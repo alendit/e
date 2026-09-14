@@ -103,6 +103,7 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
         (list :subagent-id subagent-id
               :status (plist-get record :status)
               :result-summary (plist-get record :result-summary)
+              :result (copy-tree (plist-get record :result))
               :outputs (plist-get record :outputs)
               :session-id (plist-get record :session-id))))))
 
@@ -144,7 +145,8 @@ With `:raw' non-nil, return a bounded transcript excerpt and the child's
        registry
        (plist-get context :session-id)
        (plist-get arguments :outputs)
-       (plist-get arguments :summary))
+       (plist-get arguments :summary)
+       (plist-get arguments :result))
       (list :status 'ignored
             :reason "Calling session is not a tracked subagent")))
 
@@ -247,6 +249,9 @@ HANDLER is called as (REGISTRY CONTEXT ARGUMENTS)."
     (:outputs
      (:type "array"
       :description "Structured artifact list, each (:kind :value|:uri :label).")
+     :result
+     (:type "object"
+      :description "Optional bounded application-owned structured result.")
      :summary
      (:type "string"
       :description "Short result summary."))

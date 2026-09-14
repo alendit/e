@@ -92,6 +92,18 @@ open/resume/recovery semantics."
        (when file
          (list :file file))))))
 
+(defun e-canvas--initial-session-metadata (buffer)
+  "Return BUFFER-owned metadata for a newly admitted Canvas session.
+The project root must be derived from the Canvas surface before `e-chat-open'
+admits the session.  Deriving it from the ambient current buffer would make
+later Board participants inherit an unrelated working directory."
+  (with-current-buffer buffer
+    (list :project-root
+          (e-chat-project-root
+           (if buffer-file-name
+               (file-name-directory buffer-file-name)
+             default-directory)))))
+
 (defun e-canvas--file-attachment (file)
   "Return live context attachment metadata for FILE."
   (let ((file (expand-file-name file)))
@@ -279,7 +291,9 @@ OPTIONS belong to KIND, and DISPLAY controls presentation."
          ;; attachment and metadata commands depend on the new durable root,
          ;; so they begin only from its explicit commit acknowledgement below.
          (chat-buffer
-          (e-chat-open :harness harness :session-id session-id :new-session t))
+          (e-chat-open
+           :harness harness :session-id session-id :new-session t
+           :metadata (e-canvas--initial-session-metadata buffer)))
          (attachment
           (funcall (e-canvas-kind-attachment-function kind) buffer))
          (admission-work

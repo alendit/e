@@ -34,7 +34,7 @@
   "Compact model-facing instructions for the subagents capability.")
 
 (defconst e-subagents-child-instructions
-  "You are a subagent: a child session spawned to do one task and return a compact result. Write artifacts under tmp:// (shared with the parent) and keep your final message terse. When you produce artifacts, set a structured result with (e-actions-call 'subagents :report '(:summary \"...\" :outputs [(:kind org-link :uri \"tmp://...\" :label \"...\")])). Otherwise your final message is the result."
+  "You are a subagent: a child session spawned to do one task and return a compact result. Write artifacts under tmp:// (shared with the parent) and keep your final message terse. When you produce artifacts, set a structured result with (e-actions-call 'subagents :report '(:summary \"...\" :outputs [(:kind org-link :uri \"tmp://...\" :label \"...\")])); an owning application may also require a bounded :result object. Otherwise your final message is the result."
   "Compact model-facing instructions for the child-facing subagents capability.")
 
 (defconst e-subagents-skill
@@ -62,7 +62,7 @@
      "- `interrupt`: input `(:subagent-id STRING :reason STRING)`. Explicitly aborts the child's active turn and retires its live record. `:reason` is audit data only."
      "- `shutdown`: input `(:subagent-id STRING :reason STRING)`. Explicitly interrupts a running child and retires its live record. `:reason` is audit data only."
      "- `configure-type`: input `(:type STRING :enable-layers ARRAY :disable-layers ARRAY :layer-config ALIST)`. Turns individual capabilities on or off for a spawnable type's shared harness. `layer-config` maps a capability id to its option plist, the generic way to pass or overwrite a layer's configuration -- e.g. `((agents-std-context :skills-include (\"writing\")))` to allow only the `writing` skill, or `:skills-exclude` to deny a few. Because children of a type share one harness, this configures the type, not a single child; call it before spawning."
-     "- `report` (child-side): input `(:outputs ARRAY :summary STRING)`. A child calls this to set a structured result that overrides its final message. `outputs` entries are `(:kind :value|:uri :label)`."
+     "- `report` (child-side): input `(:outputs ARRAY :summary STRING :result OBJECT?)`. A child calls this to set a structured result that overrides its final message. `outputs` entries are `(:kind :value|:uri :label)`; `result` is bounded application-owned data when the assignment requires it."
      ""
      "## Minimal context by default"
      ""

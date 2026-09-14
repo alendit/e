@@ -417,6 +417,48 @@ runtime must never use them as authority afterward.
 - No fork work, pathological exact-accounting expansion, or unrelated Grimoire
   archive cleanup.
 
+* Post-acceptance Daily source-contract correction
+
+The 2026-09-14 Daily exposed two remaining application-contract errors rather
+than a SQLite failure.  Some Grimoire children inherited the ambient process
+directory because the owning Canvas root was written only after admission, and
+Daily conflated a worker reaching =done= with its external source being
+available.  A worker could therefore finish successfully while publishing an
+unavailable-source sentence, and the owner could still finalize the run as
+=complete=.
+
+The corrected contract is:
+
+- A file-backed Canvas supplies its document project root in initial session
+  metadata.  Grimoire topic/Daily owners explicitly supply the Grimoire root,
+  and Daily supplies the same application-owned root to every participant at
+  spawn.  Tool and action execution consequently receives the project root
+  before the participant's first turn; it is not inferred from ambient Emacs
+  state.
+- A successful subagent report may carry one bounded application-owned
+  =:result= object through the generic registry and terminal Board fact.  Daily
+  owns the concrete result schema: =data= with a positive item count, =empty=
+  with zero, or =unavailable= with a bounded reason.  The Board does not learn
+  Daily policy and retains no aggregate.
+- Daily report admission validates that typed outcome against the frozen
+  artifact contract.  =unavailable= needs only the required explanatory
+  fragment and cannot masquerade as durable source data.  Required unavailable
+  sources fail finalization; optional unavailable sources produce a visible
+  partial-snapshot gap; authoritative empty results remain successful.
+- =daily-run/:apply= exposes the actual closed schema to the model: exactly the
+  ten named generated sections, each containing only =name= and =body=.  This
+  removes the prior trial-and-error around lists, vectors, and undocumented
+  property-list interpretation.
+
+Repository evidence covers the three production launch routes (generic Canvas,
+Grimoire owner, and Daily participant), generic bounded result transport,
+required/optional/empty source classification, and the exact apply schema.  The
+public graphical Daily phase-one test passes with delayed SQLite and isolated
+owner failure; phase two passes from a fresh private Emacs process and reads the
+same durable result back without duplicate work.  All 164 non-graphical
+Grimoire layer tests pass.  The running Emacs and canonical database were not
+used or changed by this correction.
+
 * Acceptance
 
 All contract rows are accepted.  Every package passed focused evidence, the

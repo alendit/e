@@ -95,7 +95,7 @@
          (chat (generate-new-buffer " *e-canvas-causal-chat*"))
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
-         calls
+         calls open-arguments
          (kind
           (e-canvas-kind-create
            :name "causal-canvas"
@@ -119,7 +119,8 @@
              returned-chat))))
     (unwind-protect
         (cl-letf (((symbol-function 'e-chat-open)
-                   (lambda (&rest _arguments)
+                   (lambda (&rest arguments)
+                     (setq open-arguments arguments)
                      (with-current-buffer chat
                        (setq-local e-chat--session-readiness-work creation))
                      chat))
@@ -131,11 +132,38 @@
                       chat))
           (should (equal (reverse (copy-sequence calls))
                          '(attachment bind present)))
+          (should
+           (equal (plist-get (plist-get open-arguments :metadata) :project-root)
+                  (file-name-as-directory
+                   (expand-file-name
+                    (with-current-buffer source default-directory)))))
           (e-work-finish creation '(:session-id "causal-session"))
           (should (equal (reverse (copy-sequence calls))
                          '(attachment bind present attach initialize))))
       (when (buffer-live-p source) (kill-buffer source))
       (when (buffer-live-p chat) (kill-buffer chat)))))
+
+(ert-deftest e-canvas-test-new-file-session-project-root-comes-from-canvas-buffer ()
+  "Ambient directories cannot leak into a file-backed Canvas admission."
+  (let* ((project (make-temp-file "e-canvas-project-" t))
+         (nested (expand-file-name "daily" project))
+         (file (expand-file-name "today.org" nested))
+         (source (find-file-noselect file))
+         (ambient (make-temp-file "e-canvas-ambient-" t)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name ".git" project))
+          (with-current-buffer source
+            (setq default-directory (file-name-as-directory nested)))
+          (let ((default-directory (file-name-as-directory ambient)))
+            (should
+             (equal
+              (plist-get (e-canvas--initial-session-metadata source)
+                         :project-root)
+              (file-name-as-directory project)))))
+      (when (buffer-live-p source) (kill-buffer source))
+      (delete-directory project t)
+      (delete-directory ambient t))))
 
 (ert-deftest e-canvas-test-open-current-buffer-creates-canvas-session ()
   "Opening from the current buffer creates a chat session with canvas context."

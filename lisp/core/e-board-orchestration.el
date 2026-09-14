@@ -268,21 +268,29 @@ safe to store in a board envelope and contains no runtime state."
              (when (eq type 'terminal-report)
                (setq body
                      (append body
-                             (list :summary (truncate-string-to-width
-                                             (or (plist-get payload :summary) "")
-                                             e-board-orchestration-summary-limit nil nil "...")
-                                   :outputs (e-board-orchestration--outputs
-                                             (plist-get payload :outputs))
-                                   :error (when-let ((error (plist-get payload :error)))
-                                            (truncate-string-to-width
-                                             (format "%s" error)
-                                             e-board-orchestration-error-limit nil nil "..."))
-                                   :participant-session-id
-                                   (when-let* ((session-id
-                                                (plist-get payload
-                                                           :participant-session-id)))
-                                     (e-board-orchestration--string
-                                      session-id :participant-session-id))))))
+                             (list
+                              :summary
+                              (truncate-string-to-width
+                               (or (plist-get payload :summary) "")
+                               e-board-orchestration-summary-limit nil nil "...")
+                              :outputs
+                              (e-board-orchestration--outputs
+                               (plist-get payload :outputs))
+                              :error
+                              (when-let ((error (plist-get payload :error)))
+                                (truncate-string-to-width
+                                 (format "%s" error)
+                                 e-board-orchestration-error-limit nil nil "..."))
+                              :participant-session-id
+                              (when-let* ((session-id
+                                           (plist-get payload
+                                                      :participant-session-id)))
+                                (e-board-orchestration--string
+                                 session-id :participant-session-id)))
+                             (when (plist-member payload :result)
+                               (list :result
+                                     (e-board-orchestration--descriptor
+                                      (plist-get payload :result)))))))
              (when (eq type 'conflict)
                (setq body
                      (append body
@@ -503,14 +511,17 @@ a durable Board replica or an invitation to query the run a second time."
          :state (plist-get task :state)
          :accepted-report
          (when report
-           (list :task-key (plist-get report :task-key)
-                 :attempt (plist-get report :attempt)
-                 :status (plist-get report :status)
-                 :summary (plist-get report :summary)
-                 :outputs (copy-tree (plist-get report :outputs))
-                 :error (copy-tree (plist-get report :error))
-                 :participant-session-id
-                 (plist-get report :participant-session-id))))))
+           (append
+            (list :task-key (plist-get report :task-key)
+                  :attempt (plist-get report :attempt)
+                  :status (plist-get report :status)
+                  :summary (plist-get report :summary)
+                  :outputs (copy-tree (plist-get report :outputs))
+                  :error (copy-tree (plist-get report :error))
+                  :participant-session-id
+                  (plist-get report :participant-session-id))
+            (when (plist-member report :result)
+              (list :result (copy-tree (plist-get report :result)))))))))
     (plist-get projection :tasks))
    :conflicts (copy-tree (plist-get projection :conflicts))))
 

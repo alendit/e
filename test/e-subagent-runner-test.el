@@ -438,10 +438,35 @@
           (should (eq (plist-get snapshot :event) 'tool-finished))
           (should
            (equal snapshot
-                  (plist-get
-                   (e-subagent-registry-get
-                    registry (plist-get record :subagent-id))
+                   (plist-get
+                    (e-subagent-registry-get
+                     registry (plist-get record :subagent-id))
                    :progress))))))))
+
+(ert-deftest e-subagent-runner-test-explicit-project-root-wins-without-parent-state ()
+  "An application-owned project root reaches the child admission directly."
+  (e-subagent-runner-test--with-instances
+    (let* ((registry (e-subagent-registry-create))
+           (parent (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :project-root "/tmp/ambient/"))
+           (captured (list nil)))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((record
+              (e-subagent-runner-test--spawn
+               registry parent "parent-1"
+               :type :reviewer :prompt "work"
+               :project-root "/tmp/grimoire/"
+               :runner (e-subagent-runner-test--capturing-runner captured)))
+             (child-harness (plist-get (car captured) :child-harness))
+             (metadata
+              (plist-get
+               (e-board-producer-test-await
+                (e-session-async-session-metadata
+                 (e-harness-sessions child-harness)
+                 (plist-get record :session-id)))
+               :metadata)))
+        (should (equal (plist-get metadata :project-root) "/tmp/grimoire/"))))))
 
 (ert-deftest e-subagent-runner-test-final-message-is-default-result ()
   "A settle with a summary records it as the compact result."
@@ -478,12 +503,15 @@
              (subagent-id (plist-get record :subagent-id))
              (child-session-id (plist-get record :session-id))
              (settle (plist-get (car captured) :on-settle)))
-        (e-subagent-report registry child-session-id
-                           (list '(:kind org-link :uri "tmp://r.org" :label "review"))
-                           "reported summary")
+        (e-subagent-report
+         registry child-session-id
+         (list '(:kind org-link :uri "tmp://r.org" :label "review"))
+         "reported summary" '(:source-status data :item-count 3))
         ;; A later final message must not overwrite the reported result.
         (let ((final (funcall settle 'done :summary "chatter final message")))
           (should (equal (plist-get final :result-summary) "reported summary"))
+          (should (equal (plist-get final :result)
+                         '(:source-status data :item-count 3)))
           (should (equal (plist-get final :outputs)
                          (list '(:kind org-link :uri "tmp://r.org" :label "review"))))
           (should (eq (plist-get final :status) 'done)))))))

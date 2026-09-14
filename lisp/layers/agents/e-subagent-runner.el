@@ -145,14 +145,16 @@ the parent applies is never clobbered."
     harness))
 
 (defun e-subagent--child-metadata
-    (instance parent-harness parent-session-id lineage-id label &optional assignment)
+    (instance parent-harness parent-session-id lineage-id label
+              &optional assignment project-root)
   "Return durable child metadata for INSTANCE under a parent lineage.
 Inherit the parent's project root so repository AGENTS.md files and
 =.agents/skills= are available to the child from its first turn."
   (let ((role (e-harness-instance-kind instance))
         (project-root
-         (and parent-session-id
-              (e-harness-project-root parent-harness parent-session-id))))
+         (or project-root
+             (and parent-session-id
+                  (e-harness-project-root parent-harness parent-session-id)))))
     (append
      (list :tmp-lineage-id lineage-id)
      (when parent-session-id (list :parent-session-id parent-session-id))
@@ -320,6 +322,7 @@ finished result carries the compact summary and outputs."
     (pcase status
       ('done (e-work-finish handle
                             (list :summary (plist-get args :summary)
+                                  :result (copy-tree (plist-get args :result))
                                   :outputs (plist-get args :outputs))))
       ('failed (e-work-fail handle
                             (list 'e-subagent-error
@@ -357,6 +360,7 @@ later final prose."
      ((and record (eq status 'done) (plist-get record :reported))
       (cons status
             (list :summary (plist-get record :result-summary)
+                  :result (copy-tree (plist-get record :result))
                   :outputs (plist-get record :outputs))))
      (t (cons status args)))))
 
@@ -384,6 +388,7 @@ retained in the live registry."
     (e-board-orchestration-actions-publish-terminal
      target assignment status
      :summary (or (plist-get record :result-summary) "")
+     :result (copy-tree (plist-get record :result))
      :outputs (or (plist-get record :outputs) [])
      :error (plist-get record :error)
      :author (list :session-id (plist-get record :session-id)))))
@@ -410,7 +415,10 @@ terminal callback is a no-op."
           (setq fields (plist-put fields :result-summary
                                   (plist-get args :summary))))
         (when (plist-member args :outputs)
-          (setq fields (plist-put fields :outputs (plist-get args :outputs)))))
+          (setq fields (plist-put fields :outputs (plist-get args :outputs))))
+        (when (plist-member args :result)
+          (setq fields (plist-put fields :result
+                                  (copy-tree (plist-get args :result))))))
       (when (plist-member args :error)
         (setq fields (plist-put fields :error (plist-get args :error))))
         (let ((terminal
@@ -501,14 +509,17 @@ immediately before invoking RUNNER.  Return RUNNER's handle plist.  Shared by
 (cl-defun e-subagent-spawn
     (registry parent-harness parent-session-id
               &key source-turn-id type prompt seed-messages label schedule runner
-              run-id task-key attempt report-admission on-running on-failure)
+              run-id task-key attempt project-root report-admission
+              on-running on-failure)
   "Spawn a subagent of TYPE under a parent lineage and return its record.
 REGISTRY tracks the child.  PARENT-HARNESS and PARENT-SESSION-ID identify the
 spawning session, whose lineage the child inherits so they share one tmp root.
 SOURCE-TURN-ID is the parent turn that initiated the child.  PROMPT is the
 child's task.  RUN-ID, TASK-KEY, and ATTEMPT optionally bind the child to one
 durable orchestration assignment.  SEED-MESSAGES are optional explicit context
-messages.  LABEL is a human-scannable stub.  SCHEDULE is `direct' (default) or
+messages.  PROJECT-ROOT explicitly fixes the child's repository when the
+application already owns that fact; otherwise the executing parent supplies it.
+LABEL is a human-scannable stub.  SCHEDULE is `direct' (default) or
 `queue'.  REPORT-ADMISSION is an optional process-local function called with a
 detached assignment and proposed report before the report becomes authoritative.
 RUNNER overrides the default direct-turn runner for tests; it is
@@ -533,7 +544,8 @@ its own terminal assignment without blocking spawn."
               (unless (and (stringp run-id) (stringp task-key) (integerp attempt) (>= attempt 0))
                 (signal 'wrong-type-argument (list 'e-board-orchestration-assignment assignment)))))
          (metadata (e-subagent--child-metadata
-                    instance parent-harness parent-session-id lineage-id label assignment))
+                    instance parent-harness parent-session-id lineage-id label
+                    assignment project-root))
          (schedule (or schedule 'direct))
          (producer-target
           (e-subagent-publication-target parent-harness parent-session-id))
@@ -717,9 +729,10 @@ child."
                       (cons id (e-harness-capability-config harness id))))
                   (append layer-config nil)))))
 
-(defun e-subagent-report (registry session-id outputs summary)
+(defun e-subagent-report (registry session-id outputs summary &optional result)
   "Record a child-reported structured result for SESSION-ID in REGISTRY.
-OUTPUTS is a structured artifact list; SUMMARY is a short result string.  The
+OUTPUTS is a structured artifact list; SUMMARY is a short result string, and
+RESULT is optional bounded application-owned structured data.  The
 report is authoritative: it marks the record reported so a later final message
 cannot overwrite it.  Return the normalized record, or nil when SESSION-ID is
 not a tracked child."
@@ -727,7 +740,8 @@ not a tracked child."
               (subagent-id (plist-get record :subagent-id)))
     (if (e-subagent-registry-reported-p registry subagent-id)
         record
-      (let* ((proposed (list :summary summary :outputs outputs))
+      (let* ((proposed (append (list :summary summary :outputs outputs)
+                               (when result (list :result result))))
              (admission
               (e-subagent-registry--report-admission registry subagent-id))
              (accepted
@@ -745,6 +759,7 @@ not a tracked child."
          registry subagent-id
          :reported t
          :outputs (plist-get accepted :outputs)
+         :result (copy-tree (plist-get accepted :result))
          :result-summary (plist-get accepted :summary))))))
 
 (defun e-subagent--record-intervention

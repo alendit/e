@@ -240,6 +240,15 @@ repairs the exact canonical run after an offline v6-to-v7 migration.  The repair
 read back one agreeing lifecycle, file, and evidence commit, and an identical
 retry returned unchanged.
 
+A 2026-09-14 follow-up closes two application-contract gaps without changing
+the SQLite-authoritative architecture.  Every Grimoire owner and participant is
+now admitted with the Grimoire project root before its first turn.  Daily
+reports carry a bounded typed source outcome (=data=, =empty=, or
+=unavailable=), finalization derives complete/partial/failed from that outcome
+instead of worker prose, and =daily-run/:apply= publishes the exact ten-section
+closed schema.  Both phases of the disposable graphical delayed-worker/restart
+scenario and all 164 non-graphical Grimoire layer tests pass.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |

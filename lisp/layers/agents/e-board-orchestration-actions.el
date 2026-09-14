@@ -38,7 +38,7 @@
           (plist-get assignment :attempt)))
 
 (cl-defun e-board-orchestration-actions-publish-terminal
-    (target assignment status &key summary outputs error author)
+    (target assignment status &key summary result outputs error author)
   "Publish ASSIGNMENT's bounded terminal STATUS report to TARGET.
 The stable assignment key makes callback retries no-ops at the board boundary."
   (let ((fact
@@ -48,7 +48,9 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                (e-board-orchestration-actions-terminal-key assignment)
                :payload (append (copy-tree assignment)
                                 (list :status status :summary (or summary "")
-                                      :outputs (or outputs []) :error error
+                                      :outputs (or outputs []) :error error)
+                                (when result (list :result result))
+                                (list
                                       :participant-session-id
                                       (plist-get author :session-id))))))
     (let ((work

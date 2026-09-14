@@ -223,6 +223,7 @@
            'terminal-report "report-1"
            '(:run-id "run-1" :task-key "daily" :attempt 0 :status done
              :summary "applied" :outputs ((:path "daily.org"))
+             :result (:source-status unavailable :reason "Slack unavailable")
              :participant-session-id "worker-1")))
          (view
           (e-board-orchestration-continuation-view
@@ -234,6 +235,8 @@
     (should (eq (plist-get view :terminal-status) 'done))
     (should (eq (plist-get task :state) 'done))
     (should (equal (plist-get accepted :summary) "applied"))
+    (should (equal (plist-get accepted :result)
+                   '(:source-status unavailable :reason "Slack unavailable")))
     (should (equal (plist-get accepted :outputs) '((:path "daily.org"))))
     (should-not (plist-member view :manifest))
     (should-not (plist-member view :continuation))

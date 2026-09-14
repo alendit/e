@@ -96,6 +96,7 @@ list and publishes no Board lifecycle facts."
           :parent-session-id (plist-get record :parent-session-id)
           :label (plist-get record :label)
           :result-summary (plist-get record :result-summary)
+          :result (copy-tree (plist-get record :result))
           :outputs (plist-get record :outputs)
           :error (plist-get record :error)
           :started-at (plist-get record :started-at)
@@ -147,6 +148,7 @@ internally so steer/read reach the child session on its own harness."
                        :report-admission report-admission
                        :work-handle work-handle
                        :result-summary nil
+                       :result nil
                        :outputs nil
                        :reported nil
                        :error nil

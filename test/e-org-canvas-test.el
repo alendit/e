@@ -178,6 +178,21 @@
                     :root (file-name-as-directory
                            (file-name-directory file))))))
 
+(ert-deftest e-org-canvas-test-application-project-root-overrides-buffer-discovery ()
+  "An application-owned Canvas root wins over a nested buffer directory."
+  (let ((buffer (generate-new-buffer " *e-org-canvas-project-root*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq default-directory "/tmp/project/nested/")
+          (should
+           (equal
+            (plist-get
+             (e-org-canvas--metadata-for-buffer
+              buffer :project-root "/tmp/application/")
+             :root)
+            "/tmp/application/")))
+      (kill-buffer buffer))))
+
 (ert-deftest e-org-canvas-test-exposes-entrypoints ()
   "The package exposes Org Canvas commands and modes."
   (dolist (symbol '(e-org-canvas-open-for-current-buffer

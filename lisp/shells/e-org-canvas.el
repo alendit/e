@@ -522,10 +522,11 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
   harness)
 
 (cl-defun e-org-canvas--metadata-for-buffer
-    (buffer &key _scope _focus target-folder needs-file-name)
+    (buffer &key _scope _focus target-folder needs-file-name project-root)
   "Return stable Org Canvas reference metadata for BUFFER."
   (with-current-buffer buffer
-    (let ((root (e-org-canvas--root-for-buffer buffer)))
+    (let ((root (or project-root
+                    (e-org-canvas--root-for-buffer buffer))))
       (list :uri (e-org-canvas--buffer-uri buffer)
             :buffer-name (buffer-name buffer)
             :label (e-org-canvas--buffer-label buffer)
@@ -550,14 +551,18 @@ ad-hoc test or caller-supplied harnesses keep their explicit layer state."
     (copy-tree org-canvas-metadata t)))
 
 (cl-defun e-org-canvas-mark-session
-    (harness session-id buffer &key scope target-folder needs-file-name focus)
+    (harness session-id buffer
+             &key scope target-folder needs-file-name focus project-root)
   "Mark HARNESS SESSION-ID as an Org Canvas session for BUFFER.
 SCOPE and FOCUS are accepted for caller compatibility.  TARGET-FOLDER and
-NEEDS-FILE-NAME become stable Org Canvas metadata."
+NEEDS-FILE-NAME become stable Org Canvas metadata.  PROJECT-ROOT, when non-nil,
+is the application-owned repository root and overrides generic buffer-derived
+project discovery."
   (ignore scope focus)
   (let ((attachment (e-org-canvas--attachment buffer))
         (options (list :target-folder target-folder
-                       :needs-file-name needs-file-name)))
+                       :needs-file-name needs-file-name
+                       :project-root project-root)))
     (e-chat-session-attach-context harness session-id attachment :canvas t)
     (prog1
         (e-org-canvas--initialize-session
@@ -702,12 +707,13 @@ the display to a normal window when the selected window is a side window."
 (defun e-org-canvas--initialize-session
     (harness session-id buffer options)
   "Initialize HARNESS SESSION-ID as an Org Canvas for BUFFER.
-OPTIONS carries optional `:target-folder' and `:needs-file-name' values."
+OPTIONS carries optional target, naming, and application project-root values."
   (let ((org-canvas
          (e-org-canvas--metadata-for-buffer
           buffer
           :target-folder (plist-get options :target-folder)
-          :needs-file-name (plist-get options :needs-file-name))))
+          :needs-file-name (plist-get options :needs-file-name)
+          :project-root (plist-get options :project-root))))
     (e-org-canvas--set-session-metadata harness session-id org-canvas)
     (e-chat-session-rename
      harness session-id
