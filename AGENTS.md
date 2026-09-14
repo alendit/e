@@ -46,6 +46,7 @@
 ## Post-Change Checklist
 
 - After finishing a coherent semantic slice, run the relevant repository-side verification, note whether a manual live reload is needed, update the applicable docs/bug/feature ledger, and commit that slice before starting unrelated work unless the user explicitly asks not to commit.
+- Changes to project-local discovery or compilation, default-project startup, or configured extension packaging must also pass `bash e2e/run-current-config-tests.sh`. This launches a fresh private Emacs daemon through the real current user configuration with test-owned runtime state. A passing isolated graphical suite or synthetic byte-compilation test does not substitute for this cold-start gate.
 - Keep commits semantic and scoped: stage only files that belong to the slice, leave unrelated dirty or untracked files alone, and split independent behavior, documentation, or guidance changes into separate commits.
 
 ## Architecture Guidance
