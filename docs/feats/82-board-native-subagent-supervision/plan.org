@@ -5,6 +5,10 @@
 
 Done
 
+The historical implementation remains accepted.  Its decisions to expose a
+registry-backed child inventory and to keep separate subagent and Board-run
+shells are superseded by the Planned [[file:addendum.org][one-participant-activity-model addendum]].
+
 * Goal
 
 The parent agent remains responsible for every child until the child reaches a terminal state or the parent deliberately replaces it.

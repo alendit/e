@@ -252,6 +252,16 @@ participant additionally enables =slack-mcp= in progressive mode, so its first
 turn always has =mcp_activate= while an uncached MCP catalog loads; graphical
 and real-current-config gates verify the capability reaches the child harness.
 
+Feature 82's original implementation remains historical =Done=, but its
+registry-backed subagent inventory and separate subagent/run shells conflict
+with the later SQLite-authoritative Board architecture.  Its
+[[file:82-board-native-subagent-supervision/addendum.org][one-participant-activity-model addendum]] is =Planned=: one bounded Board query
+will supply the only participant/activity inventory, while a private
+process-local table retains only handles needed to operate currently executing
+participants.  The clean cut removes the public process-local subagent ID,
+registry-backed list/status/read behavior, and both specialized shells without
+compatibility aliases.
+
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
 | 01 | Done        | 01-skills-over-capabilities/              | Skills over Capabilities                             |
@@ -335,7 +345,7 @@ and real-current-config gates verify the capability reaches the child harness.
 | 79 | Planned     | 79-session-workspace/                       | Session Context Resources                             |
 | 80 | Done        | 80-voice-adjustment-gradual-discovery/       | Voice Adjustment Gradual Discovery                    |
 | 81 | In-review   | 81-openai-gpt56-explicit-prompt-cache/       | OpenAI GPT-5.6 Explicit Prompt Cache                   |
-| 82 | Done        | 82-board-native-subagent-supervision/         | Board-Native Subagent Supervision                     |
+| 82 | Planned     | 82-board-native-subagent-supervision/         | Board-Native Subagent Supervision — One Participant Activity Model |
 | 83 | Done        | 83-project-local-action-capabilities/       | Project-Local Action Capabilities                    |
 | 84 | Done        | 84-trace-driven-hot-path-remediation/       | Trace-Driven Hot Path Remediation                    |
 | 85 | Done        | 85-default-projects/                        | Default Projects                                     |

@@ -1,0 +1,329 @@
+#+title: Board-Native Subagent Supervision Addendum: One Participant Activity Model
+#+startup: overview
+
+* Status
+
+Planned.
+
+* Product authority
+
+This addendum records the operator-approved unification of subagent and Board
+observation.  It supersedes the original Feature 82 decision to keep a
+registry-backed subagent shell beside a durable Board-run shell.  It also
+supersedes Feature 59's registry-backed =list=, =status=, and shell contracts
+and Feature 89's statement that the two shells remain separate.
+
+Feature 92 remains authoritative for SQLite ownership, detached asynchronous
+queries, owner-local failure isolation, and the prohibition on interactive
+storage waits.  Feature 93 remains authoritative for truthful child admission,
+restart convergence, and canonical Board participant identity.
+
+* Behavioral trace
+
+- Goal ID :: F82A1
+- Behavioral goal :: An operator or agent observes and controls work through
+  one Board participant/activity model, regardless of whether the participant
+  is currently executing in this Emacs process or exists only as durable state.
+- Direct scenario :: From a parent chat, open Board activity while the SQLite
+  read is held.  The buffer returns immediately and the composer plus three
+  independent heartbeats remain responsive.  Releasing the read displays each
+  durable participant exactly once, including its run/task context when one
+  exists.  A locally executing participant exposes live controls on that same
+  row.  After its terminal result commits and Emacs restarts, the same durable
+  row and result remain visible while live-only controls are unavailable.
+- Product authority :: The operator.
+- Owning contract :: F82A1-C01 through F82A1-C11 below.
+- Behavioral status :: Failing.  The SQL-backed Board-run shell and the
+  registry-backed subagent shell currently expose overlapping inventories with
+  different identities, lifetimes, and restart behavior.
+
+* Problem
+
+The current implementation has one legitimate lifetime split but exposes it as
+two domain models.
+
+SQLite stores Board participants, routing, pickups, orchestration facts, task
+attempts, terminal reports, and history.  Separately,
+=e-subagent-registry= stores executing child handles and the bounded progress
+needed to steer, interrupt, await, or inspect a live child.  That live
+coordination is necessary, but the registry also supplies public child IDs,
+status, result, output, list, status, read, and shell rows.  The result is a
+second participant inventory whose contents disappear at terminal settlement
+or restart.
+
+The September SQL conversion added an explicit Board publication target to the
+old subagent shell without changing its query authority.  It then added a
+separate =e-board-runs-shell= which correctly reads bounded durable projections
+and optionally consults the registry.  The partial bridge preserved both
+concepts instead of demoting the registry to a private execution mechanism.
+
+This is not a compatibility requirement.  It is an unfinished ownership
+migration.
+
+* Vocabulary and state ownership
+
+- Board :: The durable collaboration and routing boundary.  SQLite owns its
+  identity, generation, participants, activity, work projections, ordering,
+  and history.
+- Participant :: The only durable identity for a session acting on a Board.
+  A spawned child is a participant; it is not also a durable "subagent record."
+- Run, task, and attempt :: Optional durable orchestration coordinates attached
+  to a participant's work.  A participant may exist without an orchestration
+  run.
+- Subagent :: An execution role and a set of spawn/control operations.  It does
+  not name a second inventory, identifier namespace, lifecycle, or persistence
+  model.
+- Live execution :: A process-local association from one durable Board and
+  participant identity to the currently executing harness, work handle,
+  cancellation function, and latest bounded progress.  It is absent after
+  settlement or restart and is never used to decide whether the durable
+  participant exists.
+- Board activity view :: The one user-facing and agent-facing bounded view of
+  participants, runs, task state, lifecycle facts, and terminal outcomes.
+
+SQLite owns every queryable fact.  Emacs owns only buffers and presentation,
+query callbacks and cursors, executing handles, and the latest bounded progress
+needed to operate a currently executing child.  Detached query results belong
+to the requesting buffer or action until replaced or released.  No process-wide
+or per-parent participant collection is reconstructed.
+
+* Design comparison
+
+** Current aggregate
+
+- =e-subagent-registry= is both a live-handle table and a public child
+  projection.
+- =subagents/:list=, =:status=, and ordinary =:read= enumerate that projection.
+- =e-subagents-list-buffer= renders it and refreshes from registry hooks.
+- =e-board-runs-list-buffer= independently queries durable run projections and
+  then uses the same registry for live admission labels.
+- A process-local =sub_NNNNNN= value is exposed beside durable participant,
+  session, run, task, and attempt identities.
+- Terminal or restarted participants can appear in the Board view but not the
+  subagent view.
+
+** Smallest faithful alternative
+
+One consumer-shaped Board query returns a bounded participant/activity page,
+including run/task coordinates and the latest durable lifecycle or terminal
+outcome.  For run-bound work the orchestration report is the terminal outcome;
+for an ad-hoc child the participant lifecycle fact carries its bounded terminal
+summary.  The presentation and observation actions render that detached page.
+For each displayed durable participant, they may perform a process-local lookup
+to determine whether live controls and latest in-flight progress are available.
+The lookup never creates, removes, reorders, or rejects a durable row.
+
+The runner keeps one private live-execution table because harnesses, work
+handles, and cancellation functions cannot live in SQLite.  That table is
+keyed by durable Board plus participant identity, contains no terminal history,
+and has no independent list or status surface.
+
+** Decision
+
+Use the smallest faithful alternative.  Remove the registry-backed public
+inventory and both specialized shells.  Replace them with one Board activity
+surface.  Do not retain aliases, tombstones, fallback enumeration, or a
+developer-facing legacy subagent list.
+
+* Scope
+
+This addendum includes:
+
+- one bounded SQL participant/activity query shaped for observation;
+- one private live-execution lookup keyed by durable identity;
+- one Board activity shell covering participants and orchestration work;
+- Board-backed agent observation and participant control actions;
+- clean removal of the public process-local subagent identity and inventory;
+- migration of every in-tree caller, command, keymap, test, and document that
+  treats the registry as participant truth; and
+- focused, graphical, structural, startup, and complete-suite gates.
+
+This addendum does not add a general activity-log product, replay full Board
+history, persist live handles, restore executing processes after restart, add a
+polling monitor, change Daily orchestration policy, or modify the canonical user
+database.  Historical migration code may decode old durable facts where an
+existing offline contract requires it, but ordinary runtime code gets no
+compatibility branch.
+
+* Contract matrix
+
+| ID | Contract | Observable acceptance |
+|----+----------+-----------------------|
+| F82A1-C01 | SQLite is the only authority for Board participants, durable lifecycle, orchestration state, results, ordering, and history.  Run-bound work uses its orchestration report as the terminal result; an ad-hoc child records one bounded terminal lifecycle result rather than leaving it in Emacs. | A participant remains visible with the same durable identity and terminal result after all live execution state is cleared and after restart. |
+| F82A1-C02 | A child has one durable identity: its Board participant ID, which is also the admitted child session identity under the current chat contract. | Public shell rows, action results, audit facts, and control arguments use the participant ID; no =sub_NNNNNN= identity is exposed. |
+| F82A1-C03 | Process-local state retains only capabilities that SQLite cannot provide: harness, work/cancel handles, callbacks, and latest bounded in-flight progress. | The live table contains no authoritative status, result, outputs, participant list, run projection, or terminal history and removes its entry at settlement. |
+| F82A1-C04 | Board observation uses one bounded set query, not participant-by-participant reads or history replay. | Query-count assertions prove one participant/activity request for a page and no N+1 routing, session, transcript, or registry enumeration. |
+| F82A1-C05 | The public Board activity buffer returns immediately and owns only its detached page, cursor, callback, and presentation state. | A held read does not block buffer creation, composer input, or three independent heartbeats; releasing it renders the ordered page once. |
+| F82A1-C06 | The one Board activity surface represents ordinary participants and run-bound task attempts without turning them into separate inventories. | A mixed Board shows the owner, an ad-hoc child, and run-bound workers in one view with exact participant, run, task, attempt, and lifecycle labels. |
+| F82A1-C07 | Live controls resolve from a durable participant row to an optional current execution handle. | Steer, send, interrupt, shutdown, live progress, and open-chat operate from the selected participant; after restart the row remains and unavailable live controls fail visibly without changing durable state. |
+| F82A1-C08 | Agent observation is Board-backed and asynchronous. | Participant/activity list and status actions return bounded work references and settle from SQL; raw transcript inspection uses the durable session identity and bounded session query, not a registry record. |
+| F82A1-C09 | Spawn admission does not publish a second identity or optimistic participant fact. | Spawn returns the admission work reference and durable child session/participant identity; the participant becomes observable only from the committed SQLite result. |
+| F82A1-C10 | Durable rows are never accepted, rejected, hidden, or reordered by process-local execution state. | Tests deliberately omit, stale, and mismatch live handles while the SQL page remains unchanged; a handle can only add ephemeral control availability and progress. |
+| F82A1-C11 | The cut is complete. | Production and test source define or reference no =e-subagents-list-buffer=, =e-subagents-shell=, =e-subagent-registry-list=, public registry status/read result, or process-local subagent display ID; no compatibility alias remains. |
+
+* Target modularization
+
+| Responsibility | Semantic owner | Physical boundary | Cohesion reason |
+|----------------+----------------+-------------------+-----------------|
+| Durable participant/activity page | Board SQL application service | =e-board-sqlite-service.el= plus worker query mapping | Participant, activity, run/task association, ordering, and paging are relational facts and must be selected atomically and in bounded form. |
+| Durable observation mapping | Board observation application service | A narrow Board-owned module beside orchestration actions | Shells and actions need the same detached consumer projection without depending on SQLite command shapes. |
+| Live execution control | Subagent runner | Replace =e-subagent-registry.el= with a private live-execution module | Harness and cancellation handles are executable process objects; their only reason to exist is controlling currently running work. |
+| Board activity presentation | Presentation shell | Replace =e-subagents-shell.el= and =e-board-runs-shell.el= with one =e-board-activity-shell.el= | One buffer owns page/cursor/rendering and decorates durable rows with optional live controls. |
+| Spawn and participant controls | Subagent capability application service | =e-subagent-actions.el= and runner boundary | The capability owns execution commands while consuming Board identities and Board observation rather than defining another domain model. |
+
+Dependencies point from presentation and capability actions toward the
+Board-owned observation contract.  The Board service never depends on the
+subagent runner or its live table.  Joining live control availability to a
+detached Board row happens outside the durable service, immediately before
+presentation or action dispatch.
+
+* Delivery packages
+
+** F82A1-DP1: Consumer-shaped Board activity query
+
+Add one bounded asynchronous query that returns the current Board generation,
+ordered participants, latest relevant lifecycle/terminal facts, and optional
+run/task/attempt coordinates in one detached page.  Map a run-bound task's
+accepted orchestration report and an ad-hoc child's bounded terminal lifecycle
+fact into the same consumer outcome field without copying one into the other.
+Use SQL joins or bounded set reduction in the worker; do not issue a read per
+participant or rebuild a Board aggregate in Emacs.
+
+Expose the result through a narrow Board observation service shared by shells
+and actions.  The service returns work immediately, validates byte/count bounds,
+and retains no page after the consumer callback settles.
+
+Exit evidence:
+
+- disposable-SQL tests cover mixed ordinary and run-bound participants,
+  terminal results, ordering, cursor bounds, and a Board with no children;
+- query-count tests reject N+1 participant, routing, transcript, or run reads;
+- held-read tests prove enqueue-and-return behavior and request-local failure;
+  and
+- the service has no dependency on subagent live execution code.
+
+** F82A1-DP2: Private live execution handles
+
+Replace the mixed-purpose registry with a private live-execution table keyed by
+=board-id= plus =participant-id=.  Retain pending admission coordination only
+until SQLite settles, then install the live harness, work handle, cancel
+function, callbacks, and latest bounded progress.  Remove the entry at terminal
+settlement.
+
+Remove process-local =subagent-id= generation and public normalized records.
+Runner lifecycle and intervention facts use the durable participant/session
+identity.  Before discarding the last terminal-only process value, an ad-hoc
+child enqueues one idempotent bounded terminal lifecycle result; run-bound work
+continues to use the existing orchestration terminal report as its canonical
+result.  Neither path waits for commit on the interactive thread.  A stale or
+missing live entry means only "not executing in this process"; it cannot
+classify the participant or task as missing, failed, or terminal.
+
+Exit evidence:
+
+- runner tests cover delayed admission, handle installation, progress,
+  settlement cleanup, cancellation, and two Boards with equal-looking task
+  coordinates;
+- mismatch tests prove the live table cannot veto or mutate a committed row;
+- no terminal result or output survives in the live table; and
+- a structural scan finds no public process-local subagent identifier.
+
+** F82A1-DP3: One shell and one action model
+
+Create =e-board-activity-shell.el=.  Opening it requires an explicit Board SQL
+target, returns its buffer immediately, starts the bounded query, and renders
+participants and their optional run/task context in one ordered view.  The
+selected durable participant drives open-chat and live control commands.
+Controls are enabled only when the private live-execution lookup succeeds.
+
+Move agent-facing list/status observation to the same Board observation
+service.  Ordinary read uses the durable projection; raw read requests a
+bounded transcript page for the participant's durable session.  Spawn and
+control actions return/use =participant-id= and never expose a second child ID.
+
+Delete =e-subagents-shell.el= and =e-board-runs-shell.el=, their public entry
+points, registry-backed list/status/read behavior, registrations, and obsolete
+tests.  Migrate all in-tree callers directly; add no aliases or fallback path.
+
+Exit evidence:
+
+- shell tests cover immediate return, empty Board, mixed participants, live
+  control availability, terminal rows, failures, and restart without handles;
+- action tests prove SQL-backed list/status, bounded raw read, and controls by
+  participant identity;
+- an absent-symbol/reference gate covers production, tests, E2E fixtures,
+  project-local extensions, and configuration; and
+- byte compilation loads the new shell from a clean current configuration.
+
+** F82A1-DP4: Public composition and clean-cut gate
+
+Add one public graphical scenario using disposable SQLite and the real chat
+composition.  Open Board activity while its read is deliberately held; verify
+the buffer returns, composer input works, and three independent heartbeats
+fire.  Release the read and verify each participant appears once.  Start one
+live child, exercise a live command from its durable row, commit its terminal
+result, clear live process state, and reopen the view to prove the durable row
+and result remain while live controls disappear.
+
+Run the focused Board SQL/service, orchestration, subagent runner/actions, shell,
+chat, and graphical suites.  Then run byte compilation, the real-current-config
+startup gate, the complete exact-source suite, and =git diff --check=.
+
+The running Emacs and canonical user database remain untouched.  A restart is
+needed to consume the implementation because the package removes and renames
+loaded runtime modules; no compatibility shim is permitted to make live reload
+appear safe.
+
+* Acceptance
+
+The addendum is complete only when the direct scenario passes and all contracts
+F82A1-C01 through F82A1-C11 have current evidence.  Mechanism completion alone
+does not establish acceptance.
+
+Required final evidence:
+
+- one SQL-backed participant/activity inventory is reachable;
+- no registry-backed participant inventory or process-local public child ID is
+  reachable;
+- durable participant and terminal state survive restart;
+- live controls appear only as an ephemeral capability on durable rows;
+- held and failed reads remain nonblocking and request-local;
+- retained Emacs state grows with the displayed page and active executions,
+  not Board history;
+- no N+1 observation query exists;
+- all old callers and symbols are removed without aliases; and
+- focused, graphical, startup, compilation, structural, and complete-suite
+  gates pass from the exact implementation revision.
+
+* Design self-check
+
+1. This package is useful by itself: it removes a contradictory public model
+   and leaves one restart-safe Board activity surface.
+2. It moves toward SQLite-authoritative Boards with Emacs retaining only live
+   coordination and presentation state.
+3. Page limits and column layout may change and remain local to the observation
+   service and shell.  Durable identity and ownership are stable.  No
+   speculative provider or storage abstraction is added.
+4. The Board service owns durable observation, the runner owns live execution,
+   and the shell owns presentation.  Each has one reason to change.
+5. Coupling decreases because neither presentation nor model actions depend on
+   registry record shape.  The live lookup is a narrow optional capability.
+6. Stable Board policy does not depend on runner, shell, or transport details.
+7. SQLite and process-handle side effects remain in their adapters; projection
+   mapping stays detached and testable.
+8. The only retained process state is a displayed page or an executing handle.
+   Neither is a durable mirror.
+9. One set query replaces registry enumeration plus follow-up durable reads;
+   paging bounds retained state and avoids history-sized cost.
+10. The Board observation contract is real and consumer-shaped.  The private
+    live lookup promises only current handle availability.
+11. No compatibility expectation applies to the duplicated shell or public
+    process-local ID, so both are removed.
+12. The two old shell modules, registry projection API, normalized durable-like
+    fields, and their mechanism-coupled tests can be removed.
+13. Expected query failure is displayed on the requesting surface; expected
+    missing-live-handle errors disable or reject only the requested control.
+    Unexpected errors surface normally.
+14. SQL/service and runner tests prove the owners independently; the graphical
+    scenario proves their composition without coupling tests to private table
+    representation.
