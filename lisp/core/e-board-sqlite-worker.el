@@ -14,6 +14,8 @@
 
 (require 'cl-lib)
 (require 'sqlite)
+(require 'e-board-orchestration)
+(require 'e-board-sqlite-contract)
 (require 'e-runtime-store-codec)
 
 (defconst e-board-sqlite-worker-page-byte-limit (* 1024 1024)
@@ -966,6 +968,491 @@ bound instead of silently truncating the eligible set."
                  (list "Unknown Board write operation"
                        (plist-get body :op)))))))
 
+(defun e-board-sqlite-worker--activity-symbol (value)
+  "Normalize an activity enum VALUE stored as a symbol or wire string."
+  (if (stringp value) (intern value) value))
+
+(defun e-board-sqlite-worker--activity-public-participant (participant)
+  "Return PARTICIPANT without process-local execution identity or handles."
+  (let ((copy (copy-tree participant t)))
+    (dolist (key '(:subagent-id :work-handle :cancel :child-harness
+                   :publication-target :publication-function))
+      (setq copy (cl-loop for (entry value) on copy by #'cddr
+                          unless (eq entry key)
+                          append (list entry value))))
+    copy))
+
+(defun e-board-sqlite-worker--activity-lifecycle-source-p
+    (source-key session-id status)
+  "Return non-nil when SOURCE-KEY identifies a runner lifecycle for SESSION-ID.
+The source identity is the durable discriminator published by the runner.  It
+keeps unrelated same-session facts from being interpreted as lifecycle state
+without making this Board-owned worker depend on the runner implementation."
+  (and (listp source-key)
+       (= (length source-key) 3)
+       (eq (nth 0 source-key) 'subagent-lifecycle)
+       (equal (nth 1 source-key) session-id)
+       (equal (e-board-sqlite-worker--activity-symbol (nth 2 source-key))
+              status)))
+
+(defun e-board-sqlite-worker--activity-lifecycle-outcome
+    (position record source-key)
+  "Return one lifecycle OUTCOME from FACT RECORD, or nil.
+Lifecycle facts are intentionally reduced to the consumer outcome shape.  The
+process-local subagent display id, if present in the durable attributes, never
+crosses this observation boundary."
+  (let* ((attributes (plist-get record :attributes))
+         (session-id (plist-get attributes :session-id))
+         (status (e-board-sqlite-worker--activity-symbol
+                  (plist-get attributes :status))))
+    (when (and (stringp session-id) status
+               (e-board-sqlite-worker--activity-lifecycle-source-p
+                source-key session-id status))
+      (append
+       (list :source 'lifecycle :position position :session-id session-id
+             :status status)
+       (when (plist-member attributes :summary)
+         (list :summary (plist-get attributes :summary)))
+       (when (plist-member attributes :error)
+         (list :error (plist-get attributes :error)))
+       (when (plist-member attributes :result)
+         (list :result (copy-tree (plist-get attributes :result) t)))
+       (when (plist-member attributes :outputs)
+         (list :outputs (copy-tree (plist-get attributes :outputs) t)))
+       (when (plist-member attributes :finished-at)
+         (list :finished-at (plist-get attributes :finished-at)))))))
+
+(defun e-board-sqlite-worker--activity-report-outcome (position record)
+  "Return one orchestration terminal OUTCOME from FACT RECORD, or nil."
+  (let ((fact (e-board-orchestration-fact-from-record record)))
+    (when (and fact (eq (plist-get fact :type) 'terminal-report))
+      (let ((payload (plist-get fact :payload)))
+        (append
+         (list :source 'orchestration :position position
+               :session-id (plist-get payload :participant-session-id)
+               :run-id (plist-get payload :run-id)
+               :task-key (plist-get payload :task-key)
+               :attempt (plist-get payload :attempt)
+               :status (plist-get payload :status))
+         (when (plist-member payload :summary)
+           (list :summary (plist-get payload :summary)))
+         (when (plist-member payload :error)
+           (list :error (plist-get payload :error)))
+         (when (plist-member payload :result)
+           (list :result (copy-tree (plist-get payload :result) t)))
+         (when (plist-member payload :outputs)
+           (list :outputs (copy-tree (plist-get payload :outputs) t))))))))
+
+(defun e-board-sqlite-worker--activity-lifecycle-source-keys (session-ids)
+  "Return exact durable lifecycle source keys for SESSION-IDS.
+
+The runner's lifecycle source key is the Board-owned durable discriminator.
+Selecting those keys directly keeps unrelated same-session facts out of the
+bounded candidate set before any reduction or limit is applied."
+  (cl-loop for session-id in session-ids
+           append
+           (mapcar (lambda (status)
+                     (list 'subagent-lifecycle session-id status))
+                   e-board-sqlite-activity-lifecycle-statuses)))
+
+(defun e-board-sqlite-worker--activity-report-source-key (assignment)
+  "Return the durable terminal-report source key for ASSIGNMENT.
+
+Terminal reports use the stable assignment idempotency key as their Board
+source identity.  This mapping is deliberately local to the Board SQL query
+boundary; it does not require the orchestration action or a live runner."
+  (let ((run-id (plist-get assignment :run-id))
+        (task-key (plist-get assignment :task-key))
+        (attempt (plist-get assignment :attempt)))
+    (list (format "orchestration:%s:terminal-report" run-id)
+          (format "terminal:%s:%s:%d" run-id task-key attempt)
+          0)))
+
+(defun e-board-sqlite-worker--activity-lifecycle-rows
+    (board-id generation session-ids)
+  "Return bounded lifecycle rows for exact selected SESSION-IDS.
+
+The source-key set contains the durable lifecycle identity (session plus the
+current status domain), so newer unrelated facts carrying the same session and
+status attributes cannot consume the activity bound.  There is one set query
+regardless of participant count; a no-candidate request still performs it for
+fixed query-count behavior."
+  (let ((source-keys
+         (e-board-sqlite-worker--activity-lifecycle-source-keys session-ids)))
+    (if (null source-keys)
+        (sqlite-select e-board-sqlite-worker--database
+                       "SELECT position,payload,source_key FROM board_records WHERE 1=0")
+      (sqlite-select
+       e-board-sqlite-worker--database
+       (format
+        (concat
+         "SELECT position,payload,source_key FROM board_records"
+         " WHERE board_id=? AND generation=?"
+         " AND record_kind='fact' AND source_kind='fact'"
+         " AND source_key IN (%s) ORDER BY position DESC LIMIT ?")
+        (mapconcat (lambda (_source-key) "?") source-keys ","))
+       (vconcat
+        (list board-id generation)
+        (mapcar #'e-board-sqlite-worker--sql-value source-keys)
+        (list (min e-board-sqlite-activity-fact-row-limit
+                   (length source-keys))))))))
+
+(defun e-board-sqlite-worker--activity-report-rows
+    (board-id generation assignments)
+  "Return bounded terminal-report rows for exact ASSIGNMENTS.
+
+Each assignment maps to one stable terminal-report source key.  Selecting the
+exact run/task/attempt key before the bounded read prevents newer reports for
+other assignments in the same run from displacing the selected report."
+  (let ((source-keys
+         (mapcar #'e-board-sqlite-worker--activity-report-source-key
+                 assignments)))
+    (if (null source-keys)
+        (sqlite-select e-board-sqlite-worker--database
+                       "SELECT position,payload,source_key FROM board_records WHERE 1=0")
+      (sqlite-select
+       e-board-sqlite-worker--database
+       (format
+        (concat
+         "SELECT position,payload,source_key FROM board_records"
+         " WHERE board_id=? AND generation=?"
+         " AND record_kind='fact' AND source_kind='fact'"
+         " AND source_key IN (%s) ORDER BY position DESC LIMIT ?")
+        (mapconcat (lambda (_source-key) "?") source-keys ","))
+       (vconcat
+        (list board-id generation)
+        (mapcar #'e-board-sqlite-worker--sql-value source-keys)
+        (list (min e-board-sqlite-activity-fact-row-limit
+                   (length source-keys))))))))
+
+(defun e-board-sqlite-worker--activity-identities
+    (participants by-participant by-principal)
+  "Return relevant session and exact report identities for PARTICIPANTS."
+  (let (session-ids assignments)
+    (dolist (entry participants)
+      (let* ((participant-id (plist-get entry :participant-id))
+             (participant (plist-get entry :participant))
+             (principal (plist-get participant :principal))
+             (context (or (gethash participant-id by-participant)
+                          (and principal
+                               (gethash principal by-principal))))
+             (metadata (plist-get context :metadata))
+             (session-id (or (plist-get context :session-id)
+                             (plist-get participant :session-id)))
+             (run-id (plist-get metadata :board-run-id))
+             (task-key (plist-get metadata :board-task-key))
+             (attempt (plist-get metadata :board-attempt)))
+        (when (stringp session-id)
+          (push session-id session-ids))
+        (when (and (stringp run-id) (stringp task-key) (integerp attempt))
+          (push (list :run-id run-id :task-key task-key :attempt attempt
+                      :session-id session-id)
+                assignments))))
+    (list (delete-dups session-ids) (delete-dups assignments))))
+
+(defun e-board-sqlite-worker--activity-page-finalize (page byte-limit)
+  "Return PAGE with exact final encoded :bytes under BYTE-LIMIT.
+The byte count is part of the returned representation, so measuring before
+inserting it is insufficient when the count changes its encoded width."
+  (let ((candidate (plist-put (copy-tree page t) :bytes 0)))
+    (catch 'settled
+      (while t
+        (let ((bytes
+               (e-runtime-store-codec-measure-bounded candidate byte-limit)))
+          (if (= bytes (plist-get candidate :bytes))
+              (throw 'settled candidate)
+            (setq candidate (plist-put candidate :bytes bytes))))))))
+
+(defun e-board-sqlite-worker--activity-session-context
+    (board-id participants)
+  "Return bounded session context maps for BOARD-ID and PARTICIPANTS.
+The worker reads the current query rows as one set.  It maps each durable
+routing participant to its admitted session and metadata without issuing
+participant-specific session reads."
+  (let ((by-participant (make-hash-table :test 'equal))
+        (by-principal (make-hash-table :test 'equal)))
+    (let* ((session-ids
+            (delete-dups
+             (delq nil
+                   (mapcar
+                    (lambda (entry)
+                      (let ((participant (plist-get entry :participant)))
+                        (or (and (stringp (plist-get participant :session-id))
+                                 (plist-get participant :session-id))
+                            (plist-get entry :participant-id))))
+                    participants))))
+           (principals
+            (delete-dups
+             (delq nil
+                   (mapcar
+                    (lambda (entry)
+                      (let ((principal
+                             (plist-get (plist-get entry :participant)
+                                        :principal)))
+                        (and (stringp principal) principal)))
+                    participants))))
+           (clauses nil)
+           (parameters (list board-id)))
+      ;; The selected participant page supplies the exact session/principal
+      ;; candidates.  This keeps the one context read bounded without
+      ;; accidentally dropping a page row behind an unrelated session prefix.
+      (when session-ids
+        (setq clauses
+              (append clauses
+                      (list
+                       (format "session_id IN (%s)"
+                               (mapconcat (lambda (_id) "?")
+                                          session-ids ",")))))
+        (setq parameters (append parameters session-ids)))
+      (when principals
+        (setq clauses
+              (append clauses
+                      (list
+                       (format "principal IN (%s)"
+                               (mapconcat (lambda (_principal) "?")
+                                          principals ",")))))
+        (setq parameters (append parameters principals)))
+      (dolist
+          (row
+           (if clauses
+               (sqlite-select
+                e-board-sqlite-worker--database
+                (format
+                 "SELECT session_id,name,metadata,principal,association_role,routing_policy FROM session_query_state WHERE board_id=? AND (%s) ORDER BY session_id LIMIT ?"
+                 (mapconcat #'identity clauses " OR "))
+                (vconcat
+                 (append parameters
+                         (list
+                          (min e-board-sqlite-activity-session-row-limit
+                               (max 1 (* 2 (length participants))))))))
+             (sqlite-select
+              e-board-sqlite-worker--database
+              "SELECT session_id,name,metadata,principal,association_role,routing_policy FROM session_query_state WHERE 1=0")))
+      (let* ((session-id (e-board-sqlite-worker--column row 0))
+             (policy (e-board-sqlite-worker--value
+                      (e-board-sqlite-worker--column row 5)))
+             (entry (list :session-id session-id
+                          :name (e-board-sqlite-worker--column row 1)
+                          :metadata
+                          (e-board-sqlite-worker--value
+                           (e-board-sqlite-worker--column row 2))
+                          :principal (e-board-sqlite-worker--column row 3)
+                          :association-role
+                          (e-board-sqlite-worker--column row 4)
+                          :participant-id
+                          (plist-get policy :participant-id))))
+        (when-let ((participant-id (plist-get entry :participant-id)))
+          (puthash participant-id entry by-participant))
+        (when-let ((principal (plist-get entry :principal)))
+          (puthash principal entry by-principal))))
+    (list by-participant by-principal))))
+
+(defun e-board-sqlite-worker--activity-page (body)
+  "Return one bounded detached participant/activity page from BODY.
+Participant, current session, and newest fact relations are selected as sets
+inside this worker transaction.  The parent process receives only the reduced
+page and never reconstructs a Board aggregate or performs follow-up reads."
+  (let* ((board-id (plist-get body :board-id))
+         (board-row (e-board-sqlite-worker--board-row board-id))
+         (generation (e-board-sqlite-worker--column board-row 1))
+         (revision (e-board-sqlite-worker--column board-row 2))
+         (after (or (plist-get body :after) ""))
+         (limit (plist-get body :limit))
+         (byte-limit (plist-get body :byte-limit)))
+    (unless (and (integerp limit) (> limit 0)
+                 (<= limit e-board-sqlite-activity-page-count-limit))
+      (signal 'e-runtime-store-worker-error
+              (list "Board activity participant count is out of bounds"
+                    limit e-board-sqlite-activity-page-count-limit)))
+    (unless (and (integerp byte-limit) (> byte-limit 0)
+                 (<= byte-limit e-board-sqlite-activity-page-byte-limit))
+      (signal 'e-runtime-store-worker-error
+              (list "Board activity page byte bound is out of bounds"
+                    byte-limit e-board-sqlite-activity-page-byte-limit)))
+    (let* ((rows
+            (sqlite-select
+             e-board-sqlite-worker--database
+             "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id>? ORDER BY participant_id LIMIT ?"
+             (vector board-id generation after (1+ limit))))
+           (more (> (length rows) limit))
+           (selected-rows (if more (cl-subseq rows 0 limit) rows))
+           (participant-values
+            (mapcar
+             (lambda (row)
+               (list :participant-id
+                     (e-board-sqlite-worker--column row 0)
+                     :participant
+                     (e-board-sqlite-worker--value
+                      (e-board-sqlite-worker--column row 1))))
+             selected-rows))
+           (contexts
+            (e-board-sqlite-worker--activity-session-context
+             board-id participant-values))
+           (by-participant (nth 0 contexts))
+           (by-principal (nth 1 contexts))
+           (identities
+            (e-board-sqlite-worker--activity-identities
+             participant-values by-participant by-principal))
+           (session-ids (nth 0 identities))
+           (report-assignments (nth 1 identities))
+           (lifecycle-by-session (make-hash-table :test 'equal))
+           (report-by-session-assignment (make-hash-table :test 'equal))
+           (report-by-assignment (make-hash-table :test 'equal))
+           (report-by-session (make-hash-table :test 'equal)))
+      ;; Each candidate set is selected by the page's durable identities before
+      ;; reduction.  Unrelated Board history therefore cannot displace a
+      ;; relevant lifecycle or terminal report behind a global newest-row cap.
+      (dolist
+          (row
+           (e-board-sqlite-worker--activity-lifecycle-rows
+            board-id generation session-ids))
+        (let* ((position (e-board-sqlite-worker--column row 0))
+               (record (e-board-sqlite-worker--value
+                        (e-board-sqlite-worker--column row 1)))
+               (source-key (e-board-sqlite-worker--value
+                            (e-board-sqlite-worker--column row 2)))
+               (lifecycle
+                (e-board-sqlite-worker--activity-lifecycle-outcome
+                 position record source-key)))
+          (when (and lifecycle
+                     (not (gethash (plist-get lifecycle :session-id)
+                                   lifecycle-by-session)))
+            (puthash (plist-get lifecycle :session-id) lifecycle
+                     lifecycle-by-session))))
+      (dolist
+          (row
+           (e-board-sqlite-worker--activity-report-rows
+            board-id generation report-assignments))
+        (let* ((position (e-board-sqlite-worker--column row 0))
+               (record (e-board-sqlite-worker--value
+                        (e-board-sqlite-worker--column row 1)))
+               (report
+                (e-board-sqlite-worker--activity-report-outcome
+                 position record)))
+          (when report
+            (let ((assignment
+                   (list (plist-get report :run-id)
+                         (plist-get report :task-key)
+                         (plist-get report :attempt)))
+                  (session-id (plist-get report :session-id)))
+              (unless (gethash assignment report-by-assignment)
+                (puthash assignment report report-by-assignment))
+              (when session-id
+                (unless (gethash (cons session-id assignment)
+                                 report-by-session-assignment)
+                  (puthash (cons session-id assignment) report
+                           report-by-session-assignment))
+                (unless (gethash session-id report-by-session)
+                  (puthash session-id report report-by-session)))))))
+      (let ((participant-rows nil))
+        (dolist (entry participant-values)
+          (let* ((participant-id (plist-get entry :participant-id))
+                 (participant (plist-get entry :participant))
+                 (principal (plist-get participant :principal))
+                 (context (or (gethash participant-id by-participant)
+                              (and principal
+                                   (gethash principal by-principal))))
+                 (metadata (plist-get context :metadata))
+                 (session-id (or (plist-get context :session-id)
+                                 (plist-get participant :session-id)))
+                 (run-id (plist-get metadata :board-run-id))
+                 (task-key (plist-get metadata :board-task-key))
+                 (attempt (plist-get metadata :board-attempt))
+                 (assignment (and run-id task-key (integerp attempt)
+                                  (list run-id task-key attempt)))
+                 (report
+                  (or (and assignment
+                           (if session-id
+                               (or (gethash (cons session-id assignment)
+                                            report-by-session-assignment)
+                                   (let ((candidate
+                                          (gethash assignment
+                                                   report-by-assignment)))
+                                     (and candidate
+                                          (or (null (plist-get candidate
+                                                              :session-id))
+                                              (equal session-id
+                                                     (plist-get candidate
+                                                                :session-id)))
+                                          candidate)))
+                             (gethash assignment report-by-assignment)))
+                      (and (null assignment) session-id
+                           (gethash session-id report-by-session))))
+                 (lifecycle (and session-id
+                                 (gethash session-id lifecycle-by-session)))
+                 (outcome (or report lifecycle)))
+            (when (and report (null run-id))
+              (setq run-id (plist-get report :run-id)
+                    task-key (plist-get report :task-key)
+                    attempt (plist-get report :attempt)))
+            (push
+             (append
+              (list :participant-id participant-id
+                    :session-id session-id
+                    :name (or (plist-get participant :name)
+                              (plist-get context :name)
+                              session-id participant-id)
+                    :principal principal
+                    :role (plist-get participant :role)
+                    :state (or (plist-get participant :state) 'active)
+                    :participant
+                    (e-board-sqlite-worker--activity-public-participant
+                     participant))
+              (when run-id (list :run-id run-id))
+              (when task-key (list :task-key task-key))
+              (when (integerp attempt) (list :attempt attempt))
+              (when outcome
+                (list :outcome
+                      (append
+                       (list :source (plist-get outcome :source)
+                             :status (plist-get outcome :status))
+                       (when (plist-member outcome :summary)
+                         (list :summary (plist-get outcome :summary)))
+                       (when (plist-member outcome :error)
+                         (list :error (plist-get outcome :error)))
+                       (when (plist-member outcome :result)
+                         (list :result
+                               (copy-tree (plist-get outcome :result) t)))
+                       (when (plist-member outcome :outputs)
+                         (list :outputs
+                               (copy-tree (plist-get outcome :outputs) t)))
+                       (when (plist-member outcome :finished-at)
+                         (list :finished-at
+                               (plist-get outcome :finished-at)))))))
+             participant-rows)))
+        (setq participant-rows (nreverse participant-rows))
+        (let ((kept participant-rows)
+              page)
+          ;; Build the largest prefix that satisfies the exact transport codec
+          ;; bound.  If a single detached row cannot fit, fail this request
+          ;; locally instead of returning an unbounded or silently empty page.
+          (catch 'page
+            (while t
+              (let* ((last (car (last kept)))
+                     (last-id (plist-get last :participant-id))
+                     (truncated-prefix-p
+                      (or more
+                          (< (length kept) (length participant-rows)))))
+                (setq page
+                      (list :board-id board-id
+                            :generation generation
+                            :revision revision
+                            :after after
+                            :participants kept
+                            :next (and truncated-prefix-p last-id)
+                            :cursor (or last-id after))))
+              (condition-case _error
+                  (throw 'page
+                         (e-board-sqlite-worker--activity-page-finalize
+                          page byte-limit))
+                (e-runtime-store-codec-too-large
+                 (if (cdr kept)
+                     (setq kept (butlast kept))
+                   (signal 'e-runtime-store-worker-error
+                           (list
+                            "One Board activity participant exceeds page byte bound"
+                            board-id byte-limit))))))))))))
+
 (defun e-board-sqlite-worker-read (database body)
   "Execute one typed Board read BODY on DATABASE."
   (let ((e-board-sqlite-worker--database database))
@@ -1225,6 +1712,8 @@ bound instead of silently truncating the eligible set."
              :run-count run-count
              :truncated (and (= (length rows) row-limit)
                              (< run-count run-limit)))))
+    ('board-activity-page
+     (e-board-sqlite-worker--activity-page body))
     ('board-routing-get
      (when-let* ((row (car (sqlite-select
                             e-board-sqlite-worker--database

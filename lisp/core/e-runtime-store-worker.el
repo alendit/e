@@ -1120,6 +1120,7 @@ acknowledgement prefix."
        (vector (plist-get body :session-id)
                (min 1024 (max 1 (or (plist-get body :limit) 256)))))))
     ((or 'board-get 'board-list 'board-record-page 'board-visible-window
+         'board-activity-page
          'board-orchestration-run 'board-orchestration-runs
          'board-routing-get
          'board-pickup-list 'board-participant-list

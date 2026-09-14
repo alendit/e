@@ -441,6 +441,18 @@ to request-owned producer work.  It stores no terminal outcome."
    (e-board-sqlite-publication-target--service target)
    (e-board-sqlite-publication-target--board-id target) limit))
 
+(defun e-board-sqlite-publication-target-activity-page-start
+    (target &rest arguments)
+  "Read TARGET's bounded detached Board participant/activity page.
+The request is owned by the Board SQL service; TARGET contributes only its
+durable Board address and no aggregate or live execution state.  ARGUMENTS are
+the keyword arguments accepted by `e-board-sqlite-service-activity-page-start'."
+  (e-board-sqlite-publication-target--require target)
+  (apply #'e-board-sqlite-service-activity-page-start
+         (e-board-sqlite-publication-target--service target)
+         (e-board-sqlite-publication-target--board-id target)
+         arguments))
+
 (defun e-board-sqlite-publication-target-record-page-start
     (target &rest arguments)
   "Read a bounded canonical record page from TARGET using ARGUMENTS."
@@ -618,6 +630,37 @@ canonical identity payload and is copied before crossing the SQL boundary."
    service 'read
    (list :op 'board-orchestration-runs :board-id board-id
          :limit (or limit 32))))
+
+(cl-defun e-board-sqlite-service-activity-page-start
+    (service board-id &key after limit byte-limit)
+  "Read one bounded consumer-shaped Board participant/activity page.
+
+The request returns immediately with an `e-work' handle.  COUNT and BYTE-LIMIT
+are validated before admission and are repeated by the worker at the SQL
+boundary.  The worker joins or reduces bounded participant, session, and fact
+sets; it never issues a read per participant.  Neither this service nor its
+operation retains the returned page after the consumer's work handle settles."
+  (let ((limit (or limit e-board-sqlite-activity-page-count-limit))
+        (byte-limit (or byte-limit e-board-sqlite-activity-page-byte-limit)))
+    (unless (and (integerp limit) (> limit 0)
+                 (<= limit e-board-sqlite-activity-page-count-limit))
+      (signal 'e-board-sqlite-error
+              (list "Board activity participant count is out of bounds"
+                    limit e-board-sqlite-activity-page-count-limit)))
+    (unless (and (integerp byte-limit) (> byte-limit 0)
+                 (<= byte-limit e-board-sqlite-activity-page-byte-limit))
+      (signal 'e-board-sqlite-error
+              (list "Board activity page byte bound is out of bounds"
+                    byte-limit e-board-sqlite-activity-page-byte-limit)))
+    (unless (or (null after)
+                (and (stringp after) (not (string-empty-p after))))
+      (signal 'e-board-sqlite-error
+              (list "Board activity cursor is invalid" after)))
+    (e-board-sqlite-service--start
+     service 'read
+     (list :op 'board-activity-page :board-id board-id
+           :after (e-board-sqlite-service--detached-copy (or after ""))
+           :limit limit :byte-limit byte-limit))))
 
 (defun e-board-sqlite-service-pickup-page-start
     (service board-id generation participant-id &optional limit)
