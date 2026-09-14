@@ -9,11 +9,11 @@
 
 ;; A small runtime registry mapping a reference scheme to a resolver that
 ;; returns a live `e-work' handle.  A reference is "SCHEME:LOCAL-ID", e.g.
-;; "subagent:sub_000003".  This is the seam that lets a generic await tool wait
-;; on any subsystem's work by the ids the model already holds, without the tool
-;; knowing about subagents, task-queue tasks, or elisp-jobs.  Each subsystem
-;; registers its scheme; the await tool and the coordinator stay
-;; scheme-agnostic.
+;; "subagent:<opaque-board-participant-payload>".  This is the seam that lets
+;; a generic await tool wait on any subsystem's work by the opaque references
+;; the model already holds, without the tool knowing about subagents,
+;; task-queue tasks, or elisp-jobs.  Each subsystem registers its scheme; the
+;; await tool and the coordinator stay scheme-agnostic.
 ;;
 ;; The registry is process-global runtime state, like the tool registry: it
 ;; holds no durable facts and is rebuilt by whichever layers are active.

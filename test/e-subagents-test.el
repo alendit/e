@@ -126,36 +126,12 @@
 
 ;;; e-subagents-test.el ends here
 
-(ert-deftest e-subagents-test-active-child-context-includes-supervision-evidence ()
-  "Direct children add a checkpoint instruction and bounded live evidence."
-  (let* ((registry (e-subagent-registry-create))
-         (records (e-subagent-registry-records registry))
-         (record '(:subagent-id "sub_000001" :status running
-                   :parent-session-id "parent" :started-at 0.0
-                   :last-activity-at 0.0 :progress-sequence 4
-                   :progress (:sequence 4 :summary "Finished focused ERT"))))
-    (puthash "sub_000001" record records)
-    (setf (e-subagent-registry-order registry) '("sub_000001"))
-    (let ((content (plist-get (car (e-subagents--context-messages registry "parent"))
-                              :content)))
-      (should (string-match-p "Await timeouts are checkpoints" content))
-      (should (string-match-p "sub_000001: running" content))
-      (should (string-match-p "Finished focused ERT" content))
-      (should (string-match-p "Time alone never authorizes cancellation" content)))))
-
-(ert-deftest e-subagents-test-active-child-context-uses-default-registry ()
-  "Omitting REGISTRY still reads live children from the configured default."
-  (let* ((registry (e-subagent-registry-create))
-         (e-subagent-actions-default-registry registry)
-         (records (e-subagent-registry-records registry))
-         (record '(:subagent-id "sub_default" :status running
-                   :parent-session-id "parent" :started-at 0.0
-                   :last-activity-at 0.0 :progress-sequence 1
-                   :progress (:sequence 1 :summary "Default registry progress"))))
-    (puthash "sub_default" record records)
-    (setf (e-subagent-registry-order registry) '("sub_default"))
-    (let ((content
-           (plist-get (car (e-subagents--context-messages nil "parent"))
-                      :content)))
-      (should (string-match-p "sub_default: running" content))
-      (should (string-match-p "Default registry progress" content)))))
+(ert-deftest e-subagents-test-active-child-context-is-board-owned ()
+  "The private live owner does not publish a process-local child inventory."
+  (should-not (e-subagents--active-children-context
+               (e-subagent-live-create) "parent"))
+  (should-not (string-match-p
+               "sub_[0-9]"
+               (or (plist-get (car (e-subagents--context-messages nil "parent"))
+                              :content)
+                   ""))))

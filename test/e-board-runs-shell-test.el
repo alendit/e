@@ -4,7 +4,7 @@
 (require 'e-board-orchestration)
 (require 'e-board-orchestration-actions)
 (require 'e-board-runs-shell)
-(require 'e-subagent-registry)
+(require 'e-subagent-live)
 (load (expand-file-name "e-board-producer-test-support.el"
                         (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
@@ -145,45 +145,33 @@
       (should-not (string-match-p ":manifest" summary)))))
 
 (ert-deftest e-board-runs-shell-test-summary-exposes-live-pending-admission ()
-  "A live reserved child supplements, but does not replace, SQL run state."
+  "Unavailable process-local execution state cannot supplement SQL run state."
   (e-board-producer-test-with-target (target)
-    (let ((registry (e-subagent-registry-create)))
-      (e-board-runs-shell-test--publish
-       target (e-board-runs-shell-test--manifest))
-      (e-subagent-registry-reserve-admission
-       registry :type :worker :role 'worker :session-id "participant-pending"
-       :parent-session-id "owner-1" :label "Daily task" :schedule 'direct
-       :run-id "run-1" :task-key "task" :attempt 0)
-      (should-not (e-subagent-registry-list registry))
-      (let ((summary (e-board-runs-shell--format-summary
-                      target (e-board-runs-shell-test--projection target)
-                      registry)))
-        (should (string-match-p "Participant session id: participant-pending"
-                                summary))
-        (should (string-match-p "Admission: pending" summary))
-        (should (string-match-p "Disposition: pending" summary))))))
+    (e-board-runs-shell-test--publish
+     target (e-board-runs-shell-test--manifest))
+    (let ((summary (e-board-runs-shell--format-summary
+                    target (e-board-runs-shell-test--projection target)
+                    nil)))
+      (should (string-match-p "Participant session id: -" summary))
+      (should (string-match-p "Admission: pending" summary))
+      (should (string-match-p "Disposition: pending" summary)))))
 
 (ert-deftest e-board-runs-shell-test-summary-labels-successor-retrying ()
-  "A selected successor attempt is retrying while live admission waits."
+  "A selected successor attempt is retrying without live-state inference."
   (e-board-producer-test-with-target (target)
-    (let ((registry (e-subagent-registry-create)))
-      (e-board-runs-shell-test--publish
-       target (e-board-runs-shell-test--manifest))
-      (e-board-runs-shell-test--publish
-       target
-       (e-board-runs-shell-test--fact
-        'attempt-selection "retry-1"
-        '(:run-id "run-1" :task-key "task" :attempt 1)))
-      (e-subagent-registry-reserve-admission
-       registry :type :worker :role 'worker :session-id "participant-retry"
-       :parent-session-id "owner-1" :label "Daily task retry" :schedule 'direct
-       :run-id "run-1" :task-key "task" :attempt 1)
-      (let ((summary (e-board-runs-shell--format-summary
-                      target (e-board-runs-shell-test--projection target)
-                      registry)))
-        (should (string-match-p "Attempt: 1" summary))
-        (should (string-match-p "Admission: pending" summary))
-        (should (string-match-p "Disposition: retrying" summary))))))
+    (e-board-runs-shell-test--publish
+     target (e-board-runs-shell-test--manifest))
+    (e-board-runs-shell-test--publish
+     target
+     (e-board-runs-shell-test--fact
+      'attempt-selection "retry-1"
+      '(:run-id "run-1" :task-key "task" :attempt 1)))
+    (let ((summary (e-board-runs-shell--format-summary
+                    target (e-board-runs-shell-test--projection target)
+                    nil)))
+      (should (string-match-p "Attempt: 1" summary))
+      (should (string-match-p "Admission: pending" summary))
+      (should (string-match-p "Disposition: retrying" summary)))))
 
 (provide 'e-board-runs-shell-test)
 

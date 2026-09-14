@@ -19,7 +19,7 @@
 (require 'e-harness)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-harness-instances)
-(require 'e-subagent-registry)
+(require 'e-subagent-live)
 (require 'e-subagent-runner)
 (require 'e-subagents-shell)
 

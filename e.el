@@ -104,7 +104,7 @@ Test processes may bind this to nil while placing source first in
   (require 'e-agent-shell-fleet)
   (require 'e-task-queue-actions)
   (require 'e-cron-actions)
-  (require 'e-subagent-registry)
+  (require 'e-subagent-live)
   (require 'e-subagent-runner)
   (require 'e-subagent-actions)
   (require 'e-subagents)

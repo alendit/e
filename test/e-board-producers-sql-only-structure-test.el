@@ -13,7 +13,7 @@
     "lisp/layers/agents/e-board-orchestration-actions.el"
     "lisp/layers/agents/e-cron-actions.el"
     "lisp/layers/agents/e-subagent-actions.el"
-    "lisp/layers/agents/e-subagent-registry.el"
+    "lisp/layers/agents/e-subagent-live.el"
     "lisp/layers/agents/e-subagent-runner.el"
     "lisp/layers/agents/e-subagents.el"
     "lisp/layers/annotations/e-annotation-answer.el"

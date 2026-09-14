@@ -16,7 +16,7 @@
 (require 'tabulated-list)
 (require 'e-board-orchestration-actions)
 (require 'e-keymap-hints)
-(require 'e-subagent-registry)
+(require 'e-subagent-live)
 (require 'e-workspaces)
 
 (defconst e-board-runs-shell-buffer-name "*e-board-runs*"

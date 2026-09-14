@@ -19,7 +19,7 @@
 (require 'tabulated-list)
 (require 'e-keymap-hints)
 (require 'e-subagent-actions)
-(require 'e-subagent-registry)
+(require 'e-subagent-live)
 (require 'e-subagent-runner)
 (require 'e-workspaces)
 
@@ -191,10 +191,12 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
          (reason (read-string "Reason (optional): ")))
     (when (string-empty-p (string-trim prompt))
       (user-error "Steer prompt cannot be empty"))
-    (e-subagent-steer e-subagents-shell--registry
-                      (e-subagents-shell--require-publication-target)
+    (let ((target (e-subagents-shell--require-publication-target)))
+      (e-subagent-steer e-subagents-shell--registry
+                      (e-board-sqlite-publication-target-board-id target)
+                      target
                       subagent-id prompt
-                      (unless (string-empty-p (string-trim reason)) reason))
+                      (unless (string-empty-p (string-trim reason)) reason)))
     (e-subagents-shell--refresh)))
 
 (defun e-subagents-shell-progress ()
@@ -218,18 +220,22 @@ Bound to `e-subagent-registry-change-functions' so the list tracks live status."
 (defun e-subagents-shell-interrupt ()
   "Interrupt the subagent on the current row."
   (interactive)
-  (e-subagent-interrupt e-subagents-shell--registry
-                        (e-subagents-shell--require-publication-target)
+  (let ((target (e-subagents-shell--require-publication-target)))
+    (e-subagent-interrupt e-subagents-shell--registry
+                        (e-board-sqlite-publication-target-board-id target)
+                        target
                         (e-subagents-shell--subagent-id-at-point))
-  (e-subagents-shell--refresh))
+    (e-subagents-shell--refresh)))
 
 (defun e-subagents-shell-shutdown ()
   "Shut down the subagent on the current row."
   (interactive)
-  (e-subagent-shutdown e-subagents-shell--registry
-                       (e-subagents-shell--require-publication-target)
+  (let ((target (e-subagents-shell--require-publication-target)))
+    (e-subagent-shutdown e-subagents-shell--registry
+                       (e-board-sqlite-publication-target-board-id target)
+                       target
                        (e-subagents-shell--subagent-id-at-point))
-  (e-subagents-shell--refresh))
+    (e-subagents-shell--refresh)))
 
 (defun e-subagents-shell-open-chat ()
   "Open the child chat session for the subagent on the current row.
@@ -292,7 +298,7 @@ when non-nil, scopes the list to that parent's direct children.
 PUBLICATION-TARGET is the explicit SQL destination required by intervention
 commands; read-only inspection remains available without it."
   (interactive)
-  (let ((registry (or registry e-subagent-actions-default-registry))
+  (let ((registry (or registry e-subagent-actions-default-live))
         (buffer (get-buffer-create e-subagents-shell-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'e-subagents-shell-mode)

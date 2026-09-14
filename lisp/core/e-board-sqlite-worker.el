@@ -1011,8 +1011,15 @@ crosses this observation boundary."
       (append
        (list :source 'lifecycle :position position :session-id session-id
              :status status)
-       (when (plist-member attributes :summary)
-         (list :summary (plist-get attributes :summary)))
+       ;; Runner-owned lifecycle facts retain the detached field name
+       ;; `:result-summary'; older/current observation fixtures use the
+       ;; consumer-shaped `:summary'.  Normalize both at this Board boundary
+       ;; without copying the durable fact into the other source.
+       (when (or (plist-member attributes :summary)
+                 (plist-member attributes :result-summary))
+         (list :summary
+               (or (plist-get attributes :summary)
+                   (plist-get attributes :result-summary))))
        (when (plist-member attributes :error)
          (list :error (plist-get attributes :error)))
        (when (plist-member attributes :result)
