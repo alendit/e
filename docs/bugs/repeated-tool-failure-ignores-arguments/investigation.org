@@ -1,0 +1,68 @@
+#+title: Repeated Tool Failure Guard Ignores Call Arguments Investigation
+
+* Finding
+
+The provider-neutral turn loop identified a repeated failing call using only
+the tool name and a bounded normalized error preview.  It omitted the call
+arguments.  Consequently, any two consecutive calls to one tool that reached
+the same backend failure collided, even if the second call used a different
+query or otherwise attempted recovery.
+
+The observed =search= turn first queried =slack_search= and then
+=fast-tool-user=.  Both calls reached the same missing Ollama embedding model
+and produced the same stack trace, so the shared loop guard incorrectly failed
+the turn before the model could recover.
+
+* Remediation implemented
+
+The shared loop fingerprint now contains the tool name, a fixed-size SHA-256
+digest of the canonically ordered schema-normalized arguments, and the bounded
+normalized error.
+For calls rejected during schema validation, the digest uses the received
+coerced arguments rather than the transcript-safe rejection projection.  This
+prevents two distinct malformed calls from colliding merely because projection
+removed their differing invalid fields.
+
+The state remains turn-local and bounded.  It does not persist arguments or add
+tool-specific policy.  A successful call still clears the prior failure, and a
+different error still starts a new consecutive-failure run.
+
+* Validation
+
+- Complete provider-neutral loop suite: 62/62 passed.
+- Complete tool registry and execution suite: 38/38 passed.
+- The loop regression proves that different valid arguments with the same error
+  remain recoverable, while a semantically identical call with reordered object
+  keys is still detected.
+- A second regression proves the same behavior for invalid received arguments
+  whose transcript-safe projections are identical.
+- =git diff --check=: passed.
+- Full repository suite: 2287/2295 passed.  The eight failures outside this
+  slice are the board-engine removal structure check, four local HTTP MCP
+  fixtures and two OpenAI socket fixtures blocked from binding in the sandbox,
+  and the subagent intervention provenance check.  All loop and tool tests
+  passed within the full run.
+
+The running Emacs and canonical database remain unchanged.  This changes the
+core turn loop and requires a full Emacs restart; =e-dev-reload= does not apply
+it.
+
+* Required design self-check
+
+1. The package prevents recoverable tool attempts from destroying a turn.
+2. It moves toward uniform, explicit tool-result semantics in the shared loop.
+3. The stable identity fields are tool, arguments, and error; no speculative
+   recovery policy is introduced.
+4. The loop owns loop detection; individual tools remain unaware of it.
+5. Coupling is reduced by removing the need for tool-specific exceptions.
+6. No stable policy depends on a concrete provider or tool implementation.
+7. Tool execution remains outside the loop-detection identity calculation.
+8. The only added state is one fixed-size, turn-local argument digest.
+9. Happy-path work adds one SHA-256 digest only for failed tool results.
+10. Every registered tool receives the same substitutable behavior.
+11. No compatibility path is required; the incorrect identity is replaced.
+12. No legacy code is retained or added.
+13. Ordinary tool errors return to the model; exact consecutive repetitions
+    still surface as a terminal loop error.
+14. Focused loop tests prove both exact repetition and different-argument
+    recovery independently of provider and tool implementations.

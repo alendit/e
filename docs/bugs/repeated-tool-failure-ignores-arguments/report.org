@@ -1,0 +1,17 @@
+#+title: Repeated Tool Failure Guard Ignores Call Arguments
+
+* Report
+
+During a Daily chat, the model made two =search= calls with different queries.
+Both calls reached the same unavailable embedding backend and returned the same
+error text.  The second failure terminated the turn as an identical repeated
+tool call even though the model had changed its arguments.
+
+* Expected behavior
+
+- A failure is an identical repetition only when the tool name, normalized
+  arguments, and normalized error are all equal to the immediately preceding
+  failure.
+- Different arguments must return their ordinary tool result to the model, even
+  when a shared dependency produces the same error.
+- The rule must apply centrally to every model-facing tool.

@@ -861,13 +861,15 @@
      :name "fail-or-succeed"
      :description "Fail with the requested diagnostic or succeed."
      :parameters '(:type "object"
-                   :properties (:value (:type "string"))
+                   :properties (:value (:type "string")
+                                :diagnostic (:type "string"))
                    :required ["value"])
      :handler (lambda (arguments)
-                (let ((value (plist-get arguments :value)))
+                (let ((value (plist-get arguments :value))
+                      (diagnostic (plist-get arguments :diagnostic)))
                   (if (equal value "ok")
                       "ok"
-                    (error "%s" value)))))
+                    (error "%s" (or diagnostic value))))))
     (condition-case err
         (e-loop-run-turn-batch
          :session-id "session-tool-failure"
@@ -897,6 +899,28 @@
     (should (= (length tool-results) 2))
     (should (equal (plist-get (plist-get (car tool-results) :content) :status)
                    'error))))
+
+(ert-deftest e-loop-test-different-tool-arguments-with-same-error-continue ()
+  "Different calls remain recoverable even when their diagnostics are equal."
+  (let ((run (e-loop-test--run-failing-tool-sequence
+              '((:value "first query" :diagnostic "shared backend failure")
+                (:value "second query" :diagnostic "shared backend failure")
+                (:diagnostic "shared backend failure" :value "second query")))))
+    ;; The second call must reach the model as an ordinary tool error.  Only
+    ;; the exact repetition of that call is considered a stuck loop.
+    (should (= (plist-get run :calls) 3))
+    (should (eq (car (plist-get run :failure))
+                'e-loop-repeated-tool-failure))))
+
+(ert-deftest e-loop-test-different-rejected-arguments-with-same-error-continue ()
+  "Rejected calls use received arguments rather than their safe projection."
+  (let ((run (e-loop-test--run-failing-tool-sequence
+              '((:unknown "first")
+                (:unknown "second")
+                (:unknown "second")))))
+    (should (= (plist-get run :calls) 3))
+    (should (eq (car (plist-get run :failure))
+                'e-loop-repeated-tool-failure))))
 
 (ert-deftest e-loop-test-success-resets-consecutive-tool-failure ()
   "A successful call makes the next matching failure the first again."

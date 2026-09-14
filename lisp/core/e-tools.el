@@ -621,6 +621,13 @@ table schemas compare identically while preserving all material fields."
   (secure-hash 'sha256
                (json-encode (e-tools--json-normalize definition))))
 
+(defun e-tools-arguments-fingerprint (arguments)
+  "Return a stable SHA-256 fingerprint for normalized tool ARGUMENTS.
+Equivalent JSON objects compare identically regardless of their Lisp object
+representation or property order."
+  (secure-hash 'sha256
+               (json-encode (e-tools--json-normalize arguments))))
+
 (defun e-tools-result-content-text (content)
   "Return the model-visible text representation for tool result CONTENT."
   (cond

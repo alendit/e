@@ -32,7 +32,10 @@
   "Maximum normalized tool error bytes retained by the turn loop.")
 
 (defun e-loop--tool-failure-fingerprint (tool-call result)
-  "Return a bounded consecutive-failure fingerprint for TOOL-CALL and RESULT."
+  "Return a consecutive-failure fingerprint for TOOL-CALL and RESULT.
+The diagnostic and argument digest are bounded.  TOOL-CALL must carry the
+schema-normalized arguments used for execution, or the received arguments when
+schema validation rejected the call."
   (when (eq (plist-get result :status) 'error)
     (let* ((preview
             (e-tools-result-content-preview
@@ -41,8 +44,13 @@
              16 3))
            (text (string-trim
                   (replace-regexp-in-string
-                   "[[:space:]]+" " " (plist-get preview :text)))))
+                   "[[:space:]]+" " " (plist-get preview :text))))
+           (arguments-digest
+            (e-tools-arguments-fingerprint
+             (list :present (and (plist-member tool-call :arguments) t)
+                   :value (plist-get tool-call :arguments)))))
       (list :tool (plist-get tool-call :name)
+            :arguments-digest arguments-digest
             :error text))))
 
 (defun e-loop--profile-enabled-p ()
@@ -1050,7 +1058,7 @@ schedules it behind the owning session's active commit barrier."
                             (list :token token :request request))
                       (publish-request request)))
                    (finish-tool
-                    (token tool-call result)
+                    (token tool-call failure-call result)
                     (when (and (not settled)
                                (not (cancelled))
                                (current-tool-p token))
@@ -1093,7 +1101,7 @@ schedules it behind the owning session's active commit barrier."
                                         :result result))
                         (let ((fingerprint
                                (e-loop--tool-failure-fingerprint
-                                tool-call result)))
+                                failure-call result)))
                           (cond
                            ((null fingerprint)
                             (setq previous-tool-failure nil))
@@ -1226,6 +1234,17 @@ schedules it behind the owning session's active commit barrier."
                                              (copy-sequence
                                               (plist-get rejected :metadata))
                                              :argument-status 'invalid))))))))
+                                 ;; Rejection projection deliberately removes
+                                 ;; invalid fields from the transcript.  The
+                                 ;; anti-loop identity must still distinguish
+                                 ;; the actual received calls, so retain those
+                                 ;; arguments only in this turn-local copy.
+                                 (failure-call
+                                  (let ((copy (copy-tree tool-call)))
+                                    (when archival-rejected-p
+                                      (plist-put copy :arguments
+                                                 archival-received-arguments))
+                                    copy))
                                  (tool-token (list :tool-call tool-call))
                                  (tool-call-message
                                   (list :role 'tool-call
@@ -1286,7 +1305,8 @@ schedules it behind the owning session's active commit barrier."
                                            (lambda ()
                                              (condition-case err
                                                  (finish-tool
-                                                  tool-token tool-call result)
+                                                  tool-token tool-call
+                                                  failure-call result)
                                                (error (fail err))))))
                                         :on-error
                                         (lambda (err)
@@ -1331,7 +1351,8 @@ schedules it behind the owning session's active commit barrier."
                                          (lambda ()
                                            (condition-case err
                                                (finish-tool
-                                                tool-token tool-call result)
+                                                tool-token tool-call
+                                                failure-call result)
                                              (error (fail err))))))
                                       :on-error
                                       (lambda (err)
