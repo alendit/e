@@ -1271,6 +1271,38 @@ layer's skills on every call, so an unchanged root must reuse the snapshot."
           (should-not (file-exists-p (byte-compile-dest-file test-file))))
       (delete-directory project t))))
 
+(ert-deftest e-project-local-test-byte-compile-resolves-sibling-features-cold ()
+  "Project compilation resolves a sibling `require' without prior loading."
+  (let* ((project (make-temp-file "e-project-local-byte-sibling-" t))
+         (layer-directory (expand-file-name ".e/layers/topic" project))
+         (provider-file
+          (expand-file-name
+           "e-project-local-test-cold-sibling-provider.el" layer-directory))
+         (consumer-file (expand-file-name "consumer.el" layer-directory))
+         (feature 'e-project-local-test-cold-sibling-provider)
+         (e-project-local-allowed-roots (list project))
+         (byte-compile-warnings nil))
+    (unwind-protect
+        (progn
+          (e-project-local-test--make-layer project 'topic)
+          (e-project-local-test--write-file
+           provider-file
+           ";;; -*- lexical-binding: t; -*-\n(provide 'e-project-local-test-cold-sibling-provider)\n")
+          (e-project-local-test--write-file
+           consumer-file
+           ";;; -*- lexical-binding: t; -*-\n(require 'e-project-local-test-cold-sibling-provider)\n")
+          (when (featurep feature)
+            (unload-feature feature t))
+          (let* ((load-path (delete layer-directory load-path))
+                 (compiled (e-project-local-byte-compile-project project)))
+            (should (member (byte-compile-dest-file provider-file) compiled))
+            (should (member (byte-compile-dest-file consumer-file) compiled)))
+          (should (file-exists-p (byte-compile-dest-file provider-file)))
+          (should (file-exists-p (byte-compile-dest-file consumer-file))))
+      (when (featurep feature)
+        (unload-feature feature t))
+      (delete-directory project t))))
+
 (ert-deftest e-project-local-test-prime-project-auto-recompile-is-opt-in ()
   "Project priming byte-recompiles stale local files only when enabled."
   (let* ((project (make-temp-file "e-project-local-auto-byte-" t))

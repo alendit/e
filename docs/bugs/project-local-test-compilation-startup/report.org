@@ -20,3 +20,13 @@ Project-local startup priming compiles only runtime extension source, never
 verification files below an extension's =test/= directory.  Graphical fixtures
 remain valid, independently byte-compilable test programs when invoked by the
 test harness.
+
+* Reopened counterexample
+
+On 2026-09-14 normal Doom startup failed again while compiling Grimoire's
+=daily-run.el=.  Its =(require 'grimoire-daily-publication)= could not resolve
+because startup compilation did not install project-local runtime directories
+on =load-path= and the providing source was named =daily-publication.el= rather
+than =grimoire-daily-publication.el=.  The earlier graphical fixture loaded the
+provider explicitly, so its successful compilation did not exercise this cold
+module-resolution boundary.

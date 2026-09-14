@@ -451,11 +451,17 @@ runtime extension source.  Project priming must never byte-compile them."
 Only files under trusted `.e/layers/' and `.e/capabilities/' extension roots
 are compiled.  By default, compile files whose `.elc' outputs are missing or
 older than the source.  With interactive prefix argument FORCE, compile every
-project-local `.el' file."
+project-local `.el' file.  Runtime source directories are present on
+`load-path' while compiling so sibling feature dependencies resolve in the
+same cold process used by normal startup."
   (interactive (list default-directory current-prefix-arg))
-  (let ((compiled-files nil))
-    (dolist (file (e-project-local--elisp-files
-                   (e-skills-normalize-directory directory)))
+  (let* ((files (e-project-local--elisp-files
+                 (e-skills-normalize-directory directory)))
+         (load-path
+          (append (delete-dups (mapcar #'file-name-directory files))
+                  load-path))
+         (compiled-files nil))
+    (dolist (file files)
       (when (or force (e-project-local--byte-compile-needed-p file))
         (pcase (byte-compile-file file)
           ('no-byte-compile nil)
