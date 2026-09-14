@@ -247,7 +247,10 @@ reports carry a bounded typed source outcome (=data=, =empty=, or
 =unavailable=), finalization derives complete/partial/failed from that outcome
 instead of worker prose, and =daily-run/:apply= publishes the exact ten-section
 closed schema.  Both phases of the disposable graphical delayed-worker/restart
-scenario and all 164 non-graphical Grimoire layer tests pass.
+scenario and all 165 non-graphical Grimoire layer tests pass.  The Slack
+participant additionally enables =slack-mcp= in progressive mode, so its first
+turn always has =mcp_activate= while an uncached MCP catalog loads; graphical
+and real-current-config gates verify the capability reaches the child harness.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

@@ -455,9 +455,19 @@ Grimoire owner, and Daily participant), generic bounded result transport,
 required/optional/empty source classification, and the exact apply schema.  The
 public graphical Daily phase-one test passes with delayed SQLite and isolated
 owner failure; phase two passes from a fresh private Emacs process and reads the
-same durable result back without duplicate work.  All 164 non-graphical
+same durable result back without duplicate work.  All 165 non-graphical
 Grimoire layer tests pass.  The running Emacs and canonical database were not
 used or changed by this correction.
+
+The same acceptance fixture now also proves that the Slack participant's child
+harness contains the configured =slack-mcp= capability before its turn starts.
+Grimoire configures that capability in progressive mode: a cold asynchronous
+MCP catalog therefore exposes =mcp_activate= immediately instead of silently
+giving the participant a first request with no Slack tools.  The Slack task
+contract tells the participant how to activate or immediately invoke the first
+Slack operation.  The real-current-config startup gate independently verifies
+that the host's registered Slack layer reaches the shared =tool-user= harness;
+it performs no Slack request.
 
 * Acceptance
 

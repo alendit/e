@@ -17,7 +17,10 @@
 (require 'e-core)
 (require 'e-default-harnesses)
 (require 'e-harness-registry)
+(require 'e-harness-instances)
+(require 'e-layers)
 (require 'e-project-local)
+(require 'e-subagent-runner)
 
 (defvar e-current-config-e2e-test--output nil
   "Dynamically bound buffer collecting the current-config ERT report.")
@@ -91,6 +94,27 @@
     (let ((inspection (e-project-local--inspection root)))
       (when (plist-get inspection :has-extensions)
         (should (e-layer-p (e-project-local-prime-project root)))))))
+
+(ert-deftest e-current-config-e2e-test-slack-layer-reaches-tool-user ()
+  "The configured Slack layer can be activated on the shared tool-user type."
+  (unless (e-layer-get 'slack-mcp)
+    (ert-skip "Current configuration does not declare a Slack MCP layer"))
+  (e-subagent-configure-type
+   :tool-user
+   :enable-layers '("slack-mcp")
+   :layer-config '(("slack-mcp" :progressive t)))
+  (let* ((instance (e-harness-instance-get :tool-user))
+         (harness (e-harness-instance-get-or-create :tool-user))
+         (capability-ids
+          (mapcar #'e-capability-id
+                  (e-harness-effective-capabilities harness))))
+    (should (e-harness-instance-subagent-p instance))
+    (should (memq 'slack-mcp (e-harness-enabled-layer-ids harness)))
+    (should (memq 'slack-mcp capability-ids))
+    (should
+     (eq (plist-get (e-harness-capability-config harness 'slack-mcp)
+                    :progressive)
+         t))))
 
 (defun e-current-config-e2e-test-run-to-file (path &optional selector)
   "Run current-config ERT SELECTOR, write its report to PATH, and return status."
