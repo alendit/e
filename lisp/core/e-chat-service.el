@@ -279,8 +279,20 @@ by this projection boundary."
   harness session-id subscribers default-tags default-to idle-close-timer
   lifecycle-generation lifecycle-state readiness-work first-persistence-error
   continuation-owner-p
-  sqlite-service board-id principal participant-id endpoint-token endpoint-generation
+  sqlite-service board-id principal participant-id participant-name
+  endpoint-token endpoint-generation
   turn-port activity-subscription pickup-subscription executing-turns)
+
+(defun e-chat-service--participant-name (metadata role)
+  "Return the bounded display name for participant METADATA and ROLE."
+  (let ((name (or (plist-get metadata :participant-name)
+                  (plist-get metadata :subagent-label)
+                  (plist-get metadata :name))))
+    (cond
+     ((and (stringp name) (not (string-empty-p name)))
+      (copy-sequence name))
+     ((eq role 'owner) "Main")
+     (t nil))))
 
 (cl-defstruct (e-chat-service-create-operation
                (:constructor e-chat-service--create-operation-create))
@@ -650,6 +662,7 @@ runtime and durable Board id, then starts a bounded SQLite reconciliation."
                 :attributes (copy-tree (plist-get message :attributes) t)
                 :subject-participant-id
                 (plist-get message :subject-participant-id)
+                :participant-name (plist-get message :participant-name)
                 :selected-participant-p selected-p
                 :source-turn-id (plist-get message :source-turn-id))))
     (pcase kind
@@ -687,6 +700,8 @@ runtime and durable Board id, then starts a bounded SQLite reconciliation."
                                  :board-seq (plist-get message :seq)
                                  :subject-participant-id
                                  (plist-get message :subject-participant-id)
+                                 :participant-name
+                                 (plist-get message :participant-name)
                                  :source-turn-id
                                  (plist-get message :source-turn-id)
                                  :selected-participant-p selected-p)))))
@@ -1371,6 +1386,8 @@ semantic interpretation responsibility."
                         (e-chat-service-binding-participant-id binding))
                 :subject-participant-id
                 (e-chat-service-binding-participant-id binding)
+                :participant-name
+                (e-chat-service-binding-participant-name binding)
                 :source-turn-id turn-id :content output
                 :attributes (copy-tree (plist-get event :payload) t))))
          (e-chat-service--sql-notify-turn-deliveries binding event 'done)
@@ -1463,6 +1480,8 @@ semantic interpretation responsibility."
                :harness harness :session-id session-id
                :board-id board-id :principal (copy-tree principal t)
                :participant-id participant-id
+               :participant-name
+               (copy-tree (plist-get association :participant-name) t)
                :sqlite-service
                (e-board-sqlite-service-create
                 (e-session-storage-runtime-store (e-harness-sessions harness)))
@@ -1549,6 +1568,9 @@ semantic interpretation responsibility."
      :participant
      (list :id participant-id :author "e-chat"
            :principal principal :controller principal
+           :name
+           (e-chat-service--participant-name
+            (e-chat-service-create-operation-metadata pending) 'owner)
            :role 'owner :state 'active
            :subscription-id (concat "sub_" participant-id)
            :publication-pending nil))))
@@ -1995,6 +2017,10 @@ controller has been built."
          (participant
           (list :id participant-id :author "e-chat" :principal principal
                 :controller principal :role 'participant :state 'active
+                :name
+                (e-chat-service--participant-name
+                 (e-chat-service-participant-operation-metadata operation)
+                 'participant)
                 :subscription-id (concat "sub_" participant-id)
                 :publication-pending nil))
          (child

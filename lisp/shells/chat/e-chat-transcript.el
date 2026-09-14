@@ -2031,6 +2031,16 @@ revealed block when revealing, or on the block that was focused when hiding."
                        e-chat-transcript--hidden-entry-title-prefix role)))
           (if (stringp content) content (format "%S" content)))))
 
+(defun e-chat-transcript--participant-prefixed-entry (message entry)
+  "Prefix non-selected assistant ENTRY with MESSAGE's participant name."
+  (let ((name (plist-get message :participant-name)))
+    (if (and (eq (plist-get message :role) 'assistant)
+             (not (e-chat-transcript--message-selected-participant-p message))
+             (stringp name)
+             (not (string-empty-p name)))
+        (cons (car entry) (format "[%s] %s" name (cdr entry)))
+      entry)))
+
 
 (defun e-chat-transcript--render-durable-message
     (message turn-id &optional ensure-composer details-text)
@@ -2044,11 +2054,14 @@ separate dimmed representation instead."
                (not hidden)
                (e-chat-service-message-presentation
                 e-chat-harness e-chat-session-id message)))
-         (entry (if (and hidden e-chat-transcript--reveal-hidden)
-                    (e-chat-transcript--hidden-message-entry message)
-                  (if presentation
-                      (cons "Assistant" (plist-get presentation :content))
-                    (e-chat-transcript--message-entry message)))))
+         (entry
+          (e-chat-transcript--participant-prefixed-entry
+           message
+           (if (and hidden e-chat-transcript--reveal-hidden)
+               (e-chat-transcript--hidden-message-entry message)
+             (if presentation
+                 (cons "Assistant" (plist-get presentation :content))
+               (e-chat-transcript--message-entry message))))))
     (e-chat-transcript--insert-entry
      (car entry) (cdr entry) ensure-composer turn-id
      details-text

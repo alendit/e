@@ -865,7 +865,7 @@ that position before its row is written."
                     (concat
                      "SELECT session_id,board_id,principal,association_role,"
                      "routing_policy,board_output_sequence,"
-                     "board_activity_sequence FROM session_query_state "
+                     "board_activity_sequence,name FROM session_query_state "
                      "WHERE session_id=?")
                     (vector session-id)))))
     (when row
@@ -889,12 +889,36 @@ that position before its row is written."
             (board-output-sequence
              (e-runtime-store-session-worker--column row 5))
             (board-activity-sequence
-             (e-runtime-store-session-worker--column row 6)))
+             (e-runtime-store-session-worker--column row 6))
+            (session-name
+             (e-runtime-store-session-worker--scalar
+              (e-runtime-store-session-worker--column row 7) :name)))
+        (let* ((participant-id (plist-get routing-policy :participant-id))
+               (participant-row
+                (and (stringp board-id) (stringp participant-id)
+                     (car
+                      (sqlite-select
+                       database
+                       (concat
+                        "SELECT participant.payload FROM board_participants participant "
+                        "JOIN boards board ON board.board_id=participant.board_id "
+                        "AND board.generation=participant.generation "
+                        "WHERE participant.board_id=? AND participant.participant_id=?")
+                       (vector board-id participant-id)))))
+               (participant
+                (and participant-row
+                     (e-runtime-store-session-worker--decode-value
+                      (e-runtime-store-session-worker--column participant-row 0)
+                      :participant)))
+               (participant-name
+                (or (plist-get participant :name) session-name
+                    (and (equal association-role "owner") "Main"))))
         (list :session-id row-session-id :board-id board-id
               :principal principal :association-role association-role
+              :participant-name participant-name
               :routing-policy routing-policy
               :board-output-sequence board-output-sequence
-              :board-activity-sequence board-activity-sequence)))))
+              :board-activity-sequence board-activity-sequence))))))
 
 (defun e-runtime-store-session-worker--query-page (database body)
   "Read a stable newest/root bounded query-state page."

@@ -83,7 +83,8 @@ Set =E_GRAPHICAL_E2E_SELECTOR= to run one ERT selector.  The scenarios cover:
    and follows again after the user reaches the tail;
 4. a real =persp-mode= switch round trip restores the pair and composer focus;
 5. the focused composer shows model/context fill and updates from settled
-   provider usage after a turn.
+   provider usage after a turn;
+6. non-selected Board output is visibly prefixed with its participant name.
 
 When =E_GRAPHICAL_E2E_TEST_FILE= names a custom test entrypoint and no selector
 is supplied, the runner executes every test loaded by that file.  A selector

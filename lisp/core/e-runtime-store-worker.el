@@ -636,6 +636,7 @@ the following ordered open frame is the sole observable acknowledgement."
                 :principal (plist-get (plist-get body :query-delta) :principal)
                 :association-role
                 (plist-get (plist-get body :query-delta) :association-role)
+                :participant-name (plist-get participant :name)
                 :routing-policy
                 (copy-tree
                  (plist-get (plist-get body :query-delta) :routing-policy) t))
@@ -686,6 +687,8 @@ the following ordered open frame is the sole observable acknowledgement."
           :association
           (list :board-id board-id :principal principal
                 :association-role "owner"
+                :participant-name
+                (plist-get (plist-get body :participant) :name)
                 :routing-policy
                 (if existing
                     (e-runtime-store-worker--value

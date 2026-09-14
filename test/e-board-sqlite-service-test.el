@@ -472,6 +472,106 @@
         (when (e-chat-service-binding harness session-id)
           (e-chat-service--retire-binding binding))))))
 
+(ert-deftest e-chat-service-sqlite-participant-output-carries-durable-name ()
+  "A participant label crosses binding, Board record, and observer delivery."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id session-id _participant-id)
+    (let* ((parent-harness (e-harness-create :sessions store))
+           (parent-binding
+            (e-board-sqlite-service-test--await
+             (e-chat-service-binding-start parent-harness session-id)))
+           (child-harness
+            (e-harness-create
+             :sessions store
+             :backend
+             (e-backend-fake-create
+              :items '((:type assistant-message :content "Completed.")
+                       (:type done :reason stop)))))
+           (child-session-id "daily-github-session")
+           events subscription child-binding)
+      (unwind-protect
+          (progn
+            (e-board-sqlite-service-test--await
+             (e-chat-service-create-participant-start
+              parent-binding child-harness
+              :id child-session-id
+              :metadata '(:subagent-label "Daily GitHub")
+              :pickup-selector '(:tags (subagent))
+              :observer-selector :self
+              :default-tags '(subagent)
+              :default-to :self))
+            (setq child-binding
+                  (e-chat-service-binding child-harness child-session-id))
+            (should child-binding)
+            (should (equal (e-chat-service-binding-participant-name
+                            child-binding)
+                           "Daily GitHub"))
+            (setq subscription
+                  (e-chat-service-subscribe
+                   parent-harness session-id
+                   (lambda (event) (push (copy-tree event t) events))))
+            (e-board-sqlite-service-test--await
+             (e-chat-service-submit-session
+              child-harness child-session-id "Run GitHub"))
+            (let ((deadline (+ (float-time) 3.0)))
+              (while (and
+                      (not
+                       (seq-find
+                        (lambda (event)
+                          (let ((message
+                                 (plist-get (plist-get event :payload)
+                                            :message)))
+                            (and (eq (plist-get message :role) 'assistant)
+                                 (equal (plist-get message :content)
+                                        "Completed."))))
+                        events))
+                      (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (let* ((event
+                    (seq-find
+                     (lambda (candidate)
+                       (equal
+                        (plist-get
+                         (plist-get (plist-get candidate :payload) :message)
+                         :content)
+                        "Completed."))
+                     events))
+                   (message
+                    (plist-get (plist-get event :payload) :message))
+                   (page
+                    (e-board-sqlite-service-test--await
+                     (e-board-sqlite-service-record-page-start
+                      service board-id :generation 1 :after 0 :limit 16)))
+                   (record
+                    (seq-find
+                     (lambda (row)
+                       (equal (plist-get (plist-get row :record) :content)
+                              "Completed."))
+                     (plist-get page :records))))
+              (should event)
+              (should-not (plist-get message :selected-participant-p))
+              (should (equal (plist-get message :participant-name)
+                             "Daily GitHub"))
+              (should record)
+              (should (equal
+                       (plist-get (plist-get record :record)
+                                  :participant-name)
+                       "Daily GitHub")))
+            (e-chat-service--retire-binding child-binding)
+            (setq child-binding
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start
+                    child-harness child-session-id)))
+            (should (equal (e-chat-service-binding-participant-name
+                            child-binding)
+                           "Daily GitHub")))
+        (when subscription
+          (e-chat-service-unsubscribe subscription))
+        (when child-binding
+          (e-chat-service--retire-binding child-binding))
+        (when (e-chat-service-binding parent-harness session-id)
+          (e-chat-service--retire-binding parent-binding))))))
+
 (ert-deftest e-chat-open-board-sqlite-existing-session-is-public-and-asynchronous ()
   "Public Board open returns a buffer without synchronous session/Board reads."
   (e-board-sqlite-service-test--with-fixture

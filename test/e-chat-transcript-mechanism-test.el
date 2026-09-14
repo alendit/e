@@ -69,6 +69,36 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-non-selected-board-output-prefixes-participant-name ()
+  "A sibling Board output is visibly attributed without changing its content."
+  (let ((buffer (e-chat-test--buffer nil "chat-participant-prefix")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (let* ((message
+                  '(:id "sibling-output" :role assistant
+                    :content "Completed." :turn-id "sibling-turn"
+                    :board-id "daily-board"
+                    :subject-participant-id "daily-github"
+                    :participant-name "Daily GitHub"
+                    :selected-participant-p nil))
+                 (entry
+                  (e-chat-transcript--render-durable-message
+                   message "sibling-turn")))
+            (should (equal (plist-get message :content) "Completed."))
+            (should (equal (cdr entry) "[Daily GitHub] Completed."))
+            (should
+             (equal
+              (cdr
+               (e-chat-transcript--participant-prefixed-entry
+                (plist-put (copy-tree message t) :selected-participant-p t)
+                '("Assistant" . "Completed.")))
+              "Completed."))
+            (should (string-match-p
+                     (regexp-quote "[Daily GitHub] Completed.")
+                     (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 
 
 

@@ -388,6 +388,39 @@ than the invisible insertion position."
   (when (e-graphical-test-screenshot-enabled-p)
     (e-graphical-test-capture-state label)))
 
+(ert-deftest e-chat-behavior-test-participant-output-prefix ()
+  "A graphical Board transcript visibly attributes a sibling output."
+  (should (display-graphic-p))
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (with-current-buffer (plist-get fixture :transcript)
+            (e-chat-render-event
+             '(:type message-added :session-id "graphical-chat"
+               :turn-id "daily-github-turn" :created-at 1
+               :canonical-row-p t :board-id "daily-board" :board-seq 1
+               :subject-participant-id "daily-github"
+               :participant-name "Daily GitHub"
+               :selected-participant-p nil
+               :payload
+               (:message
+                (:id "daily-github-output" :role assistant
+                 :content "Completed." :terminal-output t
+                 :turn-id "daily-github-turn" :created-at 1
+                 :board-id "daily-board" :board-seq 1
+                 :subject-participant-id "daily-github"
+                 :participant-name "Daily GitHub"
+                 :selected-participant-p nil)))))
+          (redisplay t)
+          (with-current-buffer (plist-get fixture :transcript)
+            (should (string-match-p
+                     (regexp-quote "[Daily GitHub] Completed.")
+                     (buffer-string)))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-zz-debug-screenshots-capture-state-and-transition ()
   "Debug snapshots expose a visual state and a before/after transition pair."
   (should (display-graphic-p))

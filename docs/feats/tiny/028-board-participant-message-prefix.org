@@ -1,0 +1,57 @@
+#+title: Board Participant Message Prefix
+
+* Status
+
+Done.
+
+* Change
+
+Persist the admitted participant display name with each canonical Board output
+and project it into detached message events.  Chat presentation prefixes only
+non-selected assistant messages as =[participant name] message=.  The stored
+message content itself remains unchanged.
+
+Participant admission derives the name from explicit participant metadata,
+the subagent label, or the session name.  Reopening a live binding reads the
+name once from SQLite's current participant row; there is no participant map,
+message-time lookup, or second durable state owner in Emacs.
+
+This is tiny because it adds one bounded attribution field and one presentation
+rule.  The broader Board chat/activity design remains separate work.
+
+* Validation
+
+- Durable participant admission/output/delivery/reopen regression: passed.
+- Transcript projection regression, including selected-output exclusion:
+  passed.
+- Focused public-open regressions: passed.
+- Isolated graphical participant-prefix selector: passed.
+- Relevant service, session-worker, and transcript suites: 69/69 passed.
+- Current-configuration startup gate: 4/4 passed.
+- Focused byte compilation and =git diff --check=: passed; compilation emitted
+  only the repository's existing obsolete-macro and unused-argument warnings.
+
+* Architecture self-check
+
+1. The slice independently makes concurrent Board output understandable.
+2. It moves toward SQLite-authoritative Board chat with presentation-only UI
+   decoration.
+3. The future full activity UI remains local and reversible; the participant
+   name contract is stable.
+4. Chat admission owns naming, SQLite owns durability, and transcript owns the
+   prefix.
+5. One scalar field crosses the existing narrow DTO; no new broad interface is
+   introduced.
+6. Presentation still depends on the application DTO, never the SQL adapter.
+7. SQLite reads and writes remain inside the worker and service boundaries.
+8. Emacs retains one name only on an already-live binding; durable attribution
+   lives on the canonical record.
+9. Admission and reopen add no interactive wait; reopen performs one indexed
+   participant lookup, while message delivery adds no query.
+10. No abstraction or substitutability claim is added.
+11. Existing unnamed records remain valid; new outputs carry attribution.
+12. No compatibility path or legacy Board implementation is added.
+13. Invalid durable participant data surfaces through ordinary request-local
+    read failure.
+14. Service tests prove durability and delivery; transcript and graphical
+    tests prove the visible prefix independently.
