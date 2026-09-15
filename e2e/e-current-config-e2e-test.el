@@ -75,6 +75,17 @@
   (should (file-equal-p (e-source-directory) e-e2e-project-root))
   (should (eq (plist-get (e-core-status) :state) 'ready)))
 
+(ert-deftest e-current-config-e2e-test-package-command-inventory-is-current ()
+  "Normal startup exposes the replacement command and no retired command."
+  (let ((board-activity
+         (plist-get e-e2e-current-config-package-command-state
+                    :board-activity))
+        (retired
+         (plist-get e-e2e-current-config-package-command-state
+                    :retired-subagent-list)))
+    (should (plist-get board-activity :commandp))
+    (should-not (plist-get retired :commandp))))
+
 (ert-deftest e-current-config-e2e-test-default-harness-is-configured ()
   "The current config can construct its default harness without a request."
   (should (memq :chat-default (e-harness-registry-list)))

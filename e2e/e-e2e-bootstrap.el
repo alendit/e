@@ -42,6 +42,26 @@
   "Return non-nil when this process tests the current Emacs configuration."
   (equal e-e2e-emacs-config-mode "current"))
 
+(defun e-e2e--command-registration-state (command)
+  "Return bounded startup registration state for COMMAND."
+  (let* ((definition (and (fboundp command) (symbol-function command)))
+         (autoloadp (autoloadp definition)))
+    (list :command command
+          :commandp (commandp command)
+          :autoloadp autoloadp
+          :autoload-file (and autoloadp (nth 1 definition))
+          :function-file (symbol-file command 'defun))))
+
+(defconst e-e2e-current-config-package-command-state
+  (when (e-e2e-current-config-p)
+    (list
+     :board-activity
+     (e-e2e--command-registration-state 'e-board-activity-list-buffer)
+     :retired-subagent-list
+     (e-e2e--command-registration-state
+      (intern (concat "e-" "subagents-list-buffer")))))
+  "Package command state captured before E2E checkout paths are added.")
+
 (defun e-e2e--add-project-load-paths ()
   "Add checkout runtime and test dependency directories to `load-path'."
   (add-to-list 'load-path e-e2e-project-root)

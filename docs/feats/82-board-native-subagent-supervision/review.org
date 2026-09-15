@@ -132,8 +132,10 @@ production, tests, E2E fixtures, extensions, and configuration.
   held-read, mixed-view, live-control, raw-read, and restart scenario.
 - F82A1-C09 and F82A1-C10 are covered by admission, settlement, stale/missing
   handle, cross-Board ambiguity, and durable-row invariance tests.
-- F82A1-C11 is covered by the exact-source removal gate and successful clean
-  current-configuration startup.
+- F82A1-C11 is covered by the exact-source removal gate and a clean
+  current-configuration startup assertion that observes the replacement
+  command and rejects the retired command before test bootstrap paths are
+  added.
 
 ** Verification
 
@@ -141,7 +143,7 @@ production, tests, E2E fixtures, extensions, and configuration.
   seconds.
 - =E_GRAPHICAL_E2E_SELECTOR=e-board-activity-behavior-test-public-composition-survives-restart bash e2e/run-graphical-tests.sh=:
   1 expected, 0 unexpected.
-- =bash e2e/run-current-config-tests.sh=: 5 expected, 0 unexpected, using a
+- =bash e2e/run-current-config-tests.sh=: 6 expected, 0 unexpected, using a
   private daemon and test-owned runtime state.
 - =eldev compile=: completed successfully with only pre-existing obsolete-form
   warnings.

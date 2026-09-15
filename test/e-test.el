@@ -45,6 +45,7 @@
     e-org-canvas-resume
     e-debug
     e-debug-here
+    e-board-activity-list-buffer
     e-layers-toggle
     e-layers-enable
     e-layers-disable
@@ -53,6 +54,10 @@
     e-dev-reload-required-status
     e-dev-clean-stale-bytecode)
   "Interactive commands expected to exist from package autoloads.")
+
+(defconst e-test--retired-autoload-commands
+  (list (intern (concat "e-" "subagents-list-buffer")))
+  "Retired interactive commands forbidden from generated package autoloads.")
 
 (defconst e-test--autoload-functions
   '(e-chat-shell
@@ -390,6 +395,9 @@
           (dolist (function e-test--autoload-functions)
             (when (fboundp function)
               (fmakunbound function)))
+          (dolist (command e-test--retired-autoload-commands)
+            (when (fboundp command)
+              (fmakunbound command)))
           (when (fboundp 'e--add-source-directories)
             (fmakunbound 'e--add-source-directories))
           (dolist (directory '("." "lisp/shells" "lisp/shells/chat"
@@ -402,6 +410,8 @@
               (should (commandp command)))
             (dolist (function e-test--autoload-functions)
               (should (fboundp function)))
+            (dolist (command e-test--retired-autoload-commands)
+              (should-not (commandp command)))
             (autoload-do-load (symbol-function 'e-chat-new) 'e-chat-new)
             (autoload-do-load (symbol-function 'e-dev-reload) 'e-dev-reload))
           (dolist (command e-test--autoload-commands)

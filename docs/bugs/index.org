@@ -8,7 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
-| New    | stale-doom-autoload-retains-retired-subagent-command/ | Stale Doom autoload retains retired subagent command |
+| Closed | stale-doom-autoload-retains-retired-subagent-command/ | Stale Doom autoload retains retired subagent command |
 | Closed | repeated-tool-failure-ignores-arguments/ | Repeated tool failure guard ignores call arguments |
 | Closed | e-chat-reattach-minor-mode-teardown-hang/ | Chat reattachment scans the stale transcript during mode teardown |
 | New    | board-timer-reentrant-durability-barrier/ | Board timer reenters a durable mutation barrier |

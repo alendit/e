@@ -311,11 +311,14 @@ The clean cut landed in four packages:
 
 All contracts F82A1-C01 through F82A1-C11 have current evidence.  The exact
 source revision passed 2,575 of 2,575 Eldev tests, the focused graphical
-scenario passed 1 of 1 tests, the real-current-config cold-start gate passed 5
-of 5 tests, =eldev compile= completed successfully, and =git diff --check=
-passed.  The graphical artifacts show the responsive held-read state, the
-single mixed participant view, live control from a durable row, and the same
-terminal rows after replacing the live owner.
+scenario passed 1 of 1 tests, and =eldev compile= completed successfully.  A
+follow-up packaging regression exposed that Doom could retain the retired
+command in generated autoload metadata.  The corrected real-current-config
+cold-start gate now captures command registration before its test bootstrap
+changes =load-path= and passes 6 of 6 tests.  =git diff --check= passed.  The
+graphical artifacts show the responsive held-read state, the single mixed
+participant view, live control from a durable row, and the same terminal rows
+after replacing the live owner.
 
 No request reached the running Emacs or the canonical user database.  A full
 Emacs restart is required to use this implementation because it removes and

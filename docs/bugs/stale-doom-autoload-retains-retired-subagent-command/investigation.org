@@ -3,16 +3,18 @@
 
 * Conclusion
 
-The restarted Emacs is using the current Feature 82 runtime, but Doom's
-generated Straight package metadata is stale.  Its installed =e-autoloads.el=
-still declares =e-subagents-list-buffer= as an interactive autoload, so command
-completion lists the retired command even though its source file has been
+The restarted Emacs was using the current Feature 82 runtime, but Doom's
+generated Straight package metadata was stale.  Its installed =e-autoloads.el=
+still declared =e-subagents-list-buffer= as an interactive autoload, so command
+completion listed the retired command even though its source file had been
 removed.
 
-This is an acceptance and current-configuration test gap.  Feature 82 removed
+This was an acceptance and current-configuration test gap.  Feature 82 removed
 the old public shell from the checkout, but the required cold-start gate did
 not verify that the installed local-package inventory and generated autoloads
-matched the checkout.
+matched the checkout.  The active Emacs 31.1 package and profile metadata have
+now been regenerated, and the cold-start gate covers the visible command
+registration that exposed the drift.
 
 * Evidence
 
@@ -33,13 +35,13 @@ matched the checkout.
 - The checkout contains no production definition or reference for
   =e-subagents-list-buffer=; =lisp/shells/e-subagents-shell.el= was removed by
   Feature 82.
-- =~/.config/emacs/.local/straight/build-30.2/e/e-autoloads.el= is dated
-  2026-08-12 and still contains an interactive autoload for
-  =e-subagents-list-buffer= from =e-subagents-shell.el=.
-- The same Straight build directory retains an =e-subagents-shell.el= symlink
-  whose checkout target no longer exists, and it has no
+- The active Emacs 31.1 Straight build and the older Emacs 30.2 build both
+  contained an interactive autoload for =e-subagents-list-buffer= from
+  =e-subagents-shell.el=.
+- Both build directories retained an =e-subagents-shell.el= symlink whose
+  checkout target no longer existed, and neither had an
   =e-board-activity-shell.el= entry.
-- The native compilation cache also retains an August
+- The inactive Emacs 30.2 native compilation cache also retained an August
   =e-subagents-shell-*.eln= artifact.
 
 These facts give the observed request path:
@@ -69,16 +71,37 @@ The current-config gate therefore proves that the configured runtime can load
 the checkout, but not that Doom's generated package metadata reflects the
 checkout's additions and removals.
 
-* Next Step
+* Fix
 
-The immediate installation repair is to regenerate Doom's local package build
-metadata and restart Emacs.  That repair has not been run during this
-investigation because it mutates the user's Emacs installation.
+- Rebuild only the out-of-tree Straight package named =e=.  A normal Doom sync
+  is insufficient because Doom deliberately skips modification checks for an
+  out-of-tree package.
+- Run =doom sync -U= after that rebuild so the generated profile embeds the new
+  package autoload table without updating unrelated packages.
+- Capture command registration in =e2e/e-e2e-bootstrap.el= before the test
+  bootstrap adds checkout paths.
+- Require the real current-configuration test to observe
+  =e-board-activity-list-buffer= as a command and the retired subagent-list
+  command as absent.
+- Extend the source autoload test to require the Board Activity command and
+  reject the retired command from freshly generated autoloads.
 
-The repository fix should extend the cold-start gate to detect packaging drift,
-including both sides of this migration: the retired
-=e-subagents-list-buffer= command must not be registered, and the replacement
-=e-board-activity-list-buffer= command must be registered through the installed
-package.  The gate must inspect startup state before checkout paths added by the
-test bootstrap can hide an incomplete Straight build.
+No production compatibility cleanup was added.  The package does not retain a
+legacy symbol merely to compensate for stale generated state.
 
+The active Emacs 31.1 build now contains =e-board-activity-shell.el= and its
+autoload, and contains neither the retired shell link nor its autoload.  The
+generated Doom 31.1 profile likewise contains only the Board Activity command.
+The already-running GUI Emacs was not restarted, so it retains its startup
+command table until the user next restarts it.
+
+* Validation
+
+- Before the installation repair, the new real-current-config assertion failed:
+  5 expected and 1 unexpected out of 6 tests.
+- After the scoped package rebuild and =doom sync -U=, the same private
+  current-configuration cold start passed 6 of 6 tests.
+- =eldev test -f test/e-test.el=: 17 expected, 0 unexpected.
+- The focused Feature 82 removal and shell-control gate passed 1 of 1 tests.
+- =eldev compile= completed successfully.
+- =git diff --check= passed.
