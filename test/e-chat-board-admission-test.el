@@ -694,6 +694,72 @@
                          (e-chat-service-binding-session-id binding)
                          (e-chat-service-binding-board-id binding)))))))))
 
+(ert-deftest e-chat-board-admission-test-run-set-barrier-healthy-active-no-refresh ()
+  "A receipt-equal exact active run settles without a write or refresh."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((initial-query
+            (e-chat-board-admission-test--held-work
+             "held-healthy-active-initial"))
+           (queries (list initial-query))
+           (creation-key "org:daily:healthy-active")
+           admitted session-id open binding receipt state barrier)
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (or (pop queries)
+                       (error "unexpected extra Board run-set query")))))
+        (setq admitted
+              (e-chat-board-admission-test--await
+               (e-chat-service-owner-admission-work
+                (e-chat-service-owner-admission-start
+                 :harness harness :creation-key creation-key
+                 :metadata '(:name "Healthy active Daily")))))
+        (setq session-id
+              (plist-get
+               (e-chat-service-owner-admission-identities creation-key)
+               :session-id)
+              open
+              (e-chat-service-open-board-owner-start
+               (plist-get admitted :board-id) harness))
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (and (e-chat-service-binding harness session-id)
+                (null queries))))
+        (setq binding (e-chat-service-binding harness session-id)
+              state
+              (e-board-run-set-state-for
+               harness
+               (e-chat-service-binding-session-id binding)
+               (e-chat-service-binding-board-id binding)))
+        (e-work-finish
+         initial-query
+         (list :board-id (plist-get admitted :board-id)
+               :restore-state 'ready :ready-p t :status 'running
+               :runs (list (list :run-id "healthy-active" :lifecycle 'running))
+               :active-count 1 :active-run-count 1
+               :omitted-count 0 :bytes 128))
+        (should (eq (e-chat-board-admission-test--await open) binding))
+        (setq receipt (e-board-run-set-generation binding))
+        (should-not (plist-get (e-board--run-set-controls state) :query-work))
+        (setq barrier
+              (e-board-run-set-await-run-start
+               binding "healthy-active" receipt 'present))
+        (should (equal (e-chat-board-admission-test--await barrier)
+                       (e-board-orchestration-run-set-state-value state)))
+        ;; Even with the same healthy value, absence/finalization still needs
+        ;; a newer observer-visible generation.
+        (setq barrier
+              (e-board-run-set-await-run-start
+               binding "healthy-active" receipt 'absent))
+        (should-error
+         (e-chat-board-admission-test--await barrier)
+         :type 'e-board-orchestration-error)
+        (setq barrier
+              (e-board-run-set-await-run-start
+               binding "already-absent" receipt 'absent))
+        (should-error
+         (e-chat-board-admission-test--await barrier)
+         :type 'e-board-orchestration-error)))))
+
 (defun e-chat-board-admission-test--run-set-active-query-fence
     (expected-presence)
   "Prove EXPECTED-PRESENCE waits past an active intermediate refresh.

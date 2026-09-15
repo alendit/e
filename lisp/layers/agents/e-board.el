@@ -75,7 +75,8 @@ detached owner disappears; each value is a small equal-key session table.")
 (cl-defstruct (e-board--run-set-barrier
                (:constructor e-board--run-set-barrier-create))
   state binding run-id work unsubscribe start-generation query-work
-  await-refresh-p query-settled-p fence-generation expected-presence)
+  query-active-at-start-p await-refresh-p query-settled-p fence-generation
+  expected-presence)
 
 (defvar e-board--run-set-barriers
   (make-hash-table :test 'eq :weakness 'key)
@@ -351,6 +352,17 @@ completed refresh and fails immediately."
                "Board run-set projection became unavailable")))
        (fenced-p
         (cond
+         ;; A passive reopen may have no write or refresh at all: the
+         ;; controller's active result is already the exact ready projection
+         ;; captured by the receipt.  Absence remains fenced because it needs
+         ;; a newer projection to prove consumption/finalization.
+         ((and (eq (e-board--run-set-barrier-expected-presence barrier)
+                   'present)
+               (not (e-board--run-set-barrier-query-active-at-start-p barrier))
+               (= generation fence-generation)
+               (e-board--run-set-barrier-run
+                value (e-board--run-set-barrier-run-id barrier)))
+          (e-work-finish work (copy-tree value t)))
          ((> generation fence-generation)
           (if (not (plist-get value :ready-p))
               (e-work-fail
@@ -422,10 +434,12 @@ Without RECEIPT-GENERATION it settles when a ready projection contains RUN-ID
 and otherwise waits for the next observer-visible refresh.  With a generation
 receipt captured before controller work, it waits for a strictly newer ready
 projection and checks EXPECTED-PRESENCE (`present' by default, or `absent'
-for a consumed/finalized run).  If a refresh is already active at construction,
-the current generation is also a fence so an intermediate value cannot settle
-the barrier before the coalesced refresh.  Projection failure fails the barrier
-and binding retirement cancels it; no SQL read or polling is added."
+for a consumed/finalized run).  A receipt-equal exact ready run may settle for
+`present' when no refresh is active, which covers a healthy passive reopen.  If
+a refresh is already active at construction, the current generation is also a
+fence so an intermediate value cannot settle the barrier before the coalesced
+refresh.  Projection failure fails the barrier and binding retirement cancels
+it; no SQL read or polling is added."
   (unless (e-chat-service-binding-p binding)
     (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
   (unless (and (stringp run-id) (not (string-empty-p run-id)))
@@ -455,6 +469,7 @@ and binding retirement cancels it; no SQL read or polling is added."
                    :state state :binding binding :run-id (copy-sequence run-id)
                    :work work :start-generation generation
                    :query-work query-work
+                   :query-active-at-start-p query-active-p
                    :await-refresh-p (or (integerp receipt-generation)
                                         query-active-p)
                    :query-settled-p (not query-active-p)
