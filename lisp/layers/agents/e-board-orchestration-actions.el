@@ -110,7 +110,7 @@ The stable assignment key makes callback retries no-ops at the board boundary."
 (defconst e-board-orchestration-actions--mapped-work-spec
   (e-work-spec-create
    :id "board-orchestration-query" :execution 'cooperative
-   :interactive-policy 'async :owner 'subagents
+   :interactive-policy 'async :owner 'board
    :runner
    (lambda (parent arguments _context)
      (let ((child (plist-get arguments :child))
@@ -169,16 +169,31 @@ The stable assignment key makes callback retries no-ops at the board boundary."
     (signal 'e-board-orchestration-error
             (list "Run list exceeds bounded query")))
   (let ((groups (make-hash-table :test 'equal)) order)
-    (dolist (record (e-board-orchestration-actions--records page))
-      (when-let* ((fact (e-board-orchestration-fact-from-record record))
+    (dolist (row (plist-get page :records))
+      (let ((record (copy-tree (plist-get row :record) t)))
+        (when-let* ((fact (e-board-orchestration-fact-from-record record))
                   (run-id (plist-get (plist-get fact :payload) :run-id)))
-        (puthash run-id (append (gethash run-id groups) (list record)) groups)
-        (when (eq (plist-get fact :type) 'manifest)
-          (push run-id order))))
+          (puthash run-id
+                   (append (gethash run-id groups)
+                           (list (list :record record
+                                       :position (plist-get row :position))))
+                   groups)
+          (when (eq (plist-get fact :type) 'manifest)
+            (push run-id order)))))
     (mapcar
      (lambda (run-id)
-       (e-board-orchestration-actions--bounded-projection
-        (e-board-orchestration-reduce (gethash run-id groups) now)))
+       (let* ((rows (gethash run-id groups))
+              (projection
+               (e-board-orchestration-actions--bounded-projection
+                (e-board-orchestration-reduce
+                 (mapcar (lambda (row) (plist-get row :record)) rows)
+                 now)))
+              (latest (car (last rows))))
+         (plist-put
+          (plist-put projection :latest-event-position
+                     (or (plist-get latest :position) 0))
+          :latest-event-at
+          (plist-get (plist-get latest :record) :created-at))))
      order)))
 
 (defun e-board-orchestration-actions-list-runs (target &optional now)
@@ -189,8 +204,28 @@ The stable assignment key makes callback retries no-ops at the board boundary."
   (e-board-orchestration-actions--map-work
    (e-board-sqlite-publication-target-orchestration-runs-start
     target e-board-orchestration-actions-run-limit)
-   (lambda (page)
+     (lambda (page)
      (e-board-orchestration-actions--sql-run-list page now))))
+
+(defun e-board-orchestration-actions--sql-run-set (page now)
+  "Reduce SQL PAGE into the consumer-shaped Board run-set value at NOW."
+  (let ((projections (e-board-orchestration-actions--sql-run-list page now)))
+    (e-board-orchestration-run-set-projection
+     projections
+     :board-id (plist-get page :board-id))))
+
+(defun e-board-orchestration-actions-run-set (target &optional now)
+  "Return request-scoped work for TARGET's bounded active run-set."
+  (unless (e-board-orchestration-actions--sqlite-target-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
+  (e-board-orchestration-actions--map-work
+   (e-board-sqlite-publication-target-orchestration-runs-start
+    target e-board-orchestration-actions-run-limit)
+   (lambda (page)
+     (let ((value (e-board-orchestration-actions--sql-run-set page now)))
+       (plist-put value :board-id
+                  (e-board-sqlite-publication-target-board-id target))))))
 
 (defun e-board-orchestration-actions--context-target (context)
   "Return an explicit SQL target for CONTEXT's live presentation binding."
@@ -222,6 +257,11 @@ The stable assignment key makes callback retries no-ops at the board boundary."
   (e-board-orchestration-actions-list-runs
    (e-board-orchestration-actions--context-target context)))
 
+(defun e-board-orchestration-actions--run-set-list (context _arguments)
+  "Return the consumer-shaped active run-set for CONTEXT's Board."
+  (e-board-orchestration-actions-run-set
+   (e-board-orchestration-actions--context-target context)))
+
 (defconst e-board-orchestration-actions--run-id-parameters
   '(:type "object"
     :properties
@@ -229,14 +269,15 @@ The stable assignment key makes callback retries no-ops at the board boundary."
     :required ["run-id"])
   "Action parameters for one durable run lookup.")
 
-(defun e-board-orchestration-actions--action (handler parameters)
+(defun e-board-orchestration-actions--action (handler parameters description)
   "Return one async-capable durable run observation action for HANDLER."
   (e-action-create
+   :description description
    :parameters parameters
    :work
    (e-work-spec-create
     :id "board-orchestration-action" :execution 'cooperative
-    :interactive-policy 'async :owner 'subagents
+    :interactive-policy 'async :owner 'board
     :runner
     (lambda (parent arguments context)
       (let ((result (funcall handler context arguments)))
@@ -254,15 +295,23 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                ('cancelled (e-work-cancel parent)))))
           :deferred))))))
 
-(defun e-board-orchestration-actions-parent-alist ()
-  "Return parent actions that expose durable board run observations."
+(defun e-board-orchestration-actions-parent-alist (&optional run-set-p)
+  "Return Board actions that expose durable run observations.
+When RUN-SET-P is non-nil, `:list-runs' returns the Feature 89 consumer-shaped
+run-set value.  The default preserves the lower-level bounded list helper for
+callers that consume its historical list shape directly."
   (list :list-runs
         (e-board-orchestration-actions--action
-         #'e-board-orchestration-actions--list nil)
+         (if run-set-p
+             #'e-board-orchestration-actions--run-set-list
+           #'e-board-orchestration-actions--list)
+         nil
+         "List the Board's bounded active run-set.")
         :run-status
         (e-board-orchestration-actions--action
          #'e-board-orchestration-actions--status
-         e-board-orchestration-actions--run-id-parameters)))
+         e-board-orchestration-actions--run-id-parameters
+         "Read one bounded durable Board run projection.")))
 
 (provide 'e-board-orchestration-actions)
 

@@ -150,9 +150,10 @@ state or a live transcript cache."
       (e-board-observation-activity-participant-start
        (e-board-observation--context-target context) participant-id))))
 
-(defun e-board-observation--action (handler parameters)
+(defun e-board-observation--action (handler parameters description)
   "Return an async observation action descriptor for HANDLER."
   (e-action-create
+   :description description
    :parameters parameters
    :work
    (e-work-spec-create
@@ -212,14 +213,17 @@ The three actions share the same explicit Board target and never consult the
 private live execution owner."
   (list :list
         (e-board-observation--action
-         #'e-board-observation--list e-board-observation--list-parameters)
+         #'e-board-observation--list e-board-observation--list-parameters
+         "List the current Board participant/activity page.")
         :status
         (e-board-observation--action
          #'e-board-observation--status
-         e-board-observation--participant-parameters)
+         e-board-observation--participant-parameters
+         "Read one committed participant outcome.")
         :read
         (e-board-observation--action
-         #'e-board-observation--read e-board-observation--read-parameters)))
+         #'e-board-observation--read e-board-observation--read-parameters
+         "Read one participant projection or bounded durable transcript.")))
 
 (provide 'e-board-observation)
 

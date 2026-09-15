@@ -18,7 +18,6 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-capabilities)
-(require 'e-board-observation)
 (require 'e-chat-service)
 (require 'e-subagent-live)
 (require 'e-subagent-runner)
@@ -261,16 +260,15 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
 (defun e-subagent-actions-parent-alist (&optional live)
   "Return the parent-facing subagent actions plist bound to LIVE.
 These are the actions a session uses to spawn and manage its children:
-spawn, steer, send, interrupt, shutdown, configure-type, plus the Board-owned
-list, status, and read observations.  The child-side `report' is not here; see
-`e-subagent-actions-child-alist'."
+spawn, steer, send, interrupt, shutdown, and configure-type.  Board-owned
+observation actions are contributed by the independent `board' capability.
+The child-side `report' is not here; see `e-subagent-actions-child-alist'."
   (let ((live (or live e-subagent-actions-default-live)))
     (append
      (list
       :spawn
       (e-subagent-actions--action
        live #'e-subagent-actions--spawn e-subagent-actions--spawn-parameters))
-     (e-board-observation-parent-alist)
      (list
       :steer
       (e-subagent-actions--action

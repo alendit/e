@@ -441,6 +441,13 @@ to request-owned producer work.  It stores no terminal outcome."
    (e-board-sqlite-publication-target--service target)
    (e-board-sqlite-publication-target--board-id target) limit))
 
+(defun e-board-sqlite-publication-target-board-owner-resolve-start (target)
+  "Read TARGET's bounded current owner candidates."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-board-owner-resolve-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target)))
+
 (defun e-board-sqlite-publication-target-activity-page-start
     (target &rest arguments)
   "Read TARGET's bounded detached Board participant/activity page.
@@ -682,6 +689,17 @@ operation retains the returned page after the consumer's work handle settles."
   "Read BOARD-ID's detached scalar coordination row."
   (e-board-sqlite-service--start
    service 'read (list :op 'board-get :board-id board-id)))
+
+(defun e-board-sqlite-service-board-owner-resolve-start (service board-id)
+  "Read BOARD-ID's bounded current owner candidates.
+
+The result is an untouched detached candidate set.  `e-chat-service' owns the
+semantic exact-one, identity, and live-binding validation at its application
+boundary; this SQL service only supplies the fixed-cost Board query."
+  (unless (and (stringp board-id) (not (string-empty-p board-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p board-id)))
+  (e-board-sqlite-service--start
+   service 'read (list :op 'board-owner-resolve :board-id board-id)))
 
 (cl-defun e-board-sqlite-service-admit-session-input-start
     (service session-id board-id principal records query-delta participant

@@ -297,7 +297,17 @@ by this projection boundary."
 (cl-defstruct (e-chat-service-create-operation
                (:constructor e-chat-service--create-operation-create))
   work harness store session-id metadata admission first-input-work
-  owner-admission-work settled)
+  owner-admission-work settled creation-key board-id participant-id)
+
+(cl-defstruct (e-chat-service-owner-admission-ticket
+               (:constructor e-chat-service--owner-admission-ticket-create))
+  "Request-scoped stable-key owner admission ticket.
+
+The ticket deliberately exposes only the deterministic identity and the
+request work.  It is not an action result and contains no durable aggregate or
+live binding; callers must wait for WORK's explicit settlement before using
+the Board id as an address."
+  creation-key board-id session-id participant-id work)
 
 (cl-defstruct (e-chat-service-participant-operation
                (:constructor e-chat-service--participant-operation-create))
@@ -315,6 +325,16 @@ by this projection boundary."
                (:constructor e-chat-service--open-operation-create))
   "One detached validation and binding of an existing SQLite Board session."
   work target harness session-id routing-arguments child settled)
+
+(cl-defstruct (e-chat-service-owner-open-operation
+               (:constructor e-chat-service--owner-open-operation-create))
+  "One exact Board-to-owner resolution and live binding request."
+  work board-id harness child binding-work association settled)
+
+(cl-defstruct (e-chat-service-legacy-resolve-operation
+               (:constructor e-chat-service--legacy-resolve-operation-create))
+  "One request-local legacy session association migration resolution."
+  work harness session-id child association settled)
 
 (defconst e-chat-service--create-operation-spec
   (e-work-spec-create
@@ -343,6 +363,59 @@ by this projection boundary."
      (e-chat-service--start-open-operation operation)
      :deferred))
   "Work contract for one existing SQLite Board-session open.")
+
+(defconst e-chat-service--owner-open-operation-spec
+  (e-work-spec-create
+   :id "chat-board-owner-open" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (_handle operation _context)
+     (e-chat-service--start-owner-open-operation operation)
+     :deferred)))
+
+(defconst e-chat-service--legacy-resolve-operation-spec
+  (e-work-spec-create
+   :id "chat-legacy-session-resolve" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (_handle operation _context)
+     (e-chat-service--start-legacy-resolve-operation operation)
+     :deferred)))
+
+(defun e-chat-service-owner-admission-identities (creation-key)
+  "Return deterministic owner identities derived from CREATION-KEY.
+
+CREATION-KEY is the application-owned identity of a document or other
+consumer resource.  The derivation uses no clock, process counter, or live
+runtime state, so retries and a later process produce the same private
+session, Board, participant, and principal tuple."
+  (unless (and (stringp creation-key)
+               (not (string-empty-p creation-key))
+               (<= (string-bytes creation-key) 4096))
+    (signal 'e-session-error
+            (list "Owner creation key must be a bounded non-empty string"
+                  creation-key)))
+  (let ((digest (secure-hash 'sha256
+                             (concat "e-board-owner\0" creation-key))))
+    (list :creation-key (copy-sequence creation-key)
+          :session-id (concat "ses_" (substring digest 0 32))
+          :board-id (concat "brd_" (substring digest 32 64))
+          :participant-id (concat "ptc_" (substring digest 0 32))
+          :principal (concat "chat:ses_" (substring digest 0 32)))))
+
+(defun e-chat-service-owner-admission-work (ticket)
+  "Return TICKET's request-scoped admission work."
+  (unless (e-chat-service-owner-admission-ticket-p ticket)
+    (signal 'wrong-type-argument
+            (list 'e-chat-service-owner-admission-ticket-p ticket)))
+  (e-chat-service-owner-admission-ticket-work ticket))
+
+(defun e-chat-service-owner-admission-provisional-board-id (ticket)
+  "Return TICKET's deterministic provisional Board id."
+  (unless (e-chat-service-owner-admission-ticket-p ticket)
+    (signal 'wrong-type-argument
+            (list 'e-chat-service-owner-admission-ticket-p ticket)))
+  (copy-sequence (e-chat-service-owner-admission-ticket-board-id ticket)))
 
 (cl-defun e-chat-service-board-fact-start
     (binding &key author tags attributes content source-fact-key)
@@ -1537,13 +1610,26 @@ semantic interpretation responsibility."
 
 (defun e-chat-service--pending-owner-admission-data (pending)
   "Return PENDING's deterministic detached owner-admission data."
-  (let* ((session-id
-          (e-chat-service-create-operation-session-id pending))
-         (principal (format "chat:%s" session-id))
-         (identity
-          (secure-hash 'sha256 (format "chat-session:%s" session-id)))
-         (board-id (concat "brd_" (substring identity 0 32)))
-         (participant-id (concat "ptc_" (substring identity 32 64)))
+  (let* ((creation-key (e-chat-service-create-operation-creation-key pending))
+         (identities
+          (and creation-key
+               (e-chat-service-owner-admission-identities creation-key)))
+         (session-id
+          (or (plist-get identities :session-id)
+              (e-chat-service-create-operation-session-id pending)))
+         (principal
+          (or (plist-get identities :principal)
+              (format "chat:%s" session-id)))
+         (board-id
+          (or (plist-get identities :board-id)
+              (let ((identity
+                     (secure-hash 'sha256 (format "chat-session:%s" session-id))))
+                (concat "brd_" (substring identity 0 32)))))
+         (participant-id
+          (or (plist-get identities :participant-id)
+              (let ((identity
+                     (secure-hash 'sha256 (format "chat-session:%s" session-id))))
+                (concat "ptc_" (substring identity 32 64)))))
          (policy
           (e-chat-service--routing-policy
            participant-id '(:tags (main)) '(:tags (main)) '(main) nil))
@@ -1562,7 +1648,8 @@ semantic interpretation responsibility."
                 value)))
          (records (plist-get session :admission-records)))
     (list
-     :session-id session-id :principal principal :board-id board-id
+     :creation-key creation-key :session-id session-id :principal principal
+     :board-id board-id :participant-id participant-id
      :records records
      :query-delta (plist-get session :query-delta)
      :participant
@@ -1592,6 +1679,11 @@ semantic interpretation responsibility."
                 (e-work-finish
                  (e-chat-service-create-operation-work pending)
                  (list :id session-id
+                       :creation-key
+                       (e-chat-service-create-operation-creation-key pending)
+                       :board-id (plist-get (e-chat-service--pending-owner-admission-data
+                                             pending)
+                                            :board-id)
                        :metadata
                        (copy-tree
                         (e-chat-service-create-operation-metadata pending) t)
@@ -1623,6 +1715,23 @@ semantic interpretation responsibility."
                (plist-get data :participant))))
         (setf (e-chat-service-create-operation-owner-admission-work pending)
               work)
+        (setf (e-work-handle-cancel-function
+               (e-chat-service-create-operation-work pending))
+              (lambda (_handle)
+                (let* ((session-id
+                        (e-chat-service-create-operation-session-id pending))
+                       (table
+                        (e-chat-service--harness-pending-creations
+                         (e-chat-service-create-operation-harness pending)))
+                       (child
+                        (e-chat-service-create-operation-owner-admission-work
+                         pending)))
+                  (when (eq (gethash session-id table) pending)
+                    (remhash session-id table))
+                  (when (and (e-work-handle-p child)
+                             (not (memq (plist-get (e-work-status child) :state)
+                                        '(finished failed cancelled))))
+                    (e-work-cancel child)))))
         (e-work-on-settle
          work
          (lambda (settled)
@@ -1791,30 +1900,99 @@ controller has been built."
     (puthash (copy-sequence session-id) operation table)
     :deferred))
 
-(cl-defun e-chat-service-create-session-start (&key harness metadata id)
-  "Start durable chat session creation and return a stable `e-work'."
+(cl-defun e-chat-service-owner-admission-start (&key harness creation-key metadata)
+  "Start deterministic owner admission for CREATION-KEY.
+
+Return a request-scoped ticket immediately.  Its Board id is deterministic and
+safe to display as preparing, while its WORK must settle before the Board is
+used as a routable address.  Repeated calls while admission is pending share
+the same work; calls after a restart re-submit the same durable identities and
+the SQLite owner admission remains idempotent."
   (let* ((harness (or harness (e-chat-service-default-harness)))
          (store (e-harness-sessions harness))
-         (session-id (or id (e-session-generate-id))))
+         (identities (e-chat-service-owner-admission-identities creation-key))
+         (session-id (plist-get identities :session-id))
+         (metadata (e-harness--normalize-session-metadata metadata))
+         (pending-table (e-chat-service--harness-pending-creations harness))
+         (pending (gethash session-id pending-table)))
     (unless (e-session-storage-sqlite-p store)
       (signal 'e-session-storage-error
               (list "Chat session creation requires SQLite" session-id)))
-    (let* ((operation
-            (e-chat-service--create-operation-create
-             :harness harness :store store :session-id session-id
-             :metadata (e-harness--normalize-session-metadata metadata)))
-           (arguments
-            (list :harness harness
-                  :metadata (e-harness--normalize-session-metadata metadata)))
-           (work
-            (e-work-prepare
-             e-chat-service--create-operation-spec arguments
-             :context (list :domain-ref session-id
-                            :work-kind 'chat-session-create))))
-      (setf (e-chat-service-create-operation-work operation) work
-            (e-work-handle-arguments work) arguments)
-      (e-work-start-prepared work :arguments operation)
-      work)))
+    (if (and pending
+             (e-chat-service-create-operation-p pending)
+             (equal creation-key
+                    (e-chat-service-create-operation-creation-key pending)))
+        (e-chat-service--owner-admission-ticket pending)
+      (let* ((operation
+              (e-chat-service--create-operation-create
+               :harness harness :store store :session-id session-id
+               :metadata metadata :creation-key (copy-sequence creation-key)
+               :board-id (plist-get identities :board-id)
+               :participant-id (plist-get identities :participant-id)))
+             (arguments (list :harness harness :metadata metadata))
+             (work
+              (e-work-prepare
+               e-chat-service--create-operation-spec arguments
+               :context (list :domain-ref session-id
+                              :work-kind 'chat-session-create))))
+        (setf (e-chat-service-create-operation-work operation) work
+              (e-work-handle-arguments work) arguments)
+        (e-work-start-prepared work :arguments operation)
+        ;; Stable-key admission is an application operation in its own right;
+        ;; do not wait for a presentation binding or a first input to submit
+        ;; the atomic empty-owner transaction.
+        (e-chat-service--start-pending-owner-admission operation)
+        (e-chat-service--owner-admission-ticket operation)))))
+
+(defun e-chat-service--owner-admission-ticket (operation)
+  "Return the detached public ticket for owner-admission OPERATION."
+  (let* ((identities
+          (or (and (e-chat-service-create-operation-creation-key operation)
+                   (e-chat-service-owner-admission-identities
+                    (e-chat-service-create-operation-creation-key operation)))
+              (e-chat-service--pending-owner-admission-data operation))))
+    (e-chat-service--owner-admission-ticket-create
+     :creation-key (copy-sequence
+                    (or (plist-get identities :creation-key)
+                        (e-chat-service-create-operation-creation-key operation)))
+     :board-id (copy-sequence (plist-get identities :board-id))
+     :session-id (copy-sequence
+                  (or (plist-get identities :session-id)
+                      (e-chat-service-create-operation-session-id operation)))
+     :participant-id (copy-sequence (plist-get identities :participant-id))
+     :work (e-chat-service-create-operation-work operation))))
+
+(cl-defun e-chat-service-create-session-start (&key harness metadata id creation-key)
+  "Start durable chat session creation and return a stable `e-work'.
+
+When CREATION-KEY is supplied, return an owner-admission ticket with a
+provisional Board id.  The historical explicit ID form remains a work handle
+for generic chat callers; it has no stable-key promise."
+  (if creation-key
+      (e-chat-service-owner-admission-start
+       :harness harness :creation-key creation-key :metadata metadata)
+    (let* ((harness (or harness (e-chat-service-default-harness)))
+           (store (e-harness-sessions harness))
+           (session-id (or id (e-session-generate-id))))
+      (unless (e-session-storage-sqlite-p store)
+        (signal 'e-session-storage-error
+                (list "Chat session creation requires SQLite" session-id)))
+      (let* ((operation
+              (e-chat-service--create-operation-create
+               :harness harness :store store :session-id session-id
+               :metadata (e-harness--normalize-session-metadata metadata)))
+             (arguments
+              (list :harness harness
+                    :metadata (e-harness--normalize-session-metadata metadata)))
+             (work
+              (e-work-prepare
+               e-chat-service--create-operation-spec arguments
+               :context (list :domain-ref session-id
+                              :work-kind 'chat-session-create))))
+        (setf (e-chat-service-create-operation-work operation) work
+              (e-work-handle-arguments work) arguments)
+        (e-work-start-prepared work :arguments operation)
+        work))))
 
 (defun e-chat-service--open-target-board-id (target)
   "Return TARGET's detached Board id for an asynchronous open."
@@ -1826,6 +2004,306 @@ controller has been built."
    (t
     (signal 'wrong-type-argument
             (list 'sqlite-board-id-or-binding-p target)))))
+
+(defun e-chat-service--owner-association-valid-p
+    (association board-id generation trusted-principal)
+  "Signal when detached OWNER ASSOCIATION is not an exact Board tuple.
+The check is intentionally application-owned: the SQL adapter returns
+candidates, while this service validates the identity joins before any live
+binding is installed."
+  (let* ((candidate-board-id (plist-get association :board-id))
+         (role (plist-get association :association-role))
+         (policy (plist-get association :routing-policy))
+         (principal (plist-get association :principal))
+         (session-id (plist-get association :session-id))
+         (participant-id (plist-get association :participant-id))
+         (participant (plist-get association :participant))
+         (policy-participant-id (plist-get policy :participant-id)))
+    (unless (and (equal candidate-board-id board-id)
+                 (integerp generation) (> generation 0)
+                 (stringp session-id) (not (string-empty-p session-id))
+                 (member role '("owner" owner))
+                 (stringp principal) (not (string-empty-p principal))
+                 (or (null trusted-principal)
+                     (equal principal trusted-principal))
+                 (e-session-board-routing-policy-valid-p policy)
+                 (stringp participant-id)
+                 (equal participant-id policy-participant-id)
+                 (listp participant)
+                 (equal participant-id (plist-get participant :id))
+                 (member (plist-get participant :role) '(owner "owner"))
+                 (or (null (plist-get participant :principal))
+                     (equal principal (plist-get participant :principal))))
+      (signal 'e-session-error
+              (list "Malformed or conflicting Board owner association"
+                    board-id association)))
+    association))
+
+(defun e-chat-service--exact-live-owner-binding
+    (harness association)
+  "Return or reject HARNESS's existing exact live OWNER ASSOCIATION.
+No replacement or mutation is attempted when a process-local binding points at
+another durable identity."
+  (let* ((session-id (plist-get association :session-id))
+         (binding (e-chat-service-binding harness session-id)))
+    (when binding
+      (unless (and (equal (e-chat-service-binding-board-id binding)
+                          (plist-get association :board-id))
+                   (equal (e-chat-service-binding-principal binding)
+                          (plist-get association :principal))
+                   (equal (e-chat-service-binding-participant-id binding)
+                          (plist-get association :participant-id))
+                   (equal (e-chat-service-binding-default-tags binding)
+                          (plist-get (plist-get association :routing-policy)
+                                     :default-tags))
+                   (equal (e-chat-service-binding-default-to binding)
+                          (plist-get (plist-get association :routing-policy)
+                                     :default-to)))
+        (signal 'e-session-error
+                (list "Existing live Board binding conflicts with owner"
+                      (plist-get association :board-id) session-id)))
+      binding)))
+
+(defun e-chat-service--finish-owner-open-operation
+    (operation result error)
+  "Settle owner OPEN operation exactly once with RESULT or ERROR."
+  (unless (e-chat-service-owner-open-operation-settled operation)
+    (setf (e-chat-service-owner-open-operation-settled operation) t
+          (e-chat-service-owner-open-operation-child operation) nil
+          (e-chat-service-owner-open-operation-binding-work operation) nil)
+    (if error
+        (e-work-fail (e-chat-service-owner-open-operation-work operation) error)
+      (e-work-finish (e-chat-service-owner-open-operation-work operation)
+                     result))))
+
+(defun e-chat-service--owner-open-association-settled
+    (operation child)
+  "Validate owner candidates from CHILD and install one exact binding."
+  (let ((status (e-work-status child)))
+    (if (not (eq (plist-get status :state) 'finished))
+        (e-chat-service--finish-owner-open-operation
+         operation nil
+         (or (plist-get status :error)
+             '(e-work-cancelled "Board owner resolution cancelled")))
+      (condition-case error
+          (let* ((result (plist-get status :result))
+                 (board-id (e-chat-service-owner-open-operation-board-id operation))
+                 (owners (plist-get result :owners))
+                 (generation (plist-get result :generation))
+                 (trusted-principal (plist-get result :trusted-principal)))
+            (when (plist-get result :missing-board)
+              (signal 'e-session-missing (list board-id 'board)))
+            (unless (= (length owners) 1)
+              (signal 'e-session-error
+                      (list (if (null owners)
+                                "Board has no current owner"
+                              "Board has multiple current owners")
+                            board-id (length owners))))
+            (let* ((association
+                    (e-chat-service--owner-association-valid-p
+                     (car owners) board-id generation trusted-principal))
+                   (harness
+                    (e-chat-service-owner-open-operation-harness operation))
+                   (binding (e-chat-service--exact-live-owner-binding
+                             harness association)))
+              (if binding
+                  (e-chat-service--finish-owner-open-operation operation binding nil)
+                (let ((binding-work
+                       (e-chat-service-binding-start
+                        harness (plist-get association :session-id)
+                        association)))
+                  (setf (e-chat-service-owner-open-operation-association operation)
+                        (copy-tree association t)
+                        (e-chat-service-owner-open-operation-binding-work operation)
+                        binding-work)
+                  (e-work-on-settle
+                   binding-work
+                   (lambda (settled)
+                     (let ((binding-status (e-work-status settled)))
+                       (if (eq (plist-get binding-status :state) 'finished)
+                           (e-chat-service--finish-owner-open-operation
+                            operation (plist-get binding-status :result) nil)
+                         (e-chat-service--finish-owner-open-operation
+                          operation nil (plist-get binding-status :error))))))))))
+        (error
+         (e-chat-service--finish-owner-open-operation operation nil error))))))
+
+(defun e-chat-service--start-owner-open-operation (operation)
+  "Start the detached Board owner candidate query for OPERATION."
+  (let* ((harness (e-chat-service-owner-open-operation-harness operation))
+         (store (e-harness-sessions harness))
+         (service (e-board-sqlite-service-create
+                   (e-session-storage-runtime-store store)))
+         (child
+          (e-board-sqlite-service-board-owner-resolve-start
+           service (e-chat-service-owner-open-operation-board-id operation))))
+    (setf (e-chat-service-owner-open-operation-child operation) child
+          (e-work-handle-cancel-function
+           (e-chat-service-owner-open-operation-work operation))
+          (lambda (_handle)
+            (when (and (e-work-handle-p child)
+                       (not (memq (plist-get (e-work-status child) :state)
+                                  '(finished failed cancelled))))
+              (e-work-cancel child))))
+    (e-work-on-settle
+     child
+     (lambda (settled)
+       (e-chat-service--owner-open-association-settled operation settled)))))
+
+(cl-defun e-chat-service-open-board-owner-start
+    (board-id harness &key)
+  "Open exactly one current owner binding for BOARD-ID asynchronously.
+The request never creates or repairs a Board.  Zero, multiple, missing, or
+identity-conflicting durable rows fail only this request."
+  (unless (and (stringp board-id) (not (string-empty-p board-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p board-id)))
+  (unless (e-session-storage-sqlite-p (e-harness-sessions harness))
+    (signal 'e-session-storage-error
+            (list "Board owner open requires SQLite" board-id)))
+  (let* ((operation
+          (e-chat-service--owner-open-operation-create
+           :board-id (copy-sequence board-id) :harness harness))
+         (work
+          (e-work-prepare
+           e-chat-service--owner-open-operation-spec operation
+           :context (list :domain-ref board-id :work-kind 'chat-board-owner-open))))
+    (setf (e-chat-service-owner-open-operation-work operation) work)
+    (e-work-start-prepared work :arguments operation)
+    work))
+
+(defun e-chat-service--finish-legacy-resolve-operation
+    (operation result error)
+  "Settle legacy RESOLVE OPERATION exactly once."
+  (unless (e-chat-service-legacy-resolve-operation-settled operation)
+    (setf (e-chat-service-legacy-resolve-operation-settled operation) t
+          (e-chat-service-legacy-resolve-operation-child operation) nil)
+    (if error
+        (e-work-fail (e-chat-service-legacy-resolve-operation-work operation)
+                     error)
+      (e-work-finish (e-chat-service-legacy-resolve-operation-work operation)
+                     result))))
+
+(defun e-chat-service--legacy-owner-settled (operation settled)
+  "Validate the exact owner candidate from legacy resolver SETTLED."
+  (let ((status (e-work-status settled)))
+    (if (not (eq (plist-get status :state) 'finished))
+        (e-chat-service--finish-legacy-resolve-operation
+         operation nil (plist-get status :error))
+      (condition-case owner-error
+          (let* ((result (plist-get status :result))
+                 (session-id
+                  (e-chat-service-legacy-resolve-operation-session-id operation))
+                 (board-id
+                  (plist-get result :board-id))
+                 (owners (plist-get result :owners))
+                 (generation (plist-get result :generation))
+                 (trusted-principal (plist-get result :trusted-principal))
+                 (matching
+                  (cl-remove-if-not
+                   (lambda (candidate)
+                     (equal (plist-get candidate :session-id) session-id))
+                   owners)))
+            (when (plist-get result :missing-board)
+              (signal 'e-session-missing (list board-id 'board)))
+            (unless (= (length matching) 1)
+              (signal 'e-session-error
+                      (list (if (null matching)
+                                "Legacy session owner is missing"
+                              "Legacy session has multiple owners")
+                            session-id board-id)))
+            (e-chat-service--finish-legacy-resolve-operation
+             operation
+             (list :association
+                   (e-chat-service--owner-association-valid-p
+                    (car matching) board-id generation trusted-principal)
+                   :board-id board-id :generation generation)
+             nil))
+        (error
+         (e-chat-service--finish-legacy-resolve-operation
+          operation nil owner-error))))))
+
+(defun e-chat-service--legacy-association-settled (operation settled)
+  "Validate legacy association SETTLED and query its exact Board owner."
+  (let ((status (e-work-status settled)))
+    (if (not (eq (plist-get status :state) 'finished))
+        (e-chat-service--finish-legacy-resolve-operation
+         operation nil (plist-get status :error))
+      (condition-case resolve-error
+          (let* ((association (plist-get status :result))
+                 (session-id
+                  (e-chat-service-legacy-resolve-operation-session-id operation))
+                 (board-id (plist-get association :board-id)))
+            (unless (and association
+                         (equal (plist-get association :session-id) session-id)
+                         (member (plist-get association :association-role)
+                                 '(owner "owner"))
+                         (stringp board-id)
+                         (not (string-empty-p board-id)))
+              (signal 'e-session-error
+                      (list "Legacy session is not a valid Board owner"
+                            session-id)))
+            (setf (e-chat-service-legacy-resolve-operation-association operation)
+                  (copy-tree association t))
+            (let* ((harness
+                    (e-chat-service-legacy-resolve-operation-harness operation))
+                   (service
+                    (e-board-sqlite-service-create
+                     (e-session-storage-runtime-store
+                      (e-harness-sessions harness))))
+                   (owner-work
+                    (e-board-sqlite-service-board-owner-resolve-start
+                     service board-id)))
+              (setf (e-chat-service-legacy-resolve-operation-child operation)
+                    owner-work)
+              (e-work-on-settle
+               owner-work
+               (lambda (owner-settled)
+                 (e-chat-service--legacy-owner-settled
+                  operation owner-settled)))))
+        (error
+         (e-chat-service--finish-legacy-resolve-operation
+          operation nil resolve-error))))))
+
+(defun e-chat-service--start-legacy-resolve-operation (operation)
+  "Resolve one valid legacy SESSION-ID association without mutation."
+  (let* ((harness (e-chat-service-legacy-resolve-operation-harness operation))
+         (child
+          (e-session-async-board-association
+           (e-harness-sessions harness)
+           (e-chat-service-legacy-resolve-operation-session-id operation))))
+    (setf (e-chat-service-legacy-resolve-operation-child operation) child
+          (e-work-handle-cancel-function
+           (e-chat-service-legacy-resolve-operation-work operation))
+          (lambda (_handle)
+            (let ((current
+                   (e-chat-service-legacy-resolve-operation-child operation)))
+              (when (and (e-work-handle-p current)
+                         (not (memq (plist-get (e-work-status current) :state)
+                                    '(finished failed cancelled))))
+                (e-work-cancel current)))))
+    (e-work-on-settle
+     child
+     (lambda (settled)
+       (e-chat-service--legacy-association-settled operation settled)))))
+
+(defun e-chat-service-resolve-legacy-session-start (harness session-id)
+  "Resolve legacy SESSION-ID as a valid owner association without mutation."
+  (unless (and (stringp session-id) (not (string-empty-p session-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p session-id)))
+  (unless (e-session-storage-sqlite-p (e-harness-sessions harness))
+    (signal 'e-session-storage-error
+            (list "Legacy Board migration requires SQLite" session-id)))
+  (let* ((operation
+          (e-chat-service--legacy-resolve-operation-create
+           :harness harness :session-id (copy-sequence session-id)))
+         (work
+          (e-work-prepare
+           e-chat-service--legacy-resolve-operation-spec operation
+           :context (list :domain-ref session-id
+                          :work-kind 'chat-legacy-session-resolve))))
+    (setf (e-chat-service-legacy-resolve-operation-work operation) work)
+    (e-work-start-prepared work :arguments operation)
+    work))
 
 (defun e-chat-service--finish-open-operation (operation result error)
   "Settle SQLite Board open OPERATION exactly once."
@@ -1921,18 +2399,22 @@ controller has been built."
        (e-chat-service--open-association-settled operation settled)))))
 
 (cl-defun e-chat-service-open-board-start
-    (target harness session-id
+    (target harness &optional session-id
             &key (participant-id nil participant-id-supplied-p)
             (pickup-selector nil pickup-selector-supplied-p)
             (observer-selector nil observer-selector-supplied-p)
             (default-tags nil default-tags-supplied-p)
             (default-to nil default-to-supplied-p))
-  "Asynchronously validate and open existing SQLite TARGET for SESSION-ID."
-  (unless (e-session-storage-sqlite-p (e-harness-sessions harness))
-    (signal 'e-session-storage-error
-            (list "Asynchronous Board open requires SQLite" session-id)))
-  (e-chat-service--open-target-board-id target)
-  (let* ((routing-arguments
+  "Asynchronously open one exact Board owner or existing SESSION-ID binding.
+When SESSION-ID is omitted, TARGET is resolved through the Board-owned exact
+owner operation; no owner is created or repaired."
+  (if (null session-id)
+      (e-chat-service-open-board-owner-start target harness)
+    (unless (e-session-storage-sqlite-p (e-harness-sessions harness))
+      (signal 'e-session-storage-error
+              (list "Asynchronous Board open requires SQLite" session-id)))
+    (e-chat-service--open-target-board-id target)
+    (let* ((routing-arguments
           (list participant-id participant-id-supplied-p
                 pickup-selector pickup-selector-supplied-p
                 observer-selector observer-selector-supplied-p
@@ -1947,9 +2429,9 @@ controller has been built."
            e-chat-service--open-operation-spec operation
            :context (list :domain-ref session-id
                           :work-kind 'chat-board-open))))
-    (setf (e-chat-service-open-operation-work operation) work)
-    (e-work-start-prepared work :arguments operation)
-    work))
+      (setf (e-chat-service-open-operation-work operation) work)
+      (e-work-start-prepared work :arguments operation)
+      work)))
 
 (defun e-chat-service--finish-participant-operation
     (operation result error)

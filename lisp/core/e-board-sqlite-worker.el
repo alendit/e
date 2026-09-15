@@ -1476,6 +1476,66 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                             "One Board activity participant exceeds page byte bound"
                             board-id byte-limit))))))))))))
 
+(defun e-board-sqlite-worker--board-owner-resolve (body)
+  "Return bounded current owner candidates for BODY's Board id.
+
+The owner association and participant rows are selected as sets inside one
+read transaction.  The result intentionally retains candidates rather than
+choosing one: the application service must fail closed for zero or multiple
+owners and validate every identity before installing a live binding."
+  (let* ((board-id (plist-get body :board-id))
+         (board-row
+          (car (sqlite-select
+                e-board-sqlite-worker--database
+                "SELECT trusted_principal,generation,revision FROM boards WHERE board_id=?"
+                (vector board-id)))))
+    (if (null board-row)
+        (list :board-id board-id :missing-board t :owners nil)
+      (let* ((trusted-principal
+              (e-board-sqlite-worker--value
+               (e-board-sqlite-worker--column board-row 0)))
+             (generation (e-board-sqlite-worker--column board-row 1))
+             (owner-rows
+              (sqlite-select
+               e-board-sqlite-worker--database
+               (concat
+                "SELECT session_id,board_id,principal,association_role,"
+                "routing_policy,name FROM session_query_state "
+                "WHERE board_id=? AND association_role=? "
+                "ORDER BY session_id LIMIT ?")
+               (vector board-id "owner" 3)))
+             (participant-rows
+              (sqlite-select
+               e-board-sqlite-worker--database
+               "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=?"
+               (vector board-id generation)))
+             (participants (make-hash-table :test 'equal)))
+        (dolist (row participant-rows)
+          (puthash (e-board-sqlite-worker--column row 0)
+                   (e-board-sqlite-worker--value
+                    (e-board-sqlite-worker--column row 1))
+                   participants))
+        (list
+         :board-id board-id :generation generation
+         :trusted-principal trusted-principal
+         :owners
+         (mapcar
+          (lambda (row)
+            (let* ((session-id (e-board-sqlite-worker--column row 0))
+                   (routing-policy
+                    (e-board-sqlite-worker--value
+                     (e-board-sqlite-worker--column row 4)))
+                   (participant-id (plist-get routing-policy :participant-id)))
+              (list :session-id session-id
+                    :board-id (e-board-sqlite-worker--column row 1)
+                    :principal (e-board-sqlite-worker--column row 2)
+                    :association-role (e-board-sqlite-worker--column row 3)
+                    :routing-policy routing-policy
+                    :participant-name (e-board-sqlite-worker--column row 5)
+                    :participant-id participant-id
+                    :participant (gethash participant-id participants))))
+          owner-rows))))))
+
 (defun e-board-sqlite-worker-read (database body)
   "Execute one typed Board read BODY on DATABASE."
   (let ((e-board-sqlite-worker--database database))
@@ -1494,6 +1554,8 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
              :next-position (e-board-sqlite-worker--column row 4)
              :root (e-board-sqlite-worker--value
                     (e-board-sqlite-worker--column row 5)))))
+    ('board-owner-resolve
+     (e-board-sqlite-worker--board-owner-resolve body))
     ('board-list
      (let* ((limit (min 1024 (max 1 (or (plist-get body :limit) 64))))
             (after (or (plist-get body :after) ""))

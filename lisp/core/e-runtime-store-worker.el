@@ -1122,6 +1122,7 @@ acknowledgement prefix."
     ((or 'board-get 'board-list 'board-record-page 'board-visible-window
          'board-activity-page
          'board-orchestration-run 'board-orchestration-runs
+         'board-owner-resolve
          'board-routing-get
          'board-pickup-list 'board-participant-list
          'board-replay-progress-get)

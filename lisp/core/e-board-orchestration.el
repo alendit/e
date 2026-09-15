@@ -487,6 +487,321 @@ evidence."
                 :continuation-claims (copy-tree claims)
                 :terminal-status terminal-status))))))
 
+;;;; Consumer-shaped run-set projection
+
+(defconst e-board-orchestration-run-set-default-record-limit 32
+  "Maximum number of run entries retained by one Board run-set value.")
+
+(defconst e-board-orchestration-run-set-default-byte-limit (* 32 1024)
+  "Maximum encoded width of one detached Board run-set value.")
+
+(defconst e-board-orchestration-run-set-label-limit 160
+  "Maximum width of a run label in the consumer-shaped run-set value.")
+
+(defun e-board-orchestration--run-set-value (projection &rest keys)
+  "Return the first non-nil value of KEYS in PROJECTION."
+  (cl-loop for key in keys
+           for value = (plist-get projection key)
+           when value return value))
+
+(defun e-board-orchestration--run-set-task-terminal-p (task)
+  "Return non-nil when TASK has reached a terminal lifecycle state."
+  (memq (plist-get task :state) '(done failed cancelled terminal)))
+
+(defun e-board-orchestration--run-set-state-counts (tasks)
+  "Return bounded state totals for TASKS."
+  (let ((counts (list :total (length tasks)
+                      :pending 0 :running 0 :done 0 :failed 0 :cancelled 0
+                      :other 0)))
+    (dolist (task tasks)
+      (let* ((state (plist-get task :state))
+             (key (and (symbolp state)
+                       (intern (concat ":" (symbol-name state))))))
+        (if (and key (plist-member counts key))
+            (plist-put counts key (1+ (plist-get counts key)))
+          (plist-put counts :other (1+ (plist-get counts :other))))))
+    counts))
+
+(defun e-board-orchestration--run-set-entry (projection board-id restore-state)
+  "Map reduced durable run PROJECTION to one bounded consumer entry."
+  (let* ((run-id (plist-get projection :run-id))
+         (manifest (or (plist-get projection :manifest) nil))
+         (descriptor (or (plist-get manifest :descriptor)
+                         (plist-get projection :descriptor)))
+         (tasks (or (plist-get projection :tasks)
+                    (plist-get manifest :tasks) nil))
+         (required (cl-remove-if-not (lambda (task) (plist-get task :required))
+                                     tasks))
+         (optional (cl-remove-if
+                    (lambda (task) (plist-get task :required)) tasks))
+         (required-counts
+          (e-board-orchestration--run-set-state-counts required))
+         (optional-counts
+          (e-board-orchestration--run-set-state-counts optional))
+         (required-terminal
+          (cl-every #'e-board-orchestration--run-set-task-terminal-p required))
+         (optional-active
+          (cl-some (lambda (task)
+                     (not (e-board-orchestration--run-set-task-terminal-p task)))
+                   optional))
+         (terminal-status (plist-get projection :terminal-status))
+         (continuation (plist-get projection :continuation))
+         (continuation-state (plist-get continuation :state))
+         (terminal-unconsumed
+          (and terminal-status continuation
+               (memq continuation-state '(pending waiting failed))))
+         (active-p (or (not required-terminal)
+                       terminal-unconsumed optional-active))
+         (deadline (plist-get projection :deadline))
+         (deadline-expired (plist-get deadline :expired))
+         (conflicts (or (plist-get projection :conflicts) nil))
+         (failure (or (and (eq terminal-status 'failed) terminal-status)
+                      (plist-get projection :failure)))
+         (attention-p (or conflicts deadline-expired failure
+                          (eq continuation-state 'failed)))
+         (lifecycle
+          (cond
+           ((not (eq restore-state 'ready)) 'restoring)
+           (attention-p 'attention)
+           (terminal-status 'finishing)
+           ((cl-some (lambda (task) (eq (plist-get task :state) 'pending)) tasks)
+            'dispatching)
+           (t 'running)))
+         (latest-at (e-board-orchestration--run-set-value
+                     projection :latest-event-at :latest-event-time
+                     :updated-at))
+         (latest-position (or (plist-get projection :latest-event-position) 0))
+         (reports (or (plist-get projection :reports)
+                      (mapcar (lambda (task) (plist-get task :accepted-report))
+                              tasks)))
+         (participants
+          (delete-dups
+           (delq nil (mapcar (lambda (report)
+                               (or (plist-get report :participant-session-id)
+                                   (plist-get report :participant-id)))
+                             reports))))
+         (label-value
+          (or (plist-get descriptor :label)
+              (plist-get descriptor :name)
+              (plist-get manifest :label)
+              run-id))
+         (label (if (stringp label-value)
+                    (substring label-value 0
+                               (min (length label-value)
+                                    e-board-orchestration-run-set-label-limit))
+                  (format "%s" label-value)))
+         (action-rank (pcase lifecycle
+                        ('attention 0)
+                        ('restoring 1)
+                        ('dispatching 2)
+                        ('running 3)
+                        ('finishing 4)
+                        (_ 5))))
+    (list :board-id board-id :run-id run-id :label label
+          :lifecycle lifecycle :active-p active-p
+          :actionable-rank action-rank
+          :required-count (length required) :optional-count (length optional)
+          :required-total (length required) :optional-total (length optional)
+          :required-state-counts required-counts
+          :optional-state-counts optional-counts
+          :required-totals required-counts
+          :optional-totals optional-counts
+          :required-complete
+          (length (cl-remove-if-not
+                   #'e-board-orchestration--run-set-task-terminal-p required))
+          :optional-active optional-active
+          :participant-count (length participants)
+          :participant-total (length participants)
+          :admission-count (length participants)
+          :admission-total (length participants)
+          :latest-event-at latest-at :latest-event-time latest-at
+          :latest-event-position latest-position
+          :conflicts (copy-tree conflicts t)
+          :deadline (copy-tree deadline t)
+          :failure failure
+          :restore-state restore-state
+          :attention-p attention-p
+          :completion-state (or terminal-status 'active)
+          :completion-delivery-state continuation-state
+          :continuation-state continuation-state)))
+
+(defun e-board-orchestration--run-set-encoded-bytes (value)
+  "Return the detached encoded width of run-set VALUE."
+  (string-bytes (prin1-to-string value)))
+
+(defun e-board-orchestration--run-set-with-byte-accounting (value)
+  "Return VALUE with `:bytes' equal to its final encoded width."
+  (let ((guess 0) candidate actual)
+    (dotimes (_ 4)
+      (setq candidate (plist-put (copy-tree value t) :bytes guess)
+            actual (e-board-orchestration--run-set-encoded-bytes candidate)
+            guess actual))
+    candidate))
+
+(cl-defun e-board-orchestration-run-set-projection
+    (projections &key board-id
+                 (record-limit e-board-orchestration-run-set-default-record-limit)
+                 (byte-limit e-board-orchestration-run-set-default-byte-limit)
+                 (restore-state 'ready))
+  "Reduce PROJECTIONS into one bounded Board-owned run-set value.
+
+PROJECTIONS are already detached reduced run projections; this function does
+not read SQLite or inspect live execution state.  The returned value contains
+only the largest fitting ordered prefix and an omitted count.  Ordering puts
+actionable attention first, then restoring/dispatching/running/finishing, and
+uses newest event position and run id as deterministic tie breakers."
+  (unless (and (integerp record-limit) (> record-limit 0) (<= record-limit 256))
+    (signal 'e-board-orchestration-error
+            (list "Run-set record limit is out of bounds" record-limit)))
+  (unless (and (integerp byte-limit) (> byte-limit 0) (<= byte-limit (* 256 1024)))
+    (signal 'e-board-orchestration-error
+            (list "Run-set byte limit is out of bounds" byte-limit)))
+  (unless (memq restore-state '(ready restoring unavailable))
+    (signal 'e-board-orchestration-error
+            (list "Run-set restore state is invalid" restore-state)))
+  (let* ((entries
+          (cl-remove-if-not
+           (lambda (entry) (plist-get entry :active-p))
+           (sort (mapcar (lambda (projection)
+                           (e-board-orchestration--run-set-entry
+                            projection board-id restore-state))
+                         projections)
+                (lambda (left right)
+                  (let ((left-rank (plist-get left :actionable-rank))
+                        (right-rank (plist-get right :actionable-rank))
+                        (left-position (plist-get left :latest-event-position))
+                        (right-position (plist-get right :latest-event-position)))
+                    (or (< left-rank right-rank)
+                        (and (= left-rank right-rank)
+                             (or (> left-position right-position)
+                                 (and (= left-position right-position)
+                                      (string< (or (plist-get left :run-id) "")
+                                               (or (plist-get right :run-id) "")))))))))))
+         (active-count (length entries))
+         (selected (cl-subseq entries 0 (min record-limit (length entries))))
+         (omitted (max 0 (- (length entries) (length selected))))
+         value)
+    (setq value
+          (list :board-id board-id
+                :restore-state restore-state
+                :ready-p (eq restore-state 'ready)
+                :status (if (eq restore-state 'ready)
+                            (or (plist-get (car selected) :lifecycle)
+                                'running)
+                          'restoring)
+                :runs selected :active-count active-count
+                :active-run-count active-count
+                :omitted-count omitted))
+    ;; A byte budget applies to the final returned representation, including
+    ;; its accounting fields.  Drop only from the end, preserving the ordered
+    ;; actionable prefix, until the detached value fits.
+    (let ((candidate (e-board-orchestration--run-set-with-byte-accounting value)))
+      (while (> (e-board-orchestration--run-set-encoded-bytes candidate)
+                byte-limit)
+        (if (null selected)
+            (signal 'e-board-orchestration-error
+                    (list "Run-set metadata exceeds byte limit" board-id byte-limit))
+          (setq selected (butlast selected)
+                omitted (1+ omitted)
+                value (plist-put value :runs selected)
+                value (plist-put value :omitted-count omitted)
+                candidate
+                (e-board-orchestration--run-set-with-byte-accounting value))))
+      candidate)))
+
+(cl-defstruct (e-board-orchestration-run-set-state
+               (:constructor e-board-orchestration-run-set-state--create))
+  board-id current subscribers generation restore-state ready-p)
+
+(defun e-board-orchestration-run-set-state-create (&key board-id)
+  "Create a session-scoped detached run-set state for BOARD-ID."
+  (let ((state (e-board-orchestration-run-set-state--create
+                :board-id (copy-sequence board-id) :generation 0
+                :restore-state 'restoring :ready-p nil :subscribers nil)))
+    (setf (e-board-orchestration-run-set-state-current state)
+          (e-board-orchestration-run-set-projection
+           nil :board-id board-id :restore-state 'restoring))
+    state))
+
+(defun e-board-orchestration-run-set-state-update
+    (state projections &rest options)
+  "Replace STATE's bounded value from detached PROJECTIONS and notify clients."
+  (unless (e-board-orchestration-run-set-state-p state)
+    (signal 'wrong-type-argument
+            (list 'e-board-orchestration-run-set-state-p state)))
+  (let* ((value (apply #'e-board-orchestration-run-set-projection projections
+                       :board-id (e-board-orchestration-run-set-state-board-id state)
+                       options))
+         (generation (1+ (e-board-orchestration-run-set-state-generation state))))
+    (setf (e-board-orchestration-run-set-state-current state) (copy-tree value t)
+          (e-board-orchestration-run-set-state-generation state) generation
+          (e-board-orchestration-run-set-state-restore-state state)
+            (plist-get value :restore-state)
+          (e-board-orchestration-run-set-state-ready-p state)
+            (plist-get value :ready-p))
+    (dolist (subscriber (copy-sequence
+                         (e-board-orchestration-run-set-state-subscribers state)))
+      (funcall subscriber (copy-tree value t) generation))
+    (copy-tree value t)))
+
+(defun e-board-orchestration-run-set-state-value (state)
+  "Return STATE's detached current bounded run-set value."
+  (copy-tree (e-board-orchestration-run-set-state-current state) t))
+
+(defun e-board-orchestration-run-set-state-subscribe (state callback)
+  "Subscribe CALLBACK to STATE changes and return an unsubscribe function."
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (push callback (e-board-orchestration-run-set-state-subscribers state))
+  (lambda ()
+    (setf (e-board-orchestration-run-set-state-subscribers state)
+          (delq callback
+                (e-board-orchestration-run-set-state-subscribers state)))))
+
+(defun e-board-orchestration-run-set-context (state)
+  "Return the bounded model-context value for STATE."
+  (let ((value (e-board-orchestration-run-set-state-value state)))
+    (list :ready-p (plist-get value :ready-p)
+          :status (plist-get value :status)
+          :board-id (plist-get value :board-id)
+          :active-count (plist-get value :active-count)
+          :runs (copy-tree (plist-get value :runs) t)
+          :omitted-count (plist-get value :omitted-count)
+          :projection (copy-tree value t))))
+
+(defun e-board-orchestration-run-set-compact-status
+    (state &optional selected-run-id)
+  "Return concise persistent chat status metadata for STATE."
+  (let* ((value (e-board-orchestration-run-set-state-value state))
+         (status (plist-get value :status))
+         (runs (plist-get value :runs))
+         (selected (and selected-run-id
+                        (seq-find (lambda (run)
+                                   (equal (plist-get run :run-id)
+                                           selected-run-id))
+                                  runs)))
+         (summary (and selected
+                       (list :run-id (plist-get selected :run-id)
+                             :label (plist-get selected :label)
+                             :lifecycle (plist-get selected :lifecycle)
+                             :attention-p (plist-get selected :attention-p))))
+         (text (pcase status
+                 ('restoring "Board runs: restoring")
+                 ('dispatching "Board runs: dispatching")
+                 ('running (format "Board runs: %d active" (length runs)))
+                 ('finishing "Board runs: finishing")
+                 ('attention "Board runs: attention")
+                 (_ "Board runs: idle"))))
+    (list :text text :status status
+          :active-run-count (plist-get value :active-run-count)
+          :board-id (plist-get value :board-id)
+          :summary summary
+          :projection (copy-tree value t)
+          :selected-run-id (and selected (plist-get selected :run-id))
+          :activity-link (and selected
+                              (list :kind 'board-activity
+                                    :run-id (plist-get selected :run-id))))))
+
 (defun e-board-orchestration-continuation-view (projection)
   "Return detached terminal evidence needed by PROJECTION's continuation.
 

@@ -25,12 +25,11 @@
 (require 'e-skills)
 (require 'e-store)
 (require 'e-subagent-actions)
-(require 'e-board-orchestration-actions)
 (require 'e-subagent-live)
 (require 'e-waitable)
 
 (defconst e-subagents-instructions
-  "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Await timeouts are supervision checkpoints: use progress evidence before waiting again, steering, or explicitly interrupting. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types."
+  "Subagents let this session delegate work to child sessions on purpose-built harness types, keeping the child's whole transcript out of this context. Reach them through e-actions-call, never a model-facing tool. Await timeouts are supervision checkpoints: use progress evidence before waiting again, steering, or explicitly interrupting. Read e://subagents/skills/subagents for the action contract and e://subagents/refs/types.md for the full catalog of spawnable types. Durable participant observation is provided by the independent Board capability."
   "Compact model-facing instructions for the subagents capability.")
 
 (defconst e-subagents-child-instructions
@@ -41,7 +40,7 @@
   (string-join
    '("# Subagent work actions"
      ""
-     "Subagents delegate work to child sessions on purpose-built harness types. A child's whole transcript stays out of this session's context: you see a handle and live execution progress. Terminal results and history are Board facts queried from SQLite; private live capabilities release the child when it settles. The e harness does not know about subagents."
+     "Subagents delegate work to child sessions on purpose-built harness types. A child's whole transcript stays out of this session's context: you see a handle and live execution progress. Terminal results and history are Board facts queried by the independent Board capability; private live capabilities release the child when it settles. The e harness does not know about subagents."
      ""
      "## Choosing a type"
      ""
@@ -52,11 +51,6 @@
      "An action that needs asynchronous SQLite work returns a work: reference. Pass it to the top-level await tool and consume its bounded settlement report; do not treat the reference as the action result or poll the action again."
      ""
      "- `spawn`: input `(:type STRING :prompt STRING :seed-messages ARRAY :label STRING :schedule STRING)`. Creates a fresh child session on the type's harness, seeds it (prompt only by default; `:seed-messages` appends explicit context first), records lineage, and starts a non-blocking run. Returns a subagent record immediately. `:schedule` is `direct` (default) or `queue`."
-     "- `list`: returns one bounded ordered Board participant/activity page; committed SQLite rows remain visible after this process loses live handles."
-     "- `list-runs`: returns bounded durable run projections from this session's board."
-     "- `run-status`: input `(:run-id STRING)`. Returns one bounded durable run projection with task states, reports, conflicts, deadline evidence, and continuation state."
-     "- `status`: input `(:participant-id STRING)`. Durable Board observation owns the committed activity row."
-     "- `read`: input `(:participant-id STRING :raw BOOLEAN :limit INTEGER)`. Durable Board observation owns terminal result and transcript retrieval."
      "- `steer`: input `(:participant-id STRING :prompt STRING :reason STRING)`. Steers the child's running turn in place. `:reason` is bounded audit data and reaches the child only through `:prompt`."
      "- `send`: input `(:participant-id STRING :prompt STRING)`. Queues a follow-up turn to the child."
      "- `interrupt`: input `(:participant-id STRING :reason STRING)`. Explicitly aborts the child's active turn and retires its live capabilities. `:reason` is audit data only."
@@ -77,7 +71,7 @@
      ""
      "Do not poll a child's status across turns, and never sleep to wait. Use the `await` tool with the opaque `subagent:...` reference returned by spawn. It blocks your turn -- not Emacs -- until the referenced children settle (`all`, default) or the first settles (`any`), or the timeout expires. Use `any` when useful parent work can consume the first result while other children continue; use `all` only when synthesis genuinely requires every result."
      ""
-     "A timeout is a supervision checkpoint, not a terminal error. Compare each pending child's progress sequence and age with the prior checkpoint. Re-await only when progress advanced or a declared long operation remains credible. When progress is unchanged, inspect with `status` or bounded `read :raw t`, then steer once with one concrete next action. If the post-steer checkpoint is still unchanged, explicitly `interrupt` and spawn a fresh, narrower child only when the work is still required. Time alone never authorizes cancellation. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
+     "A timeout is a supervision checkpoint, not a terminal error. Compare each pending child's progress evidence and age with the prior checkpoint. Re-await only when progress advanced or a declared long operation remains credible. When progress is unchanged, steer once with one concrete next action. If the post-steer checkpoint is still unchanged, explicitly `interrupt` and spawn a fresh, narrower child only when the work is still required. Time alone never authorizes cancellation. This is the fan-in step after a fan-out: spawn one child per non-overlapping unit, then await them in one call.")
    "\n")
   "Skill body documenting the subagents action contract.")
 
@@ -182,7 +176,7 @@ local status/result/list state."
   "Create the parent-facing subagents capability.
 Contributes the discovery surface (types context provider and the read-only
 type catalog), the skill-backed action contract, and the parent-facing
-spawn/observe/steer/configure actions over the private live owner (defaulting
+spawn/steer/configure actions over the private live owner (defaulting
 to the capability's process-local owner).  A session enables this to spawn
 and manage children."
   (let ((live (or live e-subagent-actions-default-live)))
@@ -193,11 +187,10 @@ and manage children."
    :instructions e-subagents-instructions
    :context-providers (list (e-subagents-types-provider live))
    :resources (list #'e-subagents--register-reference-resources)
-   :actions (append (e-subagent-actions-parent-alist live)
-                    (e-board-orchestration-actions-parent-alist))
+   :actions (e-subagent-actions-parent-alist live)
    :skills (list (e-skill-spec-create
                   :name "subagents"
-                  :description "Spawn, observe, steer, and shut down child subagent sessions."
+                  :description "Spawn, steer, and shut down child subagent sessions."
                   :content e-subagents-skill)))))
 
 (cl-defun e-subagents-child-capability-create (&key live)

@@ -98,9 +98,14 @@
      :factory e-cron-layer-create)
     (:id subagents-parent
      :name "Subagents (parent)"
-     :summary "Spawn, observe, steer, and configure child subagents."
+     :summary "Spawn, steer, and configure child subagents."
      :feature e-subagents
      :factory e-subagents-parent-layer-create)
+    (:id board
+     :name "Board"
+     :summary "Durable Board participant activity and orchestration observation."
+     :feature e-board
+     :factory e-board-layer-create)
     (:id subagents-child
      :name "Subagents (child)"
      :summary "Child-side report action added to every spawned subagent."
