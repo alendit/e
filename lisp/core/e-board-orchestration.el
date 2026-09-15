@@ -744,6 +744,34 @@ uses newest event position and run id as deterministic tie breakers."
       (funcall subscriber (copy-tree value t) generation))
     (copy-tree value t)))
 
+(defun e-board-orchestration-run-set-state-set-value (state value)
+  "Install detached bounded consumer VALUE into STATE and notify clients.
+VALUE is already reduced by the Board SQL application service.  This narrow
+setter avoids reducing the same durable projection a second time in the
+presentation or context consumer, while retaining one immutable value for
+both consumers."
+  (unless (e-board-orchestration-run-set-state-p state)
+    (signal 'wrong-type-argument
+            (list 'e-board-orchestration-run-set-state-p state)))
+  (unless (and (listp value) (plist-member value :runs)
+               (plist-member value :omitted-count)
+               (plist-member value :restore-state))
+    (signal 'e-board-orchestration-error
+            (list "Run-set value is not a bounded projection" value)))
+  (let ((copy (copy-tree value t))
+        (generation (1+ (e-board-orchestration-run-set-state-generation state))))
+    (setf (e-board-orchestration-run-set-state-current state) copy
+          (e-board-orchestration-run-set-state-generation state) generation
+          (e-board-orchestration-run-set-state-restore-state state)
+          (plist-get copy :restore-state)
+          (e-board-orchestration-run-set-state-ready-p state)
+          (plist-get copy :ready-p))
+    (dolist (subscriber
+             (copy-sequence
+              (e-board-orchestration-run-set-state-subscribers state)))
+      (funcall subscriber (copy-tree copy t) generation))
+    (copy-tree copy t)))
+
 (defun e-board-orchestration-run-set-state-value (state)
   "Return STATE's detached current bounded run-set value."
   (copy-tree (e-board-orchestration-run-set-state-current state) t))
@@ -775,6 +803,7 @@ uses newest event position and run id as deterministic tie breakers."
   (let* ((value (e-board-orchestration-run-set-state-value state))
          (status (plist-get value :status))
          (runs (plist-get value :runs))
+         (active-count (or (plist-get value :active-run-count) 0))
          (selected (and selected-run-id
                         (seq-find (lambda (run)
                                    (equal (plist-get run :run-id)
@@ -787,10 +816,13 @@ uses newest event position and run id as deterministic tie breakers."
                              :attention-p (plist-get selected :attention-p))))
          (text (pcase status
                  ('restoring "Board runs: restoring")
-                 ('dispatching "Board runs: dispatching")
-                 ('running (format "Board runs: %d active" (length runs)))
-                 ('finishing "Board runs: finishing")
-                 ('attention "Board runs: attention")
+                 ('dispatching (format "Board runs: dispatching (%d active)"
+                                       active-count))
+                 ('running (format "Board runs: %d active" active-count))
+                 ('finishing (format "Board runs: finishing (%d active)"
+                                     active-count))
+                 ('attention (format "Board runs: attention (%d active)"
+                                     active-count))
                  (_ "Board runs: idle"))))
     (list :text text :status status
           :active-run-count (plist-get value :active-run-count)

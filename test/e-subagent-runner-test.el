@@ -457,20 +457,26 @@
                              (e-subagent-runner-test--live-entries live)))
         ;; Admission and all terminal history are durable even though live
         ;; execution coordination is gone.
-        (let* ((records (e-subagent-runner-test--records parent "parent-1"))
-                 (running
-                  (cl-count-if
-                   (lambda (record)
-                     (equal (plist-get record :tags)
-                            '(subagent change running)))
-                   records))
-                 (terminal
-                  (cl-remove-if-not
-                   (lambda (record)
-                     (let ((fact
-                            (e-board-orchestration-fact-from-record record)))
-                       (eq (plist-get fact :type) 'terminal-report)))
-                   records)))
+        (let (records running terminal)
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (setq records (e-subagent-runner-test--records parent "parent-1")
+                    running
+                    (cl-count-if
+                     (lambda (record)
+                       (equal (plist-get record :tags)
+                              '(subagent change running)))
+                     records)
+                    terminal
+                    (cl-remove-if-not
+                     (lambda (record)
+                       (let ((fact
+                              (e-board-orchestration-fact-from-record record)))
+                         (eq (plist-get fact :type) 'terminal-report)))
+                     records))
+              (and (= running 1) (= (length terminal) 1)))
+            5.0))
             (should (= running 1))
             (should (= (length terminal) 1))
             (let ((payload
@@ -1290,9 +1296,13 @@ report is child-side and must not be on the parent surface."
            (capability (e-subagents-parent-capability-create :live live))
            (store (e-store-create)))
       (should (eq (e-capability-id capability) 'subagents))
-      (dolist (action '(:spawn :list :status :read :steer :send
-                        :interrupt :shutdown :configure-type))
+      (dolist (action '(:spawn :steer :send :interrupt :shutdown
+                        :configure-type))
         (should (e-capabilities-action-spec capability action)))
+      ;; Durable observation is supplied by the independent Board capability;
+      ;; the parent surface retains only spawn/configure/live controls.
+      (dolist (action '(:list :status :read))
+        (should-not (e-capabilities-action-spec capability action)))
       (should-not (e-capabilities-action-spec capability :report))
       ;; Actions only: no model-facing tool definitions, like elisp-job.
       (should-not (e-capability-tools capability))
@@ -1577,11 +1587,17 @@ report is child-side and must not be on the parent surface."
         (should-not (e-subagent-runner-test--live-list live))
         (should-not (e-subagent-runner-test--live-work-handle
                      live (plist-get record :participant-id)))
-        (let ((reports
-               (delq nil
-                     (mapcar #'e-board-orchestration-fact-from-record
-                             (e-subagent-runner-test--records
-                              parent "parent-1")))))
+        (let (reports)
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (setq reports
+                    (delq nil
+                          (mapcar #'e-board-orchestration-fact-from-record
+                                  (e-subagent-runner-test--records
+                                   parent "parent-1"))))
+              (= (length reports) 1))
+            5.0))
           (should (= (length reports) 1))
           (should (equal (plist-get (plist-get (car reports) :payload) :summary)
                          "reported")))))))

@@ -144,6 +144,10 @@ into the other's state.")
   "Caller-owned semantic mode-line status cache for this surface.")
 (defvar-local e-chat-surface--status nil
   "Current chat status text shown in the header line.")
+(defvar-local e-chat-surface--board-status nil
+  "Current detached Board run-set compact status for this chat surface.")
+(defvar-local e-chat-surface--board-status-action nil
+  "Function invoked when the compact Board status link is activated.")
 (defvar-local e-chat-surface--running-status-bounds nil
   "Current transient activity bounds published by the activity owner.")
 
@@ -333,7 +337,20 @@ window callbacks loadable before the composition root is evaluated."
 
 (defun e-chat-surface--header-line-text (status)
   "Return header-line text for STATUS and pending-work diagnostics."
-  (let ((diagnostics (or (e-chat-surface--ui-work-diagnostics-text) "")))
+  (let* ((diagnostics (or (e-chat-surface--ui-work-diagnostics-text) ""))
+         (board-status
+          (and e-chat-surface--board-status
+               (plist-get e-chat-surface--board-status :text)))
+         (board-status-display
+          (and board-status
+               (if (functionp e-chat-surface--board-status-action)
+                   (propertize board-status
+                               'mouse-face 'highlight
+                               'help-echo "Open Board activity"
+                               'keymap
+                               (and (boundp 'e-chat-surface-board-status-map)
+                                    e-chat-surface-board-status-map))
+                 board-status))))
     (if (and e-chat-harness e-chat-session-id)
         (let* ((title (or (plist-get e-chat-session-metadata :name)
                           (plist-get e-chat-session-metadata :title)
@@ -355,10 +372,18 @@ window callbacks loadable before the composition root is evaluated."
                     t))))
                (model (plist-get options :model))
                (effort (e-context-budget-options-effort options)))
-          (format "E Chat: %s - %s - %s/%s%s"
+          (format "E Chat: %s - %s - %s/%s%s%s"
                   status title (or model "model unset")
-                  (or effort "effort unset") diagnostics))
-      (format "E Chat: %s%s" status diagnostics))))
+                  (or effort "effort unset")
+                  (if board-status-display
+                      (format " - %s" board-status-display)
+                    "")
+                  diagnostics))
+      (format "E Chat: %s%s%s" status
+              (if board-status-display
+                  (format " - %s" board-status-display)
+                "")
+              diagnostics))))
 
 (defun e-chat-surface--refresh-ui-work-diagnostics ()
   "Refresh foreground UI-work diagnostics for this surface."
@@ -500,6 +525,36 @@ IMMEDIATE keeps the scheduler's latest-value coalescing while using no delay."
 (defun e-chat-surface-set-status (status &optional refresh-mode-line)
   "Set the current surface STATUS through its owner boundary."
   (e-chat-surface--set-status status refresh-mode-line))
+
+(defvar e-chat-surface-board-status-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'e-chat-surface-activate-board-status)
+    (define-key map [mouse-1] #'e-chat-surface-activate-board-status)
+    map)
+  "Keymap for the compact Board run-set header link.")
+
+(defun e-chat-surface-activate-board-status (&optional _event)
+  "Open the selected run's Board activity link, when present."
+  (interactive)
+  (if (functionp e-chat-surface--board-status-action)
+      (funcall e-chat-surface--board-status-action)
+    (user-error "No selected Board run activity link is available")))
+
+(defun e-chat-surface-set-board-status (status &optional action)
+  "Install detached compact Board STATUS and optional activity ACTION.
+The value is presentation metadata only; the Board layer remains the owner of
+the durable run-set and consumers read one detached snapshot."
+  (setq-local e-chat-surface--board-status (copy-tree status t)
+              e-chat-surface--board-status-action action)
+  (when header-line-format
+    (setq header-line-format
+          (e-chat-surface--header-line-text e-chat-surface--status))
+    (force-mode-line-update t))
+  status)
+
+(defun e-chat-surface-clear-board-status ()
+  "Remove the detached Board status from the current chat surface."
+  (e-chat-surface-set-board-status nil nil))
 
 (defun e-chat-surface-refresh-ui-work-diagnostics ()
   "Refresh current chat header diagnostics from pending UI work."

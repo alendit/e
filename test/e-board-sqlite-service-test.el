@@ -1223,6 +1223,26 @@
       (should (equal (plist-get pickup :participant-id) target))
       (should (plist-get pickup :addressed-p)))))
 
+(ert-deftest e-board-sqlite-service-commit-observer-wakes-only-while-subscribed ()
+  "Committed Board writes wake a bounded consumer until its lease is cancelled."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id _participant-id)
+    (let* ((notifications 0)
+           (observation
+            (e-board-sqlite-service-observe-commits
+             service board-id (lambda () (cl-incf notifications)))))
+      (e-board-sqlite-service-test--await
+       (e-board-sqlite-service-record-append-start
+        service board-id 'fact 'fact "observer-1"
+        :content "first"))
+      (should (= notifications 1))
+      (should (e-board-sqlite-commit-observation-cancel observation))
+      (e-board-sqlite-service-test--await
+       (e-board-sqlite-service-record-append-start
+        service board-id 'fact 'fact "observer-2"
+        :content "second"))
+      (should (= notifications 1)))))
+
 (provide 'e-board-sqlite-service-test)
 
 ;;; e-board-sqlite-service-test.el ends here

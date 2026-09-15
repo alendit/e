@@ -6,7 +6,9 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-board)
 (require 'e-board-orchestration)
+(require 'e-context)
 
 (defun e-board-run-set-test--projection
     (run-id state position &optional extras)
@@ -38,6 +40,19 @@
     (should (eq (plist-get value :status) 'attention))
     (should (equal (plist-get (car (plist-get value :runs)) :lifecycle)
                    'attention))))
+
+(ert-deftest e-board-run-set-test-zero-projection-is-ready-and-bounded ()
+  "A settled empty run-set is distinct from an in-progress restore."
+  (let ((value
+         (e-board-orchestration-run-set-projection
+          nil :board-id "board-1" :restore-state 'ready)))
+    (should (plist-get value :ready-p))
+    (should (eq (plist-get value :restore-state) 'ready))
+    (should-not (plist-get value :runs))
+    (should (= (plist-get value :active-count) 0))
+    (should (= (plist-get value :active-run-count) 0))
+    (should (= (plist-get value :omitted-count) 0))
+    (should (<= (plist-get value :bytes) 4096))))
 
 (ert-deftest e-board-run-set-test-excludes-consumed-terminal-runs ()
   "Only runs that remain active belong to the active run-set projection."
@@ -106,6 +121,65 @@
                                :summary)
                     :run-id)
                    "bounded"))))
+
+(ert-deftest e-board-run-set-test-context-and-status-share-detached-projection ()
+  "Context and persistent status consume the same bounded run projection."
+  (let* ((projection
+          (e-board-run-set-test--projection
+           "selected" 'running 7 '(:label "Selected run")))
+         (value
+          (e-board-orchestration-run-set-projection
+           (list projection) :board-id "board-1"))
+         (state (e-board-orchestration-run-set-state-create :board-id "board-1"))
+         (provider
+          (e-board-run-set-context-provider (lambda (_harness _session-id)
+                                              state))))
+    (e-board-orchestration-run-set-state-set-value state value)
+    (let* ((context (e-board-orchestration-run-set-context state))
+           (message (car (e-context-provider-build
+                          provider :harness 'harness :session-id "session-1"
+                          :context-purpose 'turn)))
+           (status (e-board-orchestration-run-set-compact-status
+                    state "selected")))
+      (should (equal (plist-get context :runs)
+                     (plist-get value :runs)))
+      (should (equal (plist-get (plist-get context :projection) :runs)
+                     (plist-get context :runs)))
+      (should (string-match-p "selected"
+                              (plist-get message :content)))
+      (should (equal (plist-get status :selected-run-id) "selected"))
+      (should (equal (plist-get (plist-get status :activity-link) :run-id)
+                     "selected"))
+      (should (equal (plist-get (plist-get status :projection) :runs)
+                     (plist-get context :runs))))))
+
+(ert-deftest e-board-run-set-test-compact-status-covers-five-visible-states ()
+  "The persistent summary distinguishes every admitted compact run state."
+  (let ((state (e-board-orchestration-run-set-state-create :board-id "board-1")))
+    (should (string-match-p "restoring"
+                           (plist-get
+                            (e-board-orchestration-run-set-compact-status state)
+                            :text)))
+    (dolist (case '((dispatching :state pending)
+                    (running :state running)
+                    (finishing :terminal-status done
+                               :continuation (:state pending))
+                    (attention :state running
+                               :conflicts ((:reason conflict)))))
+      (let* ((projection
+              (e-board-run-set-test--projection
+               (symbol-name (car case))
+               (or (plist-get (cdr case) :state) 'done)
+               1
+               (cdr case)))
+             (value
+              (e-board-orchestration-run-set-projection
+               (list projection) :board-id "board-1")))
+        (e-board-orchestration-run-set-state-set-value state value)
+        (let ((status
+               (e-board-orchestration-run-set-compact-status
+                state (symbol-name (car case)))))
+          (should (eq (plist-get status :status) (car case))))))))
 
 (provide 'e-board-run-set-test)
 

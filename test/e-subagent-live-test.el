@@ -364,17 +364,27 @@
                     5.0))
                   ;; Queue observation after settlement: this is the test's
                   ;; explicit boundary for all preceding durable writes.
-                  (let* ((page
-                          (e-work-with-batch-await
-                            (e-work-await-batch
-                             (e-board-observation-activity-page-start
-                              target :limit 8)
-                             :timeout 5.0)))
-                         (row (cl-find participant-id
+                  (let (page row)
+                    ;; Live cleanup is not the durable commit boundary.  Keep
+                    ;; the read detached, but wait for the publication to be
+                    ;; visible before asserting the consumer projection.
+                    (should
+                     (e-chat-test--wait-until
+                      (lambda ()
+                        (setq page
+                              (e-work-with-batch-await
+                                (e-work-await-batch
+                                 (e-board-observation-activity-page-start
+                                  target :limit 8)
+                                 :timeout 5.0)))
+                        (setq row
+                              (cl-find participant-id
                                        (plist-get page :participants)
                                        :test #'equal
                                        :key (lambda (value)
-                                              (plist-get value :participant-id)))))
+                                              (plist-get value :participant-id))))
+                        (plist-get row :outcome))
+                      5.0))
                     (should row)
                     (should (equal (plist-get row :participant-id)
                                    participant-id))

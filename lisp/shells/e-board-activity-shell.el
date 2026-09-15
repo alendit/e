@@ -64,6 +64,9 @@
 (defvar-local e-board-activity-shell--error nil
   "Request-local observation error displayed by this buffer.")
 
+(defvar-local e-board-activity-shell--focus-run-id nil
+  "Durable run id whose participant row should receive initial focus.")
+
 (defun e-board-activity-shell--target-id ()
   "Return the current durable Board id."
   (e-board-sqlite-publication-target-board-id
@@ -148,6 +151,17 @@
       (erase-buffer)
       (tabulated-list-init-header)
       (tabulated-list-print t)
+      (when e-board-activity-shell--focus-run-id
+        (goto-char (point-min))
+        (forward-line 1)
+        (while (and (not (eobp))
+                    (not (equal
+                          e-board-activity-shell--focus-run-id
+                          (plist-get
+                           (e-board-activity-shell--row
+                            (tabulated-list-get-id))
+                           :run-id))))
+          (forward-line 1)))
       (save-excursion
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
@@ -440,11 +454,12 @@
 
 ;;;###autoload
 (cl-defun e-board-activity-list-buffer
-    (&key target (live e-subagent-actions-default-live))
+    (&key target (live e-subagent-actions-default-live) run-id)
   "Open TARGET's bounded Board activity buffer and return immediately.
 TARGET is an explicit SQLite publication address.  LIVE is optional private
 execution state used only to add current controls and bounded progress to
-matching durable rows."
+matching durable rows.  RUN-ID, when supplied, selects a participant row
+belonging to that durable run after the page settles."
   (interactive)
   (unless (e-board-sqlite-publication-target-valid-p target)
     (signal 'wrong-type-argument
@@ -462,6 +477,7 @@ matching durable rows."
             e-board-activity-shell--after nil
             e-board-activity-shell--next nil
             e-board-activity-shell--cursor ""
+            e-board-activity-shell--focus-run-id run-id
             e-board-activity-shell--page nil
             e-board-activity-shell--request nil
             e-board-activity-shell--error nil)

@@ -202,6 +202,43 @@
             (setq child-ids (list ad-hoc-id run-id))
             (should (stringp ad-hoc-id))
             (should (stringp run-id))
+            ;; The same detached run-set value feeds the chat header and its
+            ;; selected-run activity link.  Publish the run manifest before
+            ;; the child callbacks so the graphical witness observes the
+            ;; restoring -> populated transition through the real commit
+            ;; notification path.
+            (with-current-buffer (plist-get fixture :transcript)
+              (should (equal (plist-get e-chat-surface--board-status :status)
+                             'idle)))
+            (e-work-with-batch-await
+              (e-work-await-batch
+               (e-board-sqlite-publication-target-orchestration-fact-start
+                target
+                '(:version 1 :type manifest
+                  :idempotency-key "manifest:graphical-run"
+                  :payload (:run-id "graphical-run"
+                            :tasks ((:task-key "review" :required t
+                                      :accepted-attempt 0))
+                            :deadline (:kind none))))
+               :timeout 5.0))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (with-current-buffer (plist-get fixture :transcript)
+                 (let ((status e-chat-surface--board-status))
+                   (and (eq (plist-get status :status) 'dispatching)
+                        (= (plist-get status :active-run-count) 1)
+                        (equal (plist-get status :selected-run-id)
+                               "graphical-run")
+                        (equal
+                         (plist-get (plist-get status :activity-link) :run-id)
+                         "graphical-run")))))
+             5.0 "populated Board run-set status")
+            (setq board-buffer
+                  (with-current-buffer (plist-get fixture :transcript)
+                    (funcall e-chat-surface--board-status-action)))
+            (with-current-buffer board-buffer
+              (should (equal e-board-activity-shell--focus-run-id
+                             "graphical-run")))
             ;; Admission and runner installation are observed through the
             ;; actual production owner before the Board query begins.
             (dolist (participant-id child-ids)

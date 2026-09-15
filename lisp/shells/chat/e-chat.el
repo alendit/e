@@ -20,6 +20,7 @@
 (require 'e-chat-session)
 (require 'e-chat-output-mode)
 (require 'e-chat-service)
+(require 'e-board)
 (require 'e-context-inspection)
 (require 'e-context-status)
 (require 'e-capabilities)
@@ -97,6 +98,8 @@
 (declare-function e-chat-surface-request-mode-line-status-refresh "e-chat-surface")
 (declare-function e-chat-surface-selected-chat-surface "e-chat-surface")
 (declare-function e-chat-surface-set-window-output-follow "e-chat-surface")
+(declare-function e-chat-surface-set-board-status "e-chat-surface")
+(declare-function e-chat-surface-clear-board-status "e-chat-surface")
 (declare-function e-chat-surface-window-reaches-output-p "e-chat-surface")
 (declare-function e-chat-surface-without-recenter "e-chat-surface")
 (declare-function e-chat-composer-active-p "e-chat-composer")
@@ -606,6 +609,9 @@ those owner ports into the host hook lists."
 (defvar-local e-chat--event-subscription nil
   "Harness event subscription owned by this chat buffer.")
 
+(defvar-local e-chat--board-run-set-unsubscribe nil
+  "Unsubscribe function for this chat surface's Board run-set status.")
+
 (defvar-local e-chat--session-query-work nil
   "Request-scoped persistent SQLite chat-view work for this buffer.")
 
@@ -776,6 +782,7 @@ and / expands available prompts."
   (e-chat-surface-setup-line-wrapping)
   (e-chat-surface-mark-transcript)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--unsubscribe-board-run-set nil t)
   (add-hook 'kill-buffer-hook #'e-chat-surface-kill-composer nil t)
   (add-hook 'kill-buffer-hook #'e-chat-activity-stop-progress nil t)
   (add-hook 'kill-buffer-hook #'e-chat-composer-cancel-pending-references nil t)
@@ -1140,6 +1147,36 @@ context insertions from the chat buffer the user is looking at."
   (when e-chat--event-subscription
     (e-chat-service-unsubscribe e-chat--event-subscription))
   (setq e-chat--event-subscription nil))
+
+(defun e-chat--unsubscribe-board-run-set ()
+  "Remove this buffer's Board run-set status subscription."
+  (when (functionp e-chat--board-run-set-unsubscribe)
+    (funcall e-chat--board-run-set-unsubscribe))
+  (setq e-chat--board-run-set-unsubscribe nil)
+  (e-chat-surface-clear-board-status))
+
+(defun e-chat--attach-board-run-set (binding)
+  "Attach BINDING's compact Board run status to the current chat surface."
+  (e-chat--unsubscribe-board-run-set)
+  (when (e-chat-service-binding-p binding)
+    (let ((target (e-chat-service-publication-target binding))
+          (buffer (current-buffer)))
+      (setq-local
+       e-chat--board-run-set-unsubscribe
+       (e-board-run-set-subscribe
+        binding
+        (lambda (status)
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (let* ((link (plist-get status :activity-link))
+                     (run-id (plist-get link :run-id))
+                     (action
+                      (when (and link run-id)
+                        (lambda ()
+                          (require 'e-board-activity-shell)
+                          (e-board-activity-list-buffer
+                           :target target :run-id run-id)))))
+                (e-chat-surface-set-board-status status action))))))))))
 
 (defun e-chat--session-title ()
   "Return the current attached session title, or nil."
@@ -1625,6 +1662,7 @@ call `e-chat-new' or `e-chat-resume'."
                        (unless e-chat--event-subscription
                          (e-chat--subscribe
                           chat-harness buffer chat-session-id))
+                       (e-chat--attach-board-run-set binding)
                        (e-chat-surface-set-status "idle" t))
                    (let* ((error (plist-get status :error))
                           (upgrade
@@ -2113,6 +2151,7 @@ identity, and renders the detached visible message window once."
                                         (e-chat--subscribe-from-cursor
                                          harness buffer session-id
                                          (plist-get result :cursor)))
+                                      (e-chat--attach-board-run-set binding)
                                       (e-chat-surface-set-status "idle" t))
                                      ((or 'failed 'cancelled)
                                       (e-chat-surface-set-status
@@ -2733,6 +2772,23 @@ the transcript matches the new mode immediately."
    :instructions instructions))
 
 ;;;###autoload
+(defun e-chat--require-board-readiness ()
+  "Reject a turn until the exact Board binding is durably ready.
+The composer remains untouched, so the user can retry after the detached
+initial run-set projection settles."
+  (when-let ((work e-chat--session-readiness-work))
+    (let ((state (plist-get (e-work-status work) :state)))
+      (pcase state
+        ('finished nil)
+        ((or 'failed 'cancelled)
+         (signal (or (car (e-work-handle-error work))
+                     'e-chat-service-error)
+                 (or (cdr (e-work-handle-error work))
+                     (list "Board readiness failed"))))
+        (_
+         (user-error "Board run-set is still restoring; try again when it is ready"))))))
+
+;;;###autoload
 (defun e-chat-submit (&optional arg)
   "Submit composer text.
 When ARG is a string, submit it as a noninteractive prompt.  Interactively,
@@ -2743,6 +2799,7 @@ plain submit steers an active turn and prefix submit queues a follow-up."
         (e-chat-submit arg))
     (unless (and e-chat-harness e-chat-session-id)
       (user-error "This buffer is not attached to an e chat session"))
+    (e-chat--require-board-readiness)
     (let* ((explicit-prompt (and (stringp arg) arg))
          (prefix (and (not explicit-prompt) arg))
          (submission (unless explicit-prompt (e-chat-composer-submission)))

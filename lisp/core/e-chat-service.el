@@ -278,10 +278,162 @@ by this projection boundary."
                (:constructor e-chat-service--binding-create))
   harness session-id subscribers default-tags default-to idle-close-timer
   lifecycle-generation lifecycle-state readiness-work first-persistence-error
+  cleanup-callbacks
   continuation-owner-p
   sqlite-service board-id principal participant-id participant-name
   endpoint-token endpoint-generation
   turn-port activity-subscription pickup-subscription executing-turns)
+
+(defvar e-chat-service--binding-open-hooks nil
+  "Application-owned hooks invoked after a live Board binding is installed.
+
+Each hook receives the detached coordination-only binding and may return one
+`e-work' handle whose settlement is part of the binding readiness boundary.
+The core service owns only this generic extension seam; Board-specific policy
+stays in the Board application layer.")
+
+(defun e-chat-service-register-binding-open-hook (function)
+  "Register FUNCTION as a generic binding-open readiness hook.
+Return an idempotent unregister function.  FUNCTION must return nil or an
+`e-work' handle when called with a live binding."
+  (unless (functionp function)
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (push function e-chat-service--binding-open-hooks)
+  (let ((active-p t))
+    (lambda ()
+      (when active-p
+        (setq active-p nil)
+        (setq e-chat-service--binding-open-hooks
+              (delq function e-chat-service--binding-open-hooks))))))
+
+(defun e-chat-service-binding-register-cleanup (binding callback)
+  "Register CALLBACK for BINDING retirement and return an unsubscribe thunk."
+  (unless (e-chat-service-binding-p binding)
+    (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (if (eq (e-chat-service-binding-lifecycle-state binding) 'retired)
+      (funcall callback binding)
+    (push callback (e-chat-service-binding-cleanup-callbacks binding)))
+  (let ((active-p t))
+    (lambda ()
+      (when active-p
+        (setq active-p nil)
+        (setf (e-chat-service-binding-cleanup-callbacks binding)
+              (delq callback
+                    (e-chat-service-binding-cleanup-callbacks binding)))))))
+
+(defconst e-chat-service--binding-ready-spec
+  (e-work-spec-create
+   :id "chat-board-ready" :execution 'cooperative :interactive-policy 'async
+   :owner 'e-chat-service
+   :runner
+   (lambda (parent arguments _context)
+     (let ((child (plist-get arguments :child))
+           (binding (plist-get arguments :binding)))
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when (and (e-work-handle-p child)
+                          (not (memq (plist-get (e-work-status child) :state)
+                                     '(finished failed cancelled))))
+                 (e-work-cancel child))))
+       (e-work-on-settle
+        child
+        (lambda (settled)
+          (pcase (plist-get (e-work-status settled) :state)
+            ('finished (e-work-finish parent binding))
+            ('cancelled (e-work-cancel parent))
+            ('failed (e-work-fail parent (e-work-handle-error settled))))))
+       :deferred)))
+  "Map one binding readiness child to the binding value consumers expect.")
+
+(defconst e-chat-service--binding-readiness-set-spec
+  (e-work-spec-create
+   :id "chat-board-readiness-set" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (parent arguments _context)
+     (let* ((children (plist-get arguments :children))
+            (binding (plist-get arguments :binding))
+            (cancel-set nil))
+       (setf cancel-set
+             (e-work-await-set
+              children :mode 'all
+              :on-settle
+              (lambda (settled-set)
+                (let ((failed
+                       (seq-find
+                        (lambda (child)
+                          (memq (plist-get (e-work-status child) :state)
+                                '(failed cancelled)))
+                        (plist-get settled-set :done))))
+                  (if failed
+                      (if (eq (plist-get (e-work-status failed) :state)
+                              'cancelled)
+                          (e-work-cancel parent)
+                        (e-work-fail parent
+                                      (or (e-work-handle-error failed)
+                                          '(e-chat-service-error
+                                            "binding readiness failed"))))
+                    (e-work-finish parent binding))))))
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when cancel-set (funcall cancel-set))
+               (dolist (child children)
+                 (when (and (e-work-handle-p child)
+                            (not (memq (plist-get (e-work-status child) :state)
+                                       '(finished failed cancelled))))
+                   (e-work-cancel child)))))
+       :deferred)))
+  "Join generic binding-open readiness children without blocking callers.")
+
+(defconst e-chat-service--binding-readiness-failure-spec
+  (e-work-spec-create
+   :id "chat-board-readiness-failure" :execution 'cheap
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (parent arguments _context)
+     (e-work-fail parent (plist-get arguments :error)))))
+
+(defun e-chat-service--binding-open-readiness-start (binding)
+  "Run generic binding-open hooks for BINDING and return readiness work."
+  (let (works first-error)
+    (dolist (hook (copy-sequence e-chat-service--binding-open-hooks))
+      (condition-case error
+          (let ((work (funcall hook binding)))
+            (if (null work)
+                nil
+              (unless (e-work-handle-p work)
+                (signal 'wrong-type-argument (list 'e-work-handle-p work)))
+              (push work works)))
+        (error (unless first-error (setq first-error error)))))
+    (cond
+     (first-error
+      (dolist (work works)
+        (unless (memq (plist-get (e-work-status work) :state)
+                      '(finished failed cancelled))
+          (e-work-cancel work)))
+      (e-work-start e-chat-service--binding-readiness-failure-spec
+                    (list :error first-error)))
+     ((null works) nil)
+     ((null (cdr works)) (car works))
+     (t
+      (e-work-start e-chat-service--binding-readiness-set-spec
+                    (list :children (nreverse works) :binding binding))))))
+
+(defun e-chat-service--binding-ready-work (binding)
+  "Return work that settles to BINDING after its readiness child settles."
+  (let ((readiness (e-chat-service-binding-readiness-work binding)))
+    (if (or (null readiness)
+            (eq (plist-get (e-work-status readiness) :state) 'finished))
+        (e-work-start
+         (e-work-spec-create
+          :id "chat-board-bound" :execution 'cheap :interactive-policy 'async
+          :owner 'e-chat-service
+          :runner (lambda (bound-binding _context) bound-binding))
+         binding)
+      (e-work-start e-chat-service--binding-ready-spec
+                    (list :child readiness :binding binding)))))
 
 (defun e-chat-service--participant-name (metadata role)
   "Return the bounded display name for participant METADATA and ROLE."
@@ -893,6 +1045,18 @@ callbacks immediately so closing a live controller cannot strand a task in
           (setf (e-chat-service-subscription-sqlite-query-work subscription)
                 nil)))
       (setf (e-chat-service-binding-subscribers binding) nil)
+      (let ((callbacks
+             (prog1 (copy-sequence
+                     (e-chat-service-binding-cleanup-callbacks binding))
+               (setf (e-chat-service-binding-cleanup-callbacks binding) nil))))
+        (dolist (callback callbacks)
+          (condition-case error
+              (funcall callback binding)
+            (error
+             ;; Binding retirement must release every request-owned observer;
+             ;; one defective extension cannot strand the remaining cleanup.
+             (message "e chat binding cleanup callback failed: %s"
+                      (e-work-error-message error))))))
       (when-let* ((port (e-chat-service-binding-turn-port binding))
                   (subscription
                    (e-chat-service-binding-activity-subscription binding)))
@@ -1562,6 +1726,7 @@ semantic interpretation responsibility."
                :default-tags (copy-tree (plist-get policy :default-tags) t)
                :default-to (copy-tree (plist-get policy :default-to) t)
                :subscribers nil
+               :cleanup-callbacks nil
                :executing-turns (make-hash-table :test 'equal)
                :continuation-owner-p continuation-owner-p
                :lifecycle-generation 0 :lifecycle-state 'active))
@@ -1606,6 +1771,8 @@ semantic interpretation responsibility."
         (e-chat-service--sql-resume-ready binding)
         (when continuation-owner-p
           (e-chat-service--reconcile-binding-continuation binding))
+        (setf (e-chat-service-binding-readiness-work binding)
+              (e-chat-service--binding-open-readiness-start binding))
         binding)))
 
 (defun e-chat-service--pending-owner-admission-data (pending)
@@ -1692,9 +1859,14 @@ semantic interpretation responsibility."
                (e-chat-service-create-operation-work pending)
                (list 'e-session-error
                      "Owner admission returned no association" session-id))))
-        (e-work-fail
-         (e-chat-service-create-operation-work pending)
-         (plist-get status :error))))))
+        (if (eq (plist-get status :state) 'cancelled)
+            ;; Preserve cancellation as cancellation even though the child
+            ;; callback runs synchronously while the parent cancel function
+            ;; is unwinding.
+            (e-work-cancel (e-chat-service-create-operation-work pending))
+          (e-work-fail
+           (e-chat-service-create-operation-work pending)
+           (plist-get status :error)))))))
 
 (defun e-chat-service--start-pending-owner-admission (pending)
   "Start or return PENDING's atomic empty-owner admission work."
@@ -1763,14 +1935,25 @@ semantic interpretation responsibility."
           (signal 'e-session-storage-error
                   (list "Chat Board binding requires SQLite"
                         (e-chat-service-bind-operation-session-id operation))))
-        (e-chat-service--finish-bind-operation
-         operation
-         (e-chat-service--install-sqlite-binding
-          harness
-          (e-chat-service-bind-operation-session-id operation)
-          association
-          (e-chat-service-bind-operation-continuation-owner-p operation))
-         nil))
+        (let* ((binding
+                (e-chat-service--install-sqlite-binding
+                 harness
+                 (e-chat-service-bind-operation-session-id operation)
+                 association
+                 (e-chat-service-bind-operation-continuation-owner-p operation)))
+               (ready (e-chat-service--binding-ready-work binding)))
+          (e-work-on-settle
+           ready
+           (lambda (settled)
+             (let ((status (e-work-status settled)))
+               (if (eq (plist-get status :state) 'finished)
+                   (e-chat-service--finish-bind-operation
+                    operation (plist-get status :result) nil)
+                 (e-chat-service--retire-binding binding)
+                 (e-chat-service--finish-bind-operation
+                  operation nil
+                  (or (plist-get status :error)
+                      '(e-work-cancelled "Board readiness cancelled")))))))))
     (error
      (e-chat-service--finish-bind-operation operation nil error))))
 
@@ -1853,12 +2036,7 @@ controller has been built."
         (when continuation-owner-p
           (setf (e-chat-service-binding-continuation-owner-p binding) t)
           (e-chat-service--reconcile-binding-continuation binding))
-        (e-work-start
-         (e-work-spec-create
-          :id "chat-board-bound" :execution 'cheap :interactive-policy 'async
-          :owner 'e-chat-service
-          :runner (lambda (bound-binding _context) bound-binding))
-         binding))
+        (e-chat-service--binding-ready-work binding))
     (let* ((table (e-chat-service--harness-binding-works harness))
            (pending
             (gethash session-id

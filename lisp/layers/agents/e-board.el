@@ -19,8 +19,10 @@
 (require 'e-board-orchestration)
 (require 'e-board-orchestration-actions)
 (require 'e-context)
+(require 'e-chat-service)
 (require 'e-layers)
 (require 'e-skills)
+(require 'e-work)
 
 (defconst e-board-instructions
   "Board is the durable observation surface for the current chat's Board. Use `list', `status', and `read' for participant activity and bounded durable transcripts; use `list-runs' and `run-status' for orchestration. These actions read committed SQLite facts and never classify a row from private live execution state. Read e://board/skills/board for the action contract."
@@ -48,18 +50,35 @@
    "\n")
   "Detailed Board capability action reference.")
 
-(defvar e-board--run-set-states (make-hash-table :test 'equal)
-  "Current bounded run-set states keyed by harness and session id.")
+(defvar e-board--run-set-states
+  (make-hash-table :test 'equal :weakness 'key)
+  "Current bounded run-set states keyed by live binding or legacy context.
+
+Production entries are keyed by the exact chat binding and therefore retire
+with that binding.  The equal-key fallback exists only for detached provider
+tests that supply no live binding; it is also weak and contains no durable
+projection outside the bounded state value.")
+
+(defvar e-board--run-set-controls
+  (make-hash-table :test 'eq :weakness 'key)
+  "Request-local refresh controls keyed by bounded run-set state objects.")
 
 (defun e-board--run-set-key (harness session-id)
-  "Return the process-local key for HARNESS and SESSION-ID."
+  "Return the detached fallback key for HARNESS and SESSION-ID."
   (list harness (copy-sequence session-id)))
+
+(defun e-board--run-set-binding (harness session-id)
+  "Return the exact live binding for HARNESS and SESSION-ID, when present."
+  (and (e-harness-p harness)
+       (stringp session-id)
+       (e-chat-service-binding harness session-id)))
 
 (defun e-board-run-set-state-for (harness session-id &optional board-id)
   "Return the bounded run-set state for HARNESS and SESSION-ID.
 When no state exists, create a restoring state.  BOARD-ID is retained only in
 the detached value and may be supplied by the caller that knows the binding."
-  (let* ((key (e-board--run-set-key harness session-id))
+  (let* ((binding (e-board--run-set-binding harness session-id))
+         (key (or binding (e-board--run-set-key harness session-id)))
          (state (gethash key e-board--run-set-states)))
     (or state
         (setq state
@@ -72,6 +91,140 @@ the detached value and may be supplied by the caller that knows the binding."
       (setf (e-board-orchestration-run-set-state-board-id state)
             (copy-sequence board-id)))
     state))
+
+(defun e-board--run-set-controls (state)
+  "Return STATE's request-local refresh controls."
+  (gethash state e-board--run-set-controls))
+
+(defun e-board--run-set-query-start (binding state controls)
+  "Start one bounded durable run-set query for BINDING and STATE."
+  (let* ((target (e-chat-service-publication-target binding))
+         (work (e-board-orchestration-actions-run-set target)))
+    (setq controls (plist-put controls :query-work work))
+    (puthash state controls e-board--run-set-controls)
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (when (eq (plist-get (e-board--run-set-controls state) :query-work)
+                 work)
+         (let ((status (e-work-status settled))
+               (controls (e-board--run-set-controls state)))
+           (setq controls (plist-put controls :query-work nil))
+           (puthash state controls e-board--run-set-controls)
+           (if (eq (plist-get status :state) 'finished)
+               (condition-case error
+                   (e-board-orchestration-run-set-state-set-value
+                    state (e-work-handle-result settled))
+                 (error
+                  (e-board-orchestration-run-set-state-update
+                   state nil :restore-state 'unavailable)
+                  (message "e Board run-set projection failed: %s"
+                           (e-work-error-message error))))
+             (e-board-orchestration-run-set-state-update
+              state nil :restore-state 'unavailable))
+           (when (and (plist-get controls :rerun-p)
+                      (e-chat-service-binding-p binding)
+                      (not (eq (e-chat-service-binding-lifecycle-state binding)
+                               'retired)))
+             (setq controls (plist-put controls :rerun-p nil))
+             (puthash state controls e-board--run-set-controls)
+             (e-board--run-set-query-start binding state controls))))))
+    work))
+
+(defun e-board--run-set-refresh (binding state)
+  "Refresh STATE after a durable Board commit without polling."
+  (when-let ((controls (e-board--run-set-controls state)))
+    (if-let ((work (plist-get controls :query-work)))
+        (unless (memq (plist-get (e-work-status work) :state)
+                      '(finished failed cancelled))
+          (setq controls (plist-put controls :rerun-p t))
+          (puthash state controls e-board--run-set-controls))
+      (e-board--run-set-query-start binding state controls))))
+
+(defun e-board-run-set-bind-binding (binding)
+  "Start BINDING's initial bounded run-set query and commit wake-up path.
+The returned work is the exact durable projection used by the binding
+readiness boundary.  The Board layer owns this application service seam; the
+chat service only knows that the hook returns asynchronous readiness work."
+  (unless (e-chat-service-binding-p binding)
+    (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
+  (let* ((harness (e-chat-service-binding-harness binding))
+         (session-id (e-chat-service-binding-session-id binding))
+         (state (e-board-run-set-state-for
+                 harness session-id
+                 (e-chat-service-binding-board-id binding)))
+         (existing (e-board--run-set-controls state)))
+    (if existing
+        (or (plist-get existing :query-work)
+            (e-work-start
+             (e-work-spec-create
+              :id "board-run-set-bound" :execution 'cheap
+              :interactive-policy 'async :owner 'board
+              :runner (lambda (bound-binding _context) bound-binding))
+             binding))
+      (let* ((service (e-chat-service-binding-sqlite-service binding))
+             (board-id (e-chat-service-binding-board-id binding))
+             (controls (list :binding binding :query-work nil :rerun-p nil))
+             (observer
+              (e-board-sqlite-service-observe-commits
+               service board-id
+               (lambda ()
+                 (when (not (eq (e-chat-service-binding-lifecycle-state binding)
+                                'retired))
+                   (e-board--run-set-refresh binding state)))))
+             (cleanup
+              (e-chat-service-binding-register-cleanup
+               binding
+               (lambda (_binding)
+                 (when-let ((current (e-board--run-set-controls state)))
+                   (when-let ((query (plist-get current :query-work)))
+                     (unless (memq (plist-get (e-work-status query) :state)
+                                   '(finished failed cancelled))
+                       (e-work-cancel query)))
+                   (when-let ((wake (plist-get current :observer)))
+                     (e-board-sqlite-commit-observation-cancel wake))
+                   (remhash state e-board--run-set-controls)
+                   (remhash binding e-board--run-set-states)
+                   (setf (e-board-orchestration-run-set-state-subscribers state)
+                         nil))))))
+        (setq controls (plist-put controls :observer observer))
+        (setq controls (plist-put controls :cleanup cleanup))
+        (puthash state controls e-board--run-set-controls)
+        (e-board--run-set-query-start binding state controls)))))
+
+(defun e-board-run-set-retire-binding (binding)
+  "Retire BINDING's Board run-set state and wake-up subscription."
+  (when-let ((state (gethash binding e-board--run-set-states)))
+    (when-let ((controls (e-board--run-set-controls state)))
+      (when-let ((observer (plist-get controls :observer)))
+        (e-board-sqlite-commit-observation-cancel observer))
+      (when-let ((work (plist-get controls :query-work)))
+        (unless (memq (plist-get (e-work-status work) :state)
+                      '(finished failed cancelled))
+          (e-work-cancel work)))
+      (remhash state e-board--run-set-controls))
+    (setf (e-board-orchestration-run-set-state-subscribers state) nil)
+    (remhash binding e-board--run-set-states))
+  nil)
+
+(defun e-board-run-set-subscribe (binding callback &optional selected-run-id)
+  "Subscribe CALLBACK to BINDING's compact run status.
+CALLBACK receives a detached compact status immediately and after each durable
+Board refresh.  SELECTED-RUN-ID is used only for the activity-link summary."
+  (let* ((state (e-board-run-set-state-for
+                 (e-chat-service-binding-harness binding)
+                 (e-chat-service-binding-session-id binding)
+                 (e-chat-service-binding-board-id binding)))
+         (wrapped
+          (lambda (value _generation)
+            (let* ((runs (plist-get value :runs))
+                   (selected (or selected-run-id
+                                 (plist-get (car runs) :run-id))))
+              (funcall callback
+                       (e-board-orchestration-run-set-compact-status
+                        state selected))))))
+    (funcall wrapped (e-board-orchestration-run-set-state-value state) 0)
+    (e-board-orchestration-run-set-state-subscribe state wrapped)))
 
 (defun e-board-run-set-update (harness session-id projections &rest options)
   "Update one session-scoped Board run-set value from PROJECTIONS.
@@ -93,6 +246,7 @@ query installs the first durable value."
   (e-context-provider-create
    :name 'board-run-set
    :priority 215
+   :cache-placement 'dynamic-context
    :build
    (cl-function
     (lambda (&key harness session-id turn-id context-purpose)
@@ -108,11 +262,9 @@ query installs the first durable value."
           (list
            (list :role 'system
                  :content
-                 (if (plist-get context :ready-p)
-                     (format "Board run-set ready: %d active run(s), %d omitted."
-                             (plist-get context :active-count)
-                             (plist-get context :omitted-count))
-                   "Board run-set restoring; wait for its bounded durable projection before the first model turn.")))))))))
+                 (format "Board run-set projection (bounded, detached): %s"
+                         (e-prin1-safe
+                          (plist-get context :projection)))))))))))
 
 (defun e-board-capability-create (&optional states)
   "Create the independent Board observation capability."
@@ -137,6 +289,10 @@ query installs the first durable value."
    :name "Board"
    :requires '(async-control)
    :capabilities (list (e-board-capability-create))))
+
+(defvar e-board--binding-open-hook-unsubscribe
+  (e-chat-service-register-binding-open-hook #'e-board-run-set-bind-binding)
+  "Unregister function for the Board binding-open application hook.")
 
 (provide 'e-board)
 

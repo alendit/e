@@ -27,7 +27,8 @@
                (:constructor e-board-sqlite-live-hub--create))
   "Process-local callbacks shared by services over one runtime transport."
   (pickup-observers (make-hash-table :test 'equal))
-  (delivery-outcome-observers (make-hash-table :test 'equal)))
+  (delivery-outcome-observers (make-hash-table :test 'equal))
+  (commit-observers (make-hash-table :test 'equal)))
 
 (defvar e-board-sqlite-service--live-hubs
   (make-hash-table :test 'eq :weakness 'key-and-value)
@@ -102,6 +103,13 @@ Board aggregate, registry membership, or durable-state mirror."
                (:conc-name e-board-sqlite-pickup-observation--)
                (:copier nil))
   "One process-local subscriber for committed pickups on one live Board."
+  service board-id callback active-p)
+
+(cl-defstruct (e-board-sqlite-commit-observation
+               (:constructor e-board-sqlite-commit-observation--create)
+               (:conc-name e-board-sqlite-commit-observation--)
+               (:copier nil))
+  "One process-local subscriber for committed writes on one Board."
   service board-id callback active-p)
 
 (cl-defstruct (e-board-sqlite-service-operation
@@ -179,6 +187,11 @@ transaction, so ordinary session replay never becomes a second Board store."
 (defun e-board-sqlite-service--delivery-observer-table (service)
   "Return SERVICE's runtime-shared live delivery observer table."
   (e-board-sqlite-live-hub-delivery-outcome-observers
+   (e-board-sqlite-service-live-hub service)))
+
+(defun e-board-sqlite-service--commit-observer-table (service)
+  "Return SERVICE's runtime-shared committed-write observer table."
+  (e-board-sqlite-live-hub-commit-observers
    (e-board-sqlite-service-live-hub service)))
 
 (cl-defun e-board-sqlite-publication-target-create
@@ -261,6 +274,52 @@ SQLite."
       (when (e-board-sqlite-pickup-observation--active-p observation)
         (funcall (e-board-sqlite-pickup-observation--callback observation)
                  (e-board-sqlite-service--detached-copy detached))))))
+
+(defun e-board-sqlite-service-observe-commits (service board-id callback)
+  "Observe committed writes for BOARD-ID through SERVICE.
+CALLBACK receives no durable row and must issue its own bounded query.  The
+observation is a wake-up path only; SQLite remains authoritative."
+  (unless (e-board-sqlite-service-p service)
+    (signal 'wrong-type-argument (list 'e-board-sqlite-service-p service)))
+  (unless (and (stringp board-id) (not (string-empty-p board-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p board-id)))
+  (unless (functionp callback)
+    (signal 'wrong-type-argument (list 'functionp callback)))
+  (let* ((table (e-board-sqlite-service--commit-observer-table service))
+         (key (copy-sequence board-id))
+         (observation
+          (e-board-sqlite-commit-observation--create
+           :service service :board-id key :callback callback :active-p t)))
+    (puthash key (cons observation (gethash key table)) table)
+    observation))
+
+(defun e-board-sqlite-commit-observation-cancel (observation)
+  "Cancel committed-write OBSERVATION and return non-nil when active."
+  (when (and (e-board-sqlite-commit-observation-p observation)
+             (e-board-sqlite-commit-observation--active-p observation))
+    (let* ((service (e-board-sqlite-commit-observation--service observation))
+           (board-id (e-board-sqlite-commit-observation--board-id observation))
+           (table (e-board-sqlite-service--commit-observer-table service))
+           (remaining (delq observation (gethash board-id table))))
+      (setf (e-board-sqlite-commit-observation--active-p observation) nil)
+      (if remaining
+          (puthash board-id remaining table)
+        (remhash board-id table))
+      t)))
+
+(defun e-board-sqlite-service--notify-commits (service board-id)
+  "Wake committed-write subscribers for BOARD-ID."
+  (dolist (observation
+           (copy-sequence
+            (gethash board-id
+                     (e-board-sqlite-service--commit-observer-table service))))
+    (when (e-board-sqlite-commit-observation--active-p observation)
+      (condition-case error
+          (funcall (e-board-sqlite-commit-observation--callback observation))
+        (error
+         ;; One request-owned wake-up must not suppress another subscriber.
+         (message "e Board commit observer failed: %s"
+                  (e-work-error-message error)))))))
 
 (defun e-board-sqlite-service--publish-committed-pickups (work service)
   "Publish WORK's committed pickup result to live SERVICE subscribers."
@@ -474,17 +533,26 @@ the keyword arguments accepted by `e-board-sqlite-service-activity-page-start'."
   (unless (e-board-sqlite-service-operation-settled operation)
     (setf (e-board-sqlite-service-operation-settled operation) t
           (e-board-sqlite-service-operation-request operation) nil)
-    (let ((work (e-board-sqlite-service-operation-work operation)))
-      (if (eq (e-runtime-store-request--state request) 'committed)
-          (e-work-finish
-           work
-           (e-board-sqlite-service--detached-copy
-            (e-runtime-store-request--result request)))
+    (let* ((work (e-board-sqlite-service-operation-work operation))
+           (committed-p (eq (e-runtime-store-request--state request)
+                            'committed))
+           (result (and committed-p
+                        (e-board-sqlite-service--detached-copy
+                         (e-runtime-store-request--result request))))
+           (board-id (plist-get (e-board-sqlite-service-operation-body operation)
+                                :board-id)))
+      (if committed-p
+          (e-work-finish work result)
         (e-work-fail
          work
          (or (e-board-sqlite-service--detached-copy
               (e-runtime-store-request--error request))
-             '(e-board-sqlite-error "Board operation did not commit")))))))
+             '(e-board-sqlite-error "Board operation did not commit"))))
+      (when (and committed-p
+                 (eq (e-board-sqlite-service-operation-kind operation) 'write)
+                 board-id)
+        (e-board-sqlite-service--notify-commits
+         (e-board-sqlite-service-operation-service operation) board-id)))))
 
 (defun e-board-sqlite-service--run (handle operation _context)
   "Submit OPERATION without waiting for worker open or acknowledgement."
