@@ -246,6 +246,29 @@ accepted Daily that opens under =E_BOARD= while still executing retired dispatch
 behavior; combining DP1 and DP2 would erase the independently useful e/Grimoire
 compatibility boundary.
 
+* Accepted implementation evidence
+
+** F93A1-DP1
+
+Accepted at =a92b7ee0= on 2026-09-15.
+
+The package establishes F93A1-C02, F93A1-C06, F93A1-C07, and the =e=-owned
+stable-key admission primitive required by F93A1-C01.
+It adds exact Board-owner admission and resolution, an independent described
+=board= capability, one binding-lifetime Board run-set composition shared by
+model context and chat status, readiness-gated pickup delivery, and selected-run
+navigation into the one Board activity surface.
+
+Parent acceptance reran 120 focused Board, chat, runner, and subagent tests with
+zero unexpected results.
+The isolated graphical Board composition passed after the shared graphical wait
+helper was corrected to pump deferred runtime-worker acknowledgements; the same
+stall reproduced at the pre-DP1 baseline.
+The current-config cold-start gate passed 6/6 at the final DP1 revision, and
+compilation plus =git diff --check= passed.
+
+No live reload, canonical Daily mutation, or canonical SQLite access was used.
+
 * Test dispositions
 
 - Retain Feature 82's SQLite authority, bounded observation, and one-participant
@@ -272,7 +295,7 @@ compatibility boundary.
 
 * Completion checklist
 
-- [ ] F93A1-DP1 accepted and committed.
+- [X] F93A1-DP1 accepted and committed at =a92b7ee0=.
 - [ ] F93A1-DP2 accepted and committed in both repositories.
 - [ ] F93A1-C01 through F93A1-C09 have current source and assertion evidence.
 - [ ] Focused =e= and Grimoire suites pass.
