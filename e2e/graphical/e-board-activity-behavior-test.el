@@ -1,0 +1,423 @@
+;;; e-board-activity-behavior-test.el --- Graphical Board activity composition -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+
+;; Author: Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; One public composition witness for the Board participant/activity cut.  The
+;; Board read and child admission use disposable SQLite stores; the parent
+;; surface is the real graphical chat composition and the runner path is the
+;; production subagent admission/settlement path.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'ert)
+(eval-and-compile
+  (add-to-list 'load-path
+               (file-name-directory
+                (or load-file-name
+                    (and (boundp 'byte-compile-current-file)
+                         byte-compile-current-file)
+                    buffer-file-name))))
+(require 'e-chat-behavior-test)
+(require 'e-board-activity-shell)
+(require 'e-chat-service)
+(require 'e-harness)
+(require 'e-harness-instances)
+(require 'e-harness-registry)
+(require 'e-runtime-store)
+(require 'e-session-sqlite)
+(require 'e-subagent-live)
+(require 'e-subagent-runner)
+(require 'e-work)
+(require 'e-graphical-test-support)
+
+(defun e-board-activity-behavior-test--stall-file
+    (directory operation suffix)
+  "Return DIRECTORY's worker stall marker for OPERATION and SUFFIX."
+  (expand-file-name (format "%s.%s" operation suffix) directory))
+
+(defun e-board-activity-behavior-test--arm-stall (directory operation)
+  "Hold worker OPERATION in disposable DIRECTORY."
+  (dolist (suffix '("ready" "release"))
+    (let ((marker
+           (e-board-activity-behavior-test--stall-file
+            directory operation suffix)))
+      (when (file-exists-p marker)
+        (delete-file marker))))
+  (write-region
+   "hold" nil
+   (e-board-activity-behavior-test--stall-file directory operation "hold")
+   nil 'silent))
+
+(defun e-board-activity-behavior-test--release-stall (directory operation)
+  "Release worker OPERATION in disposable DIRECTORY."
+  (write-region
+   "release" nil
+   (e-board-activity-behavior-test--stall-file directory operation "release")
+   nil 'silent))
+
+(defun e-board-activity-behavior-test--stall-ready-p (directory operation)
+  "Return non-nil when worker OPERATION reached its hold."
+  (file-exists-p
+   (e-board-activity-behavior-test--stall-file directory operation "ready")))
+
+(defun e-board-activity-behavior-test--capture (label)
+  "Capture graphical LABEL when screenshot artifacts are enabled."
+  (when (e-graphical-test-screenshot-enabled-p)
+    (e-graphical-test-capture-state label)))
+
+(defun e-board-activity-behavior-test--capture-transition (label function)
+  "Run FUNCTION, capturing LABEL's transition when enabled."
+  (if (e-graphical-test-screenshot-enabled-p)
+      (e-graphical-test-capture-transition label function)
+    (list :value (funcall function))))
+
+(defun e-board-activity-behavior-test--runner (capture)
+  "Return a real runner seam that keeps CAPTURE's child live until settled."
+  (lambda (child-harness child-session-id prompt seed-messages on-settle)
+    (setcar capture
+            (list :child-harness child-harness
+                  :child-session-id child-session-id
+                  :prompt prompt
+                  :seed-messages seed-messages
+                  :on-settle on-settle))
+    ;; The production runner seeds before starting a child turn.  This
+    ;; deterministic runner keeps the same admission boundary while deferring
+    ;; provider completion to the scenario's explicit terminal phase.
+    (e-subagent--seed-child child-harness child-session-id seed-messages)
+    (list :cancel (lambda () nil))))
+
+(defun e-board-activity-behavior-test--select-row (buffer participant-id)
+  "Select PARTICIPANT-ID's rendered row in BUFFER."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (let ((found nil))
+      (while (and (not found) (not (eobp)))
+        (when (equal (tabulated-list-get-id) participant-id)
+          (setq found t))
+        (unless found
+          (forward-line 1)))
+      (unless found
+        (ert-fail (format "No rendered participant row for %s" participant-id))))))
+
+(defun e-board-activity-behavior-test--rows (buffer)
+  "Return BUFFER's detached tabulated rows."
+  (with-current-buffer buffer
+    (copy-tree tabulated-list-entries t)))
+
+(defun e-board-activity-behavior-test--row (buffer participant-id)
+  "Return BUFFER's rendered cells for PARTICIPANT-ID."
+  (cadr (assoc participant-id (e-board-activity-behavior-test--rows buffer))))
+
+(defun e-board-activity-behavior-test--ids (buffer)
+  "Return BUFFER's rendered participant ids."
+  (mapcar #'car (e-board-activity-behavior-test--rows buffer)))
+
+(ert-deftest e-board-activity-behavior-test-public-composition-survives-restart ()
+  "A held Board view stays interactive and converges after live state clears."
+  (should (display-graphic-p))
+  (let* ((configuration (current-window-configuration))
+         (frame-size (cons (frame-width) (frame-height)))
+         (stall-directory (make-temp-file "e-board-activity-graphical-stall-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY="
+                        stall-directory)
+                process-environment))
+         (child-directory (make-temp-file "e-board-activity-child-" t))
+         (child-store
+          (e-session-sqlite-store-create child-directory :asynchronous t))
+         (e-harness-registry--instances (make-hash-table :test 'equal))
+         (e-harness-registry--factories (make-hash-table :test 'equal))
+         (e-harness-instance--instances (make-hash-table :test 'equal))
+         (e-harness-instance--defaults (make-hash-table :test 'equal))
+         (e-subagent--configured-harnesses
+          (make-hash-table :test 'eq :weakness 'key))
+         (live (e-subagent-live-create))
+         (fixture nil)
+         (board-buffer nil)
+         (child-harness nil)
+         (ad-hoc-capture (list nil))
+         (run-capture (list nil))
+         (child-ids nil)
+         (heartbeat-timers nil)
+         (heartbeat-count 0))
+    (unwind-protect
+        (progn
+          (e-harness-instance-register
+           :id :graphical-reviewer
+           :name "Graphical Reviewer"
+           :kind 'reviewer
+           :subagent t
+           :description "Disposable graphical Board scenario child."
+           :factory
+           (lambda ()
+             (setq child-harness
+                   (e-harness-create
+                    :backend (e-backend-fake-create :items nil)
+                    :sessions child-store))))
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (let* ((harness (plist-get fixture :harness))
+                 (session-id (plist-get fixture :session-id))
+                 (binding (e-chat-service-binding harness session-id))
+                 (target (e-chat-service-publication-target binding))
+                 (board-id (e-chat-service-binding-board-id binding))
+                 (ad-hoc
+                  (e-subagent-spawn
+                   live harness session-id
+                   :source-turn-id "graphical-parent-turn"
+                   :type :graphical-reviewer
+                   :prompt "Hold an ad-hoc graphical child turn."
+                   :label "ad-hoc graphical child"
+                   :runner (e-board-activity-behavior-test--runner
+                            ad-hoc-capture)))
+                 (run-bound
+                  (e-subagent-spawn
+                   live harness session-id
+                   :source-turn-id "graphical-parent-turn"
+                   :type :graphical-reviewer
+                   :prompt "Hold a run-bound graphical child turn."
+                   :label "run-bound graphical child"
+                   :run-id "graphical-run"
+                   :task-key "review"
+                   :attempt 0
+                   :report-admission
+                   (lambda (_assignment proposed)
+                     (let ((accepted (copy-tree proposed t)))
+                       (setq accepted
+                             (plist-put accepted :summary
+                                        "run-bound terminal result"))
+                       (plist-put accepted :result
+                                  '(:kind run-bound :status complete))))
+                   :runner (e-board-activity-behavior-test--runner
+                            run-capture)))
+                 (ad-hoc-id (plist-get ad-hoc :participant-id))
+                 (run-id (plist-get run-bound :participant-id))
+                 (open-transition nil)
+                 (started-at (float-time)))
+            (setq child-ids (list ad-hoc-id run-id))
+            (should (stringp ad-hoc-id))
+            (should (stringp run-id))
+            ;; Admission and runner installation are observed through the
+            ;; actual production owner before the Board query begins.
+            (dolist (participant-id child-ids)
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (e-subagent-live-get live board-id participant-id))
+               5.0 (format "live admission %s" participant-id)))
+            (should child-harness)
+            (e-board-activity-behavior-test--arm-stall
+             stall-directory 'board-activity-page)
+            (setq open-transition
+                  (e-board-activity-behavior-test--capture-transition
+                   "board-activity-open-held"
+                   (lambda ()
+                     (let ((buffer
+                            (e-board-activity-list-buffer
+                             :target target :live live)))
+                       ;; The public shell function returns the detached
+                       ;; buffer; displaying it is the graphical composition
+                       ;; step, while the parent chat remains a real surface.
+                       (e-workspace-pop-to-buffer buffer)
+                       buffer))))
+            (setq board-buffer (plist-get open-transition :value))
+            (should (< (- (float-time) started-at) 1.0))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (e-board-activity-behavior-test--stall-ready-p
+                stall-directory 'board-activity-page))
+             5.0 "held Board activity read")
+            (e-board-activity-behavior-test--capture
+             "board-activity-held-before-input")
+            (setq heartbeat-timers
+                  (list
+                   (run-at-time 0.01 nil (lambda () (cl-incf heartbeat-count)))
+                   (run-at-time 0.02 nil (lambda () (cl-incf heartbeat-count)))
+                   (run-at-time 0.03 nil (lambda () (cl-incf heartbeat-count)))))
+            (select-window
+             (cdr (e-chat-behavior-test--fixture-windows fixture)))
+            (e-graphical-test-type-text "draft while Board activity is held")
+            (with-current-buffer
+                (window-buffer
+                 (cdr (e-chat-behavior-test--fixture-windows fixture)))
+              (should (string-suffix-p
+                       "draft while Board activity is held"
+                       (buffer-substring-no-properties (point-min) (point-max)))))
+            (e-graphical-test-wait-until
+             (lambda () (= heartbeat-count 3))
+             2.0 "three independent Board-read heartbeats")
+            (e-board-activity-behavior-test--capture
+             "board-activity-held-after-input")
+            (e-board-activity-behavior-test--capture-transition
+             "board-activity-release"
+             (lambda ()
+               (e-board-activity-behavior-test--release-stall
+                stall-directory 'board-activity-page)))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (let ((ids (e-board-activity-behavior-test--ids board-buffer)))
+                 (and (= (length ids) 3)
+                      (= (length (delete-dups (copy-sequence ids))) 3)
+                      (member ad-hoc-id ids)
+                      (member run-id ids))))
+             5.0 "mixed durable Board participant page")
+            (let ((ids (e-board-activity-behavior-test--ids board-buffer)))
+              ;; Owner, ad-hoc, and run-bound participants each have exactly
+              ;; one durable row in the one public activity surface.
+              (should (= (length ids) 3))
+              (dolist (participant-id ids)
+                ;; Count detached row identities rather than raw buffer text:
+                ;; the owner participant may also be the Board id in the
+                ;; footer, which is not a duplicate activity row.
+                (should (= 1 (cl-count participant-id ids :test #'equal)))))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer ad-hoc-id)
+                            4)
+                           "-"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer run-id)
+                            4)
+                           "graphical-run"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer run-id)
+                            5)
+                           "review"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer run-id)
+                            6)
+                           "0"))
+            (e-board-activity-behavior-test--capture
+             "board-activity-mixed-rendered")
+            ;; Exercise a live command from the selected durable row.  The
+            ;; command consumes only the exact Board/participant live handle.
+            (e-subagent-live-record-progress
+             live board-id ad-hoc-id
+             (list :participant-id ad-hoc-id :sequence 1
+                   :summary "waiting for graphical completion"))
+            (with-current-buffer board-buffer
+              (e-board-activity-shell--render))
+            (e-board-activity-behavior-test--select-row
+             board-buffer ad-hoc-id)
+            (with-current-buffer board-buffer
+              (e-board-activity-shell-show-progress))
+            (with-current-buffer e-board-activity-shell-detail-buffer-name
+              (goto-char (point-min))
+              (should (search-forward ad-hoc-id nil t))
+              (should (search-forward "waiting for graphical completion"
+                                      nil t)))
+            (e-board-activity-behavior-test--capture
+             "board-activity-live-control")
+            ;; The ad-hoc lifecycle carries its bounded terminal result.  The
+            ;; run-bound child accepts its exact orchestration report, which
+            ;; remains the canonical outcome for that row.
+            (let ((ad-hoc-call (car ad-hoc-capture))
+                  (run-call (car run-capture)))
+              (should ad-hoc-call)
+              (should run-call)
+              (funcall (plist-get ad-hoc-call :on-settle)
+                       'done
+                       :summary "ad-hoc terminal result"
+                       :result '(:kind ad-hoc :status complete)
+                       :outputs '((:kind text :label "ad-hoc complete")))
+              (e-subagent-report
+               live board-id run-id
+               '((:kind text :label "run-bound complete"))
+               "run-bound terminal result"
+               '(:kind run-bound :status complete))
+              (funcall (plist-get run-call :on-settle)
+                       'done :summary "ignored final prose"))
+            (dolist (participant-id child-ids)
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (null (e-subagent-live-get live board-id participant-id)))
+               3.0 (format "terminal live cleanup %s" participant-id)))
+            (e-workspace-pop-to-buffer board-buffer)
+            (with-current-buffer board-buffer
+              (e-board-activity-shell-refresh))
+            (e-graphical-test-wait-until
+             (lambda ()
+               (let ((ad-hoc-row
+                      (e-board-activity-behavior-test--row
+                       board-buffer ad-hoc-id))
+                     (run-row
+                      (e-board-activity-behavior-test--row
+                       board-buffer run-id)))
+                 (and ad-hoc-row run-row
+                      (equal (aref ad-hoc-row 3) "lifecycle/done")
+                      (equal (aref run-row 3) "orchestration/done")
+                      (equal (aref ad-hoc-row 7) "unavailable")
+                      (equal (aref run-row 7) "unavailable"))))
+             5.0 "durable terminal outcomes after live cleanup")
+            (let ((durable-before-restart
+                   (e-board-activity-behavior-test--rows board-buffer))
+                  ;; Replace the process-local owner before reopening the
+                  ;; durable view, which is the isolated test equivalent of
+                  ;; restarting the live execution process.
+                  (fresh-live nil))
+              (setq live nil)
+              (setq fresh-live (e-subagent-live-create))
+              (e-board-activity-list-buffer
+               :target target :live fresh-live)
+              (e-workspace-pop-to-buffer board-buffer)
+              (e-graphical-test-wait-until
+               (lambda ()
+                 (= (length (e-board-activity-behavior-test--ids
+                             board-buffer))
+                    3))
+               5.0 "reopened durable Board activity page")
+              (should (equal durable-before-restart
+                             (e-board-activity-behavior-test--rows
+                              board-buffer)))
+              (e-board-activity-behavior-test--select-row
+               board-buffer ad-hoc-id)
+              (let (unavailable durable-after-error)
+                (condition-case error
+                    (with-current-buffer board-buffer
+                      (e-board-activity-shell-show-progress))
+                  (user-error
+                   (setq unavailable (error-message-string error))))
+                (setq durable-after-error
+                      (e-board-activity-behavior-test--rows board-buffer))
+                (should (string-match-p "not executing" unavailable))
+                (should (equal durable-before-restart durable-after-error))))
+            (e-board-activity-behavior-test--capture
+             "board-activity-restart-visible")))
+      (dolist (timer heartbeat-timers)
+        (when (timerp timer)
+          (cancel-timer timer)))
+      (e-board-activity-behavior-test--release-stall
+       stall-directory 'board-activity-page)
+      (when (buffer-live-p board-buffer)
+        (kill-buffer board-buffer))
+      (dolist (name (list e-board-activity-shell-detail-buffer-name
+                          e-board-activity-shell-raw-buffer-name))
+        (when-let ((buffer (get-buffer name)))
+          (kill-buffer buffer)))
+      (when (and fixture
+                 child-harness
+                 (e-chat-service-binding child-harness
+                                         (car child-ids)))
+        (ignore-errors
+          (e-chat-service-close-board
+           (e-chat-service-binding child-harness
+                                   (car child-ids)))))
+      (when fixture
+        (e-chat-behavior-test--cleanup
+         fixture configuration frame-size))
+      (ignore-errors (e-session-sqlite-store-close child-store))
+      (when (file-directory-p child-directory)
+        (delete-directory child-directory t))
+      (when (file-directory-p stall-directory)
+        (delete-directory stall-directory t)))))
+
+(provide 'e-board-activity-behavior-test)
+
+;;; e-board-activity-behavior-test.el ends here
