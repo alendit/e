@@ -1,0 +1,285 @@
+#+title: Daily Board-First Ownership and Workflow Remediation
+#+startup: overview
+
+* Status
+
+In-progress.
+
+* Product authority
+
+The operator approved this addendum on 2026-09-15 after inspecting a newly
+created Daily canvas and its Main participant log.
+It supersedes Feature 93's decision to persist =E_SESSION= as the Daily's
+canonical identity and narrows Feature 89's phrase "canonical session and Board"
+to a runtime relationship rather than a document identity.
+Feature 82's Board and participant definitions remain authoritative.
+
+This addendum also supersedes Feature 93's registry-based recovery mechanism
+and any test or review evidence coupled to that mechanism; its observable
+atomic-admission, truthful-lifecycle, and bounded-recovery outcomes remain
+required.
+It supersedes Feature 82's implemented placement of durable observation actions
+under =subagents= while preserving Feature 82's SQLite, participant,
+activity-page, and private-live-execution contracts.
+
+For the Daily path, F93A1-DP1 is the delivery authority for Feature 89's
+previously unimplemented shared projection, chat-status, and model-context work.
+Feature 89 remains authoritative for completion handoff and idle delivery
+outside this addendum.
+
+* Behavioral trace
+
+- Goal ID :: F93A1
+- Behavioral goal :: A Daily document identifies its durable Board, opens and
+  operates through that Board, truthfully starts or recovers its worker run,
+  and gives both the operator and Main enough bounded Board state to understand
+  and act without session-first or retired-subagent concepts.
+- Direct scenario :: In a fresh private Emacs, create today's Daily and open its
+  canvas.
+  The Org file persists only =E_BOARD=.
+  The runtime resolves the Board's Main participant and session, publishes or
+  recovers one Daily run, and either admits every selected worker or records a
+  durable dispatch failure.
+  The chat shows the Board and actionable run state, the next Main turn receives
+  the same bounded projection, and Board observation is discoverable through a
+  Board-facing action and activity surface.
+  Restarting and reopening the Daily resolves the same Board without a persisted
+  session id, duplicate run, shadow Board, or process-local participant inventory.
+- Product authority :: The operator.
+- Owning contract :: F93A1-C01 through F93A1-C09.
+- Behavioral status :: Failing on 2026-09-15.
+  Board =brd_d11596a2026bde40fe1b98ac3348da58= has a seven-task manifest and a
+  =started= lifecycle fact, but only Main is present and no attempt, worker,
+  dispatch-failure, or completion fact exists.
+
+* Vocabulary and identity decision
+
+The definitions of =board=, =participant=, =session=, and =shell-facing action=
+come from =docs/references/runtime_concepts.org=.
+
+The Daily document persists one runtime identity: its Board id.
+It does not persist an owner session id, participant id, work handle, run id, or
+live-execution identity.
+The Board is the durable collaboration, routing, observation, and run-history
+boundary.
+Main is the Board's owner participant; its current session remains an internal
+runtime association that the chat service resolves from SQLite.
+
+An absent =E_BOARD= on a legacy Daily permits a one-time migration from a valid
+=E_SESSION= association, after which =E_SESSION= is removed.
+A present =E_BOARD= is authoritative.
+If that Board cannot be resolved, the workflow fails visibly instead of silently
+changing the document to a different collaboration history.
+
+* Problem and causal evidence
+
+Today's Daily stores only =E_SESSION=, so every entry point resolves the runtime
+session before deriving the Board.
+The Board remains an implementation detail even though it owns the durable run.
+
+The configured Grimoire Daily controller was not migrated with Feature 82.
+It still queries the removed public subagent registry and passes that retired
+registry into spawn.
+The manifest and =started= lifecycle commit before this call, so the missing
+symbol aborts dispatch before the first worker while leaving the Board apparently
+active.
+
+The model-facing =daily-run/:start= adapter registers a cheap action but returns
+a plist containing a raw =e-work= handle.
+The handle is not registered as the top-level =work:= result required by the
+action contract.
+Main therefore received =preparing=, could not await the nested handle, retried,
+and made unsupported progress claims.
+
+Main also received no bounded projection of the already-started run.
+Board observation was discoverable only through poorly described
+=subagents/:list= and =:list-runs= actions, while the configured Daily activity
+command still called the two shells removed by Feature 82.
+
+* Contract checklist
+
+| ID | Contract | Observable acceptance | Status |
+|----+----------+-----------------------+--------|
+| F93A1-C01 | =E_BOARD= is the only runtime identity persisted by a Daily document.  A fresh Daily derives one stable creation key from canonical document identity, never from time or process state, and passes it to a consumer-shaped =e-chat-service= owner-admission operation.  That operation atomically and idempotently admits the deterministic private session, Board, and Main participant tuple and returns its Board id.  Starting the operation returns a request-scoped admission ticket that exposes the deterministic Board id immediately together with the pending admission work; the Board id may be presented as =preparing=, but it is neither routable nor persisted until that work acknowledges admission.  This application-service ticket is not an action result and does not permit a nested work handle to escape through =e-actions-call=.  Only after admission acknowledgement does Grimoire write and save =E_BOARD=; the same Org save removes =E_SESSION= and =E_UPDATE_SESSION= when present.  Retry before acknowledgement or after admission but before or through Org save uses the same creation key and returns the exact tuple.  A present =E_BOARD= always uses F93A1-C02's resolve-only path and never authorizes owner creation or database repair.  When =E_BOARD= is absent, a valid legacy =E_SESSION= may be passed to a narrow chat-service migration resolver; after successful resolution the same Org update writes =E_BOARD= and removes both session properties.  No production path writes a session id back. | Fault tests cut before and after SQLite admission acknowledgement and before, during, and after Org save; ambiguous retries produce one deterministic session/Board/Main tuple and one persisted =E_BOARD=.  Valid, invalid, missing, and conflicting legacy associations, both-property documents, and authoritative unresolved Boards are covered.  Invalid legacy or unresolved authoritative Boards mutate neither file nor database. | Pending |
+| F93A1-C02 | One consumer-shaped =e-chat-service= operation accepts a Board id and asynchronously resolves exactly one current owner tuple: Board generation, owner participant id, durable session id, principal, and routing policy.  It validates the session, participant, role, Board, principal, and routing identities before installing or reusing an exact live binding.  Zero owners, multiple owners, missing session or participant state, identity conflict, or an existing non-exact live binding fails request-locally and neither creates an owner nor mutates the document.  In steady state Grimoire supplies only the Board id.  Fresh creation supplies only the stable creation key, and one-time legacy migration supplies only the legacy session id to the dedicated chat-service resolver; Grimoire never queries session storage directly or observes, chooses, or persists the private session tuple. | Exact zero/one/multiple, missing-row, wrong-role, wrong-Board, principal/routing-conflict, exact-live-reuse, and conflicting-live-binding partitions settle once; only the exact-one case returns Main's binding. | Pending |
+| F93A1-C03 | Daily dispatch and recovery use runner-owned consumer operations keyed by durable Board, participant, run, task, and attempt identity.  Grimoire neither receives, constructs, enumerates, nor imports the private live-execution table.  SQLite remains participant and task truth; the runner may report whether one exact assignment is currently reserved or executing, and absence is only a recovery signal interpreted under F93A1-C05.  No registry argument or process-local inventory remains in configured production or tests. | Every configured selected task (seven in the current Daily scenario) is admitted once and publishes running only after admission.  Recovery distinguishes exact pending/live execution from an orphan through the runner contract.  Structural scans reject retired registry symbols, default live-owner variables, direct =e-subagent-live= dependencies, and specialized-shell references in Grimoire. | Pending |
+| F93A1-C04 | =daily-run/:start= is a work-backed asynchronous action, never a cheap action returning nested work.  While preparation or initial dispatch is pending, =e-actions-call= returns one registered top-level =work:= reference.  The work settles successfully only after every selected task has an acknowledged durable initial disposition and returns a bounded result containing Board id, run id, overall state, and admitted/retrying/failed totals.  Expected domain failure is a truthful durable =failed= result; an unacknowledged storage or transport failure settles the action as failed. | The exact =run_elisp= return value is passed unchanged to =await=.  Success, partial dispatch failure, recovery, cancellation, and persistence failure have distinct bounded settlements, and no immediate value contains an =e-work= handle. | Pending |
+| F93A1-C05 | After manifest acknowledgement, every selected task converges to one durable dispatch disposition: admission pending, admitted/running, retry scheduled, or terminal dispatch failure.  Admission/start errors publish an idempotent bounded disposition keyed by run, task, and attempt before F93A1-C04 reports a domain result.  If disposition publication cannot be acknowledged, the action fails with persistence-suspect evidence; reopen treats a manifest task with no acknowledged disposition as dispatch-pending and reconciles it with the same stable identities.  Neither a manifest nor a =started= lifecycle fact alone implies live execution. | Fault tests cut after manifest acknowledgement; before and after reservation, admission, runner start, failure publication, and failure acknowledgement; and during restart.  Repetition produces no duplicate worker or terminal outcome and never leaves an unexplained active task. | Pending |
+| F93A1-C06 | The Board orchestration application service owns one bounded Board run-set projection.  It contains every run Feature 89 defines as active: nonterminal runs, terminal runs with unconsumed completion, and runs with optional work still active.  Entries are deterministically ordered by actionable state, latest durable event, and run id; record and byte budgets produce explicit omitted counts.  Each entry includes Board/run identity, bounded label, lifecycle, required and optional task totals, participant/admission totals, latest durable event time, explicit conflict/deadline/failure evidence, restore state, attention state, and completion-delivery state.  One session-scoped composition retains only the latest detached projection value and change notification; Main context and chat status consume that same value without re-reduction or polling.  The persistent compact status shows the active-run count and a bounded summary of the most actionable run, distinguishes =dispatching=, =running=, =finishing=, =attention=, and =restoring=, and links to the one Board activity surface focused on the selected run without rendering the full task graph.  Initial binding readiness admits no model turn until the first query settles, while presentation remains responsive and shows restoring.  Feature 82's participant/activity page remains a separate DTO and source for Board actions and shell rows. | Reducer and composition tests cover zero, one, multiple, omitted, optional-active, terminal-unconsumed, attention, and incomplete-restore runs.  Status and context receive equal projection values, deterministic ordering, and omitted counts; the first turn cannot race empty restore.  Status tests also prove the active-run count, most-actionable selection, five compact states, persistent visibility after the initiating turn, composer independence, and selected-run link into the one Board activity surface.  Board activity independently shows owner, ad-hoc, and run-bound participants without importing the run-set DTO. | Pending |
+| F93A1-C07 | Durable observation is exposed by an independently activatable =board= capability.  Standard owner chats and Daily owner sessions activate it whether or not they can spawn children.  Its described =:list=, =:status=, and =:read= actions use the Feature 82 participant/activity service; =:list-runs= and =:run-status= use Board orchestration.  Parent =subagents= retains spawn, configure-type, and runner-mediated steer/send/interrupt/shutdown; its child variant retains only report.  No observation alias remains under =subagents= and no removed shell command or autoload remains callable after a fresh start. | =e-action://board= and every child action resource have useful descriptions in a standard owner chat and Daily owner.  =e-action://subagents= contains no durable inventory action.  Fresh exact-source and compiled-current-config processes find removed commands neither =fboundp= nor =commandp=, while Board observation remains available without the subagents-parent layer. | Pending |
+| F93A1-C08 | The Daily activity command opens the one Board activity surface directly from =E_BOARD=.  Passive Daily startup means no synthetic user turn; it does not mean missing capability instructions or unidentified presentation.  Daily-owner instructions state that opening starts or recovers the controller automatically, Main must use the injected Board/run projection before invoking start again, unsupported progress claims are forbidden, and Board observation is available through =e-action://board=.  Until the durable run projection arrives, chat shows the exact Board id and a truthful preparing/restoring state. | A fresh passive canvas shows its Board immediately, starts one controller without a model turn, and the first later Main turn receives Daily-owner instructions plus current Board/run context.  It neither restarts the controller nor searches unrelated resources to answer worker status.  Activity opens without a session-property lookup or deleted shell. | Pending |
+| F93A1-C09 | The supported configured Grimoire Daily consumer composes against the current e Board contracts from a cold process; project-local discovery, compilation, and startup cannot silently retain or skip the retired API surface. | The current-config gate resolves the configured Grimoire extension, loads/compiles its exact source in a private Emacs and test-owned store/repository, creates and opens one Daily, awaits owner resolution and initial dispatch disposition, and reads back =E_BOARD= plus Board state.  It fails on a missing/skipped consumer or zero selected tests and detects retired symbols, malformed action work, missing Board capability descriptions, and stale callable commands. | Pending |
+
+* Evidence classification
+
+All F93A1 acceptance evidence is deterministic repository or
+configured-consumer evidence.
+No external provider capability is required, so external compatibility
+evidence is not applicable.
+Runtime measurements are observational only unless this addendum later gives
+them an explicit baseline, procedure, direction, and threshold.
+
+* Aggregate design comparison
+
+** Current aggregate
+
+The Org document persists a session id.
+Grimoire derives a Board binding from it, implements its own owner recovery,
+starts a second process-local work object from a cheap action, consults a removed
+registry before spawning, and sends observation through deleted shells and a
+=subagents= namespace.
+Durable start and ephemeral dispatch failure cross different reporting
+boundaries.
+
+** Smallest faithful alternative
+
+Persist the Board id once.
+Derive a stable Daily creation key, let =e-chat-service= atomically and
+idempotently admit its deterministic private owner tuple, and persist the
+returned Board id only after acknowledgement.
+Let =e-chat-service= also own one consumer-shaped Board-to-owner resolution
+operation.
+Let the Grimoire controller receive the resolved binding, publish manifest and
+dispatch state to that Board, and expose its asynchronous work directly through
+the action dispatcher.
+Let one bounded Board run-set projection value feed chat context and status.
+Let the =board= capability route participant/activity actions to Feature 82's
+Board observation service and run-list/run-status actions to the Board
+orchestration projection service; let the Board activity shell continue to
+consume the bounded participant/activity page.
+Keep only executing handles and controls behind runner-owned consumer
+operations; Grimoire and Board services never receive the private
+live-execution owner.
+
+** Decision
+
+Use the smallest faithful alternative.
+Do not add a second document property, compatibility alias, session cache,
+Board mirror, or fallback inventory.
+
+* Ownership and boundaries
+
+- =e-chat-service= owns stable-key owner admission, Board-to-owner session
+  resolution, and exact live-binding installation because it already owns
+  session/Board associations and bindings.
+- SQLite session and Board services own the bounded authoritative query.
+- The Grimoire Daily controller owns note-to-Board mapping, run policy,
+  dispatch, retry, and lifecycle facts.
+- =e-board-orchestration= owns run reduction and the Board run-set projection
+  schema.
+- A session-scoped projection composition owns only the current bounded value
+  and change notification; Main context and chat status are independent
+  consumers of that value.
+- The Board observation service owns the distinct participant/activity page
+  consumed by Board actions and the activity shell.
+- =subagents= owns spawning and runner-mediated live participant controls only.
+- The Board activity shell owns detached display state and interaction.
+
+* Compatibility and removals
+
+Legacy Daily =E_SESSION= has one bounded migration requirement only when
+=E_BOARD= is absent; it is migration input, never a steady-state routing
+identity.
+There is no requirement to retain either session property after successful
+migration or to retain durable observation aliases under =subagents=.
+Migrate all in-tree and configured Grimoire callers, documentation, keymaps,
+generated autoload inputs, and tests; add no action alias, shell alias, or
+fallback inventory.
+Generic non-Daily topic/project session properties are outside this addendum and
+remain unchanged.
+Existing SQLite Board, session, participant, pickup, and orchestration records
+require no schema or data migration.
+
+* Delivery packages
+
+** F93A1-DP1: Board-first chat and observation
+
+Add the stable-key Board-owner admission operation, the consumer-shaped
+Board-to-owner open operation, the =board= capability, described Board
+observation actions, and the shared Board run-set context/status composition.
+Remove durable observation inventory actions from =subagents=.
+
+This package establishes F93A1-C02, F93A1-C06, and F93A1-C07.
+If work stopped here, any application could idempotently admit a new owner or
+open an existing collaboration through Board-facing contracts, and both people
+and agents could observe its active work through one Board-facing model.
+
+Focused evidence includes stable-key identity derivation, concurrent and
+post-restart admission idempotence, immediate Board-id availability while
+admission is held, admission cancellation/failure settlement, chat-service
+owner-resolution partitions, Board capability action-resource discovery,
+shared projection equivalence, chat composition behavior, restart restoration,
+and affected structural scans.
+
+** F93A1-DP2: Board-first truthful Daily
+
+Migrate Grimoire's document mapping, interactive/headless entry points,
+controller dispatch, action adapter, activity command, skills, and tests to DP1.
+Publish a durable bounded failure whenever dispatch cannot proceed after a
+manifest becomes visible.
+Add the configured-consumer cold-start scenario.
+
+This package establishes F93A1-C01, F93A1-C03, F93A1-C04, F93A1-C05,
+F93A1-C08, and F93A1-C09.
+If work stopped here, the public Daily workflow would create, operate, explain,
+recover, and reopen one Board without session-first metadata or retired APIs.
+
+Focused evidence includes Grimoire unit and graphical Daily scenarios, action
+awaitability, post-manifest failure and restart partitions, property migration,
+Board activity opening, current-config cold start, and source scans.
+
+** Package relation
+
+F93A1-DP1 is the reusable e-owned prerequisite and depends only on accepted
+runtime and Feature 82 Board contracts.
+It establishes the Board-addressed owner, observation, and active-run
+context/status surfaces before any configured consumer is migrated.
+DP1 provides and independently gates the e-owned admission primitive required
+by F93A1-C01; DP2 alone establishes F93A1-C01 end to end by composing that
+accepted primitive with Daily document persistence and migration.
+
+F93A1-DP2 consumes only accepted DP1 contracts and closes the Grimoire-owned
+Daily document, startup, dispatch, failure, recovery, activity, and
+configured-consumer composition.
+Splitting identity migration from dispatch/failure truth would expose an
+accepted Daily that opens under =E_BOARD= while still executing retired dispatch
+behavior; combining DP1 and DP2 would erase the independently useful e/Grimoire
+compatibility boundary.
+
+* Test dispositions
+
+- Retain Feature 82's SQLite authority, bounded observation, and one-participant
+  activity scenarios.
+- Strengthen Feature 89's shared projection, chat status, context, and idle
+  completion scenarios with explicit Board identity.
+- Replace Feature 93 tests that assert =E_SESSION= ownership or construct the
+  removed registry.
+- Delete tests whose only purpose is to preserve registry enumeration,
+  specialized run/subagent shells, or nested raw work handles.
+- Strengthen current-config coverage from layer loading to one real private
+  Daily start and Board readback.
+
+* Non-goals
+
+- Persisting model transcripts or session ids in Org;
+- changing SQLite's existing session, Board, participant, pickup, or
+  orchestration authority;
+- reconstructing a Board aggregate in Emacs;
+- reviving a public subagent registry or specialized run shell;
+- changing the Daily's source-gathering or section-content policy;
+- mutating today's live Board or Daily as implementation proof; or
+- reloading or restarting the user's running Emacs automatically.
+
+* Completion checklist
+
+- [ ] F93A1-DP1 accepted and committed.
+- [ ] F93A1-DP2 accepted and committed in both repositories.
+- [ ] F93A1-C01 through F93A1-C09 have current source and assertion evidence.
+- [ ] Focused =e= and Grimoire suites pass.
+- [ ] Isolated graphical Board/chat and Daily scenarios pass.
+- [ ] =bash e2e/run-current-config-tests.sh= passes the real configured-consumer scenario.
+- [ ] Full =eldev test= and compilation pass in =e=.
+- [ ] Grimoire's complete layer suite passes.
+- [ ] Structural scans find no retired configured-consumer APIs or legacy document identity writes.
+- [ ] Independent review finds no actionable functional or architectural defect.
+- [ ] The running Emacs and canonical SQLite store remain unchanged; using the new behavior immediately is left as an explicit restart option.

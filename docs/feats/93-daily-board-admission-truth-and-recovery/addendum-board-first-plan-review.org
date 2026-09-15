@@ -1,0 +1,68 @@
+#+title: Plan Review: Daily Board-First Ownership and Workflow Remediation
+#+startup: overview
+
+* Review boundary
+
+Selected level: implementation-plan.
+Product authority: the operator's 2026-09-15 remediation request after
+inspecting the fresh Daily canvas and Main participant log.
+Owning contract: =addendum-board-first.org= F93A1-C01 through F93A1-C09.
+Glossary: =docs/references/runtime_concepts.org= for Board, participant,
+session, action, and work.
+
+The review used =e= revision
+=90cd481f65ddb9f330c432d4e74d084568e218de= and configured Grimoire revision
+=e733a048151cbbc97b710e5f0b77173f62726a32=.
+It was read-only and did not inspect or mutate the user's running Emacs or
+canonical SQLite store.
+
+* Plan identity
+
+The admitted addendum is the Git object
+=7b8c32485f6b20d361883cb89e00b8bb4d4b936c=.
+Contract-owning changes require another implementation-plan review.
+
+* Findings closed during review
+
+- Fresh creation now uses stable-key, admission-first owner creation and a
+  request-scoped ticket that exposes the provisional Board id without making it
+  routable or persistent before acknowledgement.
+- Board-to-owner opening validates one exact owner tuple and live binding;
+  legacy session identity is bounded migration input only.
+- Grimoire uses runner-owned consumer operations and cannot receive the private
+  live-execution table.
+- The Daily start action returns one top-level work reference and settles only
+  after every task has a durable initial disposition.
+- Failure-publication acknowledgement and restart reconciliation close the
+  manifest-to-dispatch crash cuts.
+- Feature 89's bounded Board run-set projection retains multi-run ordering,
+  budgets, omitted counts, restore/completion state, context, and compact status
+  while Feature 82's participant/activity page remains a separate DTO.
+- The independently activatable =board= capability replaces durable observation
+  aliases under =subagents= and preserves one Board activity surface.
+- Passive Daily startup includes explicit owner instructions, provisional Board
+  identity, truthful restoring status, and one automatic controller start.
+- The configured-consumer contract requires exact-source and compiled
+  cold-process evidence through a real private Daily start and readback.
+
+* Package and dependency review
+
+F93A1-DP1 is the reusable =e=-owned prerequisite: stable-key owner admission,
+exact Board opening, Board capability activation, and the shared run-set
+context/status composition.
+F93A1-DP2 consumes only accepted DP1 contracts and closes the Grimoire-owned
+document, dispatch, recovery, action, activity, instructions, and cold-start
+composition.
+
+Keeping these as two packages preserves the =e=/Grimoire boundary.
+Splitting DP2 would expose a Board-first Daily that still used retired dispatch
+behavior; combining both packages would erase an independently useful runtime
+contract.
+
+* Result
+
+=implementation-plan-fixed-point=
+
+F93A1-C01 through F93A1-C09 each have an owner, observable acceptance, failure
+and lifetime coverage, and a delivery package.
+No P0--P3 finding or unknown required specification cell remains.
