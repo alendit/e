@@ -22,8 +22,13 @@
 (require 'e-subagent-live)
 (require 'e-subagent-runner)
 
-(defvar e-subagent-actions-default-live (e-subagent-live-create)
-  "Process-wide private live execution owner shared by the capability.")
+(defvar e-subagent-actions-default-live (e-subagent-runner-live-owner)
+  "Process-wide private live execution owner shared by the runner capability.
+
+The action adapter and runner consumer operations must observe one exact live
+execution boundary so a child can report through `subagents' while a Board
+consumer dispatches it.  The owner remains private and carries no durable
+inventory or terminal projection.")
 
 (defun e-subagent-actions--participant-id (arguments)
   "Return the required durable participant id from ARGUMENTS."

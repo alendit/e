@@ -12,15 +12,27 @@
 ;;; Code:
 
 (require 'ert)
+(require 'bytecomp)
+(require 'cl-lib)
+(require 'seq)
 (require 'e-e2e-bootstrap)
+(require 'e-actions)
+(require 'e-async-control)
 (require 'e-backend)
+(require 'e-board)
+(require 'e-board-orchestration-actions)
 (require 'e-core)
 (require 'e-default-harnesses)
 (require 'e-harness-registry)
 (require 'e-harness-instances)
 (require 'e-layers)
 (require 'e-project-local)
+(require 'e-session-sqlite)
+(require 'e-session-storage)
 (require 'e-subagent-runner)
+(require 'e-tools)
+(require 'e-await-tool)
+(require 'e-waitable)
 
 (defvar e-current-config-e2e-test--output nil
   "Dynamically bound buffer collecting the current-config ERT report.")
@@ -49,6 +61,111 @@
     (with-current-buffer e-current-config-e2e-test--output
       (goto-char (point-max))
       (insert (apply #'format format-string arguments)))))
+
+(defun e-current-config-e2e-test--grimoire-root ()
+  "Return the configured Grimoire root, requiring its topic layer source."
+  (or
+   (seq-find
+    (lambda (root)
+      (file-readable-p
+       (expand-file-name ".e/layers/topic/layer.el" root)))
+    (e-default-project-roots))
+   (ert-fail "Current configuration has no configured Grimoire topic layer")))
+
+(defun e-current-config-e2e-test--grimoire-sources (root)
+  "Return the exact configured Grimoire consumer sources below ROOT."
+  (mapcar
+   (lambda (relative)
+     (let ((file (expand-file-name relative root)))
+       (unless (file-readable-p file)
+         (ert-fail (format "Configured Grimoire source is missing: %s" file)))
+       file))
+   '(".e/layers/topic/capabilities/topic.el"
+     ".e/layers/topic/commit.el"
+     ".e/layers/topic/session.el"
+     ".e/layers/topic/grimoire-daily-publication.el"
+     ".e/layers/topic/daily-run.el"
+     ".e/layers/topic/shells/topic.el")))
+
+(defun e-current-config-e2e-test--load-and-compile-grimoire (root)
+  "Load and byte-compile the exact configured Grimoire consumer at ROOT."
+  (let* ((sources (e-current-config-e2e-test--grimoire-sources root))
+         (compile-directory
+          (expand-file-name "grimoire-byte-compile/"
+                            e-current-config-e2e-test--state-directory))
+         (load-path (cons (expand-file-name ".e/layers/topic" root)
+                          load-path)))
+    (make-directory compile-directory t)
+    (dolist (source sources)
+      (load-file source))
+    ;; Compile byte-for-byte copies.  Current-config gates must never refresh
+    ;; or create artifacts inside a configured consumer checkout.
+    (dolist (source sources)
+      (let ((copy
+             (expand-file-name
+              (format "%s-%s.el"
+                      (file-name-base source)
+                      (substring (secure-hash 'sha256 source) 0 12))
+              compile-directory)))
+        (copy-file source copy t)
+        (should (byte-compile-file copy))))
+    (should (file-equal-p
+             (symbol-file 'grimoire-topic-daily 'defun)
+             (nth 0 sources)))
+    (should (file-equal-p
+             (symbol-file 'grimoire-topic--ensure-daily-owner-board-start
+                          'defun)
+             (nth 2 sources)))
+    (should (file-equal-p
+             (symbol-file 'grimoire-daily-run-start 'defun)
+             (nth 4 sources)))
+    (should (file-equal-p
+             (symbol-file 'grimoire-daily 'defun)
+             (nth 5 sources)))
+    sources))
+
+(defun e-current-config-e2e-test--initialize-git-repo (repo)
+  "Create a minimal clean disposable Grimoire repository at REPO."
+  (make-directory (expand-file-name ".e/layers/topic" repo) t)
+  (make-directory (expand-file-name "daily" repo) t)
+  (with-temp-file (expand-file-name ".e/layers/topic/layer.el" repo)
+    (insert ";;; disposable current-config topic layer marker\n"))
+  (with-temp-file (expand-file-name "daily/2099-01-01.org" repo)
+    (insert "#+title: Daily 2099-01-01\n\n* Log\n"))
+  (dolist (arguments
+           '(("init" "-q")
+             ("config" "user.name" "Current Config Test")
+             ("config" "user.email" "current-config@example.invalid")
+             ("add" ".")
+             ("commit" "-qm" "baseline")))
+    (should (zerop (apply #'process-file "git" nil nil nil
+                          "-C" repo arguments)))))
+
+(defun e-current-config-e2e-test--await-reference (reference)
+  "Pass exact work REFERENCE to `await' and return its structured result."
+  (let ((registry (e-tools-registry-create)) result unexpected)
+    (e-await-tool-register registry)
+    (e-tools-start
+     registry
+     (list :id "current-config-await" :name "await"
+           :arguments (list :refs (vector reference) :timeout 15))
+     :on-done (lambda (value) (setq result value))
+     :on-error (lambda (error) (setq unexpected error)))
+    (let ((deadline (+ (float-time) 20.0)))
+      (while (and (not result) (not unexpected) (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (when unexpected
+      (signal (car unexpected) (cdr unexpected)))
+    (or result (ert-fail "Timed out awaiting configured Daily action"))))
+
+(defun e-current-config-e2e-test--close-private-harness (harness)
+  "Retire HARNESS bindings and close its test-owned SQLite store."
+  (when-let* ((bindings (gethash harness e-chat-service--bindings)))
+    (maphash (lambda (_session-id binding)
+               (ignore-errors (e-chat-service--retire-binding binding)))
+             bindings))
+  (ignore-errors
+    (e-session-sqlite-store-close (e-harness-sessions harness))))
 
 (ert-deftest e-current-config-e2e-test-first-file-hooks-succeed ()
   "The first file opens with the current configuration's persisted state."
@@ -82,9 +199,13 @@
                     :board-activity))
         (retired
          (plist-get e-e2e-current-config-package-command-state
-                    :retired-subagent-list)))
+                    :retired-subagent-list))
+        (retired-runs
+         (plist-get e-e2e-current-config-package-command-state
+                    :retired-board-runs-list)))
     (should (plist-get board-activity :commandp))
-    (should-not (plist-get retired :commandp))))
+    (should-not (plist-get retired :commandp))
+    (should-not (plist-get retired-runs :commandp))))
 
 (ert-deftest e-current-config-e2e-test-default-harness-is-configured ()
   "The current config can construct its default harness without a request."
@@ -105,6 +226,126 @@
     (let ((inspection (e-project-local--inspection root)))
       (when (plist-get inspection :has-extensions)
         (should (e-layer-p (e-project-local-prime-project root)))))))
+
+(ert-deftest e-current-config-e2e-test-grimoire-daily-is-board-first-and-awaitable ()
+  "The exact configured Daily consumer starts through one awaitable Board action."
+  (let* ((configured-root (e-current-config-e2e-test--grimoire-root))
+         (_sources
+          (e-current-config-e2e-test--load-and-compile-grimoire
+           configured-root))
+         (repo (expand-file-name "grimoire-consumer/"
+                                 e-current-config-e2e-test--state-directory))
+         (store-directory
+          (expand-file-name "grimoire-runtime/"
+                            e-current-config-e2e-test--state-directory))
+         (e-harness-instance--instances (make-hash-table :test 'equal))
+         (e-harness-instance--defaults (make-hash-table :test 'equal))
+         (e-subagent--configured-harnesses
+          (make-hash-table :test 'eq :weakness 'key))
+         (e-subagent-runner--live-owner (e-subagent-live-create))
+         (e-work--detached-handles (make-hash-table :test 'equal))
+         (e-waitable--resolvers (make-hash-table :test 'equal))
+         sessions harness daily-capability board-capability daily-file)
+    (unwind-protect
+        (progn
+          (e-current-config-e2e-test--initialize-git-repo repo)
+          (setq sessions
+                (e-session-sqlite-store-create store-directory
+                                               :asynchronous t)
+                harness
+                (e-harness-create
+                 :backend (e-backend-fake-create :items nil :delay 0.01)
+                 :sessions sessions :enabled-layer-ids nil))
+          (e-session-enable sessions)
+          (should (e-layer-get 'slack-mcp))
+          (dolist (id '(:tool-user :fast-tool-user))
+            (e-harness-instance-register
+             :id id :kind (intern (substring (symbol-name id) 1))
+             :subagent t
+             :factory
+             (lambda ()
+               (e-harness-create
+                :backend (e-backend-fake-create :items nil :delay 0.01)
+                :sessions sessions :enabled-layer-ids nil))))
+          (setq board-capability (e-board-capability-create)
+                daily-capability
+                (grimoire-daily-run-capability-create
+                 (expand-file-name ".e/layers/topic/" repo)))
+          (dolist (key '(:list :status :read :list-runs :run-status))
+            (let ((action (e-capabilities-action-spec board-capability key)))
+              (should (e-action-p action))
+              (should (and (stringp (e-action-description action))
+                           (not (string-empty-p
+                                 (e-action-description action)))))))
+          (e-harness-activate-capability harness board-capability)
+          (e-harness-activate-capability harness daily-capability)
+          (e-async-control-register-work-resolver)
+          (cl-letf (((symbol-function 'e-chat-service-default-harness)
+                     (lambda () harness))
+                    ((symbol-function 'e-subagent-direct-runner)
+                     (lambda (&rest _arguments) (list :cancel #'ignore))))
+            (let* ((reference
+                    (e-actions-call
+                     'daily-run :start '(:date "2099-01-02")
+                     (list :harness harness
+                           :turn-id "current-config-daily")))
+                   (awaited
+                    (progn
+                      (should (string-match-p "\\`work:[^[:space:]]+\\'"
+                                              reference))
+                      (e-current-config-e2e-test--await-reference reference)))
+                   (content (plist-get awaited :content))
+                   (entry (car (plist-get content :results)))
+                   (started (plist-get entry :result)))
+              (should (eq (plist-get awaited :status) 'ok))
+              (should (plist-get content :settled))
+              (should (equal (plist-get entry :ref) reference))
+              (should (eq (plist-get entry :state) 'finished))
+              (should (eq (plist-get started :status) 'dispatched))
+              (should (eq (plist-get started :state) 'running))
+              (should (= (plist-get started :selected) 7))
+              (should (= (plist-get started :initial-dispositions) 7))
+              (should (= (plist-get started :admitted) 7))
+              (should (zerop (plist-get started :retrying)))
+              (should (zerop (plist-get started :failed)))
+              (setq daily-file (expand-file-name "daily/2099-01-02.org" repo))
+              (let ((text (with-temp-buffer
+                            (insert-file-contents daily-file)
+                            (buffer-string))))
+                (should (= (let ((start 0) (count 0))
+                             (while (string-match "^:E_BOARD:" text start)
+                               (setq count (1+ count) start (match-end 0)))
+                             count)
+                           1))
+                (should-not (string-match-p "^:E_\\(?:UPDATE_\\)?SESSION:"
+                                            text)))
+              (let* ((board-id (plist-get started :board-id))
+                     (run-id (plist-get started :run-id))
+                     (binding
+                      (e-work-with-batch-await
+                        (e-work-await-batch
+                         (e-chat-service-open-board-owner-start board-id harness)
+                         :timeout 5.0)))
+                     (target (e-chat-service-publication-target binding))
+                     (projection
+                      (e-work-with-batch-await
+                        (e-work-await-batch
+                         (e-board-orchestration-actions-run-projection
+                          target run-id)
+                         :timeout 5.0))))
+                (should (equal (plist-get projection :run-id) run-id))
+                (should (= (length (plist-get projection :tasks)) 7))
+                (should
+                 (cl-every
+                  (lambda (task)
+                    (eq (plist-get task :state) 'running))
+                  (plist-get projection :tasks))))))
+          (dolist (command
+                   (list (intern (concat "e-" "subagents-list-buffer"))
+                         (intern (concat "e-board-" "runs-list-buffer"))))
+            (should-not (commandp command))))
+      (when harness
+        (e-current-config-e2e-test--close-private-harness harness)))))
 
 (ert-deftest e-current-config-e2e-test-slack-layer-reaches-tool-user ()
   "The configured Slack layer can be activated on the shared tool-user type."
@@ -140,11 +381,15 @@
            (e-source-directory))
           (let* ((standard-output e-current-config-e2e-test--output)
                  (stats (ert-run-tests-batch selector))
+                 (total (ert-stats-total stats))
                  (unexpected (ert-stats-completed-unexpected stats))
-                 (exit (if (zerop unexpected) 0 1)))
+                 (exit (if (and (> total 0) (zerop unexpected)) 0 1)))
             (e-current-config-e2e-test--print
              "Current-config E2E complete: %d tests, %d unexpected.\n"
-             (ert-stats-total stats) unexpected)
+             total unexpected)
+            (when (zerop total)
+              (e-current-config-e2e-test--print
+               "Current-config E2E failed: selector matched zero tests.\n"))
             (with-temp-file path
               (insert-buffer-substring e-current-config-e2e-test--output))
             exit))

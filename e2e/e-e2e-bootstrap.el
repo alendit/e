@@ -59,7 +59,10 @@
      (e-e2e--command-registration-state 'e-board-activity-list-buffer)
      :retired-subagent-list
      (e-e2e--command-registration-state
-      (intern (concat "e-" "subagents-list-buffer")))))
+      (intern (concat "e-" "subagents-list-buffer")))
+     :retired-board-runs-list
+     (e-e2e--command-registration-state
+      (intern (concat "e-board-" "runs-list-buffer")))))
   "Package command state captured before E2E checkout paths are added.")
 
 (defun e-e2e--add-project-load-paths ()

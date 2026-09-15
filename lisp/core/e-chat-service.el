@@ -741,18 +741,51 @@ coordination."
     (e-work-on-settle
      work
      (lambda (settled)
-       (when (eq (gethash admission-key admissions) settled)
-         (remhash admission-key admissions)
-         (e-chat-service--runtime-coordination-prune
-          e-chat-service--continuation-admissions runtime))
        (let* ((status (e-work-status settled))
-              (state (plist-get status :state)))
-         (e-chat-service--publish-sqlite-continuation-claim
-          binding run-id publication-key
-          (if (eq state 'finished) 'published 'failed)
-          (pcase state
-            ('cancelled "Continuation admission cancelled")
-            ('failed (e-work-error-message (plist-get status :error))))))))
+              (state (plist-get status :state))
+              (claim
+               (condition-case error
+                   (e-chat-service--publish-sqlite-continuation-claim
+                    binding run-id publication-key
+                    (if (eq state 'finished) 'published 'failed)
+                    (pcase state
+                      ('cancelled "Continuation admission cancelled")
+                      ('failed (e-work-error-message
+                               (plist-get status :error)))))
+                 (error
+                  (e-chat-service--sql-note-failure binding error)
+                  nil))))
+         ;; Keep the admission key occupied through the durable claim write.
+         ;; Removing it before that write settles lets a coalesced Board event
+         ;; enqueue the same continuation a second time.
+         (if (and (e-work-handle-p claim)
+                  (eq (gethash admission-key admissions) settled))
+             (progn
+               (puthash admission-key claim admissions)
+               (e-work-on-settle
+                claim
+                (lambda (claim-settled)
+                  (when (eq (gethash admission-key admissions) claim)
+                    (if (eq state 'finished)
+                        ;; Once the continuation ran, neither a stale read nor
+                        ;; a failed claim write may enqueue it again in this
+                        ;; process.  A later durable published observation can
+                        ;; release either bounded sentinel; process restart
+                        ;; falls back to the session input idempotency key.
+                        (puthash
+                         admission-key
+                         (if (eq (plist-get (e-work-status claim-settled) :state)
+                                 'finished)
+                             'published-awaiting-observation
+                           'publication-failed-awaiting-observation)
+                         admissions)
+                      (remhash admission-key admissions)
+                      (e-chat-service--runtime-coordination-prune
+                       e-chat-service--continuation-admissions runtime))))))
+           (when (eq (gethash admission-key admissions) settled)
+             (remhash admission-key admissions)
+             (e-chat-service--runtime-coordination-prune
+              e-chat-service--continuation-admissions runtime))))))
     work))
 
 (defun e-chat-service--sqlite-orchestration-projections (page)
@@ -812,32 +845,40 @@ coordination."
                    (dolist (projection
                             (e-chat-service--sqlite-orchestration-projections
                              (e-work-handle-result settled)))
-                     (let ((continuation (plist-get projection :continuation)))
-                       (when (and (plist-get projection :terminal-status)
-                                  continuation
-                                  (not (eq (plist-get continuation :state)
-                                           'published)))
-                         (let* ((run-id (plist-get projection :run-id))
-                                (key (plist-get continuation :publication-key))
-                                (admission-key (cons board-id key))
-                                (admissions
-                                 (e-chat-service--runtime-coordination-table
-                                  e-chat-service--continuation-admissions
-                                  runtime)))
-                           (unless (and admissions
-                                        (gethash admission-key admissions))
-                             (e-chat-service--watch-sqlite-continuation-admission
-                              binding run-id key
-                              (e-chat-service-queue-session
-                               (e-chat-service-binding-harness binding)
-                               (e-chat-service-binding-session-id binding)
-                               (e-chat-service--continuation-input
-                                (plist-get continuation :prompt)
-                                projection)
-                               :metadata (list :board-run-id run-id
-                                               :board-continuation-key key)
-                               :source-input-key
-                               (list "orchestration-continuation" key 0))))))))
+                     (let* ((continuation (plist-get projection :continuation))
+                            (key (and continuation
+                                      (plist-get continuation :publication-key)))
+                            (admission-key (and key (cons board-id key)))
+                            (admissions
+                             (and key
+                                  (e-chat-service--runtime-coordination-table
+                                   e-chat-service--continuation-admissions
+                                   runtime))))
+                       (if (eq (plist-get continuation :state) 'published)
+                           ;; The durable claim now fences every later process;
+                           ;; release this process-local race sentinel.
+                           (when (and admissions
+                                      (gethash admission-key admissions))
+                             (remhash admission-key admissions)
+                             (e-chat-service--runtime-coordination-prune
+                              e-chat-service--continuation-admissions runtime))
+                         (when (and (plist-get projection :terminal-status)
+                                    continuation
+                                    (not (and admissions
+                                              (gethash admission-key admissions))))
+                           (e-chat-service--watch-sqlite-continuation-admission
+                            binding (plist-get projection :run-id) key
+                            (e-chat-service-queue-session
+                             (e-chat-service-binding-harness binding)
+                             (e-chat-service-binding-session-id binding)
+                             (e-chat-service--continuation-input
+                              (plist-get continuation :prompt)
+                              projection)
+                             :metadata
+                             (list :board-run-id (plist-get projection :run-id)
+                                   :board-continuation-key key)
+                             :source-input-key
+                             (list "orchestration-continuation" key 0)))))))
                  (error
                   (e-chat-service--sql-note-failure binding error))))
              (when (and rerun-p (e-chat-service--binding-live-p binding))
@@ -2370,7 +2411,7 @@ another durable identity."
                 (let ((binding-work
                        (e-chat-service-binding-start
                         harness (plist-get association :session-id)
-                        association)))
+                        association t)))
                   (setf (e-chat-service-owner-open-operation-association operation)
                         (copy-tree association t)
                         (e-chat-service-owner-open-operation-binding-work operation)

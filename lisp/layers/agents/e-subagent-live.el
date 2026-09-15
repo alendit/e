@@ -115,7 +115,7 @@ the same durable identity is already reserved or live."
 
 (cl-defun e-subagent-live-install
     (owner board-id participant-id &key harness work-handle cancel callbacks
-          progress report-admission)
+          progress report-admission assignment)
   "Install live capabilities after durable admission settles.
 
 Only transient execution capabilities and the latest bounded progress are
@@ -130,6 +130,8 @@ they do not turn this table into a durable result or status inventory."
                        :callbacks callbacks
                        :progress (e-subagent-live--copy-progress progress)
                        :report-admission report-admission)))
+    (when assignment
+      (setq record (plist-put record :assignment (copy-tree assignment t))))
     (when (gethash key (e-subagent-live-entries owner))
       (signal 'e-subagent-live-error
               (list "participant already has a live execution")))

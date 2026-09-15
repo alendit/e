@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'seq)
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-harness)
@@ -45,6 +46,7 @@
          (e-harness-instance--defaults (make-hash-table :test 'equal))
          (e-subagent--configured-harnesses
           (make-hash-table :test 'eq :weakness 'key))
+         (e-subagent-runner--live-owner (e-subagent-live-create))
          (e-chat-test-support-share-sqlite-store t)
          (e-chat-test-support--shared-sqlite-fixture nil)
          (e-work--unsettled-count 0)
@@ -65,6 +67,12 @@
        ;; Retire SQL callbacks while the per-test e-work accounting remains
        ;; dynamically bound; the outer shared ERT teardown then has no work.
        (e-chat-test-support--close-sqlite-fixtures))))
+
+(defun e-subagent-runner-test--orchestration-facts (harness session-id)
+  "Return detached orchestration facts for SESSION-ID."
+  (delq nil
+        (mapcar #'e-board-orchestration-fact-from-record
+                (e-subagent-runner-test--records harness session-id))))
 
 (cl-defun e-subagent-runner-test--create-board-session
     (harness &key id metadata)
@@ -1613,6 +1621,134 @@ report is child-side and must not be on the parent surface."
           (should (= (length reports) 1))
           (should (equal (plist-get (plist-get (car reports) :payload) :summary)
                          "reported")))))))
+
+(ert-deftest e-subagent-runner-test-board-dispatch-publishes-running-after-admission ()
+  "Board dispatch settles only after queued and running facts are durable."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (assignment '(:run-id "run-1" :task-key "review" :attempt 0))
+             work result state)
+        (cl-letf (((symbol-function 'e-subagent-direct-runner)
+                   (lambda (&rest _arguments) (list :cancel #'ignore))))
+          (setq work
+                 (e-subagent-runner-dispatch-start
+                   target parent "parent-1"
+                 :source-turn-id "parent-turn" :type :reviewer
+                 :prompt "Review the Board task."
+                 :run-id "run-1" :task-key "review" :attempt 0))
+          (should (e-work-handle-p work))
+          (setq result (e-board-producer-test-await work))
+          (should (eq (plist-get result :status) 'admitted))
+          (should (equal (plist-get result :board-id) board-id))
+          (setq state
+                (e-subagent-runner-assignment-state
+                 board-id "run-1" "review" 0))
+          (should (eq (plist-get state :state) 'live))
+          (should (equal (plist-get state :participant-id)
+                         (plist-get result :participant-id)))
+          (should-not (plist-member state :work-handle))
+          (should-not (plist-member state :harness)))
+        (let ((statuses
+               (delq nil
+                     (mapcar
+                      (lambda (fact)
+                        (when (and (eq (plist-get fact :type) 'task-attempt)
+                                   (equal (cl-loop for key in '(:run-id :task-key :attempt)
+                                                   collect (plist-get
+                                                            (plist-get fact :payload)
+                                                            key))
+                                          '("run-1" "review" 0)))
+                          (plist-get (plist-get fact :payload) :status)))
+                      (e-subagent-runner-test--orchestration-facts
+                       parent "parent-1")))))
+          (should (equal statuses '(queued running))))))))
+
+(ert-deftest e-subagent-runner-test-board-dispatch-failure-is-durable-domain-result ()
+  "Admission failure publishes a terminal report before dispatch finishes."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          held)
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             work result)
+        (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
+                   (lambda (&rest _arguments)
+                     (setq held
+                           (e-subagent-runner-test--deferred-work
+                            "held-board-dispatch-admission")))))
+          (setq work
+                (e-subagent-runner-dispatch-start
+                 target parent "parent-1"
+                 :source-turn-id "parent-turn" :type :reviewer
+                 :prompt "Review the Board task."
+                 :run-id "run-1" :task-key "review" :attempt 0))
+          (should (e-chat-test--wait-until (lambda () held) 5.0))
+          (e-work-fail held '(e-subagent-error "admission rejected"))
+          (setq result (e-board-producer-test-await work)))
+        (should (eq (plist-get result :status) 'failed))
+        (should (string-match-p "admission rejected"
+                                (plist-get result :error)))
+        (should-not
+         (e-subagent-runner-assignment-state board-id "run-1" "review" 0))
+        (let* ((facts (e-subagent-runner-test--orchestration-facts
+                       parent "parent-1"))
+               (terminal
+                (seq-find
+                 (lambda (fact)
+                   (eq (plist-get fact :type) 'terminal-report))
+                 facts)))
+          (should terminal)
+          (should (eq (plist-get (plist-get terminal :payload) :status)
+                      'failed)))))))
+
+(ert-deftest e-subagent-runner-test-board-dispatch-publication-failure-surfaces ()
+  "A failed queued publication fails dispatch without starting a child."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (spawned nil))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let ((target (e-subagent-runner-test--publication-target
+                     parent "parent-1")))
+        (cl-letf (((symbol-function 'e-subagent-runner--publish-attempt)
+                   (lambda (&rest _arguments)
+                     (let ((work (e-subagent-runner-test--deferred-work
+                                  "failed-queued-publication")))
+                       (e-work-fail work '(e-board-sqlite-error
+                                           "queued publication rejected"))
+                       work)))
+                  ((symbol-function 'e-subagent-spawn)
+                   (lambda (&rest _arguments) (setq spawned t))))
+          (let* ((work
+                  (e-subagent-runner-dispatch-start
+                   target parent "parent-1"
+                   :source-turn-id "parent-turn" :type :reviewer
+                   :prompt "Review the Board task."
+                   :run-id "run-1" :task-key "review" :attempt 0))
+                 (status
+                  (progn
+                    (should
+                     (e-chat-test--wait-until
+                      (lambda ()
+                        (memq (plist-get (e-work-status work) :state)
+                              '(finished failed cancelled)))
+                      5.0))
+                    (e-work-status work))))
+            (should (eq (plist-get status :state) 'failed))
+            (should (string-match-p
+                     "queued publication rejected"
+                     (e-work-error-message (plist-get status :error))))
+            (should-not spawned)))))))
 
 (provide 'e-subagent-runner-test)
 

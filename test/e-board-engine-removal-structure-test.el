@@ -15,8 +15,7 @@
 (require 'ert)
 
 (defconst e-board-engine-removal-structure-test--retired-modules
-  '(e-board
-    e-board-state
+  '(e-board-state
     e-board-admission
     e-board-durability
     e-board-registry
@@ -30,7 +29,10 @@
     e-board-storage-sqlite
     e-board-storage-sqlite-worker
     e-board-orchestration-engine)
-  "Feature names deleted by the DP7C Board-engine clean cut.")
+  "Feature names deleted by the DP7C Board-engine clean cut.
+
+The current `e-board' feature is the capability/action layer backed by the
+SQLite Board service, not the deleted aggregate engine of the same name.")
 
 (defconst e-board-engine-removal-structure-test--retired-files
   (mapcar (lambda (feature)

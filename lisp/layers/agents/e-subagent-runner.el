@@ -33,6 +33,21 @@
 (define-error 'e-subagent-unknown-type
   "No spawnable subagent type is registered for id" 'e-subagent-error)
 
+(defvar e-subagent-runner--live-owner (e-subagent-live-create)
+  "Private live execution owner shared by runner consumers and actions.
+
+The value is deliberately not an inventory API.  It is the one process-local
+owner through which the runner and the child-side report action rendezvous;
+durable participant, assignment, and terminal facts remain on the Board.")
+
+(defun e-subagent-runner-live-owner ()
+  "Return the runner-owned private live execution owner.
+
+Consumers receive operations over this owner rather than the owner itself;
+this accessor exists only so the capability adapter can share the same
+process-local execution boundary."
+  e-subagent-runner--live-owner)
+
 (defun e-subagent--lineage-id (live board-id parent-session-id)
   "Return the live tmp-lineage root for PARENT-SESSION-ID in LIVE.
 
@@ -320,6 +335,43 @@ The handle exists so a subagent is awaitable as an `e-work' handle."
    :owner 'subagents
    :runner (lambda (_handle _arguments _context) :deferred)))
 
+(defconst e-subagent-runner--dispatch-work-spec
+  (e-work-spec-create
+   :id "subagent-dispatch" :execution 'cooperative
+   :interactive-policy 'async :owner 'subagents
+   :runner (lambda (_handle _arguments _context) :deferred))
+  "Work contract for one Board-addressed initial dispatch disposition.")
+
+(defun e-subagent-runner--assignment (run-id task-key attempt)
+  "Validate and return one detached RUN-ID/TASK-KEY/ATTEMPT assignment."
+  (unless (and (stringp run-id) (not (string-empty-p run-id))
+               (stringp task-key) (not (string-empty-p task-key))
+               (integerp attempt) (>= attempt 0))
+    (signal 'e-subagent-error
+            (list "Invalid durable subagent assignment"
+                  run-id task-key attempt)))
+  (list :run-id (copy-sequence run-id)
+        :task-key (copy-sequence task-key)
+        :attempt attempt))
+
+(defun e-subagent-runner--attempt-key (assignment status)
+  "Return the stable idempotency key for ASSIGNMENT STATUS."
+  (format "dispatch:%s:%s:%d:%s"
+          (plist-get assignment :run-id)
+          (plist-get assignment :task-key)
+          (plist-get assignment :attempt)
+          status))
+
+(defun e-subagent-runner--publish-attempt (target assignment status)
+  "Publish one bounded initial-dispatch STATUS for ASSIGNMENT."
+  (e-board-sqlite-publication-target-orchestration-fact-start
+   target
+   (list :version e-board-orchestration-fact-version
+         :type 'task-attempt
+         :idempotency-key (e-subagent-runner--attempt-key assignment status)
+         :payload (append (copy-tree assignment)
+                          (list :status status)))))
+
 (defun e-subagent--pending-result (board-id participant-id work-handle)
   "Return the bounded pending result for PARTICIPANT-ID admission."
   (list :participant-id participant-id
@@ -551,7 +603,7 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
     (live parent-harness parent-session-id
           &key source-turn-id type prompt seed-messages label schedule runner
           run-id task-key attempt project-root report-admission
-          on-running on-failure)
+          on-admitted on-running on-failure)
   "Spawn a subagent and return its bounded admission result.
 LIVE owns only private process-local execution capabilities.  The child
 participant identity is its admitted session id, and is the only identity
@@ -658,11 +710,14 @@ the admission work reference and the durable participant/session identity."
                     (e-subagent-live-install
                      live board-id participant-id
                      :harness child-harness :work-handle work-handle
-                     :callbacks callbacks :report-admission report-admission)
+                     :callbacks callbacks :report-admission report-admission
+                     :assignment assignment)
                     (e-subagent--publish-lifecycle producer-target record)
                     (e-subagent--inherit-prompt-cache-policy
                      parent-harness parent-session-id
                      child-harness participant-id)
+                    (when on-admitted
+                      (funcall on-admitted (copy-tree record)))
                     (e-subagent--drive-turn
                      live board-id producer-target participant-id record
                      parent-harness parent-session-id source-turn-id
@@ -820,6 +875,151 @@ Return a detached acknowledgement, or nil when SESSION-ID is not live."
                     (list "Live report callback is unavailable")))
           (funcall setter accepted)
           (list :participant-id session-id :session-id session-id :reported t))))))
+
+(defun e-subagent-runner-assignment-state
+    (board-id run-id task-key attempt)
+  "Return detached live state for one exact Board assignment.
+
+The result is nil when no pending or executing child in this process matches
+the complete BOARD-ID/RUN-ID/TASK-KEY/ATTEMPT identity.  Otherwise it contains
+only the durable coordinates, participant/session identity, and `:state' of
+`pending' or `live'.  No table, callback, harness, work handle, or terminal
+result crosses this consumer boundary."
+  (let* ((assignment (e-subagent-runner--assignment run-id task-key attempt))
+         (owner (e-subagent-runner-live-owner))
+         found)
+    (dolist (table (list (e-subagent-live-pending-admissions owner)
+                         (e-subagent-live-entries owner)))
+      (maphash
+       (lambda (_key entry)
+         (when (and (null found)
+                    (equal (plist-get entry :board-id) board-id)
+                    (equal (plist-get entry :assignment) assignment))
+           (setq found
+                 (list :board-id board-id
+                       :participant-id (plist-get entry :participant-id)
+                       :session-id (plist-get entry :participant-id)
+                       :run-id run-id :task-key task-key :attempt attempt
+                       :state (if (eq table
+                                     (e-subagent-live-pending-admissions owner))
+                                  'pending
+                                'live)))))
+       table))
+    (copy-tree found t)))
+
+(defun e-subagent-runner--dispatch-admitted-result
+    (outer board-id run-id task-key attempt record)
+  "Finish OUTER with detached admission RESULT for RECORD."
+  (e-work-finish
+   outer
+   (list :status 'admitted
+         :board-id board-id
+         :participant-id (plist-get record :participant-id)
+         :session-id (plist-get record :session-id)
+         :run-id run-id :task-key task-key :attempt attempt)))
+
+(defun e-subagent-runner--dispatch-publish-running
+    (outer target board-id assignment run-id task-key attempt record)
+  "Publish running ASSIGNMENT and finish OUTER when it is acknowledged."
+  (condition-case error
+      (let ((running
+             (e-subagent-runner--publish-attempt target assignment 'running)))
+        (e-work-on-settle
+         running
+         (lambda (settled)
+           (let ((status (e-work-status settled)))
+             (if (eq (plist-get status :state) 'finished)
+                 (e-subagent-runner--dispatch-admitted-result
+                  outer board-id run-id task-key attempt record)
+               (e-work-fail outer (plist-get status :error)))))))
+    (error (e-work-fail outer error))))
+
+(defun e-subagent-runner--dispatch-publish-failure
+    (outer target board-id assignment run-id task-key attempt failure)
+  "Publish bounded FAILED ASSIGNMENT and settle OUTER."
+  (condition-case error
+      (let ((terminal
+             (e-board-orchestration-actions-publish-terminal
+              target assignment 'failed
+              :summary "Subagent dispatch failed"
+              :outputs []
+              :error (e-work-error-message failure))))
+        (e-work-on-settle
+         terminal
+         (lambda (settled)
+           (let ((status (e-work-status settled)))
+             (if (eq (plist-get status :state) 'finished)
+                 (e-work-finish
+                  outer
+                  (list :status 'failed
+                        :board-id board-id
+                        :run-id run-id :task-key task-key
+                        :attempt attempt
+                        :error (e-work-error-message failure)))
+               (e-work-fail outer (plist-get status :error)))))))
+    (error (e-work-fail outer error))))
+
+(cl-defun e-subagent-runner-dispatch-start
+    (target parent-harness parent-session-id
+            &key source-turn-id type prompt seed-messages label schedule
+            project-root run-id task-key attempt report-admission)
+  "Start one Board-addressed child dispatch and return cooperative WORK.
+
+TARGET is the explicit durable Board destination.  The operation publishes an
+idempotent queued disposition, admits the child through the runner's private
+live owner, and publishes running only after admission succeeds.  WORK settles
+with detached Board/participant/assignment coordinates after the first
+disposition is acknowledged.  Grimoire callers never receive the private live
+owner, registry, callbacks, or nested work value."
+  (let ((outer (e-work-start e-subagent-runner--dispatch-work-spec nil)))
+    (condition-case error
+        (let* ((assignment
+                (e-subagent-runner--assignment run-id task-key attempt))
+               (binding (e-chat-service-binding
+                         parent-harness parent-session-id))
+               (board-id (and binding
+                              (e-chat-service-binding-board-id binding)))
+               (target-board
+                (and (e-board-sqlite-publication-target-valid-p target)
+                     (e-board-sqlite-publication-target-board-id target)))
+               (live (e-subagent-runner-live-owner)))
+          (unless (and binding board-id (equal board-id target-board))
+            (signal 'e-subagent-error
+                    (list "Dispatch Board target does not match owner binding"
+                          target-board board-id)))
+          (let ((queued (e-subagent-runner--publish-attempt
+                         target assignment 'queued)))
+            (e-work-on-settle
+             queued
+             (lambda (settled)
+               (let ((status (e-work-status settled)))
+                 (if (not (eq (plist-get status :state) 'finished))
+                     (e-work-fail outer (plist-get status :error))
+                   (condition-case spawn-error
+                       (e-subagent-spawn
+                        live parent-harness parent-session-id
+                        :source-turn-id source-turn-id :type type
+                        :prompt prompt :seed-messages seed-messages
+                        :label label :schedule schedule :runner nil
+                        :project-root project-root :run-id run-id
+                        :task-key task-key :attempt attempt
+                        :report-admission report-admission
+                        :on-admitted
+                        (lambda (record)
+                          (e-subagent-runner--dispatch-publish-running
+                           outer target board-id assignment run-id task-key
+                           attempt record))
+                        :on-failure
+                        (lambda (failure _pending)
+                          (e-subagent-runner--dispatch-publish-failure
+                           outer target board-id assignment run-id task-key
+                           attempt failure)))
+                     (error
+                      (e-subagent-runner--dispatch-publish-failure
+                       outer target board-id assignment run-id task-key
+                       attempt spawn-error)))))))))
+      (error (e-work-fail outer error)))
+    outer))
 
 (defun e-subagent--live-record (live board-id participant-id)
   "Return detached runner context from a private record callback."

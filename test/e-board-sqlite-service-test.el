@@ -22,6 +22,15 @@
   (e-work-with-batch-await
     (e-work-await-batch work :timeout 5.0)))
 
+(defun e-board-sqlite-service-test--deferred-work (id)
+  "Return cooperative work named ID for explicit test settlement."
+  (e-work-start
+   (e-work-spec-create
+    :id id :execution 'cooperative :interactive-policy 'async
+    :owner 'e-board-sqlite-service-test
+    :runner (lambda (_handle _arguments _context) :deferred))
+   nil))
+
 (defun e-board-sqlite-service-test--admission (session-id board-id participant-id)
   "Return SESSION-ID's root/association records and final query delta."
   (let* ((policy
@@ -729,6 +738,104 @@
                 (setq occurrences (1+ occurrences)
                       start (match-end 0)))
               (should (= occurrences 1))))
+        (when binding (e-chat-service--retire-binding binding))))))
+
+(ert-deftest e-chat-service-sqlite-continuation-fences-stale-claim-reads ()
+  "A settled admission cannot be requeued before SQL exposes its claim."
+  (e-board-sqlite-service-test--with-fixture
+      (store _service board-id session-id _participant-id)
+    (let* ((harness (e-harness-create :sessions store))
+           (manifest
+            `(:version 1 :type manifest :idempotency-key "manifest:daily"
+              :payload (:run-id "daily-run"
+                        :tasks [(:task-key "report" :required t
+                                 :accepted-attempt 0)]
+                        :deadline (:kind none)
+                        :continuation (:session-id ,session-id
+                                       :prompt "Finalize once."
+                                       :publication-key "continue:daily"))))
+           (report
+            '(:version 1 :type terminal-report :idempotency-key "report:daily"
+              :payload (:run-id "daily-run" :task-key "report" :attempt 0
+                        :status done :summary "ready" :outputs [])))
+           (claim
+            '(:version 1 :type continuation-claim
+              :idempotency-key "continuation-claim:continue:daily:published"
+              :payload (:run-id "daily-run"
+                        :publication-key "continue:daily"
+                        :status published)))
+           (record
+            (lambda (fact)
+              (append (list :kind 'fact)
+                      (e-board-orchestration-fact-record-fields fact))))
+           (published-p nil)
+           (page
+            (lambda ()
+              (list :records
+                    (mapcar
+                     (lambda (fact) (list :record (funcall record fact)))
+                     (append (list manifest report)
+                             (when published-p (list claim))))
+                    :truncated nil)))
+           (query-spec
+            (e-work-spec-create
+             :id "continuation-query" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner (lambda (_arguments _context) (funcall page))))
+           binding admission claim-work (queue-count 0))
+      (unwind-protect
+          (progn
+            (setq binding
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness session-id)))
+            (cl-letf (((symbol-function
+                        'e-board-sqlite-service-orchestration-runs-start)
+                       (lambda (&rest _) (e-work-start query-spec nil)))
+                      ((symbol-function 'e-chat-service-queue-session)
+                       (lambda (&rest _)
+                         (cl-incf queue-count)
+                         (setq admission
+                               (e-board-sqlite-service-test--deferred-work
+                                "held-continuation-admission"))))
+                      ((symbol-function
+                        'e-chat-service--publish-sqlite-continuation-claim)
+                       (lambda (&rest _)
+                         (setq claim-work
+                               (e-board-sqlite-service-test--deferred-work
+                                "held-continuation-claim")))))
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 1))
+              ;; An in-flight admission fences another stale terminal query.
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 1))
+              (e-work-finish admission '(:admitted t))
+              (should (e-work-handle-p claim-work))
+              ;; The claim write itself owns the fence.
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 1))
+              (e-work-finish claim-work '(:published t))
+              ;; Even after write settlement, a query that began before the
+              ;; commit became visible must not requeue the continuation.
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 1))
+              (let* ((runtime (e-chat-service--binding-runtime binding))
+                     (admissions
+                      (e-chat-service--runtime-coordination-table
+                       e-chat-service--continuation-admissions runtime)))
+                (should
+                 (eq (gethash (cons board-id "continue:daily") admissions)
+                     'published-awaiting-observation)))
+              ;; Only a bounded query that observes the durable claim releases
+              ;; the process-local race sentinel.
+              (setq published-p t)
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (let* ((runtime (e-chat-service--binding-runtime binding))
+                     (admissions
+                      (e-chat-service--runtime-coordination-table
+                       e-chat-service--continuation-admissions runtime)))
+                (should-not
+                 (and admissions
+                      (gethash (cons board-id "continue:daily") admissions))))))
         (when binding (e-chat-service--retire-binding binding))))))
 
 (ert-deftest e-chat-service-sqlite-subscription-crosses-held-snapshot-once ()
