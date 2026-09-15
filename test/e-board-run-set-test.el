@@ -51,6 +51,7 @@
     (should-not (plist-get value :runs))
     (should (= (plist-get value :active-count) 0))
     (should (= (plist-get value :active-run-count) 0))
+    (should (eq (plist-get value :status) 'idle))
     (should (= (plist-get value :omitted-count) 0))
     (should (<= (plist-get value :bytes) 4096))))
 

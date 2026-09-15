@@ -686,8 +686,10 @@ uses newest event position and run id as deterministic tie breakers."
                 :restore-state restore-state
                 :ready-p (eq restore-state 'ready)
                 :status (if (eq restore-state 'ready)
-                            (or (plist-get (car selected) :lifecycle)
-                                'running)
+                            (if (zerop active-count)
+                                'idle
+                              (or (plist-get (car selected) :lifecycle)
+                                  'running))
                           'restoring)
                 :runs selected :active-count active-count
                 :active-run-count active-count

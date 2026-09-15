@@ -51,21 +51,25 @@
   "Detailed Board capability action reference.")
 
 (defvar e-board--run-set-states
-  (make-hash-table :test 'equal :weakness 'key)
+  (make-hash-table :test 'eq :weakness 'key)
   "Current bounded run-set states keyed by live binding or legacy context.
 
 Production entries are keyed by the exact chat binding and therefore retire
-with that binding.  The equal-key fallback exists only for detached provider
-tests that supply no live binding; it is also weak and contains no durable
-projection outside the bounded state value.")
+with that binding.  The identity-keyed table deliberately does not use
+`equal': binding structs mutate as readiness and subscriptions are installed.
+Detached provider contexts use `e-board--run-set-detached-states' instead.")
+
+(defvar e-board--run-set-detached-states
+  (make-hash-table :test 'eq :weakness 'key)
+  "Bounded fallback states grouped by detached harness identity.
+
+This table exists only for provider tests and other contexts without a live
+binding.  Its weak harness keys let the whole session group retire when the
+detached owner disappears; each value is a small equal-key session table.")
 
 (defvar e-board--run-set-controls
   (make-hash-table :test 'eq :weakness 'key)
   "Request-local refresh controls keyed by bounded run-set state objects.")
-
-(defun e-board--run-set-key (harness session-id)
-  "Return the detached fallback key for HARNESS and SESSION-ID."
-  (list harness (copy-sequence session-id)))
 
 (defun e-board--run-set-binding (harness session-id)
   "Return the exact live binding for HARNESS and SESSION-ID, when present."
@@ -78,14 +82,22 @@ projection outside the bounded state value.")
 When no state exists, create a restoring state.  BOARD-ID is retained only in
 the detached value and may be supplied by the caller that knows the binding."
   (let* ((binding (e-board--run-set-binding harness session-id))
-         (key (or binding (e-board--run-set-key harness session-id)))
-         (state (gethash key e-board--run-set-states)))
+         (detached-states
+          (and (not binding)
+               (or (gethash harness e-board--run-set-detached-states)
+                   (let ((table (make-hash-table :test 'equal)))
+                     (puthash harness table e-board--run-set-detached-states)
+                     table))))
+         (table (or (and binding e-board--run-set-states)
+                    detached-states))
+         (key (or binding (copy-sequence session-id)))
+         (state (gethash key table)))
     (or state
         (setq state
               (puthash key
                        (e-board-orchestration-run-set-state-create
                         :board-id board-id)
-                       e-board--run-set-states)))
+                       table)))
     (when (and board-id
                (null (e-board-orchestration-run-set-state-board-id state)))
       (setf (e-board-orchestration-run-set-state-board-id state)
@@ -99,7 +111,18 @@ the detached value and may be supplied by the caller that knows the binding."
 (defun e-board--run-set-query-start (binding state controls)
   "Start one bounded durable run-set query for BINDING and STATE."
   (let* ((target (e-chat-service-publication-target binding))
-         (work (e-board-orchestration-actions-run-set target)))
+         (child (e-board-orchestration-actions-run-set target))
+         ;; Keep the readiness carrier behind the state installation.  The
+         ;; SQL action and the generic binding readiness callback can settle
+         ;; on the same event-loop turn; mapping here makes the detached
+         ;; value visible to status/context before owner readiness observes
+         ;; the query as finished.
+         (work
+          (e-board-orchestration-actions--map-work
+           child
+           (lambda (value)
+             (e-board-orchestration-run-set-state-set-value state value)
+             value))))
     (setq controls (plist-put controls :query-work work))
     (puthash state controls e-board--run-set-controls)
     (e-work-on-settle
@@ -112,14 +135,7 @@ the detached value and may be supplied by the caller that knows the binding."
            (setq controls (plist-put controls :query-work nil))
            (puthash state controls e-board--run-set-controls)
            (if (eq (plist-get status :state) 'finished)
-               (condition-case error
-                   (e-board-orchestration-run-set-state-set-value
-                    state (e-work-handle-result settled))
-                 (error
-                  (e-board-orchestration-run-set-state-update
-                   state nil :restore-state 'unavailable)
-                  (message "e Board run-set projection failed: %s"
-                           (e-work-error-message error))))
+               nil
              (e-board-orchestration-run-set-state-update
               state nil :restore-state 'unavailable))
            (when (and (plist-get controls :rerun-p)

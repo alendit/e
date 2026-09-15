@@ -224,7 +224,23 @@
               (should (e-chat-service-binding-p binding))
               (should (equal (plist-get board :board-id) e-chat-board-id))
               (should (equal (plist-get board :trusted-principal)
-                             (format "chat:%s" e-chat-session-id))))))
+                             (format "chat:%s" e-chat-session-id))))
+            (let* ((state
+                    (e-board-run-set-state-for
+                     harness e-chat-session-id e-chat-board-id))
+                   (projection
+                    (e-board-orchestration-run-set-state-value state))
+                   (status e-chat-surface--board-status))
+              ;; Public new-session readiness and the compact status must
+              ;; expose one settled detached value, including an empty ready
+              ;; run-set.  This catches settlement-before-subscription races.
+              (should (plist-get projection :ready-p))
+              (should (equal (plist-get status :status)
+                             (plist-get projection :status)))
+              (should (eq (plist-get status :status) 'idle))
+              (should (equal (plist-get status :board-id)
+                             e-chat-board-id))
+              (should (= (plist-get status :active-run-count) 0)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
