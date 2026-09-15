@@ -1,0 +1,9 @@
+#+title: Stale Doom Autoload Retains Retired Subagent Command
+#+startup: overview
+
+* Report
+
+After Feature 82 shipped and Emacs was restarted, command completion still
+listed the retired =e-subagents-list-buffer= command.  The replacement
+=e-board-activity-list-buffer= command was also available.
+

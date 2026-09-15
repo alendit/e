@@ -1,0 +1,84 @@
+#+title: Stale Doom Autoload Retains Retired Subagent Command Investigation
+#+startup: overview
+
+* Conclusion
+
+The restarted Emacs is using the current Feature 82 runtime, but Doom's
+generated Straight package metadata is stale.  Its installed =e-autoloads.el=
+still declares =e-subagents-list-buffer= as an interactive autoload, so command
+completion lists the retired command even though its source file has been
+removed.
+
+This is an acceptance and current-configuration test gap.  Feature 82 removed
+the old public shell from the checkout, but the required cold-start gate did
+not verify that the installed local-package inventory and generated autoloads
+matched the checkout.
+
+* Evidence
+
+** Live process
+
+- The GUI Emacs process started at 2026-09-15 10:07:25, after the Feature 82
+  implementation commits.  The result is therefore not explained by an Emacs
+  process that predates the feature.
+- A bounded live probe reported =e-subagents-list-buffer= as function-bound
+  with no function file.  This is the shape of an unloaded autoload.
+- =e-subagents-shell-refresh= was not function-bound.  The retired shell was
+  not loaded wholesale.
+- =e-board-activity-list-buffer= was function-bound from the current checkout's
+  =lisp/shells/e-board-activity-shell.elc=.  The replacement shell was loaded.
+
+** Checkout and installed package metadata
+
+- The checkout contains no production definition or reference for
+  =e-subagents-list-buffer=; =lisp/shells/e-subagents-shell.el= was removed by
+  Feature 82.
+- =~/.config/emacs/.local/straight/build-30.2/e/e-autoloads.el= is dated
+  2026-08-12 and still contains an interactive autoload for
+  =e-subagents-list-buffer= from =e-subagents-shell.el=.
+- The same Straight build directory retains an =e-subagents-shell.el= symlink
+  whose checkout target no longer exists, and it has no
+  =e-board-activity-shell.el= entry.
+- The native compilation cache also retains an August
+  =e-subagents-shell-*.eln= artifact.
+
+These facts give the observed request path:
+
+1. Feature 82 removes the old shell source and adds the Board Activity shell.
+2. Doom's Straight build directory and generated autoload table are not
+   regenerated.
+3. Restart loads the stale generated autoload table.
+4. Emacs registers =e-subagents-list-buffer= as an interactive command without
+   loading its deleted module.
+5. Command completion lists the retired command.  Invoking it would then try to
+   load the missing =e-subagents-shell= module.
+
+** Why validation passed
+
+- =e2e/e-e2e-bootstrap.el= first verifies that normal user startup loaded =e=
+  from this checkout, then explicitly prepends the checkout and its Lisp
+  subdirectories to =load-path=.
+- =e2e/e-current-config-e2e-test.el= checks startup, runtime readiness, the
+  default harness, configured projects, and the Slack layer.  It has no
+  assertion about the installed Straight file inventory or retired autoloads.
+- =test/e-test.el= generates a fresh temporary autoload file from the current
+  source tree.  That proves the source autoload declarations, not the installed
+  Doom-generated autoload table.
+
+The current-config gate therefore proves that the configured runtime can load
+the checkout, but not that Doom's generated package metadata reflects the
+checkout's additions and removals.
+
+* Next Step
+
+The immediate installation repair is to regenerate Doom's local package build
+metadata and restart Emacs.  That repair has not been run during this
+investigation because it mutates the user's Emacs installation.
+
+The repository fix should extend the cold-start gate to detect packaging drift,
+including both sides of this migration: the retired
+=e-subagents-list-buffer= command must not be registered, and the replacement
+=e-board-activity-list-buffer= command must be registered through the installed
+package.  The gate must inspect startup state before checkout paths added by the
+test bootstrap can hide an incomplete Straight build.
+
