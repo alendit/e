@@ -975,7 +975,7 @@ bound instead of silently truncating the eligible set."
 (defun e-board-sqlite-worker--activity-public-participant (participant)
   "Return PARTICIPANT without process-local execution identity or handles."
   (let ((copy (copy-tree participant t)))
-    (dolist (key '(:subagent-id :work-handle :cancel :child-harness
+    (dolist (key '(:work-handle :cancel :child-harness
                    :publication-target :publication-function))
       (setq copy (cl-loop for (entry value) on copy by #'cddr
                           unless (eq entry key)
@@ -1265,7 +1265,8 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
          (revision (e-board-sqlite-worker--column board-row 2))
          (after (or (plist-get body :after) ""))
          (limit (plist-get body :limit))
-         (byte-limit (plist-get body :byte-limit)))
+         (byte-limit (plist-get body :byte-limit))
+         (participant-id (plist-get body :participant-id)))
     (unless (and (integerp limit) (> limit 0)
                  (<= limit e-board-sqlite-activity-page-count-limit))
       (signal 'e-runtime-store-worker-error
@@ -1276,11 +1277,24 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
       (signal 'e-runtime-store-worker-error
               (list "Board activity page byte bound is out of bounds"
                     byte-limit e-board-sqlite-activity-page-byte-limit)))
-    (let* ((rows
+    (unless (or (null participant-id)
+                (and (stringp participant-id)
+                     (not (string-empty-p participant-id))))
+      (signal 'e-runtime-store-worker-error
+              (list "Board activity participant identity is invalid"
+                    participant-id)))
+    (let* ((participant-filter (if participant-id " AND participant_id=?" ""))
+           (participant-parameters
+            (if participant-id (list participant-id) nil))
+           (rows
             (sqlite-select
              e-board-sqlite-worker--database
-             "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id>? ORDER BY participant_id LIMIT ?"
-             (vector board-id generation after (1+ limit))))
+             (concat
+              "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id>?"
+              participant-filter
+              " ORDER BY participant_id LIMIT ?")
+             (vconcat (list board-id generation after)
+                      participant-parameters (list (1+ limit)))))
            (more (> (length rows) limit))
            (selected-rows (if more (cl-subseq rows 0 limit) rows))
            (participant-values
@@ -1365,6 +1379,7 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                  (run-id (plist-get metadata :board-run-id))
                  (task-key (plist-get metadata :board-task-key))
                  (attempt (plist-get metadata :board-attempt))
+                 (subagent-role (plist-get metadata :subagent-role))
                  (assignment (and run-id task-key (integerp attempt)
                                   (list run-id task-key attempt)))
                  (report
@@ -1408,6 +1423,7 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
               (when run-id (list :run-id run-id))
               (when task-key (list :task-key task-key))
               (when (integerp attempt) (list :attempt attempt))
+              (when subagent-role (list :subagent-role subagent-role))
               (when outcome
                 (list :outcome
                       (append

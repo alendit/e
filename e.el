@@ -126,7 +126,7 @@ Test processes may bind this to nil while placing source first in
   (require 'e-debug)
   (require 'e-background-session)
   (require 'e-task-queue-shell)
-  (require 'e-subagents-shell)
+  (require 'e-board-activity-shell)
   (require 'e-cron-shell))
 (e-startup-run)
 

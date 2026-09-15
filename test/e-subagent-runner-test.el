@@ -270,12 +270,6 @@
   (let ((board-id (e-subagent-runner-test--board-id live participant-id)))
     (e-subagent-live-forget-admission live board-id participant-id)))
 
-(defun e-subagent-runner-test--raw-read (live participant-id &optional limit)
-  "Read PARTICIPANT-ID's bounded live transcript excerpt."
-  (e-subagent-raw-read
-   live (e-subagent-runner-test--board-id live participant-id)
-   participant-id limit))
-
 (defun e-subagent-runner-test--record-progress
     (live participant-id work-handle event)
   "Record bounded progress using the participant's Board key."
@@ -1157,40 +1151,6 @@
           (should-error (e-subagent-runner-test--send live participant-id "follow up")
                         :type 'e-subagent-live-error)
           (should-not queued))))))
-
-(ert-deftest e-subagent-runner-test-raw-read-returns-excerpt-and-uri ()
-  "Raw read returns a bounded live excerpt and the child session:// URI."
-  (e-subagent-runner-test--with-instances
-    (let* ((live (e-subagent-live-create))
-           (parent (e-harness-create
-                    :backend (e-backend-fake-create :items nil)))
-           (captured (list nil)))
-      (e-harness-test-create-session parent :id "parent-1")
-      (let* ((record (e-subagent-runner-test--spawn
-                      live parent "parent-1"
-                      :type :reviewer :prompt "go"
-                      :seed-messages (list '(:role user :content "one")
-                                           '(:role assistant :content "two"))
-                      :runner (e-subagent-runner-test--capturing-runner captured)))
-             (participant-id (plist-get record :participant-id))
-             (child-session-id (plist-get record :session-id)))
-        (let ((raw
-               (cl-letf
-                   (((symbol-function 'e-harness-executing-session-state)
-                     (lambda (harness session-id)
-                       (when (and (eq harness
-                                      (plist-get (car captured) :child-harness))
-                                  (equal session-id child-session-id))
-                         '(:messages ((:role user :content "one")
-                                      (:role assistant :content "two")))))))
-                 (e-subagent-runner-test--raw-read live participant-id 1))))
-          (should (equal (plist-get raw :session-uri)
-                         (format "session://e/sessions/%s/messages"
-                                 child-session-id)))
-          ;; The request is bounded to the last live child message.
-          (should (equal (mapcar (lambda (m) (plist-get m :content))
-                                 (plist-get raw :messages))
-                         '("two"))))))))
 
 (ert-deftest e-subagent-runner-test-configure-type-toggles-layers ()
   "configure-type enables and disables layers on the type's shared harness."

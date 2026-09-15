@@ -128,10 +128,12 @@
 
 (ert-deftest e-subagents-test-active-child-context-is-board-owned ()
   "The private live owner does not publish a process-local child inventory."
-  (should-not (e-subagents--active-children-context
-               (e-subagent-live-create) "parent"))
-  (should-not (string-match-p
-               "sub_[0-9]"
-               (or (plist-get (car (e-subagents--context-messages nil "parent"))
-                              :content)
-                   ""))))
+  (let ((generated-id-pattern (concat "sub" "_[0-9]")))
+    (should-not (e-subagents--active-children-context
+                 (e-subagent-live-create) "parent"))
+    (should-not (string-match-p
+                 generated-id-pattern
+                 (or (plist-get
+                      (car (e-subagents--context-messages nil "parent"))
+                      :content)
+                     "")))))

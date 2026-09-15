@@ -632,7 +632,7 @@ canonical identity payload and is copied before crossing the SQL boundary."
          :limit (or limit 32))))
 
 (cl-defun e-board-sqlite-service-activity-page-start
-    (service board-id &key after limit byte-limit)
+    (service board-id &key after limit byte-limit participant-id)
   "Read one bounded consumer-shaped Board participant/activity page.
 
 The request returns immediately with an `e-work' handle.  COUNT and BYTE-LIMIT
@@ -656,11 +656,19 @@ operation retains the returned page after the consumer's work handle settles."
                 (and (stringp after) (not (string-empty-p after))))
       (signal 'e-board-sqlite-error
               (list "Board activity cursor is invalid" after)))
+    (unless (or (null participant-id)
+                (and (stringp participant-id)
+                     (not (string-empty-p participant-id))))
+      (signal 'e-board-sqlite-error
+              (list "Board activity participant identity is invalid"
+                    participant-id)))
     (e-board-sqlite-service--start
      service 'read
      (list :op 'board-activity-page :board-id board-id
            :after (e-board-sqlite-service--detached-copy (or after ""))
-           :limit limit :byte-limit byte-limit))))
+           :limit limit :byte-limit byte-limit
+           :participant-id
+           (e-board-sqlite-service--detached-copy participant-id)))))
 
 (defun e-board-sqlite-service-pickup-page-start
     (service board-id generation participant-id &optional limit)

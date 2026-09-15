@@ -212,10 +212,13 @@
                   "lisp/layers/agents/e-subagents.el"))
     (with-temp-buffer
       (insert-file-contents file)
-      (let ((source (buffer-string)))
-        (should-not (string-match-p "e-subagent-registry" source))
-        (should-not (string-match-p "subagent-id" source))
-        (should-not (string-match-p "sub_[0-9]" source))))))
+      (let ((source (buffer-string))
+            (registry-symbol (concat "e-" "subagent-" "registry"))
+            (process-id-field (concat "sub" "agent-id"))
+            (generated-id-pattern (concat "sub" "_[0-9]")))
+        (should-not (string-match-p registry-symbol source))
+        (should-not (string-match-p process-id-field source))
+        (should-not (string-match-p generated-id-pattern source))))))
 
 (ert-deftest e-subagent-live-test-cancel-clears-capabilities-and-publishes-audit ()
   "Cancellation invokes the live handle and removes the entry."

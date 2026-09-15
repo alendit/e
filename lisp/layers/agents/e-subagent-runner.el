@@ -924,28 +924,6 @@ fails."
     (e-chat-service-queue-session harness participant-id prompt)
     (e-subagent--live-record live board-id participant-id)))
 
-(defun e-subagent-raw-read (live board-id participant-id &optional limit)
-  "Return a bounded raw transcript excerpt for PARTICIPANT-ID."
-  (let* ((record (e-subagent--live-record live board-id participant-id))
-         (harness (e-subagent-live-harness live board-id participant-id))
-         (session-id participant-id)
-         (limit (or limit 20))
-         (messages
-          (and harness
-               (plist-get
-                (e-harness-executing-session-state harness session-id)
-                :messages)))
-         (tail (last messages limit)))
-    (unless record
-      (user-error "Subagent %s is unavailable in this process" participant-id))
-    (list :participant-id participant-id
-          :session-id session-id
-          :session-uri (format "session://e/sessions/%s/messages" session-id)
-          :messages (mapcar (lambda (message)
-                              (list :role (plist-get message :role)
-                                    :content (plist-get message :content)))
-                            tail))))
-
 (provide 'e-subagent-runner)
 
 ;;; e-subagent-runner.el ends here

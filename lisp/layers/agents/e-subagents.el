@@ -52,7 +52,7 @@
      "An action that needs asynchronous SQLite work returns a work: reference. Pass it to the top-level await tool and consume its bounded settlement report; do not treat the reference as the action result or poll the action again."
      ""
      "- `spawn`: input `(:type STRING :prompt STRING :seed-messages ARRAY :label STRING :schedule STRING)`. Creates a fresh child session on the type's harness, seeds it (prompt only by default; `:seed-messages` appends explicit context first), records lineage, and starts a non-blocking run. Returns a subagent record immediately. `:schedule` is `direct` (default) or `queue`."
-     "- `list`: returns compact live records for the current session's executing direct children, newest-first."
+     "- `list`: returns one bounded ordered Board participant/activity page; committed SQLite rows remain visible after this process loses live handles."
      "- `list-runs`: returns bounded durable run projections from this session's board."
      "- `run-status`: input `(:run-id STRING)`. Returns one bounded durable run projection with task states, reports, conflicts, deadline evidence, and continuation state."
      "- `status`: input `(:participant-id STRING)`. Durable Board observation owns the committed activity row."

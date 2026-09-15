@@ -22,8 +22,9 @@
 
 (ert-deftest e-waitable-test-parse-reference ()
   "A reference splits into scheme and local id, rejecting malformed forms."
-  (should (equal (e-waitable-parse-reference "subagent:sub_1")
-                 '("subagent" . "sub_1")))
+  (should (equal (e-waitable-parse-reference
+                  "subagent:opaque-board-participant")
+                 '("subagent" . "opaque-board-participant")))
   ;; Extra colons belong to the local id.
   (should (equal (e-waitable-parse-reference "job:a:b")
                  '("job" . "a:b")))

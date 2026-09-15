@@ -18,6 +18,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-board-observation)
 (require 'e-chat-service)
 (require 'e-subagent-live)
 (require 'e-subagent-runner)
@@ -99,18 +100,6 @@ record live."
    :seed-messages (plist-get arguments :seed-messages)
    :label (plist-get arguments :label)
    :schedule (e-subagent-actions--schedule (plist-get arguments :schedule))))
-
-(defun e-subagent-actions--list (_live _context _arguments)
-  "Signal that durable Board observation owns child listing."
-  (user-error "Child listing is provided by Board observation (DP3)"))
-
-(defun e-subagent-actions--status (_live _context _arguments)
-  "Signal that durable Board observation owns child status."
-  (user-error "Child status is provided by Board observation (DP3)"))
-
-(defun e-subagent-actions--read (_live _context _arguments)
-  "Signal that durable Board observation owns child results."
-  (user-error "Child results are provided by Board observation (DP3)"))
 
 (defun e-subagent-actions--steer (live context arguments)
   "Steer a running subagent's active turn through LIVE."
@@ -197,21 +186,6 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
     :required ["participant-id"])
   "Action parameters for subagent lookup operations.")
 
-(defconst e-subagent-actions--read-parameters
-  '(:type "object"
-    :properties
-    (:participant-id
-     (:type "string"
-      :description "Durable participant/session id returned by spawn.")
-     :raw
-     (:type "boolean"
-      :description "Return a bounded raw transcript excerpt plus the session:// URI instead of the compact result.")
-     :limit
-     (:type "integer"
-      :description "Maximum raw messages to return (default 20)."))
-    :required ["participant-id"])
-  "Action parameters for the read action.")
-
 (defconst e-subagent-actions--steer-parameters
   '(:type "object"
     :properties
@@ -287,45 +261,37 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
 (defun e-subagent-actions-parent-alist (&optional live)
   "Return the parent-facing subagent actions plist bound to LIVE.
 These are the actions a session uses to spawn and manage its children:
-spawn, list, status, read, steer, send, interrupt, shutdown,
-configure-type.  The child-side `report' is not here; see
+spawn, steer, send, interrupt, shutdown, configure-type, plus the Board-owned
+list, status, and read observations.  The child-side `report' is not here; see
 `e-subagent-actions-child-alist'."
   (let ((live (or live e-subagent-actions-default-live)))
-    (list
-     :spawn
-     (e-subagent-actions--action
-      live #'e-subagent-actions--spawn e-subagent-actions--spawn-parameters)
-     :list
-     (e-subagent-actions--action
-      live #'e-subagent-actions--list nil)
-     :status
-     (e-subagent-actions--action
-      live #'e-subagent-actions--status
-      e-subagent-actions--participant-id-parameters)
-     :read
-     (e-subagent-actions--action
-      live #'e-subagent-actions--read
-      e-subagent-actions--read-parameters)
-     :steer
-     (e-subagent-actions--action
-      live #'e-subagent-actions--steer
-      e-subagent-actions--steer-parameters)
-     :send
-     (e-subagent-actions--action
-      live #'e-subagent-actions--send
-      e-subagent-actions--send-parameters)
-     :interrupt
-     (e-subagent-actions--action
-      live #'e-subagent-actions--interrupt
-      e-subagent-actions--intervention-parameters)
-     :shutdown
-     (e-subagent-actions--action
-      live #'e-subagent-actions--shutdown
-      e-subagent-actions--intervention-parameters)
-     :configure-type
-     (e-subagent-actions--action
-      live #'e-subagent-actions--configure-type
-      e-subagent-actions--configure-type-parameters))))
+    (append
+     (list
+      :spawn
+      (e-subagent-actions--action
+       live #'e-subagent-actions--spawn e-subagent-actions--spawn-parameters))
+     (e-board-observation-parent-alist)
+     (list
+      :steer
+      (e-subagent-actions--action
+       live #'e-subagent-actions--steer
+       e-subagent-actions--steer-parameters)
+      :send
+      (e-subagent-actions--action
+       live #'e-subagent-actions--send
+       e-subagent-actions--send-parameters)
+      :interrupt
+      (e-subagent-actions--action
+       live #'e-subagent-actions--interrupt
+       e-subagent-actions--intervention-parameters)
+      :shutdown
+      (e-subagent-actions--action
+       live #'e-subagent-actions--shutdown
+       e-subagent-actions--intervention-parameters)
+      :configure-type
+      (e-subagent-actions--action
+       live #'e-subagent-actions--configure-type
+       e-subagent-actions--configure-type-parameters)))))
 
 (defun e-subagent-actions-child-alist (&optional live)
   "Return the child-facing subagent actions plist bound to LIVE.

@@ -271,7 +271,8 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
     (unwind-protect
         (e-await-tool-test--with-scheme (list (cons "a" handle))
           (e-work-progress handle
-                           '(:subagent-id "sub_000001" :sequence 7
+                           '(:board-id "board-await" :participant-id "participant-1"
+                             :sequence 7
                              :event tool-finished :summary "Finished focused ERT"
                              :at 0.0))
           (let* ((registry (e-tools-registry-create))
@@ -314,7 +315,8 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
                           (funcall callback 'timed-out)
                           result)))
             (e-work-progress handle
-                             '(:subagent-id "sub_000001" :sequence 1
+                             '(:board-id "board-await" :participant-id "participant-1"
+                               :sequence 1
                                :event tool-started :summary "Started long build" :at 0.0))
             (let ((first (window)))
               (should (eq (plist-get (plist-get first :content) :reason) 'timed-out))
@@ -322,7 +324,8 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
                                     :progress-sequence)
                          1)))
             (e-work-progress handle
-                             '(:subagent-id "sub_000001" :sequence 2
+                             '(:board-id "board-await" :participant-id "participant-1"
+                               :sequence 2
                                :event tool-finished :summary "Finished build phase" :at 1.0))
             (let ((second (window)))
               (should (eq (plist-get (plist-get second :content) :reason) 'timed-out))
