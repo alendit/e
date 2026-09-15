@@ -163,7 +163,12 @@ Return a plist containing its stream, harness, transcript, and visible windows."
   (when-let ((outside (get-buffer "*e graphical outside*")))
     (kill-buffer outside))
   (when-let ((store (plist-get fixture :store)))
-    (ignore-errors (e-session-sqlite-store-close store)))
+    ;; This is an isolated test-runtime boundary.  Do not synchronously wait
+    ;; for a close acknowledgement from inside the server-hosted graphical
+    ;; callback; already-acknowledged durable work is sufficient here.
+    (ignore-errors
+      (e-runtime-store-shutdown
+       (e-session-storage-runtime-store store))))
   (when-let ((directory (plist-get fixture :store-directory)))
     (when (file-directory-p directory)
       (delete-directory directory t)))

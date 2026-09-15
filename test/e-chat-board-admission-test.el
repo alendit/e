@@ -262,6 +262,38 @@
                              :lifecycle)
                   'dispatching)))))
 
+(ert-deftest e-chat-board-admission-test-readiness-precedes-pickup-resume ()
+  "Owner startup installs Board readiness before restart pickup delivery."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let ((events nil)
+          (original-readiness
+           (symbol-function 'e-chat-service--binding-open-readiness-start))
+          (original-resume
+           (symbol-function 'e-chat-service--sql-resume-ready)))
+      (cl-letf
+          (((symbol-function 'e-chat-service--binding-open-readiness-start)
+            (lambda (binding)
+              (push 'readiness-installed events)
+              (funcall original-readiness binding)))
+           ((symbol-function 'e-chat-service--sql-resume-ready)
+            (lambda (binding)
+              (push 'pickup-resume events)
+              (funcall original-resume binding))))
+        (let* ((ticket
+                (e-chat-service-owner-admission-start
+                 :harness harness :creation-key "org:daily:startup-order"
+                 :metadata '(:name "Startup order Daily")))
+               (admitted
+                (e-chat-board-admission-test--await
+                 (e-chat-service-owner-admission-work ticket)))
+               (binding
+                (e-chat-board-admission-test--await
+                 (e-chat-service-open-board-owner-start
+                  (plist-get admitted :board-id) harness))))
+          (should (e-chat-service-binding-p binding))
+          (should (equal (nreverse events)
+                         '(readiness-installed pickup-resume))))))))
+
 (ert-deftest e-chat-board-admission-test-pickup-waits-for-run-set-readiness ()
   "A ready pickup neither claims nor runs while owner readiness restores.
 

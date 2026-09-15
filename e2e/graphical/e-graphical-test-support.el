@@ -157,6 +157,12 @@ on the first redisplay after this helper returns."
       (unless (= stable-observations 2)
         ;; Exercise the same event-loop and redisplay boundary that the next
         ;; user command will cross before declaring graphical state settled.
+        ;; The graphical suite is server-hosted on macOS; while an
+        ;; `emacsclient --eval' callback is active, process filters for
+        ;; detached runtime workers are otherwise deferred until the callback
+        ;; returns.  Pump all process output here so a worker acknowledgement
+        ;; can advance the same bounded wait as timers and native redisplay.
+        (accept-process-output nil 0.01)
         (sit-for 0.01)
         (redisplay t)))
     (unless (= stable-observations 2)
