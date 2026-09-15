@@ -92,8 +92,10 @@ legacy symbol merely to compensate for stale generated state.
 The active Emacs 31.1 build now contains =e-board-activity-shell.el= and its
 autoload, and contains neither the retired shell link nor its autoload.  The
 generated Doom 31.1 profile likewise contains only the Board Activity command.
-The already-running GUI Emacs was not restarted, so it retains its startup
-command table until the user next restarts it.
+The already-running GUI Emacs was not reloaded or restarted.  A one-time
+=fmakunbound= removed only its stale =e-subagents-list-buffer= autoload so the
+visible command table is repaired immediately; the regenerated profile makes
+that repair durable across the next restart.
 
 * Validation
 
@@ -101,6 +103,8 @@ command table until the user next restarts it.
   5 expected and 1 unexpected out of 6 tests.
 - After the scoped package rebuild and =doom sync -U=, the same private
   current-configuration cold start passed 6 of 6 tests.
+- The bounded live read-back reported the retired command absent and the Board
+  Activity replacement command present.
 - =eldev test -f test/e-test.el=: 17 expected, 0 unexpected.
 - The focused Feature 82 removal and shell-control gate passed 1 of 1 tests.
 - =eldev compile= completed successfully.
