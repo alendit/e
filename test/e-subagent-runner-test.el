@@ -1518,13 +1518,25 @@ report is child-side and must not be on the parent surface."
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (participant-id (plist-get record :participant-id))
              (reason (make-string 300 ?r)))
-        (cl-letf (((symbol-function 'e-chat-service-steer-session)
-                   (lambda (_harness _session prompt &rest _)
-                     (should (equal prompt "Run one focused test.")))))
-          (e-subagent-runner-test--steer
-           live
-           (e-subagent-runner-test--publication-target parent "parent-1")
-           participant-id "Run one focused test." reason))
+        (let ((publication-work nil)
+              (publish (symbol-function 'e-subagent--publish-board-fact)))
+          (cl-letf (((symbol-function 'e-chat-service-steer-session)
+                     (lambda (_harness _session prompt &rest _)
+                       (should (equal prompt "Run one focused test."))))
+                    ((symbol-function 'e-subagent--publish-board-fact)
+                     (lambda (target &rest arguments)
+                       (setq publication-work
+                             (apply publish target arguments)))))
+            (e-subagent-runner-test--steer
+             live
+             (e-subagent-runner-test--publication-target parent "parent-1")
+             participant-id "Run one focused test." reason))
+          ;; The publication target uses an independent read connection after
+          ;; SQLite opens.  Await the exact write at this explicit test boundary
+          ;; before inspecting its detached record page.
+          (should (e-work-handle-p publication-work))
+          (e-work-with-batch-await
+            (e-work-await-batch publication-work :timeout 5.0)))
         (let* ((records (e-subagent-runner-test--records parent "parent-1"))
                (fact (car (last (cl-remove-if-not
                                  (lambda (record)

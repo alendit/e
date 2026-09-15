@@ -383,7 +383,9 @@
                                        :test #'equal
                                        :key (lambda (value)
                                               (plist-get value :participant-id))))
-                        (plist-get row :outcome))
+                        (and row
+                             (eq (plist-get (plist-get row :outcome) :status)
+                                 'done)))
                       5.0))
                     (should row)
                     (should (equal (plist-get row :participant-id)

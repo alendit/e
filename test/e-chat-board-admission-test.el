@@ -28,6 +28,15 @@
       (accept-process-output nil 0.01))
     (should (funcall predicate))))
 
+(defun e-chat-board-admission-test--held-work (id)
+  "Return a started cooperative work handle held by the test until settled."
+  (e-work-start
+   (e-work-spec-create
+    :id id :execution 'cooperative :interactive-policy 'async
+    :owner 'e-chat-board-admission-test
+    :runner (lambda (_handle _arguments _context) :deferred))
+   nil))
+
 (defun e-chat-board-admission-test--stall-file (directory operation suffix)
   "Return one disposable worker stall marker path."
   (expand-file-name (format "%s.%s" operation suffix) directory))
@@ -252,6 +261,165 @@
                                   :runs))
                              :lifecycle)
                   'dispatching)))))
+
+(ert-deftest e-chat-board-admission-test-pickup-waits-for-run-set-readiness ()
+  "A ready pickup neither claims nor runs while owner readiness restores.
+
+The success and failure halves use separate disposable stores so the held
+run-set query is the only readiness edge under test.  A durable ready pickup
+is visible before release, then exactly one turn is submitted only after the
+projection succeeds; a failed projection leaves its pickup unclaimed."
+  (let ((original-submit
+         (symbol-function 'e-harness-attached-turn-port-submit))
+        (original-transition
+         (symbol-function 'e-board-sqlite-service-transition-pickup-start)))
+    (cl-labels
+        ((run-case (settle)
+           (e-chat-board-admission-test--with-fixture (store harness)
+             (let* ((service (e-board-sqlite-service-create
+                              (e-session-storage-runtime-store store)))
+                    (held (e-chat-board-admission-test--held-work
+                           (if (eq settle 'success)
+                               "held-run-set-success"
+                             "held-run-set-failure")))
+                    (submit-count 0)
+                    (claim-count 0))
+                 (cl-letf
+                   (((symbol-function 'e-board-orchestration-actions-run-set)
+                     (lambda (&rest _arguments) held))
+                    ((symbol-function
+                      'e-board-sqlite-service-transition-pickup-start)
+                     (lambda (service board-id delivery-id transition &optional data)
+                       (when (eq transition 'claim)
+                         (cl-incf claim-count))
+                       (funcall original-transition service board-id delivery-id
+                                transition data)))
+                    ((symbol-function 'e-harness-attached-turn-port-submit)
+                     (lambda (port prompt &rest arguments)
+                       (cl-incf submit-count)
+                       (apply original-submit port prompt arguments))))
+                 (let* ((admitted
+                         (e-chat-board-admission-test--admit-association
+                          service
+                          (if (eq settle 'success)
+                              "held-pickup-success-session"
+                            "held-pickup-failure-session")
+                          (if (eq settle 'success)
+                              "held-pickup-success-board"
+                            "held-pickup-failure-board")
+                          (if (eq settle 'success)
+                              "principal-held-success"
+                            "principal-held-failure")
+                          (if (eq settle 'success)
+                              "participant-held-success"
+                            "participant-held-failure")
+                          'owner))
+                        (association (plist-get admitted :association))
+                        (board-id (plist-get association :board-id))
+                        (session-id
+                         (if (eq settle 'success)
+                             "held-pickup-success-session"
+                           "held-pickup-failure-session"))
+                        (participant-id
+                         (plist-get (plist-get association :routing-policy)
+                                    :participant-id))
+                        (route
+                         (e-chat-board-admission-test--await
+                          (e-board-sqlite-service-append-route-start
+                           service board-id :author "test"
+                           :tags '(main) :content "ready pickup"
+                           :source-input-key
+                           (list "held-pickup" settle 1))))
+                        (pickup (car (plist-get route :pickups)))
+                        (open
+                         (e-chat-service-open-board-owner-start
+                          board-id harness)))
+                   (should (eq (plist-get pickup :state) 'ready))
+                   (e-chat-board-admission-test--wait
+                    (lambda ()
+                      (or (e-chat-service-binding harness session-id)
+                          (e-request-terminal-p
+                           (e-work-handle-lifecycle open)))))
+                   (should-not (e-request-terminal-p
+                                (e-work-handle-lifecycle open)))
+                   (should (= claim-count 0))
+                   (should (= submit-count 0))
+                   (let* ((board
+                           (e-chat-board-admission-test--await
+                            (e-board-sqlite-service-board-get-start
+                             service board-id)))
+                          (page
+                           (e-chat-board-admission-test--await
+                            (e-board-sqlite-service-pickup-page-start
+                             service board-id (plist-get board :generation)
+                             participant-id 16))))
+                     (should (eq (plist-get
+                                  (car page) :state)
+                                 'ready)))
+                   (if (eq settle 'success)
+                       (progn
+                         (e-work-finish
+                          held
+                          (list :board-id board-id :restore-state 'ready
+                                :ready-p t :runs nil :omitted-count 0))
+                         (should (eq
+                                  (e-chat-board-admission-test--await open)
+                                  (e-chat-service-binding harness session-id)))
+                         (e-chat-board-admission-test--wait
+                          (lambda () (= submit-count 1)))
+                         (should (= claim-count 1))
+                         (should (= submit-count 1)))
+                     (e-work-fail held
+                                  '(e-board-sqlite-error
+                                    "held run-set query failed"))
+                     (should-error
+                      (e-chat-board-admission-test--await open)
+                      :type 'e-board-sqlite-error)
+                     (should-not (e-chat-service-binding harness session-id))
+                     (should (= claim-count 0))
+                     (should (= submit-count 0))
+                     (let* ((board
+                             (e-chat-board-admission-test--await
+                              (e-board-sqlite-service-board-get-start
+                               service board-id)))
+                            (page
+                             (e-chat-board-admission-test--await
+                              (e-board-sqlite-service-pickup-page-start
+                               service board-id (plist-get board :generation)
+                               participant-id 16))))
+                       (should (eq (plist-get
+                                    (car page) :state)
+                                   'ready))))))))))
+      (run-case 'success)
+      (run-case 'failure))))
+
+(ert-deftest e-chat-board-admission-test-participant-binding-skips-owner-readiness ()
+  "Participant admission does not clobber or inherit owner run-set readiness."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((service (e-board-sqlite-service-create
+                     (e-session-storage-runtime-store store)))
+           (owner-result
+            (e-chat-board-admission-test--admit-association
+             service "participant-parent" "participant-parent-board"
+             "participant-parent-principal" "participant-parent-id" 'owner))
+           (parent-association (plist-get owner-result :association))
+           (parent
+            (e-chat-service--install-sqlite-binding
+             harness "participant-parent" parent-association nil t))
+           (operation
+            (e-chat-service-create-participant-start
+             parent harness :metadata '(:participant-name "child"))))
+      (should (e-chat-service-binding-readiness-work parent))
+      (should (e-chat-board-admission-test--await operation))
+      (let* ((child
+              (e-chat-service-participant-operation-binding
+               (e-work-handle-arguments operation)))
+             (parent-readiness
+              (e-chat-service-binding-readiness-work parent)))
+        (should child)
+        (should-not (e-chat-service-binding-readiness-work child))
+        (should (eq parent-readiness
+                    (e-chat-service-binding-readiness-work parent)))))))
 
 (ert-deftest e-chat-board-admission-test-owner-open-fails-closed-partitions ()
   "Owner resolution rejects zero, multiple, wrong-role, and live conflicts."
