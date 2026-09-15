@@ -603,6 +603,54 @@ those owner ports into the host hook lists."
 (defvar-local e-chat--session-readiness-work nil
   "Private session creation work retained by the current chat surface.")
 
+(defconst e-chat--surface-readiness-spec
+  (e-work-spec-create
+   :id "chat-surface-readiness" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat
+   :runner
+   (lambda (parent arguments _context)
+     (let ((children (plist-get arguments :children))
+           cancel-wait)
+       (setq cancel-wait
+             (e-work-await-set
+              children :mode 'all
+              :on-settle
+              (lambda (settled)
+                (let ((failed
+                       (seq-find
+                        (lambda (child)
+                          (memq (plist-get (e-work-status child) :state)
+                                '(failed cancelled)))
+                        (plist-get settled :done))))
+                  (cond
+                   ((null failed) (e-work-finish parent t))
+                   ((eq (plist-get (e-work-status failed) :state) 'cancelled)
+                    (e-work-cancel parent))
+                   (t (e-work-fail parent
+                                   (or (e-work-handle-error failed)
+                                       '(e-work-error
+                                         "chat readiness failed")))))))))
+       ;; Cancelling a presentation wait detaches it.  Application work such
+       ;; as a durable controller remains owned by its application service.
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when cancel-wait (funcall cancel-wait))))
+       :deferred)))
+  "Join binding and application readiness for one chat surface.")
+
+(defun e-chat--surface-readiness-start (binding-work application-work)
+  "Return one readiness work joining BINDING-WORK and APPLICATION-WORK."
+  (unless (e-work-handle-p binding-work)
+    (signal 'wrong-type-argument (list 'e-work-handle-p binding-work)))
+  (cond
+   ((null application-work) binding-work)
+   ((not (e-work-handle-p application-work))
+    (signal 'wrong-type-argument (list 'e-work-handle-p application-work)))
+   ((eq binding-work application-work) binding-work)
+   (t
+    (e-work-start e-chat--surface-readiness-spec
+                  (list :children (list binding-work application-work))))))
+
 (defvar-local e-chat-board-id nil
   "Board id owned by the current chat buffer's public interaction context.")
 
@@ -1581,15 +1629,17 @@ operation.  The facade retains only durable transcript and shell composition."
 
 (cl-defun e-chat-open
     (&key harness session-id new-session instance-id on-session-read-error
-          readiness-work metadata)
+          readiness-work application-readiness-work metadata)
   "Attach and return an e chat buffer.
 HARNESS, SESSION-ID, and NEW-SESSION are injectable for presentation tests and
 reload.  INSTANCE-ID identifies a configured harness instance.
 ON-SESSION-READ-ERROR, when non-nil, receives an asynchronous bounded-read
 condition after the chat buffer renders it.  READINESS-WORK is an already
-started participant admission supplied by a public Board-open operation;
-METADATA is its bounded optimistic header state.  User-facing commands should
-call `e-chat-new' or `e-chat-resume'."
+started participant admission supplied by a public Board-open operation.
+APPLICATION-READINESS-WORK optionally gates user submission on additional
+application initialization without transferring ownership of that work to the
+presentation.  METADATA is bounded optimistic header state.  User-facing
+commands should call `e-chat-new' or `e-chat-resume'."
   (let* ((instance (and (not harness)
                         instance-id
                         (e-harness-instance-get instance-id)))
@@ -1627,15 +1677,18 @@ call `e-chat-new' or `e-chat-resume'."
        on-session-read-error session-metadata))
     (e-chat--prune-duplicate-session-buffers
      buffer chat-session-id chat-harness chat-instance-id)
-    (when creation-work
+    (when (or creation-work application-readiness-work)
       ;; Binding is the application-level readiness boundary.  Starting it
       ;; also starts the pending owner's atomic SQLite admission; merely
       ;; retaining the create handle leaves the durable operation unsubmitted.
-      (let ((binding-work
-             (e-chat-service-binding-start
-              chat-harness chat-session-id nil t)))
+      (let* ((binding-work
+              (e-chat-service-binding-start
+               chat-harness chat-session-id nil t))
+             (surface-readiness
+              (e-chat--surface-readiness-start
+               binding-work application-readiness-work)))
         (with-current-buffer buffer
-          (setq-local e-chat--session-readiness-work binding-work)
+          (setq-local e-chat--session-readiness-work surface-readiness)
           (e-chat-surface-set-status "persistence pending" t))
         (e-work-on-settle
          binding-work

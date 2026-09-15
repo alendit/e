@@ -66,6 +66,80 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-daily-query-test-application-readiness-joins-binding ()
+  "A Daily controller can gate submission without owning chat persistence."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (creation-work (e-work-start e-chat-daily-query-test--spec nil))
+         (binding-work (e-work-start e-chat-daily-query-test--spec nil))
+         (application-work (e-work-start e-chat-daily-query-test--spec nil))
+         surface-work
+         buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
+                   (lambda (_store) t))
+                  ((symbol-function 'e-chat-service-create-session-start)
+                   (lambda (&rest _arguments) creation-work))
+                  ((symbol-function 'e-chat-service-binding-start)
+                   (lambda (&rest _arguments) binding-work)))
+          (setq buffer
+                (e-chat-open
+                 :harness harness :session-id "daily-application-ready"
+                 :new-session t
+                 :application-readiness-work application-work))
+          (setq surface-work
+                (buffer-local-value 'e-chat--session-readiness-work buffer))
+          (should (e-work-handle-p surface-work))
+          (should-not (eq surface-work binding-work))
+          (should-not (eq surface-work application-work))
+          (e-work-finish application-work 'controller-ready)
+          (should (eq (plist-get (e-work-status surface-work) :state)
+                      'started))
+          ;; Cancelling presentation readiness detaches the join without
+          ;; cancelling either independently owned child.
+          (e-work-cancel surface-work)
+          (should (eq (plist-get (e-work-status binding-work) :state)
+                      'started))
+          (should (eq (plist-get (e-work-status application-work) :state)
+                      'finished)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest e-chat-daily-query-test-existing-open-honors-application-readiness ()
+  "An existing Board chat gates submission on application initialization."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (binding-work (e-work-start e-chat-daily-query-test--spec nil))
+         (application-work (e-work-start e-chat-daily-query-test--spec nil))
+         (view-work (e-work-start e-chat-daily-query-test--spec nil))
+         surface-work
+         buffer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-session-storage-sqlite-p)
+                   (lambda (_store) t))
+                  ((symbol-function 'e-session-async-chat-view)
+                   (lambda (&rest _arguments) view-work))
+                  ((symbol-function 'e-chat-service-binding-start)
+                   (lambda (&rest _arguments) binding-work)))
+          (setq buffer
+                (e-chat-open
+                 :harness harness :session-id "daily-existing-ready"
+                 :application-readiness-work application-work))
+          (setq surface-work
+                (buffer-local-value 'e-chat--session-readiness-work buffer))
+          (should (e-work-handle-p surface-work))
+          (should-not (eq surface-work application-work))
+          (e-work-finish application-work 'controller-ready)
+          (should (eq (plist-get (e-work-status surface-work) :state)
+                      'started))
+          (e-work-cancel surface-work)
+          (should (eq (plist-get (e-work-status binding-work) :state)
+                      'started)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (ert-deftest e-chat-daily-query-test-killed-open-retires-late-binding ()
   "Killing a new chat before SQL readiness cannot leak its late binding."
   (let* ((store (e-session-store-create))
