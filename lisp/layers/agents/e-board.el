@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'e-capabilities)
 (require 'e-board-observation)
 (require 'e-board-orchestration)
@@ -70,6 +71,14 @@ detached owner disappears; each value is a small equal-key session table.")
 (defvar e-board--run-set-controls
   (make-hash-table :test 'eq :weakness 'key)
   "Request-local refresh controls keyed by bounded run-set state objects.")
+
+(cl-defstruct (e-board--run-set-barrier
+               (:constructor e-board--run-set-barrier-create))
+  state binding run-id work unsubscribe)
+
+(defvar e-board--run-set-barriers
+  (make-hash-table :test 'eq :weakness 'key)
+  "Active Board-owned run-set barriers keyed by session-scoped state.")
 
 (defun e-board--run-set-binding (harness session-id)
   "Return the exact live binding for HARNESS and SESSION-ID, when present."
@@ -260,6 +269,99 @@ projection rather than settling on the first stale snapshot.")
           (puthash state controls e-board--run-set-controls))
       (e-board--run-set-query-start binding state controls))))
 
+(defconst e-board--run-set-barrier-spec
+  (e-work-spec-create
+   :id "board-run-set-barrier" :execution 'cooperative
+   :interactive-policy 'async :owner 'board
+   :runner (lambda (_parent _arguments _context) :deferred))
+  "Work contract for waiting on one exact durable Board run projection.")
+
+(defun e-board--run-set-barrier-remove (barrier)
+  "Detach BARRIER from its run-set state and request-local registry."
+  (when-let* ((unsubscribe
+               (e-board--run-set-barrier-unsubscribe barrier)))
+    (setf (e-board--run-set-barrier-unsubscribe barrier) nil)
+    (funcall unsubscribe))
+  (let* ((state (e-board--run-set-barrier-state barrier))
+         (remaining
+          (delq barrier (gethash state e-board--run-set-barriers))))
+    (if remaining
+        (puthash state remaining e-board--run-set-barriers)
+      (remhash state e-board--run-set-barriers))))
+
+(defun e-board--run-set-barrier-run (value run-id)
+  "Return VALUE's exact RUN-ID entry when it is ready, or nil."
+  (and (plist-get value :ready-p)
+       (seq-find (lambda (run)
+                   (equal (plist-get run :run-id) run-id))
+                 (plist-get value :runs))))
+
+(defun e-board--run-set-barrier-observe (barrier value)
+  "Settle BARRIER from detached run-set VALUE when its contract is met."
+  (let ((work (e-board--run-set-barrier-work barrier)))
+    (unless (e-request-terminal-p (e-work-handle-lifecycle work))
+      (cond
+       ((eq (plist-get value :restore-state) 'unavailable)
+        (e-work-fail
+         work
+         (list 'e-board-orchestration-error
+               "Board run-set projection became unavailable")))
+       ((e-board--run-set-barrier-run
+         value (e-board--run-set-barrier-run-id barrier))
+        ;; STATE already owns this detached VALUE.  Returning a copy keeps the
+        ;; barrier consumer-shaped while compact status and context continue to
+        ;; read the identical session-scoped projection.
+        (e-work-finish work (copy-tree value t)))))))
+
+(defun e-board--run-set-barriers-cancel (state)
+  "Cancel every active run-set barrier for STATE."
+  (dolist (barrier (copy-sequence (gethash state e-board--run-set-barriers)))
+    (let ((work (e-board--run-set-barrier-work barrier)))
+      (unless (e-request-terminal-p (e-work-handle-lifecycle work))
+        (e-work-cancel work))))
+  (remhash state e-board--run-set-barriers))
+
+(defun e-board-run-set-await-run-start (binding run-id)
+  "Return cancellable work waiting for exact RUN-ID in BINDING's run-set.
+
+The barrier observes only the existing session-scoped detached Board state.
+It settles immediately when the ready projection contains RUN-ID, otherwise
+it waits for the next observer-visible refresh.  Projection failure fails the
+barrier and binding retirement cancels it; no SQL read or polling is added."
+  (unless (e-chat-service-binding-p binding)
+    (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
+  (unless (and (stringp run-id) (not (string-empty-p run-id)))
+    (signal 'wrong-type-argument (list 'non-empty-string-p run-id)))
+  (let* ((harness (e-chat-service-binding-harness binding))
+         (session-id (e-chat-service-binding-session-id binding))
+         (state (e-board-run-set-state-for
+                 harness session-id
+                 (e-chat-service-binding-board-id binding)))
+         (work (e-work-start e-board--run-set-barrier-spec nil))
+         (barrier (e-board--run-set-barrier-create
+                   :state state :binding binding :run-id (copy-sequence run-id)
+                   :work work)))
+    (puthash state
+             (cons barrier (gethash state e-board--run-set-barriers))
+             e-board--run-set-barriers)
+    (setf (e-work-handle-cancel-function work)
+          (lambda (_handle)
+            (e-board--run-set-barrier-remove barrier)))
+    (e-work-add-cleanup
+     work
+     (lambda (_settled)
+       (e-board--run-set-barrier-remove barrier)))
+    (setf (e-board--run-set-barrier-unsubscribe barrier)
+          (e-board-orchestration-run-set-state-subscribe
+           state
+           (lambda (value _generation)
+             (e-board--run-set-barrier-observe barrier value))))
+    (e-board--run-set-barrier-observe
+     barrier (e-board-orchestration-run-set-state-value state))
+    (when (eq (e-chat-service-binding-lifecycle-state binding) 'retired)
+      (e-work-cancel work))
+    work))
+
 (defun e-board-run-set-bind-binding (binding)
   "Start BINDING's initial bounded run-set query and commit wake-up path.
 The returned work is the exact durable projection used by the binding
@@ -300,6 +402,7 @@ chat service only knows that the hook returns asynchronous readiness work."
                      (unless (memq (plist-get (e-work-status query) :state)
                                    '(finished failed cancelled))
                        (e-work-cancel query)))
+                   (e-board--run-set-barriers-cancel state)
                    (when-let ((wake (plist-get current :observer)))
                      (e-board-sqlite-commit-observation-cancel wake))
                    (remhash state e-board--run-set-controls)
@@ -321,6 +424,7 @@ chat service only knows that the hook returns asynchronous readiness work."
         (unless (memq (plist-get (e-work-status work) :state)
                       '(finished failed cancelled))
           (e-work-cancel work)))
+      (e-board--run-set-barriers-cancel state)
       (remhash state e-board--run-set-controls))
     (setf (e-board-orchestration-run-set-state-subscribers state) nil)
     (remhash binding e-board--run-set-states))
