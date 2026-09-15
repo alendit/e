@@ -78,3 +78,128 @@ The running Emacs remains unchanged.
 * Unresolved
 
 None.
+
+* Addendum review: One Participant Activity Model
+
+** Status
+
+Done on 2026-09-15.
+
+** Scope reviewed
+
+- Addendum F82A1 and implementation commits =e6f86237= through =5f3c818d=.
+- The Board SQLite query and observation service, private live-execution owner,
+  participant actions and runner, unified Board activity shell, removed legacy
+  shells, focused ERT coverage, and public graphical scenario.
+- The complete exact-source Eldev suite, repository compilation,
+  real-current-config cold start, structural clean-cut gate, and whitespace
+  checks.
+
+** Review loop
+
+*** DONE High: Board observation needed one bounded durable fact set
+
+The new Board-owned query selects participant, lifecycle, orchestration, and
+terminal-outcome facts as one byte- and count-bounded detached page.  Its tests
+assert the exact source-key set and five constant-count SQL reads, so adding
+participants cannot introduce per-participant routing, session, transcript, or
+registry reads.
+
+*** DONE High: The public registry still owned participant truth
+
+The registry was replaced with a private live owner keyed by =(board-id .
+participant-id)=.  It retains only pending admission and current execution
+capabilities, removes entries at settlement, and cannot list, classify, hide,
+reject, or reorder durable participants.  Binding-loss lookup now rejects an
+ambiguous participant ID shared by multiple Boards instead of cancelling
+either execution.
+
+*** DONE High: Separate shells and observations preserved two models
+
+The unified Board activity shell and Board observation actions now read the
+same durable projection.  Selecting a durable participant optionally resolves
+a current live handle for control; raw transcript inspection uses the bounded
+durable session query.  Retargeting the singleton buffer cancels and fences the
+old request.  The removal gate rejects the retired modules, public registry
+operations, compatibility names, and generated =sub_NNNNNN= identities across
+production, tests, E2E fixtures, extensions, and configuration.
+
+** Contract coverage
+
+- F82A1-C01 through F82A1-C04 are covered by the durable lifecycle/result,
+  single-identity, live-owner, bounded-query, and constant-query-count tests.
+- F82A1-C05 through F82A1-C08 are covered by shell/action tests and the public
+  held-read, mixed-view, live-control, raw-read, and restart scenario.
+- F82A1-C09 and F82A1-C10 are covered by admission, settlement, stale/missing
+  handle, cross-Board ambiguity, and durable-row invariance tests.
+- F82A1-C11 is covered by the exact-source removal gate and successful clean
+  current-configuration startup.
+
+** Verification
+
+- =eldev test=: 2,575 expected, 0 unexpected, 2,575 total, in 199.817831
+  seconds.
+- =E_GRAPHICAL_E2E_SELECTOR=e-board-activity-behavior-test-public-composition-survives-restart bash e2e/run-graphical-tests.sh=:
+  1 expected, 0 unexpected.
+- =bash e2e/run-current-config-tests.sh=: 5 expected, 0 unexpected, using a
+  private daemon and test-owned runtime state.
+- =eldev compile=: completed successfully with only pre-existing obsolete-form
+  warnings.
+- =git diff --check=: passed.
+
+The first sandboxed complete-suite run had six loopback-socket permission
+failures in four MCP HTTP tests and two OpenAI HTTP tests.  Running the exact
+same source with the required host permission passed all 2,575 tests; no
+product failure remained.
+
+** Public behavior and visual inspection
+
+The captured held-read state shows the chat composer accepting its draft while
+the Board activity buffer reports its in-flight generation and three
+independent heartbeats advance.  After release, the view contains exactly one
+owner, one ad-hoc child, and one run-bound worker, with the latter's run, task,
+and attempt coordinates.  A live-progress command succeeds from the selected
+durable row.  After both terminal paths settle and the process-local owner is
+replaced, the same ad-hoc lifecycle result and run orchestration result remain
+visible and both rows truthfully report live controls as unavailable.
+
+** Architecture self-check
+
+1. If work stopped here, the project would still be better: the contradictory
+   process-local participant inventory is gone and the replacement is usable.
+2. The change moves toward SQLite-authoritative Boards with Emacs owning only
+   presentation and currently executable capabilities.
+3. Page bounds and presentation remain local and reversible; durable identity
+   and ownership are modeled directly, with no speculative extension layer.
+4. The Board service owns durable observation, the runner owns live execution,
+   and the shell owns presentation; each has one primary reason to change.
+5. Coupling decreases because actions and presentation consume the narrow
+   Board projection and optional live lookup instead of registry record shape.
+6. No stable Board policy depends on the runner, shell, provider, transport, or
+   persistence client implementation.
+7. SQLite and process-handle effects stay at their adapters; detached mapping
+   and presentation remain independently testable.
+8. Added state is limited to a requesting surface's bounded detached page and
+   active execution handles; neither is durable or a history mirror.
+9. Five constant-count SQL reads replace inventory enumeration plus follow-up
+   reads, while byte/count paging bounds work and retained memory.
+10. The Board observation contract represents a real consumer fact set, and
+    the private live lookup promises only optional current capabilities.
+11. No compatibility requirement applies to the duplicated shells, operations,
+    or process-local ID, so the implementation removes them outright.
+12. The registry projection, normalized durable-like fields, both old shells,
+    and their mechanism-coupled tests were removed.
+13. Expected query failures stay request-local and visible; missing live handles
+    reject only the requested control; unexpected errors surface normally.
+14. Owner-level SQL/service and runner tests change narrowly, while one public
+    graphical test proves composition through supported interfaces.
+
+** Live runtime
+
+No live reload, live probe, or canonical-database operation ran.  The running
+Emacs remains unchanged.  A full restart is required to consume the removed and
+renamed runtime modules; =e-dev-reload= is intentionally insufficient.
+
+** Unresolved
+
+None.

@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 * Product authority
 
@@ -33,9 +33,11 @@ restart convergence, and canonical Board participant identity.
   row and result remain visible while live-only controls are unavailable.
 - Product authority :: The operator.
 - Owning contract :: F82A1-C01 through F82A1-C11 below.
-- Behavioral status :: Failing.  The SQL-backed Board-run shell and the
-  registry-backed subagent shell currently expose overlapping inventories with
-  different identities, lifetimes, and restart behavior.
+- Behavioral status :: Passing.  The public graphical scenario keeps the chat
+  composer and three independent heartbeats responsive while the Board read is
+  held, renders ordinary and run-bound participants once when the read settles,
+  operates a live participant from its durable row, and preserves that row and
+  its terminal outcome after process-local execution state is replaced.
 
 * Problem
 
@@ -294,6 +296,31 @@ Required final evidence:
 - all old callers and symbols are removed without aliases; and
 - focused, graphical, startup, compilation, structural, and complete-suite
   gates pass from the exact implementation revision.
+
+* Implementation and verification
+
+The clean cut landed in four packages:
+
+- =e6f86237= adds the bounded SQL participant/activity page and the detached
+  Board observation service;
+- =c391c219= replaces the public registry with the private live-execution owner
+  keyed by Board and participant identity;
+- =9f55a4b3= adds the unified Board activity shell and removes both specialized
+  shells and their public registry-backed observation paths; and
+- =5f3c818d= adds the public graphical composition and restart scenario.
+
+All contracts F82A1-C01 through F82A1-C11 have current evidence.  The exact
+source revision passed 2,575 of 2,575 Eldev tests, the focused graphical
+scenario passed 1 of 1 tests, the real-current-config cold-start gate passed 5
+of 5 tests, =eldev compile= completed successfully, and =git diff --check=
+passed.  The graphical artifacts show the responsive held-read state, the
+single mixed participant view, live control from a durable row, and the same
+terminal rows after replacing the live owner.
+
+No request reached the running Emacs or the canonical user database.  A full
+Emacs restart is required to use this implementation because it removes and
+renames loaded runtime modules; =e-dev-reload= deliberately does not apply this
+core/runtime cut.
 
 * Design self-check
 
