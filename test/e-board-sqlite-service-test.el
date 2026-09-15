@@ -1350,6 +1350,27 @@
         :content "second"))
       (should (= notifications 1)))))
 
+(ert-deftest e-board-sqlite-service-commit-observer-precedes-write-settlement ()
+  "A committed write acknowledges only after Board observers are woken."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id _participant-id)
+    (let ((observer-seen nil)
+          (settlement-seen nil))
+      (e-board-sqlite-service-observe-commits
+       service board-id (lambda () (setq observer-seen t)))
+      (let ((work
+             (e-board-sqlite-service-record-append-start
+              service board-id 'fact 'fact "observer-before-settlement"
+              :content "committed")))
+        (e-work-on-settle
+         work
+         (lambda (_settled)
+           (setq settlement-seen t)
+           (should observer-seen)))
+        (e-board-sqlite-service-test--await work))
+      (should observer-seen)
+      (should settlement-seen))))
+
 (provide 'e-board-sqlite-service-test)
 
 ;;; e-board-sqlite-service-test.el ends here

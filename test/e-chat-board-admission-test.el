@@ -262,6 +262,77 @@
                              :lifecycle)
                   'dispatching)))))
 
+(ert-deftest e-chat-board-admission-test-readiness-waits-for-committed-run-set-refresh ()
+  "Owner readiness does not settle on a stale projection after a commit."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((initial-query
+            (e-chat-board-admission-test--held-work "held-run-set-initial"))
+           (refresh-query
+            (e-chat-board-admission-test--held-work "held-run-set-refresh"))
+           (queries (list initial-query refresh-query))
+           admitted association board-id session-id open binding state)
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (or (pop queries)
+                       (error "unexpected extra Board run-set query")))))
+        (setq admitted
+              (e-chat-board-admission-test--await
+               (e-chat-service-owner-admission-work
+                (e-chat-service-owner-admission-start
+                 :harness harness :creation-key "org:daily:refresh-order"
+                 :metadata '(:name "Refresh ordering Daily")))))
+        (setq association (plist-get admitted :association)
+              board-id (plist-get admitted :board-id)
+              session-id
+              (plist-get
+               (e-chat-service-owner-admission-identities
+                "org:daily:refresh-order")
+               :session-id)
+              open (e-chat-service-open-board-owner-start board-id harness))
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (and (e-chat-service-binding harness session-id)
+                (= (length queries) 1))))
+        (setq binding (e-chat-service-binding harness session-id)
+              state (e-board-run-set-state-for harness session-id board-id))
+        (should-not (e-request-terminal-p (e-work-handle-lifecycle open)))
+        (should (eq (plist-get (e-board-orchestration-run-set-state-value state)
+                               :restore-state)
+                    'restoring))
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest :idempotency-key "manifest:refresh-order"
+            :payload (:run-id "refresh-run"
+                      :tasks ((:task-key "task" :required t :accepted-attempt 0))
+                      :deadline (:kind none)))))
+        (should (plist-get (e-board--run-set-controls state) :rerun-p))
+        (e-work-finish
+         initial-query
+         (list :board-id board-id :restore-state 'ready :ready-p t
+               :status 'idle :runs nil :active-count 0 :active-run-count 0
+               :omitted-count 0 :bytes 0))
+        (e-chat-board-admission-test--wait
+         (lambda () (= (length queries) 0)))
+        ;; The first SQL child was a stale snapshot.  Its detached value must
+        ;; not settle owner readiness; the observer-driven refresh owns that
+        ;; boundary and is still held here.
+        (should-not (e-request-terminal-p (e-work-handle-lifecycle open)))
+        (should (eq (plist-get (e-board-orchestration-run-set-state-value state)
+                               :restore-state)
+                    'restoring))
+        (e-work-finish
+         refresh-query
+         (list :board-id board-id :restore-state 'ready :ready-p t
+               :status 'running
+               :runs (list (list :run-id "refresh-run" :lifecycle 'running))
+               :active-count 1 :active-run-count 1 :omitted-count 0 :bytes 128))
+        (should (eq (e-chat-board-admission-test--await open) binding))
+        (let ((value (e-board-orchestration-run-set-state-value state)))
+          (should (eq (plist-get value :restore-state) 'ready))
+          (should (equal (plist-get (car (plist-get value :runs)) :run-id)
+                         "refresh-run")))))))
+
 (ert-deftest e-chat-board-admission-test-readiness-precedes-pickup-resume ()
   "Owner startup installs Board readiness before restart pickup delivery."
   (e-chat-board-admission-test--with-fixture (store harness)

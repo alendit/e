@@ -542,17 +542,22 @@ the keyword arguments accepted by `e-board-sqlite-service-activity-page-start'."
            (board-id (plist-get (e-board-sqlite-service-operation-body operation)
                                 :board-id)))
       (if committed-p
-          (e-work-finish work result)
+          (progn
+            ;; Wake Board-owned projection consumers before acknowledging the
+            ;; write to their callers.  Otherwise a readiness callback can
+            ;; observe the committed write while the shared run-set still
+            ;; represents the previous SQL snapshot.
+            (when (and (eq (e-board-sqlite-service-operation-kind operation)
+                           'write)
+                       board-id)
+              (e-board-sqlite-service--notify-commits
+               (e-board-sqlite-service-operation-service operation) board-id))
+            (e-work-finish work result))
         (e-work-fail
          work
          (or (e-board-sqlite-service--detached-copy
               (e-runtime-store-request--error request))
-             '(e-board-sqlite-error "Board operation did not commit"))))
-      (when (and committed-p
-                 (eq (e-board-sqlite-service-operation-kind operation) 'write)
-                 board-id)
-        (e-board-sqlite-service--notify-commits
-         (e-board-sqlite-service-operation-service operation) board-id)))))
+             '(e-board-sqlite-error "Board operation did not commit")))))))
 
 (defun e-board-sqlite-service--run (handle operation _context)
   "Submit OPERATION without waiting for worker open or acknowledgement."

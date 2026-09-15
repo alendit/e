@@ -146,43 +146,108 @@ Board readiness composition merely because both consume `e-work' handles.")
   (e-work-start e-board--run-set-mapped-work-spec
                 (list :child child :mapper mapper)))
 
-(defun e-board--run-set-query-start (binding state controls)
-  "Start one bounded durable run-set query for BINDING and STATE."
+(defconst e-board--run-set-query-spec
+  (e-work-spec-create
+   :id "board-run-set-query" :execution 'cooperative
+   :interactive-policy 'async :owner 'board
+   :runner (lambda (_parent _arguments _context) :deferred))
+  "Work contract for a stable Board run-set query carrier.
+
+The carrier stays pending when a committed-write notification races its SQL
+child.  This lets the owner readiness boundary receive the refreshed detached
+projection rather than settling on the first stale snapshot.")
+
+(defun e-board--run-set-query-child-start (binding state work)
+  "Start one SQL run-set child for stable query WORK."
   (let* ((target (e-chat-service-publication-target binding))
          (child (e-board-orchestration-actions-run-set target))
-         ;; Keep the readiness carrier behind the state installation.  The
-         ;; SQL action and the generic binding readiness callback can settle
-         ;; on the same event-loop turn; mapping here makes the detached
-         ;; value visible to status/context before owner readiness observes
-         ;; the query as finished.
-         (work
-          (e-board--run-set-map-work
-           child
-           (lambda (value)
-             (e-board-orchestration-run-set-state-set-value state value)
-             value))))
-    (setq controls (plist-put controls :query-work work))
+         ;; Keep the Board-owned mapper boundary, but install STATE only after
+         ;; the stable carrier decides that no committed refresh raced CHILD.
+         (mapped (e-board--run-set-map-work child #'identity))
+         (controls (e-board--run-set-controls state)))
+    (setq controls (plist-put controls :current-child mapped))
     (puthash state controls e-board--run-set-controls)
     (e-work-on-settle
-     work
+     mapped
      (lambda (settled)
-       (when (eq (plist-get (e-board--run-set-controls state) :query-work)
-                 work)
-         (let ((status (e-work-status settled))
-               (controls (e-board--run-set-controls state)))
-           (setq controls (plist-put controls :query-work nil))
-           (puthash state controls e-board--run-set-controls)
-           (if (eq (plist-get status :state) 'finished)
-               nil
-             (e-board-orchestration-run-set-state-update
-              state nil :restore-state 'unavailable))
-           (when (and (plist-get controls :rerun-p)
-                      (e-chat-service-binding-p binding)
-                      (not (eq (e-chat-service-binding-lifecycle-state binding)
-                               'retired)))
-             (setq controls (plist-put controls :rerun-p nil))
-             (puthash state controls e-board--run-set-controls)
-             (e-board--run-set-query-start binding state controls))))))
+       (e-board--run-set-query-child-settled
+        binding state work mapped settled)))
+    mapped))
+
+(defun e-board--run-set-query-child-settled
+    (binding state work child settled)
+  "Advance stable run-set WORK after CHILD SETTLED."
+  (when (and (eq (plist-get (e-board--run-set-controls state) :query-work)
+                work)
+             (not (e-request-terminal-p (e-work-handle-lifecycle work)))
+             (eq (plist-get (e-board--run-set-controls state) :current-child)
+                 child))
+    (let* ((status (e-work-status settled))
+           (controls (e-board--run-set-controls state))
+           (rerun-p (plist-get controls :rerun-p)))
+      (setq controls (plist-put controls :current-child nil))
+      (if rerun-p
+          (if (and (e-chat-service-binding-p binding)
+                   (not (eq (e-chat-service-binding-lifecycle-state binding)
+                            'retired)))
+              (progn
+                ;; Do not expose CHILD's potentially stale value.  The next
+                ;; bounded SQL read becomes the one that settles readiness.
+                (setq controls (plist-put controls :rerun-p nil))
+                (puthash state controls e-board--run-set-controls)
+                (condition-case error
+                    (e-board--run-set-query-child-start binding state work)
+                  (error
+                   (setq controls (plist-put controls :query-work nil))
+                   (puthash state controls e-board--run-set-controls)
+                   (e-work-fail work error))))
+            ;; A binding that retired while the stale child was settling must
+            ;; not install that child or leave its readiness pending.
+            (setq controls (plist-put controls :query-work nil))
+            (puthash state controls e-board--run-set-controls)
+            (e-board-orchestration-run-set-state-update
+             state nil :restore-state 'unavailable)
+            (e-work-cancel work))
+        (setq controls (plist-put controls :query-work nil))
+        (puthash state controls e-board--run-set-controls)
+        (pcase (plist-get status :state)
+          ('finished
+           (condition-case error
+               (progn
+                 (e-board-orchestration-run-set-state-set-value
+                  state (e-work-handle-result settled))
+                 (e-work-finish work (e-work-handle-result settled)))
+             (error (e-work-fail work error))))
+          ('cancelled
+           (e-board-orchestration-run-set-state-update
+            state nil :restore-state 'unavailable)
+           (e-work-cancel work))
+          (_
+           (e-board-orchestration-run-set-state-update
+            state nil :restore-state 'unavailable)
+           (e-work-fail work (or (e-work-handle-error settled)
+                                 '(e-board-orchestration-error
+                                   "Board run-set query failed")))))))))
+
+(defun e-board--run-set-query-start (binding state controls)
+  "Start one bounded durable run-set query for BINDING and STATE."
+  (let ((work (e-work-start e-board--run-set-query-spec nil)))
+    (setq controls (plist-put controls :query-work work))
+    (puthash state controls e-board--run-set-controls)
+    (setf (e-work-handle-cancel-function work)
+          (lambda (_handle)
+            (when-let ((current (plist-get
+                                 (e-board--run-set-controls state)
+                                 :current-child)))
+              (unless (e-request-terminal-p
+                       (e-work-handle-lifecycle current))
+                (e-work-cancel current)))))
+    (condition-case error
+        (e-board--run-set-query-child-start binding state work)
+      (error
+       (setq controls (plist-put controls :query-work nil))
+       (puthash state controls e-board--run-set-controls)
+       (e-work-fail work error)))
     work))
 
 (defun e-board--run-set-refresh (binding state)
