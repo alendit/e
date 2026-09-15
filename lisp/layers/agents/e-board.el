@@ -108,6 +108,44 @@ the detached value and may be supplied by the caller that knows the binding."
   "Return STATE's request-local refresh controls."
   (gethash state e-board--run-set-controls))
 
+(defconst e-board--run-set-mapped-work-spec
+  (e-work-spec-create
+   :id "board-run-set-state-map" :execution 'cooperative
+   :interactive-policy 'async :owner 'board
+   :runner
+   (lambda (parent arguments _context)
+     (let ((child (plist-get arguments :child))
+           (mapper (plist-get arguments :mapper)))
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when (and (e-work-handle-p child)
+                          (not (memq (plist-get (e-work-status child) :state)
+                                     '(finished failed cancelled))))
+                 (e-work-cancel child))))
+       (e-work-on-settle
+        child
+        (lambda (settled)
+          (pcase (plist-get (e-work-status settled) :state)
+            ('finished
+             (condition-case error
+                 (e-work-finish parent
+                                (funcall mapper
+                                         (e-work-handle-result settled)))
+               (error (e-work-fail parent error))))
+            ('failed (e-work-fail parent (e-work-handle-error settled)))
+            ('cancelled (e-work-cancel parent)))))
+       :deferred)))
+  "Work contract for Board-owned detached run-set state installation.
+
+This mapper is deliberately owned by the Board application layer: the
+model-facing orchestration action adapter must not become a dependency of
+Board readiness composition merely because both consume `e-work' handles.")
+
+(defun e-board--run-set-map-work (child mapper)
+  "Return request-scoped work mapping CHILD through Board MAPPER."
+  (e-work-start e-board--run-set-mapped-work-spec
+                (list :child child :mapper mapper)))
+
 (defun e-board--run-set-query-start (binding state controls)
   "Start one bounded durable run-set query for BINDING and STATE."
   (let* ((target (e-chat-service-publication-target binding))
@@ -118,7 +156,7 @@ the detached value and may be supplied by the caller that knows the binding."
          ;; value visible to status/context before owner readiness observes
          ;; the query as finished.
          (work
-          (e-board-orchestration-actions--map-work
+          (e-board--run-set-map-work
            child
            (lambda (value)
              (e-board-orchestration-run-set-state-set-value state value)
