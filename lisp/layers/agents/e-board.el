@@ -422,8 +422,10 @@ Without RECEIPT-GENERATION it settles when a ready projection contains RUN-ID
 and otherwise waits for the next observer-visible refresh.  With a generation
 receipt captured before controller work, it waits for a strictly newer ready
 projection and checks EXPECTED-PRESENCE (`present' by default, or `absent'
-for a consumed/finalized run).  Projection failure fails the barrier and
-binding retirement cancels it; no SQL read or polling is added."
+for a consumed/finalized run).  If a refresh is already active at construction,
+the current generation is also a fence so an intermediate value cannot settle
+the barrier before the coalesced refresh.  Projection failure fails the barrier
+and binding retirement cancels it; no SQL read or polling is added."
   (unless (e-chat-service-binding-p binding)
     (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
   (unless (and (stringp run-id) (not (string-empty-p run-id)))
@@ -456,7 +458,15 @@ binding retirement cancels it; no SQL read or polling is added."
                    :await-refresh-p (or (integerp receipt-generation)
                                         query-active-p)
                    :query-settled-p (not query-active-p)
-                   :fence-generation receipt-generation
+                   ;; A receipt fences the controller's first publication.
+                   ;; When a refresh is already active, its current state is
+                   ;; itself only an intermediate snapshot; fence at least
+                   ;; the generation visible at barrier construction so a
+                   ;; coalesced final refresh cannot be bypassed.
+                   :fence-generation
+                   (if query-active-p
+                       (max generation (or receipt-generation generation))
+                     receipt-generation)
                    :expected-presence expected-presence)))
     (puthash state
              (cons barrier (gethash state e-board--run-set-barriers))

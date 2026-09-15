@@ -694,6 +694,137 @@
                          (e-chat-service-binding-session-id binding)
                          (e-chat-service-binding-board-id binding)))))))))
 
+(defun e-chat-board-admission-test--run-set-active-query-fence
+    (expected-presence)
+  "Prove EXPECTED-PRESENCE waits past an active intermediate refresh.
+
+The first refresh publishes an intermediate generation, then a second commit
+starts a held final refresh.  A barrier created in that window must not settle
+from the intermediate value, regardless of whether the final expectation is
+presence or absence."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((initial-query
+            (e-chat-board-admission-test--held-work
+             "held-active-fence-initial"))
+           (intermediate-query
+            (e-chat-board-admission-test--held-work
+             "held-active-fence-intermediate"))
+           (final-query
+            (e-chat-board-admission-test--held-work
+             "held-active-fence-final"))
+           (queries (list initial-query intermediate-query final-query))
+           (creation-key (format "org:daily:active-fence-%s"
+                                 expected-presence))
+           (run-id (if (eq expected-presence 'present)
+                       "active-fence-present"
+                     "active-fence-absent"))
+           (intermediate-runs
+            (list (list :run-id run-id :lifecycle 'running)))
+           (final-runs (if (eq expected-presence 'present)
+                           intermediate-runs
+                         nil))
+           admitted session-id open binding state receipt barrier intermediate final)
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (or (pop queries)
+                       (error "unexpected extra Board run-set query")))))
+        (setq admitted
+              (e-chat-board-admission-test--await
+               (e-chat-service-owner-admission-work
+                (e-chat-service-owner-admission-start
+                 :harness harness
+                 :creation-key creation-key
+                 :metadata '(:name "Active fence Daily")))))
+        (setq session-id
+              (plist-get
+               (e-chat-service-owner-admission-identities creation-key)
+               :session-id)
+              open (e-chat-service-open-board-owner-start
+                    (plist-get admitted :board-id) harness))
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (and (e-chat-service-binding harness session-id)
+                (= (length queries) 2))))
+        (setq binding (e-chat-service-binding harness session-id)
+              state
+              (e-board-run-set-state-for
+               harness
+               (e-chat-service-binding-session-id binding)
+               (e-chat-service-binding-board-id binding)))
+        (e-work-finish
+         initial-query
+         (list :board-id (plist-get admitted :board-id)
+               :restore-state 'ready :ready-p t :status 'idle :runs nil
+               :active-count 0 :active-run-count 0 :omitted-count 0 :bytes 0))
+        (should (eq (e-chat-board-admission-test--await open) binding))
+        (setq receipt (e-board-run-set-generation binding))
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest
+            :idempotency-key "manifest:active-fence-intermediate"
+            :payload (:run-id "intermediate-run" :tasks nil
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (and (= (length queries) 1)
+                (e-work-handle-p intermediate-query))))
+        (setq intermediate
+              (list :board-id (e-chat-service-binding-board-id binding)
+                    :restore-state 'ready :ready-p t :status 'running
+                    :runs intermediate-runs :active-count 1
+                    :active-run-count 1 :omitted-count 0 :bytes 128))
+        (e-work-finish intermediate-query intermediate)
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (and (> (e-board-orchestration-run-set-state-generation state)
+                   receipt)
+                (null (plist-get (e-board--run-set-controls state)
+                                 :query-work)))))
+        ;; A second durable notification starts the final refresh after the
+        ;; intermediate generation has become observer-visible.
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest
+            :idempotency-key "manifest:active-fence-final"
+            :payload (:run-id "final-run" :tasks nil
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (and (= (length queries) 0)
+                (let ((query (plist-get (e-board--run-set-controls state)
+                                        :query-work)))
+                  (and (e-work-handle-p query)
+                       (not (e-request-terminal-p
+                             (e-work-handle-lifecycle query))))))))
+        (setq barrier
+              (e-board-run-set-await-run-start
+               binding run-id receipt expected-presence))
+        ;; The intermediate value is newer than RECEIPT, but the final query
+        ;; is active.  Its current generation must therefore be the fence.
+        (should-not (e-request-terminal-p (e-work-handle-lifecycle barrier)))
+        (setq final
+              (list :board-id (e-chat-service-binding-board-id binding)
+                    :restore-state 'ready :ready-p t
+                    :status (if (eq expected-presence 'present)
+                                'running
+                              'idle)
+                    :runs final-runs
+                    :active-count (if final-runs 1 0)
+                    :active-run-count (if final-runs 1 0)
+                    :omitted-count 0 :bytes (if final-runs 128 0)))
+        (e-work-finish final-query final)
+        (should (equal (e-chat-board-admission-test--await barrier) final))))))
+
+(ert-deftest e-chat-board-admission-test-run-set-barrier-fences-active-present-refresh ()
+  "An active final refresh fences an intermediate present generation."
+  (e-chat-board-admission-test--run-set-active-query-fence 'present))
+
+(ert-deftest e-chat-board-admission-test-run-set-barrier-fences-active-absent-refresh ()
+  "An active final refresh fences an intermediate present finalized generation."
+  (e-chat-board-admission-test--run-set-active-query-fence 'absent))
+
 (ert-deftest e-chat-board-admission-test-readiness-precedes-pickup-resume ()
   "Owner startup installs Board readiness before restart pickup delivery."
   (e-chat-board-admission-test--with-fixture (store harness)
