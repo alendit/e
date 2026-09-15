@@ -375,8 +375,6 @@
                :omitted-count 0 :bytes 0))
         (should (e-chat-service-binding-p
                  (e-chat-board-admission-test--await open)))
-        (setq barrier (e-board-run-set-await-run-start binding "controller-run"))
-        (should-not (e-request-terminal-p (e-work-handle-lifecycle barrier)))
         (e-chat-board-admission-test--await
          (e-board-sqlite-publication-target-orchestration-fact-start
           (e-chat-service-publication-target binding)
@@ -386,6 +384,10 @@
                       :deadline (:kind none)))))
         (e-chat-board-admission-test--wait
          (lambda () (= (length queries) 0)))
+        ;; The controller receipt is now followed by an active observer query;
+        ;; construct the barrier while that post-controller refresh is held.
+        (setq barrier (e-board-run-set-await-run-start binding "controller-run"))
+        (should-not (e-request-terminal-p (e-work-handle-lifecycle barrier)))
         ;; A completed controller work/result cannot make the app ready while
         ;; its observer-visible Board refresh is still held.
         (should-not (e-request-terminal-p (e-work-handle-lifecycle barrier)))
@@ -414,7 +416,11 @@
   (e-chat-board-admission-test--with-fixture (store harness)
     (let* ((initial-query
             (e-chat-board-admission-test--held-work "held-barrier-failure"))
-           (queries (list initial-query))
+           (refresh-query
+            (e-chat-board-admission-test--held-work "held-barrier-failure-refresh"))
+           (cancel-query
+            (e-chat-board-admission-test--held-work "held-barrier-cancel-refresh"))
+           (queries (list initial-query refresh-query cancel-query))
            admitted board-id session-id open binding state barrier)
       (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
                  (lambda (&rest _arguments)
@@ -436,7 +442,7 @@
         (e-chat-board-admission-test--wait
          (lambda ()
            (and (e-chat-service-binding harness session-id)
-                (= (length queries) 0))))
+                (= (length queries) 2))))
         (setq binding (e-chat-service-binding harness session-id)
               state (e-board-run-set-state-for harness session-id board-id))
         (e-work-finish
@@ -445,19 +451,248 @@
                :status 'idle :runs nil :active-count 0 :active-run-count 0
                :omitted-count 0 :bytes 0))
         (e-chat-board-admission-test--await open)
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest :idempotency-key "manifest:barrier-failure"
+            :payload (:run-id "failure-run"
+                      :tasks ((:task-key "task" :required t :accepted-attempt 0))
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait
+         (lambda () (= (length queries) 1)))
         (setq barrier (e-board-run-set-await-run-start binding "never"))
-        (e-board-orchestration-run-set-state-update
-         state nil :restore-state 'unavailable)
+        (e-work-fail refresh-query '(e-board-orchestration-error
+                                     "held refresh failed"))
         (should-error
          (e-chat-board-admission-test--await barrier)
          :type 'e-board-orchestration-error)
         (e-board-orchestration-run-set-state-update
          state nil :restore-state 'ready)
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest :idempotency-key "manifest:barrier-cancel"
+            :payload (:run-id "cancel-run"
+                      :tasks ((:task-key "task" :required t :accepted-attempt 0))
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait
+         (lambda () (= (length queries) 0)))
         (setq barrier (e-board-run-set-await-run-start binding "retired"))
         (e-chat-service--retire-binding binding)
         (should-error
          (e-chat-board-admission-test--await barrier)
          :type 'e-work-cancelled)))))
+
+(ert-deftest e-chat-board-admission-test-run-set-query-start-failure-publishes-unavailable ()
+  "A synchronous refresh-start error invalidates the shared projection first."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((ticket
+            (e-chat-service-owner-admission-start
+             :harness harness :creation-key "org:daily:query-start-failure"
+             :metadata '(:name "Query start failure Daily")))
+           (admitted
+            (e-chat-board-admission-test--await
+             (e-chat-service-owner-admission-work ticket)))
+           (binding
+            (e-chat-board-admission-test--await
+             (e-chat-service-open-board-owner-start
+              (plist-get admitted :board-id) harness)))
+           (session-id (e-chat-service-binding-session-id binding))
+           (state (e-board-run-set-state-for
+                   harness session-id
+                   (e-chat-service-binding-board-id binding))))
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (error "synchronous run-set start failure"))))
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest
+            :idempotency-key "manifest:query-start-failure"
+            :payload (:run-id "query-start-failure-run" :tasks nil
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait
+         (lambda ()
+           (eq (plist-get (e-board-orchestration-run-set-state-value state)
+                          :restore-state)
+               'unavailable)))
+        (should-not (plist-get (e-board--run-set-controls state) :query-work))
+        (let ((barrier
+               (e-board-run-set-await-run-start binding "missing-after-start")))
+          (should-error
+           (e-chat-board-admission-test--await barrier)
+           :type 'e-board-orchestration-error))))))
+
+(ert-deftest e-chat-board-admission-test-run-set-value-install-failure-invalidates-state ()
+  "A malformed detached result invalidates state before query failure settles."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((initial-query
+            (e-chat-board-admission-test--held-work "held-value-install-initial"))
+           (refresh-query
+            (e-chat-board-admission-test--held-work "held-value-install-refresh"))
+           (queries (list initial-query refresh-query))
+           admitted binding open state barrier)
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (or (pop queries)
+                       (error "unexpected extra Board run-set query")))))
+        (setq admitted
+              (e-chat-board-admission-test--await
+               (e-chat-service-owner-admission-work
+                (e-chat-service-owner-admission-start
+                 :harness harness :creation-key "org:daily:value-install-failure"
+                 :metadata '(:name "Value install failure Daily")))))
+        (setq open
+              (e-chat-service-open-board-owner-start
+               (plist-get admitted :board-id) harness))
+        (e-work-finish
+         initial-query
+         (list :board-id (plist-get admitted :board-id)
+               :restore-state 'ready :ready-p t :status 'idle :runs nil
+               :active-count 0 :active-run-count 0 :omitted-count 0 :bytes 0))
+        (setq binding (e-chat-board-admission-test--await open))
+        (setq state
+              (e-board-run-set-state-for
+               harness (e-chat-service-binding-session-id binding)
+               (e-chat-service-binding-board-id binding)))
+        (e-chat-board-admission-test--await
+         (e-chat-service-binding-readiness-work binding))
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest
+            :idempotency-key "manifest:value-install-failure"
+            :payload (:run-id "value-install-failure-run" :tasks nil
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait (lambda () (null queries)))
+        (setq barrier
+              (e-board-run-set-await-run-start binding "missing-after-install"))
+        ;; :runs is intentionally absent, so the Board-owned value setter must
+        ;; reject it and publish unavailable before failing the query carrier.
+        (e-work-finish
+         refresh-query
+         (list :board-id (e-chat-service-binding-board-id binding)
+               :restore-state 'ready :ready-p t :status 'running
+               :omitted-count 0 :bytes 0))
+        (should (eq (plist-get (e-board-orchestration-run-set-state-value state)
+                               :restore-state)
+                    'unavailable))
+        (should-error
+         (e-chat-board-admission-test--await barrier)
+         :type 'e-board-orchestration-error)))))
+
+(ert-deftest e-chat-board-admission-test-run-set-barrier-fails-on-omitted-run ()
+  "A ready bounded page missing an exact run fails after its refresh generation."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((initial-query
+            (e-chat-board-admission-test--held-work "held-omitted-run-initial"))
+           (refresh-query
+            (e-chat-board-admission-test--held-work "held-omitted-run-refresh"))
+           (queries (list initial-query refresh-query))
+           admitted binding open state barrier)
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (or (pop queries)
+                       (error "unexpected extra Board run-set query")))))
+        (setq admitted
+              (e-chat-board-admission-test--await
+               (e-chat-service-owner-admission-work
+                (e-chat-service-owner-admission-start
+                 :harness harness :creation-key "org:daily:omitted-run"
+                 :metadata '(:name "Omitted run Daily")))))
+        (setq open
+              (e-chat-service-open-board-owner-start
+               (plist-get admitted :board-id) harness))
+        (e-work-finish
+         initial-query
+         (list :board-id (plist-get admitted :board-id)
+               :restore-state 'ready :ready-p t :status 'idle :runs nil
+               :active-count 0 :active-run-count 0 :omitted-count 0 :bytes 0))
+        (setq binding (e-chat-board-admission-test--await open)
+              state (e-board-run-set-state-for
+                     harness (e-chat-service-binding-session-id binding)
+                     (e-chat-service-binding-board-id binding)))
+        (e-chat-board-admission-test--await
+         (e-chat-service-binding-readiness-work binding))
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest :idempotency-key "manifest:omitted-run"
+            :payload (:run-id "omitted-run" :tasks nil
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait (lambda () (null queries)))
+        (setq barrier (e-board-run-set-await-run-start binding "omitted-run"))
+        (e-work-finish
+         refresh-query
+         (list :board-id (e-chat-service-binding-board-id binding)
+               :restore-state 'ready :ready-p t :status 'running :runs nil
+               :active-count 0 :active-run-count 0 :omitted-count 1 :bytes 64))
+        (should (equal (plist-get (e-board-orchestration-run-set-state-value state)
+                                  :omitted-count)
+                       1))
+        (should-error
+         (e-chat-board-admission-test--await barrier)
+         :type 'e-board-orchestration-error)
+        ;; With no current query, the already-published ready generation is a
+        ;; completed refresh and cannot leave a missing exact run pending.
+        (setq barrier (e-board-run-set-await-run-start binding "omitted-now"))
+        (should-error
+         (e-chat-board-admission-test--await barrier)
+         :type 'e-board-orchestration-error)))))
+
+(ert-deftest e-chat-board-admission-test-run-set-barrier-fenced-finalized-absence ()
+  "A finalized run waits for a newer projection proving it is no longer active."
+  (e-chat-board-admission-test--with-fixture (store harness)
+    (let* ((initial-query
+            (e-chat-board-admission-test--held-work "held-finalized-initial"))
+           (refresh-query
+            (e-chat-board-admission-test--held-work "held-finalized-refresh"))
+           (queries (list initial-query refresh-query))
+           admitted binding open receipt barrier)
+      (cl-letf (((symbol-function 'e-board-orchestration-actions-run-set)
+                 (lambda (&rest _arguments)
+                   (or (pop queries)
+                       (error "unexpected extra Board run-set query")))))
+        (setq admitted
+              (e-chat-board-admission-test--await
+               (e-chat-service-owner-admission-work
+                (e-chat-service-owner-admission-start
+                 :harness harness :creation-key "org:daily:fenced-finalized"
+                 :metadata '(:name "Fenced finalized Daily")))))
+        (setq open
+              (e-chat-service-open-board-owner-start
+               (plist-get admitted :board-id) harness))
+        (e-work-finish
+         initial-query
+         (list :board-id (plist-get admitted :board-id)
+               :restore-state 'ready :ready-p t :status 'idle :runs nil
+               :active-count 0 :active-run-count 0 :omitted-count 0 :bytes 0))
+        (setq binding (e-chat-board-admission-test--await open))
+        (e-chat-board-admission-test--await
+         (e-chat-service-binding-readiness-work binding))
+        (setq receipt (e-board-run-set-generation binding))
+        (e-chat-board-admission-test--await
+         (e-board-sqlite-publication-target-orchestration-fact-start
+          (e-chat-service-publication-target binding)
+          '(:version 1 :type manifest :idempotency-key "manifest:fenced-finalized"
+            :payload (:run-id "finalized-run" :tasks nil
+                      :deadline (:kind none)))))
+        (e-chat-board-admission-test--wait (lambda () (null queries)))
+        (setq barrier
+              (e-board-run-set-await-run-start
+               binding "finalized-run" receipt 'absent))
+        (should-not (e-request-terminal-p (e-work-handle-lifecycle barrier)))
+        (e-work-finish
+         refresh-query
+         (list :board-id (e-chat-service-binding-board-id binding)
+               :restore-state 'ready :ready-p t :status 'idle :runs nil
+               :active-count 0 :active-run-count 0 :omitted-count 0 :bytes 0))
+        (should (equal (e-chat-board-admission-test--await barrier)
+                       (e-board-orchestration-run-set-state-value
+                        (e-board-run-set-state-for
+                         (e-chat-service-binding-harness binding)
+                         (e-chat-service-binding-session-id binding)
+                         (e-chat-service-binding-board-id binding)))))))))
 
 (ert-deftest e-chat-board-admission-test-readiness-precedes-pickup-resume ()
   "Owner startup installs Board readiness before restart pickup delivery."

@@ -74,7 +74,8 @@ detached owner disappears; each value is a small equal-key session table.")
 
 (cl-defstruct (e-board--run-set-barrier
                (:constructor e-board--run-set-barrier-create))
-  state binding run-id work unsubscribe)
+  state binding run-id work unsubscribe start-generation query-work
+  await-refresh-p query-settled-p fence-generation expected-presence)
 
 (defvar e-board--run-set-barriers
   (make-hash-table :test 'eq :weakness 'key)
@@ -166,6 +167,18 @@ The carrier stays pending when a committed-write notification races its SQL
 child.  This lets the owner readiness boundary receive the refreshed detached
 projection rather than settling on the first stale snapshot.")
 
+(defun e-board--run-set-query-fail (state work error)
+  "Mark STATE unavailable before failing stable query WORK with ERROR.
+
+The detached state is the observation boundary shared by readiness, context,
+and status.  A query-start or value-install error must therefore publish the
+unavailable state before its carrier fails, so a barrier cannot remain bound
+to a previously ready value while the request that should refresh it has
+failed."
+  (e-board-orchestration-run-set-state-update
+   state nil :restore-state 'unavailable)
+  (e-work-fail work error))
+
 (defun e-board--run-set-query-child-start (binding state work)
   "Start one SQL run-set child for stable query WORK."
   (let* ((target (e-chat-service-publication-target binding))
@@ -209,7 +222,7 @@ projection rather than settling on the first stale snapshot.")
                   (error
                    (setq controls (plist-put controls :query-work nil))
                    (puthash state controls e-board--run-set-controls)
-                   (e-work-fail work error))))
+                   (e-board--run-set-query-fail state work error))))
             ;; A binding that retired while the stale child was settling must
             ;; not install that child or leave its readiness pending.
             (setq controls (plist-put controls :query-work nil))
@@ -226,7 +239,7 @@ projection rather than settling on the first stale snapshot.")
                  (e-board-orchestration-run-set-state-set-value
                   state (e-work-handle-result settled))
                  (e-work-finish work (e-work-handle-result settled)))
-             (error (e-work-fail work error))))
+             (error (e-board--run-set-query-fail state work error))))
           ('cancelled
            (e-board-orchestration-run-set-state-update
             state nil :restore-state 'unavailable)
@@ -256,7 +269,7 @@ projection rather than settling on the first stale snapshot.")
       (error
        (setq controls (plist-put controls :query-work nil))
        (puthash state controls e-board--run-set-controls)
-       (e-work-fail work error)))
+       (e-board--run-set-query-fail state work error)))
     work))
 
 (defun e-board--run-set-refresh (binding state)
@@ -296,9 +309,39 @@ projection rather than settling on the first stale snapshot.")
                    (equal (plist-get run :run-id) run-id))
                  (plist-get value :runs))))
 
-(defun e-board--run-set-barrier-observe (barrier value)
-  "Settle BARRIER from detached run-set VALUE when its contract is met."
+(defun e-board--run-set-barrier-query-settled (barrier _settled)
+  "Observe BARRIER after its refresh query settles without a state wake-up."
   (let ((work (e-board--run-set-barrier-work barrier)))
+    (unless (e-request-terminal-p (e-work-handle-lifecycle work))
+      (setf (e-board--run-set-barrier-query-settled-p barrier) t)
+      (let ((state (e-board--run-set-barrier-state barrier)))
+        (e-board--run-set-barrier-observe
+         barrier
+         (e-board-orchestration-run-set-state-value state)
+         (e-board-orchestration-run-set-state-generation state))))))
+
+(defun e-board--run-set-barrier-observe (barrier value &optional generation)
+  "Settle BARRIER from detached run-set VALUE when its contract is met.
+
+When BARRIER starts during a refresh, the ready value at its starting
+generation is the pre-controller snapshot and remains provisional.  A later
+observer-visible generation, or the refresh carrier's settlement itself, is a
+bounded completion point: an absent exact run is then a real projection
+failure, including a bounded projection whose omitted count hides that run.
+When no refresh is active at entry, a ready missing-run value is already a
+completed refresh and fails immediately."
+  (let* ((work (e-board--run-set-barrier-work barrier))
+         (state (e-board--run-set-barrier-state barrier))
+         (generation (or generation
+                         (e-board-orchestration-run-set-state-generation
+                          state)))
+         (fence-generation (e-board--run-set-barrier-fence-generation barrier))
+         (fenced-p (integerp fence-generation))
+         (refresh-complete-p
+          (or (e-board--run-set-barrier-query-settled-p barrier)
+              (not (e-board--run-set-barrier-await-refresh-p barrier))
+              (> generation
+                 (e-board--run-set-barrier-start-generation barrier)))))
     (unless (e-request-terminal-p (e-work-handle-lifecycle work))
       (cond
        ((eq (plist-get value :restore-state) 'unavailable)
@@ -306,12 +349,47 @@ projection rather than settling on the first stale snapshot.")
          work
          (list 'e-board-orchestration-error
                "Board run-set projection became unavailable")))
+       (fenced-p
+        (cond
+         ((> generation fence-generation)
+          (if (not (plist-get value :ready-p))
+              (e-work-fail
+               work
+               (list 'e-board-orchestration-error
+                     "Board run-set refresh did not become ready"))
+            (let ((present-p
+                   (e-board--run-set-barrier-run
+                    value (e-board--run-set-barrier-run-id barrier))))
+              (if (eq (e-board--run-set-barrier-expected-presence barrier)
+                      'absent)
+                  (if present-p
+                      (e-work-fail
+                       work
+                       (list 'e-board-orchestration-error
+                             "Finalized Board run remained active"))
+                    (e-work-finish work (copy-tree value t)))
+                (if present-p
+                    (e-work-finish work (copy-tree value t))
+                  (e-work-fail
+                   work
+                   (list 'e-board-orchestration-error
+                         "Board run-set projection omitted the exact run")))))))
+         ((e-board--run-set-barrier-query-settled-p barrier)
+          (e-work-fail
+         work
+         (list 'e-board-orchestration-error
+                 "Board run-set refresh did not publish a new generation")))))
        ((e-board--run-set-barrier-run
          value (e-board--run-set-barrier-run-id barrier))
         ;; STATE already owns this detached VALUE.  Returning a copy keeps the
         ;; barrier consumer-shaped while compact status and context continue to
         ;; read the identical session-scoped projection.
-        (e-work-finish work (copy-tree value t)))))))
+        (e-work-finish work (copy-tree value t)))
+       ((and (plist-get value :ready-p) refresh-complete-p)
+        (e-work-fail
+         work
+         (list 'e-board-orchestration-error
+               "Board run-set projection omitted the exact run")))))))
 
 (defun e-board--run-set-barriers-cancel (state)
   "Cancel every active run-set barrier for STATE."
@@ -321,26 +399,65 @@ projection rather than settling on the first stale snapshot.")
         (e-work-cancel work))))
   (remhash state e-board--run-set-barriers))
 
-(defun e-board-run-set-await-run-start (binding run-id)
+(defun e-board-run-set-generation (binding)
+  "Return BINDING's current shared Board run-set generation.
+
+Callers use this detached receipt before starting controller work and pass it
+back to `e-board-run-set-await-run-start'.  The receipt is only a fence; Board
+continues to own both the projection and the observer-visible generation."
+  (unless (e-chat-service-binding-p binding)
+    (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
+  (e-board-orchestration-run-set-state-generation
+   (e-board-run-set-state-for
+    (e-chat-service-binding-harness binding)
+    (e-chat-service-binding-session-id binding)
+    (e-chat-service-binding-board-id binding))))
+
+(defun e-board-run-set-await-run-start
+    (binding run-id &optional receipt-generation expected-presence)
   "Return cancellable work waiting for exact RUN-ID in BINDING's run-set.
 
 The barrier observes only the existing session-scoped detached Board state.
-It settles immediately when the ready projection contains RUN-ID, otherwise
-it waits for the next observer-visible refresh.  Projection failure fails the
-barrier and binding retirement cancels it; no SQL read or polling is added."
+Without RECEIPT-GENERATION it settles when a ready projection contains RUN-ID
+and otherwise waits for the next observer-visible refresh.  With a generation
+receipt captured before controller work, it waits for a strictly newer ready
+projection and checks EXPECTED-PRESENCE (`present' by default, or `absent'
+for a consumed/finalized run).  Projection failure fails the barrier and
+binding retirement cancels it; no SQL read or polling is added."
   (unless (e-chat-service-binding-p binding)
     (signal 'wrong-type-argument (list 'e-chat-service-binding-p binding)))
   (unless (and (stringp run-id) (not (string-empty-p run-id)))
     (signal 'wrong-type-argument (list 'non-empty-string-p run-id)))
+  (unless (or (null receipt-generation) (integerp receipt-generation))
+    (signal 'wrong-type-argument
+            (list 'or-null-integer-p receipt-generation)))
+  (setq expected-presence (or expected-presence 'present))
+  (unless (memq expected-presence '(present absent))
+    (signal 'wrong-type-argument
+            (list '(member present absent) expected-presence)))
   (let* ((harness (e-chat-service-binding-harness binding))
          (session-id (e-chat-service-binding-session-id binding))
          (state (e-board-run-set-state-for
                  harness session-id
                  (e-chat-service-binding-board-id binding)))
+         (controls (e-board--run-set-controls state))
+         (query-work (plist-get controls :query-work))
+         (query-active-p
+          (and (e-work-handle-p query-work)
+               (not (e-request-terminal-p
+                     (e-work-handle-lifecycle query-work)))))
+         (generation
+          (e-board-orchestration-run-set-state-generation state))
          (work (e-work-start e-board--run-set-barrier-spec nil))
          (barrier (e-board--run-set-barrier-create
                    :state state :binding binding :run-id (copy-sequence run-id)
-                   :work work)))
+                   :work work :start-generation generation
+                   :query-work query-work
+                   :await-refresh-p (or (integerp receipt-generation)
+                                        query-active-p)
+                   :query-settled-p (not query-active-p)
+                   :fence-generation receipt-generation
+                   :expected-presence expected-presence)))
     (puthash state
              (cons barrier (gethash state e-board--run-set-barriers))
              e-board--run-set-barriers)
@@ -354,10 +471,16 @@ barrier and binding retirement cancels it; no SQL read or polling is added."
     (setf (e-board--run-set-barrier-unsubscribe barrier)
           (e-board-orchestration-run-set-state-subscribe
            state
-           (lambda (value _generation)
-             (e-board--run-set-barrier-observe barrier value))))
+           (lambda (value value-generation)
+             (e-board--run-set-barrier-observe
+              barrier value value-generation))))
+    (when query-active-p
+      (e-work-on-settle
+       query-work
+       (lambda (settled)
+         (e-board--run-set-barrier-query-settled barrier settled))))
     (e-board--run-set-barrier-observe
-     barrier (e-board-orchestration-run-set-state-value state))
+     barrier (e-board-orchestration-run-set-state-value state) generation)
     (when (eq (e-chat-service-binding-lifecycle-state binding) 'retired)
       (e-work-cancel work))
     work))
@@ -398,11 +521,15 @@ chat service only knows that the hook returns asynchronous readiness work."
                binding
                (lambda (_binding)
                  (when-let ((current (e-board--run-set-controls state)))
+                   ;; Cancel barriers before cancelling a held query.  Query
+                   ;; cancellation publishes unavailable; a retiring binding
+                   ;; must settle its consumers as cancelled instead of
+                   ;; exposing that retirement transition as a query failure.
+                   (e-board--run-set-barriers-cancel state)
                    (when-let ((query (plist-get current :query-work)))
                      (unless (memq (plist-get (e-work-status query) :state)
                                    '(finished failed cancelled))
                        (e-work-cancel query)))
-                   (e-board--run-set-barriers-cancel state)
                    (when-let ((wake (plist-get current :observer)))
                      (e-board-sqlite-commit-observation-cancel wake))
                    (remhash state e-board--run-set-controls)
@@ -420,11 +547,13 @@ chat service only knows that the hook returns asynchronous readiness work."
     (when-let ((controls (e-board--run-set-controls state)))
       (when-let ((observer (plist-get controls :observer)))
         (e-board-sqlite-commit-observation-cancel observer))
+      ;; See the binding cleanup callback above: retirement is cancellation,
+      ;; not an observation failure, even when a query is currently held.
+      (e-board--run-set-barriers-cancel state)
       (when-let ((work (plist-get controls :query-work)))
         (unless (memq (plist-get (e-work-status work) :state)
                       '(finished failed cancelled))
           (e-work-cancel work)))
-      (e-board--run-set-barriers-cancel state)
       (remhash state e-board--run-set-controls))
     (setf (e-board-orchestration-run-set-state-subscribers state) nil)
     (remhash binding e-board--run-set-states))
