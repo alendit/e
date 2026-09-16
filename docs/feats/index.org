@@ -263,6 +263,10 @@ list/status/read behavior, and both specialized shells without compatibility
 aliases.  The exact source passed all 2,575 Eldev tests, the public graphical
 held-read/live-control/restart scenario, compilation, and the real-current-config
 cold-start gate without touching the running Emacs or canonical user database.
+A live Daily follow-up also closed an owner-chat presentation leak: Board
+continuations retain their bounded terminal projection as durable model input
+but are hidden from the clean transcript, including already-stored
+continuations identified by durable metadata.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

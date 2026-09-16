@@ -228,12 +228,19 @@ session replica and is nil when no live consumer owns such a result."
 A message is hidden when its display disposition is `hidden', set either as a
 top-level `:display' (used to supersede a stored reply after the fact) or in
 its `:metadata' `:display' (used when a message is queued hidden from the
-start).  The value may be the symbol `hidden' or the string \"hidden\" after a
-JSON replay, so both are recognized."
-  (let* ((display (or (plist-get message :display)
-                      (plist-get (plist-get message :metadata) :display))))
+start).  Internal Board orchestration continuations are also hidden by their
+durable continuation identity, including records created before the producer
+began setting an explicit display disposition.  Display values may be the
+symbol `hidden' or the string \"hidden\" after JSON replay."
+  (let* ((metadata (plist-get message :metadata))
+         (display (or (plist-get message :display)
+                      (plist-get metadata :display)))
+         (origin (plist-get metadata :input-origin)))
     (or (eq display 'hidden)
-        (equal display "hidden"))))
+        (equal display "hidden")
+        (and (or (eq origin 'board)
+                 (equal origin "board"))
+             (stringp (plist-get metadata :board-continuation-key))))))
 
 (defun e-harness-session-title (harness session-id)
   "Return display title for SESSION-ID in HARNESS."

@@ -708,7 +708,8 @@
              :id "continuation-admission" :execution 'cheap
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) '(:admitted t))))
-           binding queued-input (query-count 0) (publication-count 0))
+           binding queued-input queued-metadata
+           (query-count 0) (publication-count 0))
       (unwind-protect
           (progn
             (setq binding
@@ -720,8 +721,10 @@
                          (cl-incf query-count)
                          (e-work-start query-spec nil)))
                       ((symbol-function 'e-chat-service-queue-session)
-                       (lambda (_harness _session-id input &rest _)
-                         (setq queued-input input)
+                       (lambda (_harness _session-id input &rest arguments)
+                         (setq queued-input input
+                               queued-metadata
+                               (plist-get arguments :metadata))
                          (e-work-start admission-spec nil)))
                       ((symbol-function
                         'e-chat-service--publish-sqlite-continuation-claim)
@@ -729,6 +732,12 @@
               (e-chat-service--reconcile-sqlite-continuation binding))
             (should (= query-count 1))
             (should (= publication-count 1))
+            (should (eq (plist-get queued-metadata :display) 'hidden))
+            (should (equal (plist-get queued-metadata :board-run-id)
+                           "daily-run"))
+            (should (equal (plist-get queued-metadata
+                                      :board-continuation-key)
+                           "continue:daily"))
             (should (string-match-p (regexp-quote prompt) queued-input))
             (should (string-match-p ":terminal-status done" queued-input))
             (should (string-match-p ":summary \"ready\"" queued-input))

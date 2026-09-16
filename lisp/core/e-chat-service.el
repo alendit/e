@@ -875,7 +875,8 @@ coordination."
                               (plist-get continuation :prompt)
                               projection)
                              :metadata
-                             (list :board-run-id (plist-get projection :run-id)
+                             (list :display 'hidden
+                                   :board-run-id (plist-get projection :run-id)
                                    :board-continuation-key key)
                              :source-input-key
                              (list "orchestration-continuation" key 0)))))))

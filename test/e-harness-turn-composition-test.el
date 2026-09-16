@@ -433,6 +433,18 @@ prompt rides the metadata channel and its value may replay as a string."
   (should-not (e-harness-message-hidden-p
                '(:role assistant :content "x" :display inline))))
 
+(ert-deftest e-harness-test-message-hidden-p-recognizes-board-continuations ()
+  "An internal orchestration continuation never becomes visible chat prose."
+  (should
+   (e-harness-message-hidden-p
+    '(:role user :content "terminal projection"
+      :metadata (:input-origin board
+                 :board-continuation-key "continue:daily"))))
+  (should-not
+   (e-harness-message-hidden-p
+    '(:role user :content "ordinary Board message"
+      :metadata (:input-origin board)))))
+
 (ert-deftest e-harness-test-abort-cancels-queued-async-turn ()
   "Aborting a queued async turn settles it as cancelled."
   (let* ((called nil)

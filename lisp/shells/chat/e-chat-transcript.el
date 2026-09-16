@@ -2518,7 +2518,8 @@ must not need to inspect its representation to schedule their own work."
 This narrow presentation port is used by the persistent SQLite chat view.  It
 does not ask the chat service for a session, apply provider presentation, or
 replay activity/history; all values have already been bounded and detached by
-the session query application operation."
+the session query application operation.  Hidden values remain durable for
+model context and audit but are excluded from the clean transcript."
   (let ((turn-index 0)
         turn-id)
     (dolist (message messages)
@@ -2529,7 +2530,8 @@ the session query application operation."
               (or (plist-get message :turn-id)
                   (format "visible-turn-%d" (1+ turn-index))))
         (setq turn-index (1+ turn-index)))
-      (unless (eq (plist-get message :role) 'tool)
+      (unless (or (eq (plist-get message :role) 'tool)
+                  (e-harness-message-hidden-p message))
         (let* ((entry (e-chat-transcript--message-entry message))
                (content (cdr entry)))
           (e-chat-transcript--insert-entry

@@ -320,6 +320,21 @@ exposed obsolete =repo-root= and =arguments= parameters on the private Daily
 action-target helper.  The helper now accepts only its real =context= input,
 and the gate promotes every non-obsolescence byte-compiler warning to an error
 so a successful =.elc= can no longer conceal this class of defect.
+
+A 2026-09-16 live Daily run exposed a presentation leak in the Board
+continuation handoff.  The owner correctly received the bounded terminal
+projection as durable model input, but the persistent chat renderer displayed
+that internal input as user prose.  New continuation messages now carry an
+explicit hidden disposition, the shared visibility rule recognizes the
+durable Board continuation identity so already-stored messages are covered,
+and the SQLite-backed clean transcript applies that rule without deleting or
+weakening model/audit context.  The focused Board, harness, and transcript
+slice passes 64 of 64 tests, =eldev compile= succeeds, and the real-current-config
+cold-start gate passes 7 of 7 tests.  The complete suite passes 2,604 of 2,615;
+six local-socket failures pass outside the sandbox, while the remaining five
+fail identically from an archived clean =HEAD= and are therefore pre-existing
+branch failures outside this change.
+
 =git diff --check= passed.  The
 graphical artifacts show the responsive held-read state, the single mixed
 participant view, live control from a durable row, and the same terminal rows

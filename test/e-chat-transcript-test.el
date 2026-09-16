@@ -76,6 +76,26 @@
     (should-error (e-chat-transcript-validated-replay-limit 0 'limit)
                   :type 'user-error)))
 
+(ert-deftest e-chat-transcript-owner-persistent-window-omits-hidden-inputs ()
+  "The persistent clean transcript omits hidden and continuation input."
+  (let ((buffer (e-chat-transcript-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (e-chat-transcript-render-visible-message-window
+           '((:id "visible" :role user :content "visible prompt")
+             (:id "explicit-hidden" :role user :content "repair prompt"
+              :metadata (:display hidden))
+             (:id "continuation" :role user :content "terminal projection"
+              :metadata (:input-origin board
+                         :board-continuation-key "continue:daily"))
+             (:id "reply" :role assistant :content "brief result")))
+          (let ((text (buffer-string)))
+            (should (string-match-p "visible prompt" text))
+            (should (string-match-p "brief result" text))
+            (should-not (string-match-p "repair prompt" text))
+            (should-not (string-match-p "terminal projection" text))))
+      (e-chat-owner-test--kill-buffer buffer))))
+
 (ert-deftest e-chat-transcript-owner-exports-navigation-contract ()
   "Navigation modes and keymaps are defined by the transcript owner."
   (should (fboundp #'e-chat-response-navigation-mode))
