@@ -1,0 +1,132 @@
+#+title: Addendum 2: Coordinator-Owned Daily Completion and Publication
+#+startup: overview
+
+* Status
+
+In-progress.
+
+The operator approved this addendum on 2026-09-16 after a live Daily run
+demonstrated that the accepted Board-first workflow could still strand a run:
+model-owned shell timeout semantics killed a required collector, the
+reconciliation model had to drive separate =:apply= and =:finalize= actions,
+literal prose matching rejected an otherwise terminal projection, and the
+generic topic turn hook committed the Board-owned Daily independently of the
+publication lifecycle.
+
+This addendum changes completion ownership, not the Daily's Board identity,
+source policy, generated section names, or SQLite authority.
+
+* Behavioral goal
+
+Goal =F93A2-G01=: one Daily coordinator scatters the selected gatherers, receives
+one durable terminal projection after every gatherer succeeds, fails, or reaches
+the run-owned deadline, obtains one typed complete section map from the sole
+reconciliation continuation, validates it before mutation, and performs one
+idempotent publication containing the Daily note and admitted generated
+artifacts.  Any pre-publication failure leaves the note and Git history
+unchanged and remains durably visible.
+
+Direct scenario: all selected gatherers settle while Slack fails optionally.
+The terminal projection contains the typed gap, reconciliation supplies every
+generated section exactly once, the coordinator commits the Daily and admitted
+raw artifacts once, and SQLite reaches =finalized=.  A deadline, invalid
+reconciliation result, restart, and retry are adversarial partitions of this
+same scenario.
+
+* Contract matrix
+
+| Contract | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Package | Evidence | Status |
+|-
+| F93A2-C01 | A Board-dispatched child may receive one absolute deadline.  When it expires, runtime-owned Work cancels the child and publishes exactly one terminal failed Board report; a late provider callback cannot publish a second terminal outcome. | =e-subagent-runner= over =e-work= | Process-local deadline/cancellation; durable terminal report.  Restart recovery redispatches only tasks that still lack a terminal disposition. | F93A2-DP1 | Focused Work/runner/Board tests for success, expiry, cancellation, late callback, and dispatch acknowledgement | Pending |
+| F93A2-C02 | Every selected Daily gatherer, including the deterministic agentic collector, is bounded by the one absolute run deadline recorded in the manifest.  The deadline is execution policy, not prompt advice or a model shell argument. | Grimoire Daily controller | One deadline per run.  The default duration is private configurable policy; tests use short deadlines. | F93A2-DP2 | Manifest, model-worker, collector, timeout, and restart tests | Pending |
+| F93A2-C03 | After all selected tasks are terminal, exactly one hidden reconciliation continuation consumes one bounded terminal projection and submits one typed complete generated-section map.  The model cannot mutate or finalize the Daily. | Grimoire Daily reconciliation coordinator, using the existing durable continuation claim | One result per run/revision; durable claim fences restart and duplicate delivery.  Invalid or incomplete results become durable failure without file or Git mutation. | F93A2-DP2 | Complete, missing, duplicate, malformed, optional-gap, duplicate-continuation, and restart tests | Pending |
+| F93A2-C04 | One coordinator-owned publication operation validates the section map, terminal projection, target coherence, and admitted artifact set before mutation; then it materializes, installs completion metadata, commits the Daily plus admitted generated artifacts once, and records publication/finalization. | Grimoire Daily publication application service | SQLite owns started/materialized/published/finalized/failed recovery facts.  =materialized= remains an internal crash-recovery phase, not a second caller action.  Retry verifies or resumes the exact revision/commit. | F93A2-DP2 | No-write invalid input, exact commit set, apply/commit/fact crash cuts, idempotent retry, and cleanup tests | Pending |
+| F93A2-C05 | The generic topic turn-commit hook skips an Org file under the Daily path when its file-level =E_BOARD= property is nonempty.  Ordinary topic canvases and legacy non-Board Daily files retain existing behavior. | Grimoire topic commit adapter | Turn-local decision from the authoritative target file; no new state. | F93A2-DP2 | Board-Daily skip, legacy-Daily commit, and ordinary-topic commit tests | Pending |
+| F93A2-C06 | The configured cold-start path compiles and runs the exact project-local workflow with runtime deadlines, typed reconciliation handoff, coordinator publication, and generic-hook exclusion. | Configured =e=/Grimoire composition | Fresh private Emacs and test-owned repositories/store; running Emacs is not mutated. | F93A2-DP2 | =bash e2e/run-current-config-tests.sh= plus focused configured scenario | Pending |
+
+* Ownership and transaction order
+
+1. The Daily controller freezes one absolute deadline in the manifest and
+   dispatches each selected task with that deadline.
+2. =e-work= owns the timer and cancellation.  =e-subagent-runner= owns the
+   exactly-once conversion from child settlement to the terminal Board report.
+3. Existing Board orchestration owns durable reduction and the bounded terminal
+   continuation projection.
+4. The sole hidden reconciliation continuation may only submit the typed Daily
+   result.  It receives no file/Git mutation action.
+5. The Daily publication application service validates the entire candidate
+   before its first write.  It alone materializes, commits the exact admitted
+   paths, and records publication/finalization.
+6. Presentation and generic turn hooks do not participate in this transaction.
+
+Unexpected runtime, validation, storage, or Git errors surface through the
+coordinator Work and durable lifecycle evidence.  Expected optional-source
+failure is represented as a typed gap.  No broad error swallowing or prose
+matching decides publication.
+
+* Deadline policy
+
+The contract requires a positive absolute run deadline, not one public numeric
+value.  Grimoire supplies a private configurable default of 900 seconds.  The
+observed deterministic collector takes about 49 seconds, so this admits more
+than an order of magnitude of measured collector time plus model and transport
+variance while bounding participant/process occupancy and eventual fan-in.
+At the exact deadline unsettled child Work fails and cancellation is requested;
+an already terminal report wins.  Revisit the default if healthy runs approach
+12 minutes or resource evidence requires a tighter occupancy bound.
+
+* Delivery packages
+
+** F93A2-DP1: Deadline-aware Board dispatch
+
+Add the narrow optional absolute-deadline input to Board-addressed subagent
+dispatch and prove exactly-once terminal publication under expiry and late
+callbacks.  This establishes F93A2-C01 and is independently useful to any
+Board-run consumer.  It changes core runtime behavior and requires a full
+Emacs restart to use in the running process.
+
+** F93A2-DP2: Coordinator-owned Daily completion
+
+Consume DP1 from the Grimoire controller; bound the runtime-owned collector by
+the same run deadline; replace ordinary model-driven =:apply=/=:finalize= with
+one typed reconciliation result and one internal publication operation; exclude
+Board-owned Dailies from generic turn commits; update instructions and tests;
+and pass the configured cold-start gate.  This establishes F93A2-C02 through
+F93A2-C06.  If work stopped here, the ordinary public Daily path would have one
+completion owner and one publication boundary.
+
+The split follows the =e=/configured-consumer ownership boundary.  DP2 may not
+be accepted without DP1.  Internal materialization and finalization steps stay
+together because separating them recreates the stranded externally driven
+workflow this addendum removes.
+
+* Compatibility and removals
+
+- Preserve SQLite Board/run/task/attempt and publication lifecycle formats.
+- Preserve restart recovery and exact Git evidence; no data migration.
+- Remove the ordinary Daily reconciliation prompt's =:apply= and =:finalize=
+  instructions and remove their model-facing action surface when no remaining
+  supported caller requires it.
+- Retain internal materialization/finalization helpers only as private phases of
+  the one publication operation and the explicit offline incident repair.
+- Do not add a second scatter/gather framework, session identity, completion
+  store, fallback commit path, or prose-based gap detector.
+
+* Scenario portfolio
+
+| Scenario | Contracts | Observable invariant | Evidence class | Localization |
+|-
+| S-DEADLINE | F93A2-C01, F93A2-C02 | A stalled child is cancelled and produces one durable terminal report; fan-in can finish. | Deterministic repository | Work versus runner terminal bridge |
+| S-PUBLISH | F93A2-C03, F93A2-C04 | One complete typed result causes one exact publication and finalization. | Deterministic repository | Reconciliation validation versus publication phase |
+| S-INVALID | F93A2-C03, F93A2-C04 | Invalid reconciliation changes neither Daily/raw files nor Git and remains durably failed. | Deterministic repository | Candidate validation boundary |
+| S-RESTART | F93A2-C01--F93A2-C04 | Restart/retry neither duplicates a child, continuation, mutation, nor commit. | Deterministic repository | Board claim/lifecycle phase |
+| S-HOOK | F93A2-C05 | Generic turns cannot commit a Board-owned Daily; unaffected canvases retain behavior. | Deterministic repository | Topic commit adapter |
+| S-CONFIG | F93A2-C06 | Exact configured source compiles and the composed private Daily completes. | Deterministic configured-consumer | Cold-start stage and readback |
+
+* Non-goals
+
+- Repairing or mutating the currently stranded live Daily or Board;
+- changing source selection, section prose policy, or Board-facing UX;
+- replacing Board orchestration or its durable terminal reducer;
+- adding presentation polling or exposing sessions as Daily identity; or
+- reloading or restarting the user's running Emacs automatically.

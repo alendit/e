@@ -1,0 +1,56 @@
+#+title: Plan Review: Coordinator-Owned Daily Completion and Publication
+#+startup: overview
+
+* Review boundary
+
+Selected level: implementation-plan.
+Product authority: the operator's 2026-09-16 instruction to implement the
+discussed coordinator scatter/gather flow and fix the reproduced timeout,
+stranded reconciliation, split publication, and generic commit defects.
+Plan: =addendum-coordinator-publication.org=.
+
+The review inspected the current =e-work= deadline/cancellation contract,
+Board-addressed subagent dispatch and exactly-once settlement, durable Board
+continuation projection/claim fencing, the Grimoire Daily manifest and runtime
+collector, split publication lifecycle, and generic topic commit hook.  It did
+not inspect or mutate the running Emacs or canonical SQLite store.
+
+* Plan identity and invalidation
+
+The admitted identity is this review plus the exact addendum committed with it.
+Changes to the six observable contracts, owner split, transaction order,
+deadline semantics, or delivery relation invalidate this decision and require
+another implementation-plan review.  Private helper shape and the configurable
+900-second default do not invalidate it when the contracts and exact-boundary
+tests remain true.
+
+* Completeness decisions
+
+- Deadline ownership is closed: absolute deadline/timer/cancellation remain in
+  =e-work=; =e-subagent-runner= alone converts settlement to one Board report.
+- Required information is closed: the manifest produces the immutable run
+  deadline, Board terminal projection produces typed task results/gaps, and the
+  reconciliation result supplies the complete section map.
+- Transaction/recovery is closed: validate before write; materialized remains
+  an internal recoverable phase; commit uses the exact admitted paths; durable
+  published/finalized evidence fences retry.
+- The model is no longer a workflow coordinator.  Its only side effect is the
+  narrow typed reconciliation result handoff.
+- Generic topic commit has an exact consumer-shaped exclusion and cannot become
+  a second Daily writer.
+- DP1 and DP2 are useful stopping points with one dependency direction; no
+  partial publication package exists.
+- Stable formats and Board identity remain compatible.  The obsolete ordinary
+  =:apply=/=:finalize= caller path and mechanism tests are explicitly removed or
+  made private.
+- Repository-controlled scenarios cover positive, invalid, timeout, late,
+  restart, hook, and configured cold-start partitions.  No external capability
+  is required for acceptance.
+
+* Result
+
+=implementation-plan-fixed-point=
+
+F93A2-C01 through F93A2-C06 each have one semantic owner, complete lifetime and
+recovery meaning, one establishing delivery package, and named deterministic
+evidence.  No required plan cell or ownership decision remains unknown.
