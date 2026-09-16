@@ -37,7 +37,7 @@ same scenario.
 
 | Contract | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Package | Evidence | Status |
 |-
-| F93A2-C01 | A Board-dispatched child may receive one absolute deadline.  When it expires, runtime-owned Work cancels the child and publishes exactly one terminal failed Board report; a late provider callback cannot publish a second terminal outcome. | =e-subagent-runner= over =e-work= | Process-local deadline/cancellation; durable terminal report.  Restart recovery redispatches only tasks that still lack a terminal disposition. | F93A2-DP1 | Focused Work/runner/Board tests for success, expiry, cancellation, late callback, and dispatch acknowledgement | Pending |
+| F93A2-C01 | A Board-dispatched child may receive one absolute deadline.  When it expires, runtime-owned Work cancels the child and publishes exactly one terminal failed Board report; a late provider callback cannot publish a second terminal outcome. | =e-subagent-runner= over =e-work= | Process-local deadline/cancellation; durable terminal report.  Restart recovery redispatches only tasks that still lack a terminal disposition. | F93A2-DP1 | Focused Work/runner/Board tests for success, expiry, cancellation, late callback, and dispatch acknowledgement | In-review |
 | F93A2-C02 | Every selected Daily gatherer, including the deterministic agentic collector, is bounded by the one absolute run deadline recorded in the manifest.  The deadline is execution policy, not prompt advice or a model shell argument. | Grimoire Daily controller | One deadline per run.  The default duration is private configurable policy; tests use short deadlines. | F93A2-DP2 | Manifest, model-worker, collector, timeout, and restart tests | Pending |
 | F93A2-C03 | After all selected tasks are terminal, exactly one hidden reconciliation continuation consumes one bounded terminal projection and submits one typed complete generated-section map.  The model cannot mutate or finalize the Daily. | Grimoire Daily reconciliation coordinator, using the existing durable continuation claim | One result per run/revision; durable claim fences restart and duplicate delivery.  Invalid or incomplete results become durable failure without file or Git mutation. | F93A2-DP2 | Complete, missing, duplicate, malformed, optional-gap, duplicate-continuation, and restart tests | Pending |
 | F93A2-C04 | One coordinator-owned publication operation validates the section map, terminal projection, target coherence, and admitted artifact set before mutation; then it materializes, installs completion metadata, commits the Daily plus admitted generated artifacts once, and records publication/finalization. | Grimoire Daily publication application service | SQLite owns started/materialized/published/finalized/failed recovery facts.  =materialized= remains an internal crash-recovery phase, not a second caller action.  Retry verifies or resumes the exact revision/commit. | F93A2-DP2 | No-write invalid input, exact commit set, apply/commit/fact crash cuts, idempotent retry, and cleanup tests | Pending |
@@ -84,6 +84,17 @@ dispatch and prove exactly-once terminal publication under expiry and late
 callbacks.  This establishes F93A2-C01 and is independently useful to any
 Board-run consumer.  It changes core runtime behavior and requires a full
 Emacs restart to use in the running process.
+
+DP1 delivery evidence: the Board dispatch API validates and forwards one
+positive absolute timestamp into the admitted child Work context and metadata.
+The Work deadline remains the runtime owner of failure and provider
+cancellation; the runner's publication observer converts only the typed
+=e-work-deadline-exceeded= settlement into one durable failed terminal report.
+The existing live settlement guard makes provider callbacks after expiry
+no-ops.  Focused coverage proves the ordinary queued/running acknowledgement,
+deadline expiry and cancellation, exactly one terminal report, the late
+callback path, and the unchanged dispatch path when no deadline is supplied.
+Parent acceptance remains pending for this package.
 
 ** F93A2-DP2: Coordinator-owned Daily completion
 

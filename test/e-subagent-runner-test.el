@@ -1670,6 +1670,87 @@ report is child-side and must not be on the parent surface."
                        parent "parent-1")))))
           (should (equal statuses '(queued running))))))))
 
+(ert-deftest e-subagent-runner-test-board-dispatch-deadline-cancels-and-reports-once ()
+  "A child deadline cancels the provider and publishes one typed terminal report."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (cancelled nil)
+          (settle nil))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (deadline (+ (float-time) 0.5))
+             (work nil)
+             result child-work)
+        (cl-letf (((symbol-function 'e-subagent-direct-runner)
+                   (lambda (_child-harness _child-session-id _prompt _seed
+                            on-settle _on-progress)
+                     (setq settle on-settle)
+                     (list :cancel
+                           (lambda ()
+                             (setq cancelled t)
+                             ;; Model the provider's late cancellation event.
+                             (funcall on-settle 'cancelled))))))
+          (setq work
+                (e-subagent-runner-dispatch-start
+                 target parent "parent-1"
+                 :source-turn-id "parent-turn" :type :reviewer
+                 :prompt "Review the Board task."
+                 :run-id "run-1" :task-key "review" :attempt 0
+                 :deadline deadline))
+          (setq result (e-board-producer-test-await work)))
+        (should (eq (plist-get result :status) 'admitted))
+        (setq child-work
+              (e-subagent-runner-test--live-work-handle
+               (e-subagent-runner-live-owner)
+               (plist-get result :participant-id)))
+        (should (e-work-handle-p child-work))
+        (should (equal (plist-get (e-work-handle-context child-work) :deadline)
+                       deadline))
+        (should (equal (plist-get (e-work-handle-metadata child-work) :deadline)
+                       deadline))
+        (should
+         (e-chat-test--wait-until
+          (lambda ()
+            (eq (plist-get (e-work-status child-work) :state) 'failed))
+          5.0))
+        (should cancelled)
+        (let ((error (plist-get (e-work-status child-work) :error)))
+          (should (eq (car error) 'e-work-deadline-exceeded)))
+        ;; The provider callback runs after the deadline settlement and cannot
+        ;; resurrect the private live record or publish a second report.
+        (funcall settle 'done :summary "late provider result")
+        (should-not
+         (e-subagent-runner-assignment-state board-id "run-1" "review" 0))
+        (let (reports)
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (setq reports
+                    (delq nil
+                          (mapcar #'e-board-orchestration-fact-from-record
+                                  (e-subagent-runner-test--records
+                                   parent "parent-1"))))
+              (= (length (seq-filter
+                          (lambda (fact)
+                            (eq (plist-get fact :type) 'terminal-report))
+                          reports))
+                 1))
+            5.0))
+          (let ((terminal
+                 (seq-find (lambda (fact)
+                             (eq (plist-get fact :type) 'terminal-report))
+                           reports)))
+            (should (eq (plist-get (plist-get terminal :payload) :status)
+                        'failed))
+            (should
+             (string-match-p
+              "e-work-deadline-exceeded"
+              (plist-get (plist-get terminal :payload) :error)))))))))
+
 (ert-deftest e-subagent-runner-test-board-dispatch-coalesces-exact-assignment-claim ()
   "Concurrent calls share one pre-ack assignment dispatch and participant."
   (e-subagent-runner-test--with-instances

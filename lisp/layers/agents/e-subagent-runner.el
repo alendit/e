@@ -362,6 +362,19 @@ The handle exists so a subagent is awaitable as an `e-work' handle."
         :task-key (copy-sequence task-key)
         :attempt attempt))
 
+(defun e-subagent--validate-deadline (deadline)
+  "Validate optional positive absolute DEADLINE and return it.
+The dispatch contract deliberately accepts an absolute timestamp rather than
+owning a duration or default policy.  A past positive timestamp is valid and
+settles the child as soon as its Work carrier starts."
+  (when (and deadline
+             (or (not (numberp deadline))
+                 (not (> deadline 0))))
+    (signal 'e-subagent-error
+            (list "Subagent dispatch deadline must be a positive absolute timestamp"
+                  deadline)))
+  deadline)
+
 (defun e-subagent-runner--attempt-key (assignment status)
   "Return the stable idempotency key for ASSIGNMENT STATUS."
   (format "dispatch:%s:%s:%d:%s"
@@ -486,6 +499,20 @@ durable or public live-table projection."
     (e-subagent--settle-work-handle work-handle status args)
     (apply #'e-subagent--settle
            live board-id participant-id record target report-state status args)))
+
+(defun e-subagent--deadline-publication-observer
+    (live board-id participant-id record target report-state work-handle)
+  "Return the runner-owned observer for WORK-HANDLE's deadline failure.
+Only the typed `e-work-deadline-exceeded' condition crosses this boundary.
+The Work timer remains responsible for failing and cancelling the carrier; this
+observer makes that one terminal settlement visible on the durable Board."
+  (lambda (_handle state payload)
+    (when (and (eq state 'failed)
+               (consp payload)
+               (eq (car payload) 'e-work-deadline-exceeded))
+      (e-subagent--settle-runner
+       live board-id participant-id record target report-state work-handle
+       'failed (list :error payload)))))
 
 (defun e-subagent--durable-assignment (record)
   "Return RECORD's persisted orchestration assignment, or nil."
@@ -617,8 +644,15 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
                              publication-target report-state
                              work-handle status args))))))
           (when (and (listp handle) (functionp (plist-get handle :cancel)))
-            (e-subagent-live-update live board-id participant-id
-                                    :cancel (plist-get handle :cancel)))
+            (let ((cancel (plist-get handle :cancel)))
+              (e-subagent-live-update live board-id participant-id
+                                      :cancel cancel)
+              ;; Deadline-aware child Work owns provider cancellation when its
+              ;; runtime timer expires.  Keep the no-deadline generic path's
+              ;; historical Work carrier behavior unchanged.
+              (when (plist-get (e-work-handle-context work-handle) :deadline)
+                (setf (e-work-handle-cancel-function work-handle)
+                      (lambda (_handle) (funcall cancel))))))
           ;; A dispatch consumer settles only after this provider invocation
           ;; returned successfully.  Publish its lifecycle running fact at
           ;; the same boundary; generic spawn callers retain their historical
@@ -647,19 +681,22 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
 (cl-defun e-subagent-spawn
     (live parent-harness parent-session-id
           &key source-turn-id type prompt seed-messages label schedule runner
-          run-id task-key attempt project-root report-admission
+          run-id task-key attempt deadline project-root report-admission
           on-admitted on-running on-failure on-runner-started
           on-runner-failure)
   "Spawn a subagent and return its bounded admission result.
 LIVE owns only private process-local execution capabilities.  The child
 participant identity is its admitted session id, and is the only identity
 returned to callers.  Before durable admission settles, the result contains
-the admission work reference and the durable participant/session identity."
+the admission work reference and the durable participant/session identity.
+DEADLINE, when non-nil, is one positive absolute timestamp for the child Work;
+the dispatch caller owns the policy that produced it."
   (unless (stringp source-turn-id)
     (signal 'wrong-type-argument (list 'stringp :source-turn-id)))
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
     (signal 'wrong-type-argument (list 'stringp :prompt)))
   (let* ((type (e-subagent--normalize-type type))
+         (deadline (e-subagent--validate-deadline deadline))
          (instance (e-subagent--type-instance type))
          (child-harness (e-subagent--child-harness instance))
          (parent-binding
@@ -685,11 +722,13 @@ the admission work reference and the durable participant/session identity."
          (work-handle
           (e-work-prepare
            (e-subagent--work-spec) nil
-           :context (list :session-id parent-session-id
-                          :turn-id source-turn-id
-                          :work-kind 'subagent
-                          :domain-ref (e-subagent-live-reference
-                                       board-id participant-id))))
+           :context (append
+                     (list :session-id parent-session-id
+                           :turn-id source-turn-id
+                           :work-kind 'subagent
+                           :domain-ref (e-subagent-live-reference
+                                        board-id participant-id))
+                     (when deadline (list :deadline deadline)))))
          (record (list :board-id board-id
                        :participant-id participant-id
                        :type type
@@ -717,6 +756,12 @@ the admission work reference and the durable participant/session identity."
          (pending
           (e-subagent--pending-result board-id participant-id work-handle))
          admission-work admitted-result)
+    (when (and deadline assignment)
+      (e-work-install-publication-observer
+       work-handle
+       (e-subagent--deadline-publication-observer
+        live board-id participant-id record producer-target report-state
+        work-handle)))
     (e-subagent-live-reserve-admission
      live board-id participant-id
      :work-handle work-handle :assignment assignment :callbacks callbacks
@@ -1019,7 +1064,7 @@ result crosses this consumer boundary."
 (cl-defun e-subagent-runner-dispatch-start
     (target parent-harness parent-session-id
             &key source-turn-id type prompt seed-messages label schedule
-            project-root run-id task-key attempt report-admission)
+            project-root run-id task-key attempt report-admission deadline)
   "Start one Board-addressed child dispatch and return cooperative WORK.
 
 TARGET is the explicit durable Board destination.  The operation publishes an
@@ -1028,10 +1073,12 @@ live owner, and publishes running only after the provider runner returns
 successfully.  WORK settles
 with detached Board/participant/assignment coordinates after the first
 disposition is acknowledged.  Grimoire callers never receive the private live
-owner, registry, callbacks, or nested work value."
+owner, registry, callbacks, or nested work value.  DEADLINE, when non-nil, is
+passed as one positive absolute timestamp to the admitted child Work."
   (let ((outer (e-work-start e-subagent-runner--dispatch-work-spec nil)))
     (condition-case error
-        (let* ((assignment
+        (let* ((deadline (e-subagent--validate-deadline deadline))
+               (assignment
                 (e-subagent-runner--assignment run-id task-key attempt))
                (binding (e-chat-service-binding
                          parent-harness parent-session-id))
@@ -1081,6 +1128,7 @@ owner, registry, callbacks, or nested work value."
                             :label label :schedule schedule :runner nil
                             :project-root project-root :run-id run-id
                             :task-key task-key :attempt attempt
+                            :deadline deadline
                             :report-admission report-admission
                             :on-admitted nil
                             :on-runner-started
