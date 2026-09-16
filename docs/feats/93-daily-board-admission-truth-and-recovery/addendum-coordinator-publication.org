@@ -37,12 +37,12 @@ same scenario.
 
 | Contract | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Package | Evidence | Status |
 |-
-| F93A2-C01 | A Board-dispatched child may receive one absolute deadline.  When it expires, runtime-owned Work cancels the child and publishes exactly one terminal failed Board report; a late provider callback cannot publish a second terminal outcome. | =e-subagent-runner= over =e-work= | Process-local deadline/cancellation; durable terminal report.  Restart recovery redispatches only tasks that still lack a terminal disposition. | F93A2-DP1 | Focused Work/runner/Board tests for success, expiry, cancellation, late callback, and dispatch acknowledgement | In-review |
-| F93A2-C02 | Every selected Daily gatherer, including the deterministic agentic collector, is bounded by the one absolute run deadline recorded in the manifest.  The deadline is execution policy, not prompt advice or a model shell argument. | Grimoire Daily controller | One deadline per run.  The default duration is private configurable policy; tests use short deadlines. | F93A2-DP2 | Manifest, model-worker, collector, timeout, and restart tests | Pending |
-| F93A2-C03 | After all selected tasks are terminal, exactly one hidden reconciliation continuation consumes one bounded terminal projection and submits one typed complete generated-section map.  The model cannot mutate or finalize the Daily. | Grimoire Daily reconciliation coordinator, using the existing durable continuation claim | One result per run/revision; durable claim fences restart and duplicate delivery.  Invalid or incomplete results become durable failure without file or Git mutation. | F93A2-DP2 | Complete, missing, duplicate, malformed, optional-gap, duplicate-continuation, and restart tests | Pending |
-| F93A2-C04 | One coordinator-owned publication operation validates the section map, terminal projection, target coherence, and admitted artifact set before mutation; then it materializes, installs completion metadata, commits the Daily plus admitted generated artifacts once, and records publication/finalization. | Grimoire Daily publication application service | SQLite owns started/materialized/published/finalized/failed recovery facts.  =materialized= remains an internal crash-recovery phase, not a second caller action.  Retry verifies or resumes the exact revision/commit. | F93A2-DP2 | No-write invalid input, exact commit set, apply/commit/fact crash cuts, idempotent retry, and cleanup tests | Pending |
-| F93A2-C05 | The generic topic turn-commit hook skips an Org file under the Daily path when its file-level =E_BOARD= property is nonempty.  Ordinary topic canvases and legacy non-Board Daily files retain existing behavior. | Grimoire topic commit adapter | Turn-local decision from the authoritative target file; no new state. | F93A2-DP2 | Board-Daily skip, legacy-Daily commit, and ordinary-topic commit tests | Pending |
-| F93A2-C06 | The configured cold-start path compiles and runs the exact project-local workflow with runtime deadlines, typed reconciliation handoff, coordinator publication, and generic-hook exclusion. | Configured =e=/Grimoire composition | Fresh private Emacs and test-owned repositories/store; running Emacs is not mutated. | F93A2-DP2 | =bash e2e/run-current-config-tests.sh= plus focused configured scenario | Pending |
+| F93A2-C01 | A Board-dispatched child may receive one absolute deadline.  When it expires, runtime-owned Work cancels the child and publishes exactly one terminal failed Board report; a late provider callback cannot publish a second terminal outcome. | =e-subagent-runner= over =e-work= | Process-local deadline/cancellation; durable terminal report.  Restart recovery redispatches only tasks that still lack a terminal disposition. | F93A2-DP1 | Focused Work/runner/Board tests for success, expiry, cancellation, late callback, and dispatch acknowledgement; parent accepted e commit =45fe89f60a69068cd5997307da458a00bf58a8a1= | Done |
+| F93A2-C02 | Every selected Daily gatherer, including the deterministic agentic collector, is bounded by the one absolute run deadline recorded in the manifest.  The deadline is execution policy, not prompt advice or a model shell argument. | Grimoire Daily controller | One deadline per run.  The default duration is private configurable policy; tests use short deadlines. | F93A2-DP2 | Manifest default/extraction, direct worker dispatch, agentic collector context, and restart tests; Grimoire daily-run suite 50/50 | In-review |
+| F93A2-C03 | After all selected tasks are terminal, exactly one hidden reconciliation continuation consumes one bounded terminal projection and submits one typed complete generated-section map.  The model cannot mutate or finalize the Daily. | Grimoire Daily reconciliation coordinator, using the existing durable continuation claim | One result per run/revision; durable claim fences restart and duplicate delivery.  Invalid or incomplete results become durable failure without file or Git mutation. | F93A2-DP2 | `:reconcile` is the sole Daily action; complete-map handoff, invalid-result failure, and restart tests; Grimoire publication suite 23/23 | In-review |
+| F93A2-C04 | One coordinator-owned publication operation validates the section map, terminal projection, target coherence, and admitted artifact set before mutation; then it materializes, installs completion metadata, commits the Daily plus admitted generated artifacts once, and records publication/finalization. | Grimoire Daily publication application service | SQLite owns started/materialized/published/finalized/failed recovery facts.  =materialized= remains an internal crash-recovery phase, not a second caller action.  Retry verifies or resumes the exact revision/commit. | F93A2-DP2 | No-write invalid input, exact Daily+artifact commit set, materialized restart, idempotent retry, and cleanup tests; Grimoire publication suite 23/23 | In-review |
+| F93A2-C05 | The generic topic turn-commit hook skips an Org file under the Daily path when its file-level =E_BOARD= property is nonempty.  Ordinary topic canvases and legacy non-Board Daily files retain existing behavior. | Grimoire topic commit adapter | Turn-local decision from the authoritative target file; no new state. | F93A2-DP2 | Board-Daily skip plus legacy Daily and ordinary topic commit tests; topic-hook suite 12/12 | In-review |
+| F93A2-C06 | The configured cold-start path compiles and runs the exact project-local workflow with runtime deadlines, typed reconciliation handoff, coordinator publication, and generic-hook exclusion. | Configured =e=/Grimoire composition | Fresh private Emacs and test-owned repositories/store; running Emacs is not mutated. | F93A2-DP2 | `bash e2e/run-current-config-tests.sh`: 8 tests, 0 unexpected | In-review |
 
 * Ownership and transaction order
 
@@ -94,7 +94,9 @@ The existing live settlement guard makes provider callbacks after expiry
 no-ops.  Focused coverage proves the ordinary queued/running acknowledgement,
 deadline expiry and cancellation, exactly one terminal report, the late
 callback path, and the unchanged dispatch path when no deadline is supplied.
-Parent acceptance remains pending for this package.
+Parent accepted the scoped e implementation at commit
+=45fe89f60a69068cd5997307da458a00bf58a8a1=; core runtime changes require a
+restart of any process that should use the new dispatch contract.
 
 ** F93A2-DP2: Coordinator-owned Daily completion
 
@@ -110,6 +112,12 @@ The split follows the =e=/configured-consumer ownership boundary.  DP2 may not
 be accepted without DP1.  Internal materialization and finalization steps stay
 together because separating them recreates the stranded externally driven
 workflow this addendum removes.
+
+DP2 implementation evidence is now available in the Grimoire working tree:
+the direct batch ERT suites pass daily-run 50/50, publication 23/23, and
+topic-commit 12/12, and the configured cold-start gate passes 8/8.  Parent
+acceptance remains pending for DP2; no running Emacs or canonical Board was
+reloaded or mutated while collecting this evidence.
 
 * Compatibility and removals
 

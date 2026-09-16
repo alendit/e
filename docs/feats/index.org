@@ -190,6 +190,10 @@ Feature 93 is =In-progress=.  Addendum 2 replaces model-driven Daily
 and publication boundary, adds runtime-owned absolute child deadlines, and
 excludes Board-owned Dailies from generic turn commits.  Its accepted plan is
 [[file:93-daily-board-admission-truth-and-recovery/addendum-coordinator-publication.org][Coordinator-Owned Daily Completion and Publication]].
+DP1 is accepted at e commit =45fe89f60a69068cd5997307da458a00bf58a8a1=.
+The DP2 consumer implementation has focused Grimoire evidence (50/50
+daily-run, 23/23 publication, 12/12 topic-hook) and the required configured
+cold-start gate (8/8); its parent acceptance remains pending.
 
 The previously accepted Board-first slice remains complete.  Atomic child admission now makes =running= mean a live
 started runner, restart recovery treats nonterminal attempts without live
