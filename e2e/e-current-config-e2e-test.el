@@ -21,8 +21,11 @@
 (require 'e-backend)
 (require 'e-board)
 (require 'e-board-orchestration-actions)
+(require 'e-board-sqlite-service)
 (require 'e-core)
 (require 'e-default-harnesses)
+(require 'e-chat-service)
+(require 'e-cron)
 (require 'e-harness-registry)
 (require 'e-harness-instances)
 (require 'e-layers)
@@ -33,6 +36,7 @@
 (require 'e-tools)
 (require 'e-await-tool)
 (require 'e-waitable)
+(require 'e-work)
 
 (defvar e-current-config-e2e-test--output nil
   "Dynamically bound buffer collecting the current-config ERT report.")
@@ -85,6 +89,7 @@
      ".e/layers/topic/session.el"
      ".e/layers/topic/grimoire-daily-publication.el"
      ".e/layers/topic/daily-run.el"
+     ".e/layers/topic/cron.el"
      ".e/layers/topic/shells/topic.el")))
 
 (defun e-current-config-e2e-test--load-and-compile-grimoire (root)
@@ -125,16 +130,126 @@
              (symbol-file 'grimoire-daily-run-start 'defun)
              (nth 4 sources)))
     (should (file-equal-p
-             (symbol-file 'grimoire-daily 'defun)
+             (symbol-file 'grimoire-daily-update-cron-register 'defun)
              (nth 5 sources)))
+    (should (file-equal-p
+             (symbol-file 'grimoire-daily 'defun)
+             (nth 6 sources)))
     sources))
+
+(ert-deftest e-current-config-e2e-test-grimoire-cron-is-publish-supervised ()
+  "Cold startup creates the supervisor Board before arming its publish-only schedule."
+  (let* ((repo-root (file-name-as-directory
+                     (file-truename
+                      (e-current-config-e2e-test--grimoire-root))))
+         (schedule nil)
+         (registration nil)
+         (deadline (+ (float-time) 20.0)))
+    ;; Registration and SQLite hydration are independent asynchronous events.
+    ;; Re-read both the live schedule and the process-local Board-create record
+    ;; on every turn; a one-shot schedule snapshot can observe the pre-creation
+    ;; disabled state forever.
+    (while (and (< (float-time) deadline)
+                (not
+                 (progn
+                   (setq schedule (e-cron-get 'grimoire-daily-update)
+                         registration
+                         (and (boundp
+                               'grimoire-daily-update-cron--registrations)
+                              (gethash
+                               repo-root
+                               grimoire-daily-update-cron--registrations)))
+                   (and schedule registration
+                        (e-cron-schedule-storage-ready-p schedule)
+                        (e-cron-schedule-enabled schedule)
+                        (eq (plist-get registration :health) 'healthy)
+                        (eq (plist-get registration :board-state) 'finished)
+                        (let ((board-create
+                               (plist-get registration :board-create)))
+                          (and board-create
+                               (eq (plist-get (e-work-status board-create) :state)
+                                   'finished)))))))
+      (accept-process-output nil 0.05))
+    (setq schedule (e-cron-get 'grimoire-daily-update)
+          registration
+          (and (boundp 'grimoire-daily-update-cron--registrations)
+               (gethash repo-root grimoire-daily-update-cron--registrations)))
+    (should schedule)
+    (should registration)
+    (should (eq (plist-get registration :board-state) 'finished))
+    (should (eq (plist-get registration :health) 'healthy))
+    (should (eq (plist-get
+                 (e-work-status (plist-get registration :board-create)) :state)
+                'finished))
+    (should (e-cron-schedule-enabled schedule))
+    (should (e-cron-schedule-storage-ready-p schedule))
+    (should (e-cron-schedule-next-fire schedule))
+    (should (time-less-p (current-time)
+                         (e-cron-schedule-next-fire schedule)))
+    (let* ((metadata (e-cron-schedule-metadata schedule))
+           (action (plist-get metadata :action-spec))
+           (target (plist-get metadata :publication-target)))
+      (should (eq (e-cron-schedule-catch-up schedule) 'skip))
+      (should (plist-get metadata :publication-target-explicit))
+      (should (equal (plist-get metadata :observer-policy)
+                     'weekday-work-hours))
+      (should (equal (plist-get target :kind) 'sqlite-board))
+      (should (stringp (plist-get target :board-id)))
+      (should (equal (plist-get registration :board-id)
+                     (plist-get target :board-id)))
+      (should (equal (car action) :publish))
+      (should-not (e-cron-schedule-guard schedule))
+      ;; The same runtime SQLite authority must contain the created,
+      ;; inspectable supervisory Board before this health assertion passes.
+      (let* ((harness (e-chat-service-default-harness))
+             (runtime (e-session-storage-runtime-store
+                       (e-harness-sessions harness)))
+             (service (e-board-sqlite-service-create runtime))
+             (board
+              (e-work-with-batch-await
+                (e-work-await-batch
+                 (e-board-sqlite-service-board-get-start
+                  service (plist-get target :board-id))
+                 :timeout 10.0))))
+        (should (equal (plist-get board :board-id)
+                       (plist-get target :board-id)))))))
 
 (defun e-current-config-e2e-test--initialize-git-repo (repo)
   "Create a minimal clean disposable Grimoire repository at REPO."
   (make-directory (expand-file-name ".e/layers/topic" repo) t)
+  (make-directory (expand-file-name "scripts" repo) t)
   (make-directory (expand-file-name "daily" repo) t)
   (with-temp-file (expand-file-name ".e/layers/topic/layer.el" repo)
     (insert ";;; disposable current-config topic layer marker\n"))
+  ;; Keep the exact configured Daily consumer's runtime-owned collector
+  ;; executable without reading the real Grimoire checkout's live scripts.
+  ;; The fixture settles immediately and materializes the same declared JSON
+  ;; shape, so this E2E proves Board/work dispatch rather than host session
+  ;; discovery.
+  (with-temp-file (expand-file-name "scripts/agentic-sessions.py" repo)
+    (insert
+     "#!/usr/bin/env python3\n"
+     "import argparse, json, os, tempfile\n"
+     "parser = argparse.ArgumentParser()\n"
+     "parser.add_argument('--since', required=True)\n"
+     "parser.add_argument('--date', required=True)\n"
+     "parser.add_argument('--output', required=True)\n"
+     "args = parser.parse_args()\n"
+     "os.makedirs(os.path.dirname(args.output), exist_ok=True)\n"
+     "payload = {'date': args.date, 'since': args.since,\n"
+     "           'days': [{'date': args.date}], 'claude': [],\n"
+     "           'codex': [], 'cursor': [], 'e': [], 'errors': []}\n"
+     "directory = os.path.dirname(args.output) or '.'\n"
+     "fd, temporary = tempfile.mkstemp(prefix='.agentic-', dir=directory, text=True)\n"
+     "try:\n"
+     "    with os.fdopen(fd, 'w', encoding='utf-8') as stream:\n"
+     "        json.dump(payload, stream)\n"
+     "        stream.flush()\n"
+     "        os.fsync(stream.fileno())\n"
+     "    os.replace(temporary, args.output)\n"
+     "finally:\n"
+     "    if os.path.exists(temporary):\n"
+     "        os.unlink(temporary)\n"))
   (with-temp-file (expand-file-name "daily/2099-01-01.org" repo)
     (insert "#+title: Daily 2099-01-01\n\n* Log\n"))
   (dolist (arguments

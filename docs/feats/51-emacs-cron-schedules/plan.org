@@ -18,6 +18,19 @@ In-progress. Engine, routing/capability layer, and overview command
 implemented with focused ERT coverage; live-reloaded and probed in the running
 Emacs.
 
+Current consumer boundary: cron producers use the publish-only action with an
+explicit SQL Board target. Application policy and recovery belong to the
+consumer's bounded SQLite observer; a producer must not register a direct
+callback, process-local Board registry, dummy participant, or hidden fallback.
+Grimoire Daily uses this boundary with weekday/work-hour filtering and explicit
+skip catch-up semantics.  Its process-local registration owns a real durable
+supervisor Board: Grimoire creates the deterministic Board through the runtime
+transport owned by =e-cron-storage=, keeps the schedule disabled until that
+Board-create Work settles successfully, and records observer failures by
+disabling the schedule.
+The project-local registration must not resolve a default chat harness or create
+a hidden session while the harness is still being constructed.
+
 * Problem
 
 =e-background-session= already supports a =schedule-seconds= trigger, but it
