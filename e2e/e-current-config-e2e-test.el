@@ -100,15 +100,20 @@
       (load-file source))
     ;; Compile byte-for-byte copies.  Current-config gates must never refresh
     ;; or create artifacts inside a configured consumer checkout.
-    (dolist (source sources)
-      (let ((copy
-             (expand-file-name
-              (format "%s-%s.el"
-                      (file-name-base source)
-                      (substring (secure-hash 'sha256 source) 0 12))
-              compile-directory)))
-        (copy-file source copy t)
-        (should (byte-compile-file copy))))
+    (let ((byte-compile-error-on-warn t)
+          ;; Emacs 31 obsoletes compatibility macros still supported by older
+          ;; Emacsen.  Keep that migration separate, but reject every other
+          ;; warning from the configured consumer, including unused arguments.
+          (byte-compile-warnings '(not obsolete)))
+      (dolist (source sources)
+        (let ((copy
+               (expand-file-name
+                (format "%s-%s.el"
+                        (file-name-base source)
+                        (substring (secure-hash 'sha256 source) 0 12))
+                compile-directory)))
+          (copy-file source copy t)
+          (should (byte-compile-file copy)))))
     (should (file-equal-p
              (symbol-file 'grimoire-topic-daily 'defun)
              (nth 0 sources)))

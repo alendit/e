@@ -315,7 +315,12 @@ scenario passed 1 of 1 tests, and =eldev compile= completed successfully.  A
 follow-up packaging regression exposed that Doom could retain the retired
 command in generated autoload metadata.  The corrected real-current-config
 cold-start gate now captures command registration before its test bootstrap
-changes =load-path= and passes 6 of 6 tests.  =git diff --check= passed.  The
+changes =load-path= and passes 7 of 7 tests.  A second cold-start regression
+exposed obsolete =repo-root= and =arguments= parameters on the private Daily
+action-target helper.  The helper now accepts only its real =context= input,
+and the gate promotes every non-obsolescence byte-compiler warning to an error
+so a successful =.elc= can no longer conceal this class of defect.
+=git diff --check= passed.  The
 graphical artifacts show the responsive held-read state, the single mixed
 participant view, live control from a durable row, and the same terminal rows
 after replacing the live owner.
