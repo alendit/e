@@ -114,8 +114,10 @@ together because separating them recreates the stranded externally driven
 workflow this addendum removes.
 
 DP2 implementation evidence is now available in the Grimoire working tree:
-the direct batch ERT suites pass daily-run 50/50, publication 23/23, and
-topic-commit 12/12, and the configured cold-start gate passes 8/8.  Parent
+the direct batch ERT suites pass daily-run 50/50, publication 25/25 (including
+typed optional-gap injection when the model omits or paraphrases the failure,
+exactly-once rendering, unchanged no-gap maps, and lifecycle gap persistence),
+and topic-commit 12/12; the configured cold-start gate passes 8/8.  Parent
 acceptance remains pending for DP2; no running Emacs or canonical Board was
 reloaded or mutated while collecting this evidence.
 
