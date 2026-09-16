@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 The operator approved this addendum on 2026-09-16 after a live Daily run
 demonstrated that the accepted Board-first workflow could still strand a run:
@@ -38,11 +38,11 @@ same scenario.
 | Contract | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Package | Evidence | Status |
 |-
 | F93A2-C01 | A Board-dispatched child may receive one absolute deadline.  When it expires, runtime-owned Work cancels the child and publishes exactly one terminal failed Board report; a late provider callback cannot publish a second terminal outcome. | =e-subagent-runner= over =e-work= | Process-local deadline/cancellation; durable terminal report.  Restart recovery redispatches only tasks that still lack a terminal disposition. | F93A2-DP1 | Focused Work/runner/Board tests for success, expiry, cancellation, late callback, and dispatch acknowledgement; parent accepted e commit =45fe89f60a69068cd5997307da458a00bf58a8a1= | Done |
-| F93A2-C02 | Every selected Daily gatherer, including the deterministic agentic collector, is bounded by the one absolute run deadline recorded in the manifest.  The deadline is execution policy, not prompt advice or a model shell argument. | Grimoire Daily controller | One deadline per run.  The default duration is private configurable policy; tests use short deadlines. | F93A2-DP2 | Manifest default/extraction, direct worker dispatch, agentic collector context, and restart tests; Grimoire daily-run suite 50/50 | In-review |
-| F93A2-C03 | After all selected tasks are terminal, exactly one hidden reconciliation continuation consumes one bounded terminal projection and submits one typed complete generated-section map.  The model cannot mutate or finalize the Daily. | Grimoire Daily reconciliation coordinator, using the existing durable continuation claim | One result per run/revision; durable claim fences restart and duplicate delivery.  Invalid or incomplete results become durable failure without file or Git mutation. | F93A2-DP2 | `:reconcile` is the sole Daily action; complete-map handoff, invalid-result failure, and restart tests; Grimoire publication suite 23/23 | In-review |
-| F93A2-C04 | One coordinator-owned publication operation validates the section map, terminal projection, target coherence, and admitted artifact set before mutation; then it materializes, installs completion metadata, commits the Daily plus admitted generated artifacts once, and records publication/finalization. | Grimoire Daily publication application service | SQLite owns started/materialized/published/finalized/failed recovery facts.  =materialized= remains an internal crash-recovery phase, not a second caller action.  Retry verifies or resumes the exact revision/commit. | F93A2-DP2 | No-write invalid input, exact Daily+artifact commit set, materialized restart, idempotent retry, and cleanup tests; Grimoire publication suite 23/23 | In-review |
-| F93A2-C05 | The generic topic turn-commit hook skips an Org file under the Daily path when its file-level =E_BOARD= property is nonempty.  Ordinary topic canvases and legacy non-Board Daily files retain existing behavior. | Grimoire topic commit adapter | Turn-local decision from the authoritative target file; no new state. | F93A2-DP2 | Board-Daily skip plus legacy Daily and ordinary topic commit tests; topic-hook suite 12/12 | In-review |
-| F93A2-C06 | The configured cold-start path compiles and runs the exact project-local workflow with runtime deadlines, typed reconciliation handoff, coordinator publication, and generic-hook exclusion. | Configured =e=/Grimoire composition | Fresh private Emacs and test-owned repositories/store; running Emacs is not mutated. | F93A2-DP2 | `bash e2e/run-current-config-tests.sh`: 8 tests, 0 unexpected | In-review |
+| F93A2-C02 | Every selected Daily gatherer, including the deterministic agentic collector, is bounded by the one absolute run deadline recorded in the manifest.  The deadline is execution policy, not prompt advice or a model shell argument. | Grimoire Daily controller | One deadline per run.  The default duration is private configurable policy; tests use short deadlines. | F93A2-DP2 | Manifest default/extraction, direct worker dispatch, agentic collector context, and restart tests; Grimoire daily-run suite 50/50 | Done |
+| F93A2-C03 | After all selected tasks are terminal, exactly one hidden reconciliation continuation consumes one bounded terminal projection and submits one typed complete generated-section map.  The model cannot mutate or finalize the Daily. | Grimoire Daily reconciliation coordinator, using the existing durable continuation claim | One result per run/revision; durable claim fences restart and duplicate delivery.  Invalid or incomplete results become durable failure without file or Git mutation. | F93A2-DP2 | =:reconcile= is the sole Daily action; complete-map handoff, invalid-result failure, typed gap injection, and restart tests; Grimoire publication suite 25/25 | Done |
+| F93A2-C04 | One coordinator-owned publication operation validates the section map, terminal projection, target coherence, and admitted artifact set before mutation; then it materializes, installs completion metadata, commits the Daily plus admitted generated artifacts once, and records publication/finalization. | Grimoire Daily publication application service | SQLite owns started/materialized/published/finalized/failed recovery facts.  =materialized= remains an internal crash-recovery phase, not a second caller action.  Retry verifies or resumes the exact revision/commit. | F93A2-DP2 | No-write invalid input, exact Daily+artifact commit set, materialized restart, idempotent retry, and cleanup tests; Grimoire publication suite 25/25 | Done |
+| F93A2-C05 | The generic topic turn-commit hook skips an Org file under the Daily path when its file-level =E_BOARD= property is nonempty.  Ordinary topic canvases and legacy non-Board Daily files retain existing behavior. | Grimoire topic commit adapter | Turn-local decision from the authoritative target file; no new state. | F93A2-DP2 | Board-Daily skip plus legacy Daily and ordinary topic commit tests; topic-hook suite 12/12 | Done |
+| F93A2-C06 | The configured cold-start path compiles and runs the exact project-local workflow with runtime deadlines, typed reconciliation handoff, coordinator publication, and generic-hook exclusion. | Configured =e=/Grimoire composition | Fresh private Emacs and test-owned repositories/store; running Emacs is not mutated. | F93A2-DP2 | =bash e2e/run-current-config-tests.sh=: 8 tests, 0 unexpected | Done |
 
 * Ownership and transaction order
 
@@ -113,13 +113,15 @@ be accepted without DP1.  Internal materialization and finalization steps stay
 together because separating them recreates the stranded externally driven
 workflow this addendum removes.
 
-DP2 implementation evidence is now available in the Grimoire working tree:
+DP2 is accepted at Grimoire commits =467034a1c4366cb6c9dc1ca68b06cc8f858bb22a=
+and =9a1b6bd3cd048bad57e158e945b3c8906894bea4=.  Final evidence:
 the direct batch ERT suites pass daily-run 50/50, publication 25/25 (including
 typed optional-gap injection when the model omits or paraphrases the failure,
 exactly-once rendering, unchanged no-gap maps, and lifecycle gap persistence),
-and topic-commit 12/12; the configured cold-start gate passes 8/8.  Parent
-acceptance remains pending for DP2; no running Emacs or canonical Board was
-reloaded or mutated while collecting this evidence.
+and topic-commit 12/12; offline repair compatibility passes 18/18; the
+configured cold-start gate passes 8/8.  Parent acceptance independently reran
+daily-run 50/50, publication 25/25, topic-commit 12/12, and the cold-start gate
+8/8.  No running Emacs or canonical Board was reloaded or mutated.
 
 * Compatibility and removals
 
@@ -151,3 +153,38 @@ reloaded or mutated while collecting this evidence.
 - replacing Board orchestration or its durable terminal reducer;
 - adding presentation polling or exposing sessions as Daily identity; or
 - reloading or restarting the user's running Emacs automatically.
+
+* Architecture self-check
+
+1. The package is independently useful: a Daily run now reaches either one
+   finalized publication or one durable terminal failure without a model-owned
+   workflow gap.
+2. It moves toward Board-native coordinator scatter/gather with one application
+   writer and no session-facing Daily identity.
+3. The stable decisions are owner boundaries and transaction order.  The
+   900-second default remains private, configurable, and evidence-revisable.
+4. =e-work= owns deadline/cancellation, the runner owns terminal Board
+   conversion, Board orchestration owns durable fan-in, and the Daily service
+   owns reconciliation policy and publication.
+5. Coupling is reduced to an optional absolute-deadline dispatch input and one
+   typed Daily reconciliation handoff; neither exposes unused control state.
+6. Dependencies continue from Grimoire policy toward stable Work, Board, and
+   publication contracts; core policy does not depend on Grimoire.
+7. Timers, provider cancellation, file writes, Git, and SQLite publication stay
+   in runtime or application adapters outside pure validation/reduction.
+8. The only added process state is one timer/observer per active bounded child.
+   Durable state reuses manifest, terminal report, and publication lifecycle.
+9. Work is still scattered concurrently.  Added work is bounded validation and
+   one pass over ten sections; no polling or repeated Board scan was added.
+10. The deadline and reconciliation interfaces are real consumer contracts;
+    callers without a deadline retain prior behavior, while Daily supplies the
+    complete invariant.
+11. SQLite and repair compatibility are retained; ordinary =:apply= and
+    =:finalize= model actions and generic Board-Daily commits were removed.
+12. The obsolete split model choreography and prose-based gap detector are gone
+    from the ordinary path.
+13. Expected source/validation failures become typed gaps or durable lifecycle
+    failures; unexpected runtime, storage, and Git errors fail the owning Work.
+14. Owner tests prove deadline settlement, typed reconciliation, validate-before-
+    write publication, recovery/idempotence, commit exclusion, repair
+    compatibility, and the exact configured cold-start composition.
