@@ -13,6 +13,7 @@
 
 (require 'ert)
 (require 'e)
+(require 'e-json)
 (require 'e-operations)
 
 (ert-deftest e-operations-test-standard-operation-contracts ()
@@ -60,8 +61,8 @@
         (pop properties)
         (should-not (plist-get (pop properties) :description))))))
 
-(ert-deftest e-operations-test-dispatchers-normalize-tool-arguments ()
-  "Operation dispatchers adapt model tool arguments to resource calls."
+(ert-deftest e-operations-test-dispatchers-forward-canonical-tool-arguments ()
+  "Operation dispatchers adapt canonical model arguments to resource calls."
   (let (calls)
     (funcall (e-operation-dispatch e-operation-read)
              (lambda (&rest args) (push args calls) "read-result")
@@ -71,7 +72,7 @@
              '(:uri "test://write" :content "content"))
     (funcall (e-operation-dispatch e-operation-edit)
              (lambda (&rest args) (push args calls) "edit-result")
-             '(:uri "test://edit" :edits ((:oldText "a" :newText "b"))))
+             '(:uri "test://edit" :edits [(:oldText "a" :newText "b")]))
     (funcall (e-operation-dispatch e-operation-glob)
              (lambda (&rest args) (push args calls) "glob-result")
              '(:uri "test://glob"
@@ -95,7 +96,7 @@
     (should (equal (nreverse calls)
                    '(("test://read" (:unit "line" :start 1 :end 2))
                      ("test://write" "content")
-                     ("test://edit" ((:oldText "a" :newText "b")))
+                     ("test://edit" [(:oldText "a" :newText "b")])
                      ("test://glob" "*.el" 5 nil nil nil nil nil nil nil)
                      ("test://search" "needle"
                       (:glob "*.el"
@@ -105,26 +106,27 @@
                        :limit 7))
                      ("test://toc" (:max-depth 2 :language "elisp")))))))
 
-(ert-deftest e-operations-test-edit-coerces-bare-edit-object ()
-  "The edit dispatcher wraps a lone edit object into a one-element array.
-
-Some models send a single edit object instead of a one-element array; it must
-normalize to a list of edit plists rather than tripping the resource validator.
-Stringified arguments are reparsed upstream in `e-tools--coerce-arguments', so
-`edits' arrives here as data."
-  ;; A well-formed array passes through unchanged.
-  (should (equal (e-operations--coerce-edits '((:oldText "a" :newText "b")))
-                 '((:oldText "a" :newText "b"))))
-  ;; A bare edit object is wrapped into a one-element array.
-  (should (equal (e-operations--coerce-edits '(:oldText "a" :newText "b"))
-                 '((:oldText "a" :newText "b"))))
-  ;; The dispatcher applies the coercion before calling the resource handler.
+(ert-deftest e-operations-test-edit-requires-canonical-array ()
+  "The edit contract forwards vectors and rejects alternate array shapes."
+  (let ((arguments '(:uri "test://edit"
+                     :edits [(:oldText "a" :newText "b")]))
+        (schema (e-operation-parameters e-operation-edit)))
+    ;; The model-facing contract accepts the canonical vector unchanged.
+    (should (eq (e-json-schema-assert arguments schema) arguments))
+    ;; A list array and a stringified array are not compatibility inputs.
+    (dolist (invalid
+             (list '(:uri "test://edit"
+                     :edits ((:oldText "a" :newText "b")))
+                   '(:uri "test://edit"
+                     :edits "[{\"oldText\":\"a\",\"newText\":\"b\"}]")))
+      (should-error (e-json-schema-assert invalid schema))))
+  ;; A canonical vector passes to the resource handler without reshaping.
   (let (calls)
     (funcall (e-operation-dispatch e-operation-edit)
              (lambda (&rest args) (push args calls) "edit-result")
-             '(:uri "test://edit" :edits (:oldText "a" :newText "b")))
+             '(:uri "test://edit" :edits [(:oldText "a" :newText "b")]))
     (should (equal (nreverse calls)
-                   '(("test://edit" ((:oldText "a" :newText "b"))))))))
+                   '(("test://edit" [(:oldText "a" :newText "b")]))))))
 
 (provide 'e-operations-test)
 
