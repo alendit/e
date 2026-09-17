@@ -406,7 +406,7 @@ the record-focused assertions concise without restoring the retired wrapper."
           (e-context-lifetime-frame-curation-presentation frame 1.0))
          (record
           (e-context-lifetime-test--prepared-curation-record
-           frame '(:keep (1))
+           frame '(:keep [1])
            "response-curation" 1.0)))
     (should (= (length observation-ids)
                (length (delete-dups (copy-sequence observation-ids)))))
@@ -493,7 +493,7 @@ the record-focused assertions concise without restoring the retired wrapper."
      :type 'e-context-lifetime-invalid-record)
     (should-error
      (e-context-lifetime-test--prepared-curation-record
-      frame '(:keep (1)) "response-1")
+      frame '(:keep [1]) "response-1")
      :type 'e-context-lifetime-invalid-record)))
 
 (ert-deftest e-context-lifetime-test-segment-fingerprint-uses-semantic-tool-value ()
@@ -573,45 +573,50 @@ the record-focused assertions concise without restoring the retired wrapper."
 
 (ert-deftest e-context-lifetime-test-curation-disposition-arguments-are-strict ()
   "Curation arguments accept optional origin disposition keys strictly."
-  (let ((valid '(:keep (2)
-                 :summaries ((:sources (1 3) :text "combined fact")))))
+  (let ((valid '(:keep [2]
+                 :summaries [(:sources [1 3] :text "combined fact")])))
     (should (equal (e-context-lifetime-normalize-curation-disposition valid)
-                   '(:keep (2)
-                     :summaries ((:sources (1 3) :text "combined fact"))
-                     :erase nil)))
+                   '(:keep [2]
+                     :summaries [(:sources [1 3] :text "combined fact")]
+                     :erase [])))
     (should (equal
              (e-context-lifetime-normalize-curation-disposition
               '(:summaries [(:sources [1] :text "one")]
-                :keep nil))
-             '(:keep nil :summaries ((:sources (1) :text "one"))
-               :erase nil)))
-    (should (equal
-             (e-context-lifetime-normalize-curation-disposition
-              '(:keep nil :summaries nil :erase nil))
-             '(:keep nil :summaries nil :erase nil)))
+                :keep []))
+             '(:keep [] :summaries [(:sources [1] :text "one")]
+               :erase [])))
     (should (equal (e-context-lifetime-normalize-curation-disposition nil)
-                   '(:keep nil :summaries nil :erase nil)))
+                   '(:keep [] :summaries [] :erase [])))
     (dolist (bad
              (list
-              '(:keep ("1"))
+              '(:keep ["1"])
               '(:keep 1)
-              '(:keep (1 1))
-              '(:keep (1) :summaries ((:sources (1) :text "duplicate"))
-                :erase (2))
-              '(:summaries ((:sources nil :text "missing-source"))
-                :keep nil)
-              '(:summaries ((:sources (1) :text ""))
-                :keep nil)
-              '(:summaries ((:sources (1) :text "ok" :extra t))
-                :keep nil)
-              '(:keep (1) :summaries nil :erase (1))
-              '(:keep (1) :summaries ((:sources (1) :text "overlap"))
-                :erase (3))
-              '(:keep (1) :summaries nil :erase (1 2))
-              '(:unknown (1))))
+              '(:keep [1 1])
+              '(:keep [1] :summaries [(:sources [1] :text "duplicate")]
+                :erase [2])
+              '(:summaries [(:sources [] :text "missing-source")]
+                :keep [])
+              '(:summaries [(:sources [1] :text "")]
+                :keep [])
+              '(:summaries [(:sources [1] :text "ok" :extra t)]
+                :keep [])
+              '(:keep [1] :summaries [] :erase [1])
+              '(:keep [1] :summaries [(:sources [1] :text "overlap")]
+                :erase [3])
+              '(:keep [1] :summaries [] :erase [1 2])
+              '(:unknown [1])
+              '(:keep nil)
+              '(:keep (1))
+              '(:summaries ((:sources [1] :text "list array")))
+              '(:summaries [(:sources (1) :text "nested list array")])
+              '((keep . [1]))))
       (should-error
        (e-context-lifetime-normalize-curation-disposition bad)
-       :type 'e-context-lifetime-invalid-record))))
+       :type 'e-context-lifetime-invalid-record))
+    (should-error
+     (e-context-lifetime-normalize-curation-disposition
+      (make-hash-table :test #'equal))
+     :type 'e-context-lifetime-invalid-record)))
 
 (ert-deftest e-context-lifetime-test-curation-prepares-v3-record-with-provenance ()
   "Preparation copies selected values and derives ordered provenance only."
@@ -638,8 +643,8 @@ the record-focused assertions concise without restoring the retired wrapper."
          (record
           (e-context-lifetime-test--prepared-curation-record
            frame
-           '(:keep (1)
-             :summaries ((:sources (2 3) :text "durable replacement")))
+           '(:keep [1]
+             :summaries [(:sources [2 3] :text "durable replacement")])
            "response-1"
            1.0))
          (items (plist-get record :items)))
@@ -672,14 +677,14 @@ the record-focused assertions concise without restoring the retired wrapper."
   (let ((frame (e-context-lifetime-test--frame)))
     (should-error
      (e-context-lifetime-test--prepared-curation-record
-      frame '(:keep (2)) "response-1")
+      frame '(:keep [2]) "response-1")
      :type 'e-context-lifetime-invalid-record)
     (let ((consumed
            (e-context-lifetime-frame-complete-for-consumer
             frame "consumer-1" "response-1")))
       (should-error
        (e-context-lifetime-test--prepared-curation-record
-        consumed '(:keep (1)) "response-2")
+        consumed '(:keep [1]) "response-2")
        :type 'e-context-lifetime-invalid-record))))
 
 (ert-deftest e-context-lifetime-test-curation-source-and-byte-bounds ()
@@ -689,38 +694,38 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (= (length (plist-get
                         (e-context-lifetime-test--prepared-curation-record
                          sixteen
-                         (list :keep (number-sequence 1 16)
-                         :summaries nil)
+                         (list :keep (vconcat (number-sequence 1 16))
+                               :summaries [])
                          "response-16")
                         :items))
                16))
     (should-error
      (e-context-lifetime-test--prepared-curation-record
-      seventeen (list :keep (number-sequence 1 17)
-                      :summaries nil)
+      seventeen (list :keep (vconcat (number-sequence 1 17))
+                      :summaries [])
       "response-17")
      :type 'e-context-lifetime-invalid-record))
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
          (sources (e-context-lifetime-frame-curation-sources frame 1.0))
          (one-byte-summary
-          (list :sources '(1) :text "x"))
+          (list :sources [1] :text "x"))
          (one-byte-record
           (e-context-lifetime--curation-record
-           frame (list :keep nil :summaries (list one-byte-summary))
+           frame (list :keep [] :summaries (vector one-byte-summary))
            "response-bytes" sources))
          (one-byte-package
           (list :promotion one-byte-record :erasure nil))
          (length-at-limit
           (+ 1 (- e-context-lifetime-curation-max-record-bytes
                   (e-context-lifetime--bytes one-byte-package)))))
-    (let ((effect (list :keep nil :summaries
-                        (list (list :sources '(1)
-                                    :text (make-string length-at-limit ?x)))))
-          (too-large (list :keep nil :summaries
-                           (list (list :sources '(1)
-                                       :text
-                                       (make-string (1+ length-at-limit)
-                                                    ?x))))))
+    (let ((effect (list :keep [] :summaries
+                        (vector (list :sources [1]
+                                      :text (make-string length-at-limit ?x)))))
+          (too-large (list :keep [] :summaries
+                           (vector (list :sources [1]
+                                         :text
+                                         (make-string (1+ length-at-limit)
+                                                      ?x))))))
       (should (= (e-context-lifetime--bytes
                   (plist-get
                    (e-context-lifetime-prepare-curation-disposition
@@ -736,14 +741,14 @@ the record-focused assertions concise without restoring the retired wrapper."
   "Optional curation disposes selected sources and omits the rest."
   (let* ((frame (e-context-lifetime-test--multi-source-frame 3))
          (arguments
-          '(:keep (1)
-            :summaries ((:sources (2) :text "durable summary"))))
+          '(:keep [1]
+            :summaries [(:sources [2] :text "durable summary")]))
          (normalized
           (e-context-lifetime-normalize-curation-disposition arguments 3)))
     (should (equal normalized
-                   '(:keep (1)
-                     :summaries ((:sources (2) :text "durable summary"))
-                     :erase nil)))
+                   '(:keep [1]
+                     :summaries [(:sources [2] :text "durable summary")]
+                     :erase [])))
     (let* ((prepared
             (e-context-lifetime-prepare-curation-disposition
              frame arguments "response-mixed"))
@@ -761,7 +766,7 @@ the record-focused assertions concise without restoring the retired wrapper."
                                   (prin1-to-string record))))
     (let ((all-omitted
            (e-context-lifetime-prepare-curation-disposition
-            frame '(:keep nil :summaries nil :erase nil)
+            frame '(:keep [] :summaries [] :erase [])
             "response-all-omitted")))
       (should-not (plist-get all-omitted :record))
       (should-not (plist-get all-omitted :erasure-record))
@@ -771,12 +776,12 @@ the record-focused assertions concise without restoring the retired wrapper."
       (should (= (plist-get all-omitted :erased-source-count) 0)))
     (dolist (bad
              (list
-              '(:keep (1) :summaries nil :erase (1 2 3))
-              '(:keep (1) :summaries ((:sources (1) :text "duplicate")))
-              '(:keep nil :summaries ((:sources (1) :text ""))
-                :erase nil)
-              '(:keep (1) :summaries ((:sources (1) :text "overlap"))
-                :erase (2))))
+              '(:keep [1] :summaries [] :erase [1 2 3])
+              '(:keep [1] :summaries [(:sources [1] :text "duplicate")])
+              '(:keep [] :summaries [(:sources [1] :text "")]
+                :erase [])
+              '(:keep [1] :summaries [(:sources [1] :text "overlap")]
+                :erase [2])))
       (should-error
        (e-context-lifetime-normalize-curation-disposition bad 3)
        :type 'e-context-lifetime-invalid-record))
@@ -784,7 +789,7 @@ the record-focused assertions concise without restoring the retired wrapper."
            (omitted
             (e-context-lifetime-prepare-curation-disposition
              seventeen
-             '(:keep (1))
+             '(:keep [1])
              "response-omitted")))
       (should (plist-get omitted :record))
       (should (= (plist-get omitted :source-count) 17))
@@ -792,7 +797,7 @@ the record-focused assertions concise without restoring the retired wrapper."
       (should-error
        (e-context-lifetime-prepare-curation-disposition
         seventeen
-        (list :keep (number-sequence 1 17))
+        (list :keep (vconcat (number-sequence 1 17)))
         "response-retain-17")
        :type 'e-context-lifetime-invalid-record))))
 
@@ -802,9 +807,9 @@ the record-focused assertions concise without restoring the retired wrapper."
          (prepared
           (e-context-lifetime-prepare-curation-disposition
            frame
-           '(:keep (1)
-             :summaries ((:sources (2 3) :text "two sources"))
-             :erase (4))
+           '(:keep [1]
+             :summaries [(:sources [2 3] :text "two sources")]
+             :erase [4])
            "response-activity"))
          (projection
           (e-context-lifetime-curation-activity-projection prepared)))
@@ -836,7 +841,7 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should-not
      (e-context-lifetime-curation-activity-projection
       (e-context-lifetime-prepare-curation-disposition
-       frame '(:keep nil :summaries nil :erase nil)
+       frame '(:keep [] :summaries [] :erase [])
        "response-all-omitted")))
     (dolist (bad
              '((:kept-source-count 0 :summary-count 0
@@ -877,10 +882,10 @@ the record-focused assertions concise without restoring the retired wrapper."
   (let* ((frame (e-context-lifetime-test--multi-source-frame 1))
          (sources (e-context-lifetime-frame-curation-sources frame 1.0))
          (one-byte-summary
-          (list :sources '(1) :text "x"))
+          (list :sources [1] :text "x"))
          (one-byte-record
           (e-context-lifetime--curation-record
-           frame (list :keep nil :summaries (list one-byte-summary))
+           frame (list :keep [] :summaries (vector one-byte-summary))
            "response-disposition-bytes" sources))
          (one-byte-package
           (list :promotion one-byte-record :erasure nil))
@@ -890,15 +895,15 @@ the record-focused assertions concise without restoring the retired wrapper."
           (+ 1 (- e-context-lifetime-curation-max-record-bytes
                   (e-context-lifetime--bytes one-byte-package)))))
     (let* ((at-limit
-            (list :keep nil
+            (list :keep []
                   :summaries
-                  (list (list :sources '(1)
-                              :text (make-string length-at-limit ?x)))))
+                  (vector (list :sources [1]
+                                :text (make-string length-at-limit ?x)))))
            (one-over
-            (list :keep nil
+            (list :keep []
                   :summaries
-                  (list (list :sources '(1)
-                              :text (make-string (1+ length-at-limit) ?x))))))
+                  (vector (list :sources [1]
+                                :text (make-string (1+ length-at-limit) ?x))))))
       (let ((prepared
              (e-context-lifetime-prepare-curation-disposition
               frame at-limit "response-disposition-bytes" 1.0)))
@@ -914,7 +919,7 @@ the record-focused assertions concise without restoring the retired wrapper."
             frame "consumer-1" "response-consumed")))
       (should-error
        (e-context-lifetime-prepare-curation-disposition
-        consumed '(:keep (1))
+        consumed '(:keep [1])
         "response-after-consume")
        :type 'e-context-lifetime-invalid-record))))
 
@@ -922,9 +927,9 @@ the record-focused assertions concise without restoring the retired wrapper."
   "Erasure records carry ordered tool identities, never source content."
   (let* ((frame (e-context-lifetime-test--multi-tool-source-frame 4))
          (arguments
-          '(:keep (1)
-            :summaries ((:sources (2) :text "durable summary"))
-            :erase (4)))
+          '(:keep [1]
+            :summaries [(:sources [2] :text "durable summary")]
+            :erase [4]))
          (prepared
           (e-context-lifetime-prepare-curation-disposition
            frame arguments "response-erasure"))
@@ -985,7 +990,7 @@ the record-focused assertions concise without restoring the retired wrapper."
                                 :content "safe output"))))))))
       (let* ((prepared
               (e-context-lifetime-prepare-curation-disposition
-               frame '(:keep (1)) "response-invalid-tool-name"))
+               frame '(:keep [1]) "response-invalid-tool-name"))
              (stub
               (car (plist-get
                     (e-context-lifetime-curation-activity-projection prepared)
@@ -998,7 +1003,7 @@ the record-focused assertions concise without restoring the retired wrapper."
   (let* ((representative e-context-lifetime-curation-max-sources)
          (frame (e-context-lifetime-test--multi-tool-source-frame representative))
          (arguments
-          (list :erase (number-sequence 1 representative)))
+          (list :erase (vconcat (number-sequence 1 representative))))
          (prepared
           (e-context-lifetime-prepare-curation-disposition
            frame arguments "response-32"))
@@ -1017,7 +1022,7 @@ the record-focused assertions concise without restoring the retired wrapper."
             (e-context-lifetime-test--multi-tool-source-frame larger-count))
            (larger-arguments
             (list
-                  :erase (number-sequence 1 larger-count))))
+                  :erase (vconcat (number-sequence 1 larger-count)))))
       (should-error
        (e-context-lifetime-prepare-curation-disposition
         larger-frame larger-arguments "response-large")
@@ -1028,7 +1033,7 @@ the record-focused assertions concise without restoring the retired wrapper."
   (let* ((count 1)
          (frame (e-context-lifetime-test--multi-tool-source-frame count))
          (sources (e-context-lifetime-frame-curation-sources frame))
-         (normalized (list :erase (number-sequence 1 count)))
+         (normalized (list :erase (vconcat (number-sequence 1 count))))
          (base
           (e-context-lifetime--curation-erasure-record
            frame normalized "r" sources))
@@ -1060,7 +1065,7 @@ the record-focused assertions concise without restoring the retired wrapper."
   (let ((frame (e-context-lifetime-test--frame)))
     (should-error
      (e-context-lifetime-prepare-curation-disposition
-      frame '(:erase (1))
+      frame '(:erase [1])
       "response-non-tool")
      :type 'e-context-lifetime-invalid-record))
   (let ((frame
@@ -1075,7 +1080,7 @@ the record-focused assertions concise without restoring the retired wrapper."
                                             :content "no call id")))))))
     (should-error
      (e-context-lifetime-prepare-curation-disposition
-      frame '(:erase (1))
+      frame '(:erase [1])
       "response-missing-tool-id")
      :type 'e-context-lifetime-invalid-record))
   (let ((frame
@@ -1093,7 +1098,7 @@ the record-focused assertions concise without restoring the retired wrapper."
                                     :content "mismatched ids"))))))))
     (should-error
      (e-context-lifetime-prepare-curation-disposition
-      frame '(:erase (1))
+      frame '(:erase [1])
      "response-mismatched-tool-id")
      :type 'e-context-lifetime-invalid-record)))
 

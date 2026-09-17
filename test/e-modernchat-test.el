@@ -199,14 +199,16 @@
             :items '((:type assistant-message :content "SQL modern reply")
                      (:type done :reason stop)))))
          (session-id "modernchat-sql")
-         (readiness
-          (e-chat-service-create-session-start
-           :harness harness :id session-id
-           :metadata '(:name "SQL modern chat")))
          (original-submit (symbol-function 'e-chat-service-submit-session))
-         sent-states admission buffer)
+         readiness sent-states admission buffer)
     (unwind-protect
-        (cl-letf (((symbol-function 'e-modernchat--ensure-runtime) #'ignore)
+        (progn
+          (e-session-enable store)
+          (setq readiness
+                (e-chat-service-create-session-start
+                 :harness harness :id session-id
+                 :metadata '(:name "SQL modern chat")))
+          (cl-letf (((symbol-function 'e-modernchat--ensure-runtime) #'ignore)
                   ((symbol-function 'emacs-egui-create-buffer)
                    (lambda (&rest arguments)
                      (list :buffer
@@ -252,8 +254,8 @@
                           (plist-get view :messages))))
             (should (equal contents
                            '("SQL modern prompt" "SQL modern reply"))))
-          (should (e-chat-service-binding harness session-id))
-          (should sent-states))
+            (should (e-chat-service-binding harness session-id))
+            (should sent-states)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when-let* ((binding (e-chat-service-binding harness session-id)))

@@ -921,17 +921,17 @@ BYTES-PER-TOKEN overrides the configured estimate ratio."
           (e-context-lifetime-frame-curation-sources
            frame bytes-per-token)))
 
-(defun e-context-lifetime--curation-sequence (value kind)
-  "Return VALUE as a strict list-shaped curation sequence of KIND."
-  (cond
-   ((null value) nil)
-   ((vectorp value) (append value nil))
-   ((and (proper-list-p value)
-         (not (e-context-lifetime--keyword-plist-p value)))
-    value)
-   (t
-    (signal 'e-context-lifetime-invalid-record
-            (list kind :not-array value)))))
+(defun e-context-lifetime--curation-array (arguments key kind)
+  "Return canonical array KEY from ARGUMENTS, defaulting to empty.
+KIND identifies validation errors.  Present values must be vectors; this
+model-facing boundary never guesses whether a Lisp list meant an array."
+  (if (plist-member arguments key)
+      (let ((value (plist-get arguments key)))
+        (unless (vectorp value)
+          (signal 'e-context-lifetime-invalid-record
+                  (list kind :not-canonical-array value)))
+        value)
+    []))
 
 (defun e-context-lifetime--curation-positive-label (value kind)
   "Validate one strict positive integer curation label VALUE for KIND."
@@ -942,25 +942,30 @@ BYTES-PER-TOKEN overrides the configured estimate ratio."
 
 (defun e-context-lifetime--curation-labels
     (value kind &optional require-nonempty)
-  "Return strict positive integer labels from VALUE for KIND.
+  "Return canonical positive integer label vector from VALUE for KIND.
 REQUIRE-NONEMPTY rejects an empty sequence when non-nil."
-  (let ((items (e-context-lifetime--curation-sequence value kind)))
-    (when (and require-nonempty (null items))
+  (unless (vectorp value)
+    (signal 'e-context-lifetime-invalid-record
+            (list kind :not-canonical-array value)))
+  (when (and require-nonempty (= (length value) 0))
       (signal 'e-context-lifetime-invalid-record
               (list kind :empty value)))
-    (mapcar (lambda (item)
-              (e-context-lifetime--curation-positive-label item kind))
-            items)))
+  (let ((items (copy-sequence value)))
+    (dotimes (index (length items))
+      (aset items index
+            (e-context-lifetime--curation-positive-label
+             (aref items index) kind)))
+    items))
 
 (defun e-context-lifetime-normalize-curation-disposition
     (arguments &optional source-count)
-  "Normalize optional curation ARGUMENTS for SOURCE-COUNT presented sources.
+  "Validate and copy canonical curation ARGUMENTS for SOURCE-COUNT sources.
 
 The accepted keys are optional `:keep', `:summaries', and `:erase'; omission
 means an empty disposition and may intentionally omit every presented source.
 Submitted labels must be positive, unique, and within SOURCE-COUNT when it is
 supplied.  Only labels and summary text are copied; omitted or erased source
-bodies and provenance never enter the normalized value."
+  bodies and provenance never enter the returned canonical JSON object."
   (unless (e-context-lifetime--keyword-plist-p arguments)
     (signal 'e-context-lifetime-invalid-record
             (list 'curation-disposition :not-keyword-plist arguments)))
@@ -983,13 +988,17 @@ bodies and provenance never enter the normalized value."
             (list 'curation-disposition :source-count source-count)))
   (let* ((keep
           (e-context-lifetime--curation-labels
-           (plist-get arguments :keep) 'curation-keep))
+           (e-context-lifetime--curation-array
+            arguments :keep 'curation-keep)
+           'curation-keep))
          (raw-summaries
-          (e-context-lifetime--curation-sequence
-           (plist-get arguments :summaries) 'curation-summaries))
+          (e-context-lifetime--curation-array
+           arguments :summaries 'curation-summaries))
          (erase
           (e-context-lifetime--curation-labels
-           (plist-get arguments :erase) 'curation-erase))
+           (e-context-lifetime--curation-array
+            arguments :erase 'curation-erase)
+           'curation-erase))
          (seen (make-hash-table :test #'eql))
          (retained-count 0)
          summaries)
@@ -1005,10 +1014,11 @@ bodies and provenance never enter the normalized value."
            (when retained-p
              (setq retained-count (1+ retained-count))))
          (record-labels (labels kind retained-p)
-           (dolist (label labels)
-             (record-label label kind retained-p))))
+           (dotimes (index (length labels))
+             (record-label (aref labels index) kind retained-p))))
       (record-labels keep 'curation-keep t)
-      (dolist (summary raw-summaries)
+      (dotimes (summary-index (length raw-summaries))
+        (let ((summary (aref raw-summaries summary-index)))
         (e-context-lifetime--validate-exact-plist
          summary '(:sources :text) 'curation-summary)
         (let ((sources
@@ -1022,27 +1032,27 @@ bodies and provenance never enter the normalized value."
           (record-labels sources 'curation-summary-sources t)
           (push (list :sources (copy-sequence sources)
                       :text (copy-sequence text))
-                summaries)))
+                summaries))))
       (record-labels erase 'curation-erase nil)
       (when (> (hash-table-count seen)
                e-context-lifetime-curation-max-sources)
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation-disposition :disposed-source-count
                       (hash-table-count seen))))
-      (list :keep keep
-            :summaries (nreverse summaries)
+      (list :keep (copy-sequence keep)
+            :summaries (vconcat (nreverse summaries))
             :erase erase))))
 
 (defun e-context-lifetime--curation-activity-source-stubs
     (sources normalized)
   "Return bounded content-free source stubs for NORMALIZED over SOURCES."
   (let ((dispositions (make-hash-table :test #'eql)))
-    (dolist (label (plist-get normalized :keep))
+    (seq-doseq (label (plist-get normalized :keep))
       (puthash label 'kept dispositions))
-    (dolist (summary (plist-get normalized :summaries))
-      (dolist (label (plist-get summary :sources))
+    (seq-doseq (summary (plist-get normalized :summaries))
+      (seq-doseq (label (plist-get summary :sources))
         (puthash label 'summarized dispositions)))
-    (dolist (label (plist-get normalized :erase))
+    (seq-doseq (label (plist-get normalized :erase))
       (puthash label 'erased dispositions))
     (cl-loop for source in sources
              for disposition = (gethash (plist-get source :label)
@@ -1085,8 +1095,8 @@ into the normalized disposition or either record."
           (list :keep (plist-get normalized :keep)
                 :summaries (plist-get normalized :summaries)))
          (promotion-p
-          (or (plist-get normalized :keep)
-              (plist-get normalized :summaries)))
+          (or (> (length (plist-get normalized :keep)) 0)
+              (> (length (plist-get normalized :summaries)) 0)))
          (record
           (when promotion-p
             (e-context-lifetime--curation-record
@@ -1119,13 +1129,13 @@ into the normalized disposition or either record."
             ;; components as one context-curation-package record.
             :package package
             :activity-source-stubs activity-source-stubs
-            :erase-only-p (and (plist-get normalized :erase)
-                               (null (plist-get normalized :keep))
-                               (null (plist-get normalized :summaries)))
+            :erase-only-p (and (> (length (plist-get normalized :erase)) 0)
+                               (= (length (plist-get normalized :keep)) 0)
+                               (= (length (plist-get normalized :summaries)) 0))
             :source-count (length sources)
             :retained-source-count
             (+ (length (plist-get normalized :keep))
-               (cl-loop for summary in (plist-get normalized :summaries)
+               (cl-loop for summary across (plist-get normalized :summaries)
                         sum (length (plist-get summary :sources))))
             :erased-source-count
             (length (plist-get normalized :erase))))))
@@ -1217,9 +1227,12 @@ excluded.  Invalid projections signal `e-context-lifetime-invalid-record'."
         (stubs-present-p (plist-member projection :source-stubs))
         (stubs
          (and (plist-member projection :source-stubs)
-              (e-context-lifetime--curation-sequence
-               (plist-get projection :source-stubs)
-               'curation-activity-source-stubs))))
+              (let ((value (plist-get projection :source-stubs)))
+                (unless (proper-list-p value)
+                  (signal 'e-context-lifetime-invalid-record
+                          (list 'curation-activity-source-stubs
+                                :not-domain-list value)))
+                value))))
     (dolist (value (list kept summaries summarized erased))
       (unless (and (integerp value) (>= value 0))
         (signal 'e-context-lifetime-invalid-record
@@ -1277,7 +1290,7 @@ activity projection."
        (list :kept-source-count (length keep)
              :summary-count (length summaries)
              :summarized-source-count
-             (cl-loop for summary in summaries
+             (cl-loop for summary across summaries
                       sum (length (plist-get summary :sources)))
              :erased-source-count (length erase)
              :source-stubs
@@ -1330,7 +1343,7 @@ FRAME, NORMALIZED, and RESPONSE-ENTRY-ID supply its identity inputs."
 FRAME and SOURCES are bound using NORMALIZED and RESPONSE-ENTRY-ID."
   (let (items)
     ;; Exact items retain keep argument order.
-    (dolist (label (plist-get normalized :keep))
+    (seq-doseq (label (plist-get normalized :keep))
       (let* ((source (e-context-lifetime--curation-source-for-label
                       sources label))
              (provenance
@@ -1343,7 +1356,7 @@ FRAME and SOURCES are bound using NORMALIZED and RESPONSE-ENTRY-ID."
          items)))
     (setq items (nreverse items))
     ;; Summary items retain summary submission order and source order.
-    (dolist (summary (plist-get normalized :summaries))
+    (seq-doseq (summary (plist-get normalized :summaries))
       (let* ((summary-sources
               (mapcar (lambda (label)
                         (e-context-lifetime--curation-source-for-label
@@ -1395,7 +1408,7 @@ FRAME, NORMALIZED, and RESPONSE-ENTRY-ID supply its identity inputs."
 Only ordinary tool-result source identities are eligible.  SOURCE values and
 the source bodies never enter the returned record."
   (let ((erase-labels (plist-get normalized :erase)))
-    (when erase-labels
+    (when (> (length erase-labels) 0)
       (list
        :record-version e-context-lifetime-curation-erasure-record-version
        :type 'context-erasure

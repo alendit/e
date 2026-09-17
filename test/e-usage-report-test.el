@@ -45,11 +45,11 @@
    :actions
 	   (list :run
 	         (e-action-cheap-create
-	          :runner (lambda (_arguments _context) 'ran)
+	          :runner (lambda (_arguments _context) "ran")
 	          :description "Sample counted action.")
 	         :idle
 	         (e-action-cheap-create
-	          :runner (lambda (_arguments _context) 'idle)
+	          :runner (lambda (_arguments _context) "idle")
 	          :description "Sample zero-use action."))))
 
 (ert-deftest e-usage-report-test-splits-tools-and-actions ()

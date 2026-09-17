@@ -1796,8 +1796,8 @@ only joins that result to the content-free evidence record."
               (e-context-lifetime-normalize-curation-disposition
                arguments source-count))
              (retained-p
-              (or (plist-get normalized :keep)
-                  (plist-get normalized :summaries)))
+              (or (> (length (plist-get normalized :keep)) 0)
+                  (> (length (plist-get normalized :summaries)) 0)))
              (disposition
               (and record
                    (e-live-e2e--adoption-record-disposition
@@ -1820,11 +1820,11 @@ submitted erase label and no retained exact or summary labels."
               (e-context-lifetime-normalize-curation-disposition
                arguments source-count))
              (erase (plist-get normalized :erase))
-             (label (car erase)))
+             (label (and (= (length erase) 1) (aref erase 0))))
         (and (integerp source-count)
              (> source-count 0)
-             (null (plist-get normalized :keep))
-             (null (plist-get normalized :summaries))
+             (= (length (plist-get normalized :keep)) 0)
+             (= (length (plist-get normalized :summaries)) 0)
              (= (length erase) 1)
              (integerp label)
              (<= 1 label source-count)))
@@ -2300,10 +2300,10 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
                             :text (concat "Remember " sentinel)))))
          (other-record
           '(:items ((:kind exact :value "OTHER-SENTINEL"))))
-         (exact-arguments '(:keep (1)))
+         (exact-arguments '(:keep [1]))
          (summary-arguments
           '(:summaries
-            ((:sources (1) :text "Remember LIVE-ADOPTION-SENTINEL")))))
+            [(:sources [1] :text "Remember LIVE-ADOPTION-SENTINEL")])))
     (should (e-live-e2e--adoption-positive-effect-valid-p
              exact-arguments 2 exact-record sentinel))
     (should (e-live-e2e--adoption-positive-effect-valid-p
@@ -2313,37 +2313,37 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
     (should-not (e-live-e2e--adoption-positive-effect-valid-p
                  summary-arguments 2 nil sentinel))
     (dolist (bad
-             '((:keep nil :summaries nil)
-               (:keep (1) :erase (1))
-               (:erase (1 2))))
+             '((:keep [] :summaries [])
+               (:keep [1] :erase [1])
+               (:erase [1 2])))
       (should-not (e-live-e2e--adoption-positive-effect-valid-p
                    bad 2 exact-record sentinel)))
     ;; The independent erasure disposition has no positive adoption evidence.
     (should-not (e-live-e2e--adoption-positive-effect-valid-p
-                 '(:erase (1 2))
+                 '(:erase [1 2])
                  2 exact-record sentinel))))
 
 (ert-deftest e-live-e2e-test-autonomous-adoption-erase-effect-validation ()
   "Erase validation accepts exactly one submitted source label."
   (should (e-live-e2e--adoption-erase-effect-valid-p
-           '(:erase (1)) 2))
+           '(:erase [1]) 2))
   (should (e-live-e2e--adoption-erase-effect-valid-p
-           '(:keep nil :summaries nil :erase (2)) 2))
+           '(:keep [] :summaries [] :erase [2]) 2))
   (dolist (bad
-           '((:keep (1) :summaries nil :erase (2))
-             (:keep nil :summaries ((:sources (1) :text "fact")) :erase (2))
-             (:keep nil :summaries nil :erase nil)
-             (:keep nil :summaries nil :erase (1 2))
-             (:keep nil :summaries nil)
-             (:erase (0))
-             (:erase (3))
-             (:erase ("1"))
-             (:unknown (1))))
+           '((:keep [1] :summaries [] :erase [2])
+             (:keep [] :summaries [(:sources [1] :text "fact")] :erase [2])
+             (:keep [] :summaries [] :erase [])
+             (:keep [] :summaries [] :erase [1 2])
+             (:keep [] :summaries [])
+             (:erase [0])
+             (:erase [3])
+             (:erase ["1"])
+             (:unknown [1])))
     (should-not (e-live-e2e--adoption-erase-effect-valid-p bad 2)))
   ;; Explicit erasure is one submitted label even when the source frontier is
   ;; larger; source eligibility is checked by the core frame preparation.
   (should (e-live-e2e--adoption-erase-effect-valid-p
-           '(:erase (17)) 17)))
+           '(:erase [17]) 17)))
 
 (ert-deftest e-live-e2e-test-autonomous-erase-classification-partitions ()
   "Erase adoption and composition failures remain independently classified."

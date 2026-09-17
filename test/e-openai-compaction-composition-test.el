@@ -125,13 +125,13 @@
       (should (equal (plist-get (plist-get erase :items) :minimum) 1))
       (should (equal
                (e-context-lifetime-normalize-curation-disposition
-                '(:keep (1) :summaries nil :erase (2)))
-               '(:keep (1) :summaries nil :erase (2))))
+                '(:keep [1] :summaries [] :erase [2]))
+               '(:keep [1] :summaries [] :erase [2])))
       (should
        (equal
         (e-context-lifetime-normalize-curation-disposition
-         '(:keep nil :summaries nil))
-        '(:keep nil :summaries nil :erase nil))))))
+         '(:keep [] :summaries []))
+        '(:keep [] :summaries [] :erase []))))))
 
 (ert-deftest e-openai-test-context-curation-schema-is-captured-by-both-transports ()
   "The native HTTP and WebSocket starts capture the same optional carrier."
@@ -213,8 +213,8 @@
               (should
                (equal
                 (e-context-lifetime-normalize-curation-disposition
-                 '(:keep nil :summaries nil))
-                '(:keep nil :summaries nil :erase nil)))
+                 '(:keep [] :summaries []))
+                '(:keep [] :summaries [] :erase [])))
               (when request
                 (e-backend-cancel-request request)))))))))
 

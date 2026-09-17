@@ -209,7 +209,7 @@
                  (package
                   (plist-get
                    (e-context-lifetime-prepare-curation-disposition
-                    frame '(:keep (1) :summaries nil :erase nil)
+                    frame '(:keep [1] :summaries [] :erase [])
                     "response:rdbms" 1.0)
                    :package)))
             (e-session-async-test--wait-finished

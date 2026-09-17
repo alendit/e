@@ -179,9 +179,9 @@
               (plist-get
                (e-context-lifetime-prepare-curation-disposition
                 frame
-                '(:keep nil
-                  :summaries ((:sources (1)
-                               :text "selected durable fact")))
+                '(:keep []
+                  :summaries [(:sources [1]
+                               :text "selected durable fact")])
                 "response-portable-summary"
                 1.0)
                :record)))
@@ -233,10 +233,10 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
           (plist-get
            (e-context-lifetime-prepare-curation-disposition
             frame
-            (list :keep nil
+            (list :keep []
                   :summaries
-                  (list (list :sources '(1)
-                              :text (format "selected-%s" suffix))))
+                  (vector (list :sources [1]
+                                :text (format "selected-%s" suffix))))
             response-id
             1.0)
            :record)))
@@ -841,8 +841,8 @@ an empty summary\"."
                            :arguments ()))
                 (funcall on-item
                          '(:type context-curate
-                           :arguments (:keep (999)
-                                       :summaries nil)))
+                           :arguments (:keep [999]
+                                       :summaries [])))
                 (funcall on-item
                          '(:type tool-call
                            :id "call-after-invalid-session"

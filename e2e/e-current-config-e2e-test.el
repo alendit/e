@@ -415,19 +415,20 @@
                                               reference))
                       (e-current-config-e2e-test--await-reference reference)))
                    (content (plist-get awaited :content))
-                   (entry (car (plist-get content :results)))
+                   (results (plist-get content :results))
+                   (entry (aref results 0))
                    (started (plist-get entry :result)))
               (should (eq (plist-get awaited :status) 'ok))
               (should (plist-get content :settled))
+              (should (vectorp results))
+              (should (= (length results) 1))
               (should (equal (plist-get entry :ref) reference))
-              (should (eq (plist-get entry :state) 'finished))
-              (should (eq (plist-get started :status) 'dispatched))
-              (should (eq (plist-get started :state) 'running))
+              (should (equal (plist-get entry :state) "finished"))
+              (should (equal (plist-get started :status) "dispatched"))
+              (should (eq (plist-get started :foreground) :json-false))
               (should (= (plist-get started :selected) 7))
-              (should (= (plist-get started :initial-dispositions) 7))
-              (should (= (plist-get started :admitted) 7))
-              (should (zerop (plist-get started :retrying)))
-              (should (zerop (plist-get started :failed)))
+              (should (vectorp (plist-get started :task-keys)))
+              (should (= (length (plist-get started :task-keys)) 7))
               (setq daily-file (expand-file-name "daily/2099-01-02.org" repo))
               (let ((text (with-temp-buffer
                             (insert-file-contents daily-file)
@@ -507,6 +508,13 @@
             (e-current-config-e2e-test--print
              "Current-config E2E complete: %d tests, %d unexpected.\n"
              total unexpected)
+            (seq-doseq (test (ert--stats-tests stats))
+              (let ((result (ert-test-most-recent-result test)))
+                (when (ert-test-failed-p result)
+                  (e-current-config-e2e-test--print
+                   "FAILED %S: %S\n"
+                   (ert-test-name test)
+                   (ert-test-failed-condition result)))))
             (when (zerop total)
               (e-current-config-e2e-test--print
                "Current-config E2E failed: selector matched zero tests.\n"))

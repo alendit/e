@@ -53,10 +53,10 @@
                       (setq curation-input
                             (list :type 'context-curate
                                   :arguments
-                                  '(:keep nil
+                                  '(:keep []
                                     :summaries
-                                    ((:sources (1)
-                                      :text "selected durable fact")))))
+                                    [(:sources [1]
+                                      :text "selected durable fact")])))
                       (funcall on-item curation-input)
                       (funcall on-item '(:type done :reason tool-use)))
                   (funcall on-item
@@ -276,7 +276,7 @@
                    (funcall
                     on-item
                     (e-openai-decoder--context-curation-effect
-                     '(:keep nil :summaries nil :erase nil)
+                     '(:keep [] :summaries [] :erase [])
                      "curation-initial"))
                    (funcall on-item '(:type done :reason stop)))
                   (2
@@ -292,7 +292,7 @@
                    (funcall
                     on-item
                     (e-openai-decoder--context-curation-effect
-                     '(:keep (3) :summaries nil :erase nil)
+                     '(:keep [3] :summaries [] :erase [])
                      "curation-fresh"))
                    (funcall on-item '(:type done :reason stop)))
                   (4
@@ -450,8 +450,8 @@
            (raw-result-marker "UNIQUE-RAW-TOOL-RESULT")
            (raw-result
             `(:capability "web.fetch"
-              :headers ((:name "server" :value "nginx")
-                        (:name "content-type" :value "text/html"))
+              :headers [(:name "server" :value "nginx")
+                        (:name "content-type" :value "text/html")]
               :text ,raw-result-marker))
            (backend
             (e-backend-create
@@ -484,10 +484,10 @@
                    (setq curation-input
                          (list :type 'context-curate
                                :arguments
-                               '(:keep nil
+                               '(:keep []
                                  :summaries
-                                 ((:sources (2)
-                                   :text "selected from tool result")))
+                                 [(:sources [2]
+                                   :text "selected from tool result")])
                                :provider-replay-items
                                '((:type provider-replay-item
                                  :provider-id openai
@@ -599,10 +599,10 @@
                          (plist-get (nth (1- tool-position) messages-b)
                                     :content))))
               (should (equal curation-arguments
-                             '(:keep nil
+                             '(:keep []
                                :summaries
-                               ((:sources (2)
-                                 :text "selected from tool result")))))
+                               [(:sources [2]
+                                 :text "selected from tool result")])))
               (should tool-message-c)
               (should (equal (mapcar (lambda (item)
                                        (plist-get (plist-get item :item) :type))
@@ -732,8 +732,8 @@
 (ert-deftest e-harness-test-invalid-curation-returns-provider-error-before-append ()
   "Completion validation returns a tool-style error and the same turn recovers."
   (e-harness-test--with-empty-layer-registry
-    (dolist (case '((unknown-label . (:keep (2) :summaries nil))
-                    (oversized-record . (:keep (1) :summaries nil))))
+    (dolist (case '((unknown-label . (:keep [2] :summaries []))
+                    (oversized-record . (:keep [1] :summaries []))))
       (let* ((request-count 0)
              (requests nil)
              (source-value "PREFLIGHT-SOURCE")
@@ -766,10 +766,10 @@
                                   (setq prepared-bytes
                                         (string-bytes
                                          (encode-coding-string text 'utf-8 t)))
-                                  (list :keep nil
+                                  (list :keep []
                                         :summaries
-                                        (list (list :sources '(1)
-                                                    :text text))))
+                                        (vector (list :sources [1]
+                                                      :text text))))
                               (cdr case))))
                        (funcall
                         on-item
@@ -875,7 +875,7 @@
                    (funcall
                     on-item
                     (e-openai-decoder--context-curation-effect
-                     '(:keep (1) :summaries nil :erase nil)
+                     '(:keep [1] :summaries [] :erase [])
                      (format "recovery-curation-%d" request-count)))
                    (funcall on-item '(:type done :reason stop)))
                   (3
@@ -970,7 +970,7 @@
               (lambda (&key on-item &allow-other-keys)
                 (funcall on-item
                          '(:type context-curate
-                           :arguments (:keep (1) :summaries nil)))
+                           :arguments (:keep [1] :summaries [])))
                 (funcall on-item
                          '(:type assistant-message :content "selected"))
                 (funcall on-item '(:type done :reason stop))))))
@@ -1129,7 +1129,7 @@
                :curation-effects
                (list (list :type 'context-curate
                            :arguments
-                           '(:keep (2) :summaries nil)))))
+                           '(:keep [2] :summaries [])))))
        :type 'e-context-lifetime-invalid-record))
     (should (eq (plist-get entry :context-frame) frame))
     (should-not (e-context-lifetime-frame-consumed-p frame))
@@ -1193,10 +1193,10 @@
                              on-item
                              (list :type 'context-curate
                                    :arguments
-                                   '(:keep nil
+                                   '(:keep []
                                      :summaries
-                                     ((:sources (2)
-                                       :text "selected after B")))))
+                                     [(:sources [2]
+                                       :text "selected after B")])))
                               (funcall on-item
                                        '(:type assistant-message
                                          :content "B"))

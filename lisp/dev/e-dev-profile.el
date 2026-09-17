@@ -132,6 +132,10 @@ alist versus an array."
   (cond
    ((or (null value) (eq value t) (eq value :json-false)
         (eq value :json-null) (stringp value) (numberp value)) value)
+   ;; Profiling records are a domain format whose event/status fields are
+   ;; symbols internally.  Their file representation is deliberately text;
+   ;; this is an explicit format mapping, not generic JSON normalization.
+   ((symbolp value) (symbol-name value))
    ((vectorp value)
     (vconcat (mapcar #'e-dev-profile--value-to-json (append value nil))))
    ((and (consp value)

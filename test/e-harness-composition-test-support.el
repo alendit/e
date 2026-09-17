@@ -285,10 +285,10 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
           (plist-get
            (e-context-lifetime-prepare-curation-disposition
             frame
-            (list :keep nil
+            (list :keep []
                   :summaries
-                  (list (list :sources '(1)
-                              :text (format "selected-%s" suffix))))
+                  (vector (list :sources [1]
+                                :text (format "selected-%s" suffix))))
             response-id
             1.0)
            :record)))

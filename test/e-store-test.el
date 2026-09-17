@@ -98,7 +98,7 @@
      (equal (e-resources-glob resources "e://readonly" "skills/*" 5)
             '(:resources [(:uri "e://readonly/skills/guide"
                             :name "skills/guide"
-                            :kind resource)]
+                            :kind "resource")]
               :truncated nil)))
     (should
      (equal (e-resources-search

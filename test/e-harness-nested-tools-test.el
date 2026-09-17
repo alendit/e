@@ -35,7 +35,17 @@
        (condition-case err
            (e-tools-call! "long_network_tool" nil)
          (e-tools-nested-tool-error
-          (cadr err)))))
+          (let ((nested (cadr err)))
+            (list :status (symbol-name (plist-get nested :status))
+                  :content (plist-get nested :content)
+                  :metadata
+                  (list :error
+                        (symbol-name
+                         (plist-get (plist-get nested :metadata) :error))
+                        :blocking-class
+                        (symbol-name
+                         (plist-get (plist-get nested :metadata)
+                                    :blocking-class)))))))))
     (e-tools-test-register
      registry
      :name "long_network_tool"
@@ -65,12 +75,12 @@
     (should-not started-long)
     (should (equal (plist-get result :status) 'ok))
     (let ((nested (plist-get result :content)))
-      (should (equal (plist-get nested :status) 'error))
+      (should (equal (plist-get nested :status) "error"))
       (should (string-match-p "cannot run synchronously inside another tool"
                               (plist-get nested :content)))
       (should (equal (plist-get nested :metadata)
-                     '(:error e-nested-long-tool-rejected
-                       :blocking-class network))))))
+                     '(:error "e-nested-long-tool-rejected"
+                       :blocking-class "network"))))))
 
 (ert-deftest e-harness-nested-tools-test-rejects-async-nested-tool ()
   "Async-only nested tools return a structured error and are not started."
@@ -89,7 +99,17 @@
        (condition-case err
            (e-tools-call! "async_tool" nil)
          (e-tools-nested-tool-error
-          (cadr err)))))
+          (let ((nested (cadr err)))
+            (list :status (symbol-name (plist-get nested :status))
+                  :content (plist-get nested :content)
+                  :metadata
+                  (list :error
+                        (symbol-name
+                         (plist-get (plist-get nested :metadata) :error))
+                        :blocking-class
+                        (symbol-name
+                         (plist-get (plist-get nested :metadata)
+                                    :blocking-class)))))))))
     (e-tools-test-register
      registry
      :name "async_tool"
@@ -119,12 +139,12 @@
     (should-not started-async)
     (should (equal (plist-get result :status) 'ok))
     (let ((nested (plist-get result :content)))
-      (should (equal (plist-get nested :status) 'error))
+      (should (equal (plist-get nested :status) "error"))
       (should (string-match-p "async-backed"
                               (plist-get nested :content)))
       (should (equal (plist-get nested :metadata)
-                     '(:error e-tools-nested-async-tool-rejected
-                       :blocking-class cheap))))))
+                     '(:error "e-tools-nested-async-tool-rejected"
+                       :blocking-class "cheap"))))))
 
 (provide 'e-harness-nested-tools-test)
 

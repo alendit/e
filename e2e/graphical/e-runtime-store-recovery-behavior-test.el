@@ -948,11 +948,11 @@ aggregate or mirror."
               (e-graphical-test-stream-emit
                stream
                (e-openai-decoder--context-curation-effect
-                (list :keep nil
+                (list :keep []
                       :summaries
-                      (list (list :sources (list large-result-source-label)
-                                  :text large-curation-summary))
-                      :erase nil)
+                      (vector (list :sources (vector large-result-source-label)
+                                    :text large-curation-summary))
+                      :erase [])
                 "daily-large-result-curation")
                0.01)
               (e-graphical-test-stream-finish stream 0.02)

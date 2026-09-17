@@ -2104,7 +2104,7 @@
               (funcall
                on-item
                '(:type context-curate
-                 :arguments (:keep (1) :summaries nil)))
+                 :arguments (:keep [1] :summaries [])))
               (funcall on-item
                        '(:type assistant-message :content "answer"))
               (funcall on-item '(:type done :reason stop))))))
@@ -2132,7 +2132,7 @@
                        (setq messages (append messages (list message)))))
     (should (= (length curation-effects) 1))
     (should (equal (plist-get (car curation-effects) :arguments)
-                   '(:keep (1) :summaries nil :erase nil)))
+                   '(:keep [1] :summaries [] :erase [])))
     (should-not (seq-find (lambda (message)
                             (eq (plist-get message :role) 'tool-call))
                           messages))
@@ -2156,7 +2156,7 @@
                          :metadata (:response-id "response-curated")))
               (funcall on-item
                        '(:type context-curate
-                         :arguments (:keep nil :summaries nil :erase nil)))
+                         :arguments (:keep [] :summaries [] :erase [])))
               (funcall on-item
                        '(:type assistant-message :content "answer"))
               (funcall on-item '(:type done :reason stop)))))))
@@ -2222,7 +2222,7 @@
                 (2
                  (funcall on-item
                           '(:type context-curate
-                            :arguments (:keep (1) :summaries nil)
+                            :arguments (:keep [1] :summaries [])
                             :provider-replay-item
                             (:type provider-replay-item
                              :provider-id openai
@@ -2333,7 +2333,7 @@
               (setq request-count (1+ request-count))
               (funcall on-item
                        (e-openai-decoder--context-curation-effect
-                        '(:keep nil :summaries nil :erase nil)
+                        '(:keep [] :summaries [] :erase [])
                         (format "curation-call-%d" request-count)))
               (funcall on-item
                        (list :type 'provider-anchor-candidate
@@ -2432,8 +2432,8 @@
                 ((or 1 2)
                  (funcall on-item
                           (e-openai-decoder--context-curation-effect
-                           (list :keep (list request-count)
-                                 :summaries nil :erase nil)
+                           (list :keep (vector request-count)
+                                 :summaries [] :erase [])
                            (format "strict-curation-%d" request-count)))
                  (funcall on-item '(:type done :reason stop)))
                 (3
@@ -2513,7 +2513,7 @@
                 ((or 2 4)
                  (funcall on-item
                           (e-openai-decoder--context-curation-effect
-                           '(:keep (1) :summaries nil :erase nil)
+                           '(:keep [1] :summaries [] :erase [])
                            (format "curation-%d" request-count)))
                  (funcall on-item '(:type done :reason stop)))
                 (5
@@ -3066,7 +3066,7 @@
               ;; later ordinary call must not be dispatched after this point.
               (funcall on-item
                        '(:type context-curate
-                         :arguments (:keep (1) :erase (1))))
+                         :arguments (:keep [1] :erase [1])))
               (funcall on-item
                        '(:type tool-call
                          :id "call-after-invalid"
@@ -3140,7 +3140,7 @@
                 (1
                  (funcall on-item
                           (e-openai-decoder--context-curation-effect
-                           '(:keep (9) :summaries nil :erase nil)
+                           '(:keep [9] :summaries [] :erase [])
                            "invalid-curation-call"))
                  (funcall on-item '(:type done :reason stop)))
                 (2
@@ -3229,7 +3229,7 @@
             (lambda (&key on-item &allow-other-keys)
               (funcall on-item
                        '(:type context-curate
-                         :arguments (:keep (1) :summaries nil)))
+                         :arguments (:keep [1] :summaries [])))
               (funcall on-item
                        '(:type tool-call :id "call-after-curation"
                          :name "after-curation" :arguments nil)))))))
@@ -3286,10 +3286,10 @@
             (lambda (&key on-item &allow-other-keys)
               (funcall on-item
                        '(:type context-curate
-                         :arguments (:keep (1) :summaries nil)))
+                         :arguments (:keep [1] :summaries [])))
               (funcall on-item
                        '(:type context-curate
-                         :arguments (:keep (1) :summaries nil))))))))
+                         :arguments (:keep [1] :summaries []))))))))
     (should-error
      (e-loop-run-turn-batch
       :session-id "session-multiple-curations"

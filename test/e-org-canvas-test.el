@@ -69,6 +69,14 @@
     (error nil))
   (e-work-status work))
 
+(defun e-org-canvas-test--await-session-idle (store session-id)
+  "Wait until STORE has no pending commands for SESSION-ID."
+  (let ((deadline (+ (float-time) 5.0)))
+    (while (and (e-session-async-pending-p store session-id)
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    (should-not (e-session-async-pending-p store session-id))))
+
 (cl-defmacro e-org-canvas-test--with-sqlite-harness
     ((harness store &optional with-org-canvas) &rest body)
   "Run BODY with a disposable SQLite STORE and public chat HARNESS."
@@ -2195,6 +2203,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
             (should (equal (file-name-nondirectory buffer-file-name)
                            "project-notes.org"))
             (should (file-exists-p buffer-file-name))
+            (e-org-canvas-test--await-session-idle store "session-1")
             (let* ((metadata
                     (plist-get
                      (e-org-canvas-test--await

@@ -48,7 +48,7 @@
                          "old"))
           (e-resources-edit resources
                             "file://sample.txt"
-                            '((:oldText "old" :newText "new")))
+                            '[(:oldText "old" :newText "new")])
           (should (equal (with-temp-buffer
                            (insert-file-contents file)
                            (buffer-string))

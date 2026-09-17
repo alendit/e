@@ -269,10 +269,10 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
           (plist-get
            (e-context-lifetime-prepare-curation-disposition
             frame
-            (list :keep nil
+            (list :keep []
                   :summaries
-                  (list (list :sources '(1)
-                              :text (format "selected-%s" suffix))))
+                  (vector (list :sources [1]
+                                :text (format "selected-%s" suffix))))
             response-id
             1.0)
            :record)))
@@ -1514,21 +1514,21 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
         (should-not (equal key other-tools-key))))))
 
 (ert-deftest e-harness-test-derived-prompt-cache-key-canonicalizes-tool-schemas ()
-  "Equivalent nested hash schemas share a key; material changes do not."
+  "Equivalent canonical schemas share a key; material changes do not."
   (e-harness-test--with-empty-layer-registry
-    (let* ((properties-a (make-hash-table :test 'equal))
-           (properties-b (make-hash-table :test 'equal))
-           (properties-c (make-hash-table :test 'equal))
-           (path-schema '(:type "string" :minLength 1))
+    (let* ((path-schema '(:type "string" :minLength 1))
            (other-schema '(:type "string" :maxLength 40)))
-      (puthash "path" path-schema properties-a)
-      (puthash "other" other-schema properties-a)
-      ;; Insert the equivalent hash object in the opposite order.
-      (puthash "other" (copy-tree other-schema) properties-b)
-      (puthash "path" (copy-tree path-schema) properties-b)
-      (puthash "path" '(:type "number") properties-c)
-      (puthash "other" (copy-tree other-schema) properties-c)
-      (let* ((definition-a
+      (let* ((properties-a
+              (list :path path-schema :other other-schema))
+             ;; Canonical objects may differ in property order; fingerprints
+             ;; sort object keys without accepting alternate container types.
+             (properties-b
+              (list :other (copy-tree other-schema)
+                    :path (copy-tree path-schema)))
+             (properties-c
+              (list :path '(:type "number")
+                    :other (copy-tree other-schema)))
+             (definition-a
               (list :type "function" :name "read" :description "Read."
                     :parameters (list :type "object"
                                       :properties properties-a
@@ -1759,8 +1759,8 @@ backend-error-message helper must return only the bare reason."
                        :curation-effects
                        (list
                         (list :type 'context-curate
-                              :arguments '(:keep nil :summaries nil
-                                            :erase (1))))))))))
+                              :arguments '(:keep [] :summaries []
+                                            :erase [1])))))))))
           (should (equal order '(package control consume)))
           (e-session-flush-write-queue store)
           (let* ((erasures (e-session-local-context-erasures store "erase-only"))
@@ -1861,9 +1861,9 @@ backend-error-message helper must return only the bare reason."
                      (list
                       (list :type 'context-curate
                             :arguments
-                            '(:keep (1)
-                              :summaries nil
-                              :erase (2)))))))))
+                            '(:keep [1]
+                              :summaries []
+                              :erase [2]))))))))
           (let* ((package-entry
                   (seq-find
                    (lambda (item)
@@ -1909,9 +1909,9 @@ backend-error-message helper must return only the bare reason."
                       (list
                        (list :type 'context-curate
                              :arguments
-                             '(:keep (1)
-                               :summaries nil
-                               :erase (1))))))
+                             '(:keep [1]
+                               :summaries []
+                               :erase [1])))))
                :type 'e-context-lifetime-invalid-record))
             (should-not (e-context-lifetime-frame-consumed-p bad-frame))
             (should-not (e-session-local-context-curations store "mixed-invalid"))
@@ -1941,9 +1941,9 @@ backend-error-message helper must return only the bare reason."
                         (list
                          (list :type 'context-curate
                                :arguments
-                               '(:keep (1)
-                                 :summaries nil
-                                 :erase (2))))))
+                               '(:keep [1]
+                                 :summaries []
+                                 :erase [2])))))
                  :type 'error)))
             (should-not (e-context-lifetime-frame-consumed-p failure-frame))
             (should-not (e-session-local-context-curations store "mixed-failure"))
@@ -1987,7 +1987,7 @@ backend-error-message helper must return only the bare reason."
                    :curation-effects
                    (list (list :type 'context-curate
                                :arguments
-                               '(:keep (1) :summaries nil)))))))
+                               '(:keep [1] :summaries [])))))))
     (should (equal (e-context-lifetime-frame-id consumed) "frame:a"))
     (should (eq (plist-get entry :context-frame) frame-b))
     (should-not (e-context-lifetime-frame-consumed-p frame-b))
@@ -2077,7 +2077,7 @@ backend-error-message helper must return only the bare reason."
                 :curation-effects
                 (list (list :type 'context-curate
                             :arguments
-                            '(:keep (1) :summaries nil))))))))
+                            '(:keep [1] :summaries []))))))))
     (should (equal order '(package consume)))
     (should (= (length (e-session-local-context-curations store "session-1")) 1))
     (should (e-context-lifetime-frame-consumed-p
