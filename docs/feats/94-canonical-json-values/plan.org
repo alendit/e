@@ -1,0 +1,134 @@
+#+title: Canonical JSON Values Across Model and Persistence Boundaries
+#+startup: overview
+
+* Status
+
+In-progress.
+
+This work was opened after the Daily reconciliation action exposed a list-of-
+plists corruption path.  A schema-aware compatibility normalizer repaired the
+immediate symptom, but retained the underlying ambiguity between Elisp lists,
+plists, alists, and JSON arrays.  This feature replaces that compatibility
+matrix with one canonical JSON representation and then rebases the Daily
+coordinator correction on it.
+
+* Canonical contract
+
+| JSON value | Canonical Elisp value |
+|-
+| object | keyword plist; the empty object is =nil= |
+| array | vector; the empty array is =[]= |
+| string and number | native string and finite number |
+| true | =t= |
+| false | =:json-false= |
+| null | =:json-null= |
+
+The boundary is structural and exact.  It rejects alists, hash tables,
+list-based arrays, non-keyword object keys, arbitrary symbols, non-finite
+numbers, and cycles.  JSON Schema validates this representation but never
+reinterprets it.  Applications may explicitly map canonical values into
+domain records after the boundary.
+
+Provider adapters parse wire JSON into the representation once.  Tool and
+action dispatch preserve it unchanged.  Canonical encoders preserve empty
+object versus empty array and false versus null.  Existing arbitrary Elisp
+runtime-store values remain a separate domain; only persisted fields declared
+to contain canonical JSON adopt the canonical contract.
+
+* Compatibility decision
+
+Current durable SQLite/runtime-store values retain their tagged Elisp codec.
+Existing JSONL session/catalog/checkpoint data is read through one named,
+read-only legacy migration adapter and is written canonically thereafter.
+Versioned temporary tool-invocation documents, Grimoire raw JSON sidecars, and
+embedded Agenda Apply JSON must round-trip canonically.  Generated graph,
+semantic, and source data is migrated with its adapter; rebuildability is not
+an excuse to keep ambiguous shapes.
+
+Board semantics do not change.  Board owns terminal fan-in and continuation
+delivery.  The Daily application owns reconciliation, publication, recovery,
+and the mapping from a canonical section vector into publication-domain
+records.
+
+* Ordered migration checklist
+
+** TODO F94-DP1: Establish the value contract
+
+- [ ] Add the shared canonical JSON module and public false/null sentinels.
+- [ ] Add exact predicates, rejecting assertion, parser, and serializer.
+- [ ] Prove nested objects/arrays, arrays of objects, empty object/array,
+  false/null, invalid containers, non-finite numbers, and cycles.
+
+** TODO F94-DP2: Canonical provider and codec boundaries
+
+- [ ] Make OpenAI, Anthropic, and MCP decoders produce plist objects, vector
+  arrays, =:json-false=, and =:json-null= exactly once.
+- [ ] Make request encoders assert and serialize canonical JSON.
+- [ ] Migrate session, catalog, checkpoint, and temporary invocation JSON;
+  retain only the named legacy reader needed for existing durable files.
+- [ ] Prove provider decode and persistence round trips without shape loss.
+
+** TODO F94-DP3: Canonical tool and action dispatch
+
+- [ ] Make model-facing tools and capability actions accept and carry only
+  canonical JSON values.
+- [ ] Migrate direct e callers, schemas, and fixtures to vector arrays and
+  explicit false/null sentinels.
+- [ ] Prove provider decode -> dispatch -> application consumption.
+- [ ] Delete recursive action normalization, tool reparsing/coercion, JSON
+  fingerprint normalization, and their compatibility tests.
+
+** TODO F94-DP4: Canonical Grimoire boundaries
+
+- [ ] Migrate Daily, source-process, semantic, graph, quest, and Agenda JSON
+  adapters plus their fixtures.
+- [ ] Map the canonical Daily section vector explicitly into publication
+  domain records and remove string-key/container fallbacks.
+- [ ] Prove Grimoire reconciliation and raw/embedded persistence round trips.
+
+** TODO F94-DP5: Rebase Daily coordinator ownership correction
+
+- [ ] Give each reconciliation attempt a fresh bounded Daily-owned coordinator
+  session; the long-lived canvas owner is not the execution context.
+- [ ] Observe coordinator activity and recover exactly once when a terminal
+  turn omits =daily-run/:reconcile=.
+- [ ] Own =awaiting-reconciliation -> publishing -> finalized|failed= in the
+  Daily application while Board remains delivery-only.
+- [ ] Remove model-supplied publication revision authority and retain typed
+  optional-gap injection.
+- [ ] Replace stale =:apply=/:finalize= graphical/configured coverage with the
+  canonical =:reconcile= completion path.
+
+** TODO F94-DP6: Verification and deletion proof
+
+- [ ] Run focused provider, codec, tool, action, persistence, and Grimoire
+  suites after each owning package.
+- [ ] Run graphical tests for the coordinator/user-visible path.
+- [ ] Run =bash e2e/run-current-config-tests.sh= after configured Grimoire
+  changes.
+- [ ] Confirm the normalizer/coercion helpers and obsolete fixtures are gone.
+- [ ] Commit semantic slices and leave both repositories clean except for
+  enumerated pre-existing user changes.
+
+* Required scenarios
+
+| Scenario | Required evidence |
+|-
+| Nested canonical values | Objects and vectors retain exact shape at every boundary. |
+| Array of objects | Provider decode, dispatch, and Daily consumption preserve every object. |
+| Empty values | =nil= round-trips as object, =[]= as array. |
+| Boolean/null | =:json-false= and =:json-null= remain distinct. |
+| Rejection | Alists, hash tables, list arrays, and arbitrary symbols fail clearly. |
+| Persistence | Canonical encode/decode preserves every JSON kind. |
+| Daily regression | The original list-of-plists corruption path is impossible. |
+| Coordinator omission | Daily retries once, then durably fails without changing Board state. |
+
+* Explicit deletion targets
+
+- The schema-aware recursive action normalization introduced by e commit
+  =9de7fce7b1658460db05ddc246f5846702cfe9f9=.
+- Tool argument JSON-string reparsing and container coercion.
+- Provider list-array decoders and replay-shape guessing.
+- Grimoire Daily string-key and list/vector compatibility accessors.
+- Stale model-facing =:apply=/:finalize= and model-supplied revision paths.
+

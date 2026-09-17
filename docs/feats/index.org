@@ -197,6 +197,12 @@ daily-run 50/50, publication 25/25, topic-hook 12/12, and the required
 configured cold-start gate 8/8.  The live Emacs and canonical Board were not
 mutated.
 
+Feature 94 is =In-progress=.  It replaces ambiguous JSON-shaped Elisp values
+with one canonical boundary representation and then rebases the Daily
+coordinator recovery correction on that contract.  The persisted migration
+checklist, compatibility decision, and deletion targets are in
+[[file:94-canonical-json-values/plan.org][Canonical JSON Values Across Model and Persistence Boundaries]].
+
 The previously accepted Board-first slice remains complete.  Atomic child admission now makes =running= mean a live
 started runner, restart recovery treats nonterminal attempts without live
 assignments as orphans, and all Daily continuation uses the one canonical
@@ -375,3 +381,4 @@ continuations identified by durable metadata.
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
 | 93 | Done        | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Coordinator Publication Addendum |
+| 94 | In-progress | 94-canonical-json-values/                            | Canonical JSON Values Across Model and Persistence Boundaries |
