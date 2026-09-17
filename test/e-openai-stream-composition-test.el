@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -186,6 +186,18 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       :name "now"
       :arguments (:format "iso"))))))
 
+(ert-deftest e-openai-test-parse-tool-arguments-preserves-canonical-json ()
+  "Responses tool arguments retain nested arrays, objects, false, and null."
+  (let* ((items
+          (e-openai-codex-parse-stream
+           "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call-json\",\"name\":\"inspect\",\"arguments\":\"{\\\"object\\\":{},\\\"array\\\":[],\\\"flags\\\":[false,null],\\\"items\\\":[{\\\"empty\\\":{},\\\"values\\\":[1,false]}]}\"}}\n\n"))
+         (arguments (plist-get (car items) :arguments)))
+    (should (equal arguments
+                   '(:object nil
+                     :array []
+                     :flags [:json-false :json-null]
+                     :items [(:empty nil :values [1 :json-false])])))))
+
 (ert-deftest e-openai-test-parse-encrypted-reasoning-for-stateless-replay ()
   "Encrypted reasoning output becomes an opaque provider replay item."
   (should
@@ -197,7 +209,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
        :item (:type "reasoning"
               :id "rs-1"
               :encrypted_content "ciphertext"
-              :summary nil))))))
+              :summary :json-null))))))
 
 (ert-deftest e-openai-test-parse-reasoning-summary-presence-is-diagnostic-only ()
   "Encrypted reasoning preserves whether summary is absent, empty, or present."

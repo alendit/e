@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -90,7 +90,7 @@
       (should-not (plist-member properties :source-observation-ids))
       (should-not (string-match-p
                    "frame-id\\|source-observation-ids\\|schema-version"
-                   (json-encode enabled))))
+                   (e-json-serialize enabled))))
     (should-not (plist-member disabled :tools))))
 
 (ert-deftest e-openai-test-context-curation-schema-core-shape-agrees-on-transports ()
@@ -172,14 +172,9 @@
                      (lambda () (or captured-http captured-websocket))
                      0.2))
             (let* ((body (if (eq transport 'http)
-                             (json-parse-string
-                              captured-http
-                              :object-type 'plist
-                              :array-type 'list
-                              :null-object nil
-                              :false-object :json-false)
+                             (e-json-parse-string captured-http)
                            captured-websocket))
-                   (tool (car (append (plist-get body :tools) nil)))
+                   (tool (aref (plist-get body :tools) 0))
                    (parameters (plist-get tool :parameters))
                    (properties (plist-get parameters :properties))
                    (erase (plist-get properties :erase)))
@@ -214,9 +209,7 @@
                        (plist-get
                         (plist-get (plist-get properties :summaries) :items)
                         :required)
-                       (if (eq transport 'http)
-                           '("sources" "text")
-                         ["sources" "text"])))
+                       ["sources" "text"]))
               (should
                (equal
                 (e-context-lifetime-normalize-curation-disposition
@@ -290,24 +283,24 @@
          (started-tools nil)
          (first-items nil)
          (curation-arguments
-          (json-encode
+          (e-json-serialize
            '(:keep [1] :summaries [] :erase [])))
          (first-response
           (mapconcat
            (lambda (event)
-             (format "data: %s\n\n" (json-encode event)))
+             (format "data: %s\n\n" (e-json-serialize event)))
            (list
             (list :type "response.output_item.done"
                   :item (list :type "function_call"
                               :call_id "call-ordinary"
                               :name "inspect"
-                              :arguments (json-encode
+                              :arguments (e-json-serialize
                                           '(:target "state"))))
             (list :type "response.output_item.done"
                   :item (list :type "function_call"
                               :call_id "call-second"
                               :name "inspect-second"
-                              :arguments (json-encode
+                              :arguments (e-json-serialize
                                           '(:target "other-state"))))
             (list :type "response.output_item.done"
                   :item (list :type "function_call"
@@ -320,7 +313,7 @@
          (second-response
           (mapconcat
            (lambda (event)
-             (format "data: %s\n\n" (json-encode event)))
+             (format "data: %s\n\n" (e-json-serialize event)))
            (list
             (list :type "response.output_text.done" :text "follow-up")
             (list :type "response.completed"
@@ -531,24 +524,18 @@
            backend
            :messages messages
            :options '(:model "gpt-5.6" :session-id "compact-session")))
-         (body
-          (json-parse-string
-           (plist-get captured :body)
-           :object-type 'plist
-           :array-type 'list
-           :null-object nil
-           :false-object :json-false)))
+         (body (e-json-parse-string (plist-get captured :body))))
     (should (equal (plist-get captured :url)
                    "https://api.openai.com/v1/responses/compact"))
     (should (equal (cdr (assoc "Authorization" (plist-get captured :headers)))
                    "Bearer test-api-token"))
     (should (equal (plist-get body :model) "gpt-5.6"))
-    (should (listp (plist-get body :input)))
+    (should (vectorp (plist-get body :input)))
     (should-not (plist-member body :previous_response_id))
     (should-not (string-match-p "RAW-E\|ANCHOR\|provider-replay"
                                 (plist-get captured :body)))
     (should (equal (e-backend-provider-compaction-result-output result)
-                   '((:type "encrypted" :payload "opaque"))))
+                   [(:type "encrypted" :payload "opaque")]))
     (should (equal (e-backend-provider-compaction-result-usage result)
                    '(:input-tokens 2 :total-tokens 3)))))
 

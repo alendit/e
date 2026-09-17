@@ -13,7 +13,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-backend)
@@ -21,6 +20,7 @@
 (require 'e-request)
 (require 'e-tools)
 (require 'e-work)
+(require 'e-json)
 (require 'e-openai-diagnostics)
 (require 'e-openai-profile)
 (require 'e-openai-responses)
@@ -272,7 +272,7 @@ OpenAI request and backend-neutral context."
               (list :metadata (list :provider provider
                                     :wire-api wire-api))
               (lambda ()
-                (json-encode body-data))))
+                (e-json-serialize body-data))))
             (session-id (plist-get effective-options :session-id))
             (url (pcase wire-api
                    ('responses
@@ -378,12 +378,14 @@ OpenAI request and backend-neutral context."
                   (plist-get context :reasoning-identity)))
                 ('chat-completion
                  (e-openai-chat-completion-parse-stream body))))
-      (json-error (setq parse-error err)))
+      (e-json-error (setq parse-error err)))
     (cond
      ((e-openai-http-error-p response)
       (list (e-openai--http-error-item response items)))
      ((and parse-error
-           (eq (car parse-error) 'json-end-of-file)
+           (and (eq (car parse-error) 'e-json-error)
+                (string-match-p "end of file"
+                                (error-message-string parse-error)))
            (e-openai-decoder-sse-response-p body))
       (list (e-openai--premature-stream-error-item wire-api)))
      (parse-error

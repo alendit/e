@@ -12,11 +12,11 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'websocket)
 (require 'e-backend)
+(require 'e-json)
 (require 'e-openai-profile)
 (require 'e-openai-diagnostics)
 (require 'e-openai-decoder)
@@ -58,26 +58,27 @@
   "Responses WebSocket already has an active request")
 
 (defun e-openai-websocket--json-value-copy (value)
-  "Return a detached copy of JSON-like VALUE.
-Hash tables are copied by contents so a response's immediate continuation
-snapshot does not share mutable request-property objects with a later request."
+  "Return a detached copy of canonical JSON VALUE.
+The WebSocket continuation snapshot contains only canonical objects and
+arrays, so hash tables, alists, and list arrays are invalid here."
+  (e-json-assert-value value)
   (cond
    ((stringp value)
     (copy-sequence value))
-   ((hash-table-p value)
-    (let ((copy (make-hash-table :test (hash-table-test value))))
-      (maphash (lambda (key entry)
-                 (puthash (e-openai-websocket--json-value-copy key)
-                          (e-openai-websocket--json-value-copy entry)
-                          copy))
-               value)
-      copy))
    ((vectorp value)
     (apply #'vector
            (mapcar #'e-openai-websocket--json-value-copy value)))
    ((consp value)
-    (cons (e-openai-websocket--json-value-copy (car value))
-          (e-openai-websocket--json-value-copy (cdr value))))
+    (let ((copy nil)
+          (cursor value))
+      (while cursor
+        (setq copy
+              (append copy
+                      (list (car cursor)
+                            (e-openai-websocket--json-value-copy
+                             (cadr cursor)))))
+        (setq cursor (cddr cursor)))
+      copy))
    (t value)))
 
 (defun e-openai-websocket--session-clear-response-state (session)
@@ -233,33 +234,10 @@ response chain."
    :instructions))
 
 (defun e-openai-websocket--json-value-equal-p (first second)
-  "Return non-nil when JSON-like values FIRST and SECOND are equivalent.
-Hash tables are compared by contents rather than object identity.  Vector and
-list order remains significant because those values encode JSON arrays and
-ordered request plists in adapter-local request data."
-  (cond
-   ((and (hash-table-p first) (hash-table-p second))
-    (and (= (hash-table-count first) (hash-table-count second))
-         (let ((missing (make-symbol "missing"))
-               (equivalent t))
-           (maphash
-            (lambda (key value)
-              (let ((other (gethash key second missing)))
-                (unless (and (not (eq other missing))
-                             (e-openai-websocket--json-value-equal-p value other))
-                  (setq equivalent nil))))
-            first)
-           equivalent)))
-   ((and (vectorp first) (vectorp second))
-    (and (= (length first) (length second))
-         (cl-loop for index below (length first)
-                  always
-                  (e-openai-websocket--json-value-equal-p
-                   (aref first index) (aref second index)))))
-   ((and (consp first) (consp second))
-    (and (e-openai-websocket--json-value-equal-p (car first) (car second))
-         (e-openai-websocket--json-value-equal-p (cdr first) (cdr second))))
-   (t (equal first second))))
+  "Return non-nil when canonical JSON FIRST and SECOND are equivalent."
+  (e-json-assert-value first)
+  (e-json-assert-value second)
+  (equal first second))
 
 (defun e-openai-websocket--unresolved-response-p (event)
   "Return non-nil when EVENT rejects an unavailable previous response id."
@@ -498,8 +476,8 @@ list.  Return a cancellable `e-backend-request' handle."
          (send-current-body ()
            (websocket-send-text
             (e-openai-websocket--session-websocket session)
-            (json-encode (append (list :type "response.create")
-                                 actual-body-data))))
+            (e-json-serialize (append (list :type "response.create")
+                                       actual-body-data))))
          (retry-full-request ()
            (setq retried-full t)
            ;; The provider rejected the only retained response identity.  Do

@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -133,13 +133,11 @@
   "Each successive tool continuation replays reasoning summaries as arrays."
   (let* ((first-reasoning
           '(:type "reasoning" :id "rs-1" :encrypted_content "ciphertext-1"
-            ;; This is the list representation produced for a JSON array by
-            ;; `e-openai-decoder-parse-json'.
-            :summary ((:type "summary_text" :text "first"))))
+            :summary [(:type "summary_text" :text "first")] ))
          (second-reasoning
           '(:type "reasoning" :id "rs-2" :encrypted_content "ciphertext-2"
-            ;; This is the object representation observed from a provider that
-            ;; returned one summary object instead of an array.
+            ;; A provider object is explicitly projected to a one-element
+            ;; summary array by the Responses adapter.
             :summary (:type "summary_text" :text "second")))
          (body
           (e-openai-codex-request-body
@@ -505,7 +503,7 @@
   "The ChatGPT-backed Codex endpoint keeps cache keys but omits retention."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
-                                    (json-encode
+                                    (e-json-serialize
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
@@ -517,7 +515,7 @@
            (cl-function
             (lambda (&key url headers body)
               (ignore url headers)
-              (setq captured (json-read-from-string body))
+              (setq captured (e-json-parse-string body))
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (unwind-protect
         (progn
@@ -527,9 +525,9 @@
                                        :prompt-cache-key "cache-key"
                                        :prompt-cache-retention "24h")
                             :on-item #'ignore)
-          (should (equal (alist-get 'prompt_cache_key captured)
+          (should (equal (plist-get captured :prompt_cache_key)
                          "cache-key"))
-          (should-not (assq 'prompt_cache_retention captured)))
+          (should-not (plist-member captured :prompt_cache_retention)))
       (delete-file auth-file))))
 
 (ert-deftest e-openai-test-token-provider-keeps-prompt-cache-retention ()
@@ -551,7 +549,7 @@
            (cl-function
             (lambda (&key url headers body)
               (ignore url headers)
-              (setq captured (json-read-from-string body))
+              (setq captured (e-json-parse-string body))
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (e-backend-stream-batch backend
                       :messages '((:role user :content "hello"))
@@ -559,8 +557,8 @@
                                  :prompt-cache-key "cache-key"
                                  :prompt-cache-retention "24h")
                       :on-item #'ignore)
-    (should (equal (alist-get 'prompt_cache_key captured) "cache-key"))
-    (should (equal (alist-get 'prompt_cache_retention captured) "24h"))))
+    (should (equal (plist-get captured :prompt_cache_key) "cache-key"))
+    (should (equal (plist-get captured :prompt_cache_retention) "24h"))))
 
 (ert-deftest e-openai-test-gpt56-omits-deprecated-prompt-cache-retention ()
   "GPT-5.6 keeps its cache key but omits the legacy retention policy."
@@ -581,7 +579,7 @@
            (cl-function
             (lambda (&key url headers body)
               (ignore url headers)
-              (setq captured (json-read-from-string body))
+              (setq captured (e-json-parse-string body))
               "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")))))
     (e-backend-stream-batch
      backend
@@ -590,9 +588,9 @@
                 :prompt-cache-key "cache-key"
                 :prompt-cache-retention "24h")
      :on-item #'ignore)
-    (should (equal (alist-get 'prompt_cache_key captured) "cache-key"))
-    (should-not (assq 'prompt_cache_retention captured))
-    (should-not (assq 'prompt_cache_options captured))))
+    (should (equal (plist-get captured :prompt_cache_key) "cache-key"))
+    (should-not (plist-member captured :prompt_cache_retention))
+    (should-not (plist-member captured :prompt_cache_options))))
 
 (ert-deftest e-openai-test-backend-captures-default-provider-at-create-time ()
   "Backends created from the default provider do not follow later default changes."
@@ -782,7 +780,7 @@
   "The default OpenAI request path exposes a cancellable url-retrieve handle."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
-                                    (json-encode
+                                    (e-json-serialize
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
@@ -827,7 +825,7 @@
   "Cancelling a url-retrieve request deletes its network process."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
-                                    (json-encode
+                                    (e-json-serialize
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))

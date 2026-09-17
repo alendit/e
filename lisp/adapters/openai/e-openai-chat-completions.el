@@ -11,7 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-openai-profile)
 
@@ -38,9 +38,10 @@
         (content (plist-get message :content)))
     (pcase role
       ('tool-call
-       (let ((arguments (json-encode
-                         (or (plist-get content :arguments)
-                             (make-hash-table :test 'equal)))))
+       (let ((arguments (e-json-serialize
+                         (if (plist-member content :arguments)
+                             (plist-get content :arguments)
+                           nil))))
          (list :role "assistant"
                :content nil
                :tool_calls

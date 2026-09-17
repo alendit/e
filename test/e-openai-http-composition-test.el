@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -113,7 +113,7 @@
          :url "https://example.test/codex/responses"
          :headers `(("Authorization" . ,(string-to-multibyte "Bearer test"))
                     ("Content-Type" . "application/json"))
-         :body (json-encode '(:text "▌ unicode body"))
+         :body (e-json-serialize '(:text "▌ unicode body"))
          :on-complete (lambda (value) (setq response value))
          :on-error (lambda (err) (setq error err)))
         (should-not error)

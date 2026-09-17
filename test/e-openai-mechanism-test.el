@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -337,12 +337,7 @@
            :messages '((:role user :content "hello"))
            :options '(:model "gpt-test")))
          (metadata (plist-get context :metadata))
-         (body-data (json-parse-string
-                     (plist-get context :body)
-                     :object-type 'plist
-                     :array-type 'list
-                     :null-object nil
-                     :false-object :json-false)))
+         (body-data (e-json-parse-string (plist-get context :body))))
     (should (eq (plist-get context :responses-transport) 'websocket))
     (should (eq (plist-get metadata :responses-transport) 'websocket))
     (should-not (plist-member body-data :store))
@@ -375,7 +370,7 @@
 (ert-deftest e-openai-test-codex-profile-uses-required-unstored-websocket-mode ()
   "Codex WebSocket requests explicitly use the backend-required store=false."
   (let* ((auth-file (make-temp-file "e-openai-auth" nil ".json"))
-         (auth (json-encode
+         (auth (e-json-serialize
                 (list :tokens
                       (list :access_token (e-openai-test--jwt)
                             :refresh_token "refresh")))))
@@ -396,11 +391,7 @@
                                 :messages
                                 ((:role system
                                   :content "stable instructions")))))))
-                 (body (json-parse-string (plist-get context :body)
-                                          :object-type 'plist
-                                          :array-type 'list
-                                          :null-object nil
-                                          :false-object :json-false)))
+                 (body (e-json-parse-string (plist-get context :body))))
             (should (eq (plist-get context :responses-transport) 'websocket))
             (should (eq (plist-get body :store) :json-false))
             (should-not (plist-member body :stream))
@@ -408,11 +399,11 @@
             (should (equal (plist-get body :instructions)
                            "You are a helpful assistant."))
             (should (equal (mapcar (lambda (item) (plist-get item :role))
-                                   (plist-get body :input))
+                                   (append (plist-get body :input) nil))
                            '("developer" "user")))
             (should-not
              (plist-member
-              (car (plist-get (car (plist-get body :input)) :content))
+              (aref (plist-get (aref (plist-get body :input) 0) :content) 0)
               :prompt_cache_breakpoint))
             (should (equal (plist-get context :prompt-layout-revision)
                            e-openai-gpt56-segmented-context-layout-revision))
@@ -546,7 +537,7 @@
   (let* ((process-environment
           (cons "OPENAI_API_KEY=test-api-token" process-environment))
          (auth-file (make-temp-file "e-openai-auth" nil ".json"))
-         (auth (json-encode
+         (auth (e-json-serialize
                 (list :tokens
                       (list :access_token (e-openai-test--jwt)
                             :refresh_token "refresh"))))
@@ -796,16 +787,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    "https://gateway.example.test/v1/chat/completions"))
     (should (equal (cdr (assoc "Authorization" (plist-get context :headers)))
                    "Bearer test-gateway-token"))
-    (should (equal (json-parse-string (plist-get context :body)
-                                      :object-type 'plist
-                                      :array-type 'list
-                                      :null-object nil
-                                      :false-object :json-false)
+    (should (equal (e-json-parse-string (plist-get context :body))
                    '(:model "claude-default"
                      :stream t
-                     :messages ((:role "system"
+                     :messages [(:role "system"
                                   :content "You are a helpful assistant.")
-                                (:role "user" :content "hello")))))))
+                                (:role "user" :content "hello")])))))
 
 
 (ert-deftest e-openai-test-sync-backend-stream-rejects-hot-path-before-request ()
@@ -943,16 +930,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (let ((payload
-                        (json-parse-string text
-                                           :object-type 'plist
-                                           :array-type 'list
-                                           :null-object nil
-                                           :false-object :json-false)))
+                        (e-json-parse-string text)))
                    (setq sends (append sends (list payload)))
                    (funcall
                     on-message
                     websocket
-                    (json-encode
+                    (e-json-serialize
                      `(:type "response.completed"
                        :response (:id ,(format "resp-%d"
                                                (cl-incf response-index))
@@ -1049,13 +1032,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    ('partial
                     (funcall on-message
                              websocket
-                             (json-encode
+                             (e-json-serialize
                               '(:type "response.output_text.delta"
                                 :delta "partial"))))
                    ('failed
                     (funcall on-message
                              websocket
-                             (json-encode
+                             (e-json-serialize
                               '(:type "response.failed"
                                 :response
                                 (:id "failed-response"
@@ -1163,18 +1146,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                        (append
                         sends
                         (list
-                         (json-parse-string text
-                                            :object-type 'plist
-                                            :array-type 'list
-                                            :null-object nil
-                                            :false-object :json-false))))
+                         (e-json-parse-string text))))
                  (if (= send-count 1)
                      (progn
                        ;; A later completed frame must be ignored after the
                        ;; incomplete terminal event has settled the request.
                        (funcall on-message
                                 websocket
-                                (json-encode
+                                (e-json-serialize
                                  '(:type "response.incomplete"
                                    :response (:id "resp-incomplete"
                                               :status "incomplete"
@@ -1182,13 +1161,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                               (:reason "max_output_tokens")))))
                        (funcall on-message
                                 websocket
-                                (json-encode
+                                (e-json-serialize
                                  '(:type "response.completed"
                                    :response (:id "resp-late"
                                               :status "completed")))))
                    (funcall on-message
                             websocket
-                            (json-encode
+                            (e-json-serialize
                              '(:type "response.completed"
                                :response (:id "resp-followup"
                                           :status "completed")))))))
@@ -1273,12 +1252,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
 (ert-deftest e-openai-test-websocket-properties-compare-json-object-contents ()
   "Fresh nested JSON objects do not invalidate equivalent tool definitions."
-  (let ((first-parameters (make-hash-table :test 'equal))
-        (second-parameters (make-hash-table :test 'equal)))
-    (puthash "type" "object" first-parameters)
-    (puthash "properties" (make-hash-table :test 'equal) first-parameters)
-    (puthash "properties" (make-hash-table :test 'equal) second-parameters)
-    (puthash "type" "object" second-parameters)
+  (let ((first-parameters '(:type "object" :properties nil))
+        (second-parameters '(:type "object" :properties nil)))
     (let ((first
            (list :model "gpt-test"
                  :tools (vector (list :name "inspect"
@@ -1288,7 +1263,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                  :tools (vector (list :name "inspect"
                                       :parameters second-parameters)))))
       (should (e-openai-websocket--json-value-equal-p first second))
-      (puthash "additionalProperties" :json-false second-parameters)
+      (setq second-parameters
+            (append second-parameters
+                    (list :additionalProperties e-json-false)))
+      (setq second
+            (list :model "gpt-test"
+                  :tools (vector (list :name "inspect"
+                                       :parameters second-parameters))))
       (should-not (e-openai-websocket--json-value-equal-p first second)))))
 
 
@@ -1311,11 +1292,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (let ((payload
-                        (json-parse-string text
-                                           :object-type 'plist
-                                           :array-type 'list
-                                           :null-object nil
-                                           :false-object :json-false)))
+                        (e-json-parse-string text)))
                    (setq sends (append sends (list payload)))
                    ;; Leave the first response in flight so the test can
                    ;; mutate both top-level and nested source strings before
@@ -1323,7 +1300,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                    (when (= (length sends) 2)
                      (funcall on-message
                               websocket
-                              (json-encode
+                              (e-json-serialize
                                '(:type "response.completed"
                                  :response (:id "resp-two"
                                             :status "completed"))))))))
@@ -1344,7 +1321,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       (aset tool-name 0 ?c)
       (funcall on-message
                'fake-websocket
-               (json-encode
+               (e-json-serialize
                 '(:type "response.completed"
                   :response (:id "resp-one" :status "completed"))))
       ;; A second mutation after completion must also leave the recorded
@@ -1395,9 +1372,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should (eq (plist-get item :type) 'context-curate))
     (should-not (plist-member item :name))
     (should (equal (plist-get item :arguments)
-                   '(:keep (1) :summaries
-                           ((:sources (2 3) :text "selected"))
-                     :erase (4))))
+                   '(:keep [1] :summaries
+                           [(:sources [2 3] :text "selected")]
+                     :erase [4])))
     (should-not (string-match-p
                  "frame\|observation\|fingerprint\|schema-version"
                  (prin1-to-string (plist-get item :arguments))))))
@@ -1488,7 +1465,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 (ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()
   "Full replay restores the curation call/output pair; anchors send output only."
   (let* ((effect (e-openai-decoder--context-curation-effect
-                  '(:keep (1) :summaries nil :erase nil) "curation-call"))
+                  '(:keep [1] :summaries [] :erase []) "curation-call"))
          (replays (plist-get effect :provider-replay-items))
          (messages
           `((:role user :content "prompt")

@@ -14,11 +14,11 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-capability-config)
 (require 'e-context)
+(require 'e-json)
 (require 'e-request)
 (require 'e-store)
 (require 'e-tools)
@@ -349,7 +349,7 @@ The callable tool name is the generated name the model invokes later."
          (e-mcp-tool-description tool)
          ""
          "Input schema (JSON):"
-         (json-encode (e-mcp-tool-input-schema tool)))
+         (e-json-serialize (e-mcp-tool-input-schema tool)))
    "\n"))
 
 (defun e-mcp-capability--family-index-text (server-id catalog)

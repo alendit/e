@@ -14,7 +14,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'pp)
 (require 'seq)
 (require 'subr-x)

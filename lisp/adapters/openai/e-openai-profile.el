@@ -14,10 +14,10 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-context-lifetime)
+(require 'e-json)
 (require 'e-openai-diagnostics)
 
 (defconst e-openai-codex-default-base-url
@@ -722,13 +722,9 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
   (let ((file (or auth-file (e-openai-codex-auth-file))))
     (unless (file-readable-p file)
       (signal 'e-openai-auth-missing (list file)))
-    (json-parse-string (with-temp-buffer
-                         (insert-file-contents file)
-                         (buffer-string))
-                       :object-type 'plist
-                       :array-type 'list
-                       :null-object nil
-                       :false-object :json-false)))
+    (e-json-parse-string (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string)))))
 
 (defun e-openai-codex-auth-access-token (auth)
   "Return AUTH's access token."
@@ -755,12 +751,8 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
          (payload (nth 1 parts)))
     (unless (= (length parts) 3)
       (signal 'e-openai-auth-invalid '("Access token is not a JWT")))
-    (let* ((claims (json-parse-string
-                    (e-openai-profile--base64url-decode payload)
-                    :object-type 'plist
-                    :array-type 'list
-                    :null-object nil
-                    :false-object :json-false))
+    (let* ((claims (e-json-parse-string
+                    (e-openai-profile--base64url-decode payload)))
            (account-claims (plist-get
                             claims
                             (e-openai-profile--json-key

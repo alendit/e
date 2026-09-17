@@ -12,18 +12,14 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-openai-diagnostics)
+(require 'e-json)
 
 (defun e-openai-decoder--parse-json (value)
   "Parse VALUE as JSON into plist data."
-  (json-parse-string value
-                     :object-type 'plist
-                     :array-type 'list
-                     :null-object nil
-                     :false-object :json-false))
+  (e-json-parse-string value))
 
 (defun e-openai-decoder--function-call-item-p (item)
   "Return non-nil when ITEM is a Responses function-call item."
@@ -46,8 +42,8 @@
   (cond
    ((and (stringp arguments) (not (string-empty-p arguments)))
     (e-openai-decoder--parse-json arguments))
-   ((listp arguments) arguments)
-   (t nil)))
+   ((null arguments) nil)
+   (t (e-json-assert-value arguments))))
 
 (defconst e-openai-decoder--context-curation-duplicate-correction
   "Curation was already handled for the currently presented labeled sources. Continue normally; call context-curate again only after new labeled sources are presented."
@@ -68,8 +64,7 @@
                      :call_id call-id
                      :name "context-curate"
                      :arguments
-                     (json-encode
-                      (or arguments (make-hash-table :test 'equal)))))
+                     (e-json-serialize arguments)))
    (list :type 'provider-replay-item
          :provider-id 'openai
          :item (list :type "function_call_output"
@@ -119,11 +114,14 @@ provider identity.  Core binds its labels to the live frame at completion."
     effect))
 
 (defun e-openai-decoder--sequence-list (value)
-  "Return VALUE as a list when it is a JSON array sequence."
+  "Project canonical JSON array VALUE to a provider-domain list.
+Only vectors represent arrays at the wire boundary; nil remains the absent
+optional field used by the provider event schema."
   (cond
    ((vectorp value) (append value nil))
-   ((listp value) value)
-   (t nil)))
+   ((null value) nil)
+   (t (signal 'e-openai-provider-invalid
+              (list "Expected a JSON array" value)))))
 
 (defun e-openai-decoder--content-text (content)
   "Return concatenated output text from Responses CONTENT."

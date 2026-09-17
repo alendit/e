@@ -13,10 +13,10 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-backend)
+(require 'e-json)
 (require 'e-openai-diagnostics)
 (require 'e-openai-profile)
 (require 'e-openai-responses)
@@ -76,31 +76,15 @@ adapter mapping adds no replay, anchor, diagnostic, or current-state fields."
 (defun e-openai-compaction--decode (response)
   "Decode one complete OpenAI compact RESPONSE into the generic result."
   (let* ((body (e-openai-http-response-body-text response))
-         ;; `json-parse-string' represents both an empty object and an empty
-         ;; plist as nil.  Reject an object-valued output before that loss of
-         ;; shape so only the documented array is accepted.
-         (object-output-p
-          (and (stringp body)
-               (string-match-p
-                "\\\"output\\\"[[:space:]]*:[[:space:]]*{"
-                body)))
          (parsed
-          (if (and (listp body)
-                   (or (null body) (keywordp (car body))))
-            body
-            (json-parse-string body
-                               :object-type 'plist
-                               :array-type 'list
-                               :null-object :json-null
-                               :false-object :json-false)))
+          (if (stringp body)
+              (e-json-parse-string body)
+            (e-json-assert-value body)))
          (object (plist-get parsed :object))
          (output (plist-get parsed :output)))
     (when (e-openai-http-error-p response)
       (signal 'e-openai-provider-invalid
               (list "OpenAI compact request failed" response)))
-    (when object-output-p
-      (signal 'e-openai-provider-invalid
-              (list "OpenAI compact output is an object" parsed)))
     (unless (member object '("response.compaction" response.compaction))
       (signal 'e-openai-provider-invalid
               (list "Unexpected OpenAI compact object" object)))
@@ -110,10 +94,7 @@ adapter mapping adds no replay, anchor, diagnostic, or current-state fields."
     (when (eq output :json-null)
       (signal 'e-openai-provider-invalid
               (list "OpenAI compact response has no output" parsed)))
-    (unless (or (vectorp output)
-                (and (listp output)
-                     (or (null output)
-                         (not (keywordp (car output))))))
+    (unless (vectorp output)
       (signal 'e-openai-provider-invalid
               (list "OpenAI compact output is not an array" output)))
     (list :output output
@@ -133,7 +114,7 @@ adapter mapping adds no replay, anchor, diagnostic, or current-state fields."
                                      (plist-get profile :default-model)
                                      e-openai-default-model)
                           :input (e-openai-compaction--input messages)))
-         (body (json-encode body-data))
+         (body (e-json-serialize body-data))
          (headers (e-openai-compaction--headers
                    profile auth-file (plist-get options :session-id)))
          (requester (or compaction-request-function

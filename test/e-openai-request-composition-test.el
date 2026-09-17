@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -64,14 +64,8 @@
                 :options '(:model "gpt-test")
                 :tools (list tool)))
          (wire-tool (aref (plist-get body :tools) 0))
-         (round-trip
-          (json-parse-string
-           (json-encode body)
-           :object-type 'plist
-           :array-type 'list
-           :null-object nil
-           :false-object :json-false))
-         (round-trip-tool (car (plist-get round-trip :tools))))
+         (round-trip (e-json-parse-string (e-json-serialize body)))
+         (round-trip-tool (aref (plist-get round-trip :tools) 0)))
     (should (equal (plist-get (plist-get wire-tool :parameters) :required)
                    ["uri"]))
     (should (eq (plist-get (plist-get wire-tool :parameters)
@@ -79,7 +73,7 @@
                 :json-false))
     (should (equal (plist-get (plist-get round-trip-tool :parameters)
                              :required)
-                   '("uri")))
+                   ["uri"]))
     (should (eq (plist-get (plist-get round-trip-tool :parameters)
                            :additionalProperties)
                 :json-false))))
@@ -389,8 +383,8 @@
 
 (ert-deftest e-openai-test-inherited-curation-frontier-keeps-markers-and-literals ()
   "Inherited curation sources keep marker/source order and exact literals."
-  (let* ((source-one '(:kind "structured" :value 7 :items (alpha beta)))
-         (source-two '(:kind "structured" :value 9 :items (gamma delta)))
+  (let* ((source-one '(:kind "structured" :value 7 :items ["alpha" "beta"]))
+         (source-two '(:kind "structured" :value 9 :items ["gamma" "delta"]))
          (segments-one
           `((:kind static-prefix
              :messages ((:role system :content "STATIC-POLICY")))
@@ -449,7 +443,7 @@
          (prefix-one (cl-subseq input-one 0 3))
          (prefix-two (cl-subseq input-two 0 3))
          (late-one (nthcdr 3 input-one))
-         (wire (json-encode body-one)))
+         (wire (e-json-serialize body-one)))
     (should (equal (mapcar (lambda (item) (plist-get item :role)) input-one)
                    '("developer" "developer" "user"
                      "developer" "developer" "developer" "developer")))
@@ -458,7 +452,7 @@
                                         :text))
                            late-one)
                    (list "[ephemeral context source 1, ~2 tokens]"
-                         (json-encode source-one)
+                         (e-json-serialize source-one)
                          "[ephemeral context source 2, ~3 tokens]"
                          "SOURCE-TWO")))
     (should (equal prefix-one prefix-two))

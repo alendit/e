@@ -13,8 +13,8 @@
 
 (require 'cl-lib)
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-harness)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
@@ -126,14 +126,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
              :additionalProperties :json-false)
              :strict :json-false))))
          (wire-tool (aref (plist-get body :tools) 0))
-         (round-trip
-          (json-parse-string
-           (json-encode body)
-           :object-type 'plist
-           :array-type 'list
-           :null-object nil
-           :false-object :json-false))
-         (round-trip-tool (car (plist-get round-trip :tools))))
+         (round-trip (e-json-parse-string (e-json-serialize body)))
+         (round-trip-tool (aref (plist-get round-trip :tools) 0)))
     (should (equal (plist-get (plist-get wire-tool :input_schema) :required)
                    ["uri"]))
     (should (eq (plist-get (plist-get wire-tool :input_schema)
@@ -141,7 +135,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                 :json-false))
     (should (equal (plist-get (plist-get round-trip-tool :input_schema)
                              :required)
-                   '("uri")))
+                   ["uri"]))
     (should (eq (plist-get (plist-get round-trip-tool :input_schema)
                            :additionalProperties)
                 :json-false))))
@@ -465,16 +459,18 @@ retry classifier sees the kind even when the message does not name it."
   (should
    (equal
     (e-anthropic-parse-stream
-     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"read\",\"input\":{}}}\n\n\
-event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"uri\\\":\"}}\n\n\
-event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"file://README.md\\\"}\"}}\n\n\
+     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"inspect\",\"input\":{}}}\n\n\
+event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"object\\\":{},\\\"array\\\":[],\\\"flags\\\":[false,null],\\\"items\\\":[{\\\"empty\\\":{},\\\"values\\\":[1,false]}]}\"}}\n\n\
 event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
     '((:type tool-call
        :id "toolu_1"
-       :name "read"
-       :arguments (:uri "file://README.md"))
+       :name "inspect"
+       :arguments (:object nil
+                    :array []
+                    :flags [:json-false :json-null]
+                    :items [(:empty nil :values [1 :json-false])]))
       (:type done :reason tool-use)))))
 
 (ert-deftest e-anthropic-test-parse-max-tokens-stop-is-surfaced ()
@@ -521,16 +517,12 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
     (should (equal (cdr (assoc "anthropic-version" (plist-get context :headers)))
                    e-anthropic-version))
     (should (assoc "Content-Type" (plist-get context :headers)))
-    (should (equal (json-parse-string (plist-get context :body)
-                                      :object-type 'plist
-                                      :array-type 'list
-                                      :null-object nil
-                                      :false-object :json-false)
+    (should (equal (e-json-parse-string (plist-get context :body))
                    '(:model "claude-test"
                      :max_tokens 1024
                      :stream t
-                     :messages ((:role "user"
-                                 :content ((:type "text" :text "hello"))))
+                     :messages [(:role "user"
+                                 :content [(:type "text" :text "hello")])]
                      :thinking (:type "adaptive")
                      :output_config (:effort "high"))))))
 
@@ -617,14 +609,10 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
            :provider 'eng-anthropic
            :messages '((:role user :content "hello"))
            :options '(:model "claude-test" :max-tokens 1024)))
-         (body (json-parse-string (plist-get context :body)
-                                  :object-type 'plist
-                                  :array-type 'list
-                                  :null-object nil
-                                  :false-object :json-false))
+         (body (e-json-parse-string (plist-get context :body)))
          (metadata (plist-get context :metadata)))
     (should (equal (plist-get body :context_management)
-                   '(:edits ((:type "clear_tool_results")))))
+                   '(:edits [(:type "clear_tool_results")])))
     (should (equal (cdr (assoc "anthropic-beta" (plist-get context :headers)))
                    "context-management-test"))
     (should (equal (plist-get metadata :anthropic-context-management)
@@ -648,11 +636,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
            :provider 'eng-anthropic
            :messages '((:role user :content "hello"))
            :options '(:model "claude-test" :max-tokens 1024)))
-         (body (json-parse-string (plist-get context :body)
-                                  :object-type 'plist
-                                  :array-type 'list
-                                  :null-object nil
-                                  :false-object :json-false))
+         (body (e-json-parse-string (plist-get context :body)))
          (metadata (plist-get context :metadata)))
     (should-not (assoc "anthropic-beta" (plist-get context :headers)))
     (should-not (plist-member body :context_management))
@@ -718,11 +702,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                    :provider 'bedrockish
                    :messages '((:role user :content "hi"))
                    :options '(:model "claude-opus-4-8" :max-tokens 8))))
-    (should (equal (plist-get (json-parse-string (plist-get context :body)
-                                                 :object-type 'plist
-                                                 :array-type 'list
-                                                 :null-object nil
-                                                 :false-object :json-false)
+    (should (equal (plist-get (e-json-parse-string (plist-get context :body))
                               :model)
                    "anthropic.claude-opus-4-8"))))
 

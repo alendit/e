@@ -12,10 +12,10 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-context-lifetime)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-openai-diagnostics)
 (require 'e-openai-profile)
@@ -34,7 +34,7 @@ representation or dropping their structure."
         (text (cond
                ((null content) "")
                ((stringp content) content)
-               (t (json-encode content)))))
+               (t (e-json-serialize content)))))
     (vector
      (append
       (list :type type :text text)
@@ -52,9 +52,10 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
        (list :type "function_call"
              :call_id (plist-get content :id)
              :name (plist-get content :name)
-             :arguments (json-encode
-                         (or (plist-get content :arguments)
-                             (make-hash-table :test 'equal)))))
+             :arguments (e-json-serialize
+                         (if (plist-member content :arguments)
+                             (plist-get content :arguments)
+                           nil))))
       ('tool
        (let ((result content))
          (list :type "function_call_output"
@@ -74,23 +75,25 @@ object, while Responses input requires the field to contain an array."
   (let* ((normalized (copy-tree item))
          (summary (plist-get normalized :summary)))
     (when (member (plist-get normalized :type) '("reasoning" reasoning))
-      ;; `json-parse-string' uses lists for both arrays and plists.  A
-      ;; non-empty summary whose first element is a keyword is therefore an
-      ;; object-valued provider response; a list whose first element is itself
-      ;; a plist is an array-valued response.  Use a vector for both cases so
-      ;; `json-encode' cannot mistake the latter for one object whose fields
-      ;; are arrays.  Normalize that response shape without retaining or
-      ;; interpreting its diagnostic text.
+      ;; Responses input requires a summary array even when the response
+      ;; carried a null or one object.  The decoder already gave us the
+      ;; canonical shape, so this is an explicit provider projection rather
+      ;; than a list/object heuristic: vectors stay arrays, objects become a
+      ;; one-element array, and empty/null values become an empty array.
       (setq normalized
             (plist-put normalized :summary
                        (cond
                         ((null summary) [])
                         ((vectorp summary) summary)
-                        ((and (listp summary)
+                        ((eq summary e-json-null) [])
+                        ((and (consp summary)
                               (keywordp (car summary)))
+                         (e-json-assert-value summary)
                          (vector summary))
-                        ((listp summary) (vconcat summary))
-                        (t (vector summary))))))
+                        (t
+                         (signal 'e-openai-provider-invalid
+                                 (list "Responses reasoning summary is not an object or array"
+                                       summary)))))))
     normalized))
 
 (defun e-openai-responses--normalize-input-items (items)
@@ -169,7 +172,7 @@ replaceable channel from a raw system-message role."
                   (cond
                    ((stringp content) content)
                    ((null content) nil)
-                   (t (json-encode content)))))
+                   (t (e-json-serialize content)))))
               messages))
        "\n\n"))))
 

@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -102,7 +102,7 @@ data: [DONE]\n\n")
 
 (ert-deftest e-openai-test-parse-chat-completion-tool-call-stream ()
   "Chat Completion tool-call deltas become backend-neutral tool calls."
-  (let ((first (json-encode
+  (let ((first (e-json-serialize
                 (list :choices
                       (vector
                        (list :delta
@@ -115,7 +115,7 @@ data: [DONE]\n\n")
                                           (list :name "read"
                                                 :arguments "{\"uri\":"))))
                              :index 0)))))
-        (second (json-encode
+        (second (e-json-serialize
                  (list :choices
                        (vector
                         (list :delta
@@ -138,15 +138,36 @@ data: [DONE]\n\n")
          :arguments (:uri "file://README.md"))
         (:type done :reason tool-calls))))))
 
+(ert-deftest e-openai-test-chat-completion-tool-request-round-trips-canonical-json ()
+  "Chat Completions tool request arguments serialize canonical JSON exactly."
+  (let* ((arguments '(:object nil
+                      :array []
+                      :flags [:json-false :json-null]
+                      :items [(:empty nil :values [1 :json-false])]))
+         (body (e-openai-chat-completion-request-body
+                :messages (list (list :role 'tool-call
+                                       :content (list :id "call-json"
+                                                      :name "inspect"
+                                                      :arguments arguments)))
+                :options '(:model "gpt-test")
+                :tools nil))
+         (wire-arguments
+          (plist-get
+           (plist-get
+            (aref (plist-get (aref (plist-get body :messages) 1) :tool_calls) 0)
+                  :function)
+           :arguments)))
+    (should (equal (e-json-parse-string wire-arguments) arguments))))
+
 (ert-deftest e-openai-test-parse-chat-completion-length-skips-partial-tool-call ()
   "Chat Completion streams can stop before tool-call JSON is complete."
-  (let ((text (json-encode
+  (let ((text (e-json-serialize
                (list :choices
                      (vector
                       (list :delta
                             (list :content "I will update it.")
                             :index 0)))))
-        (tool-start (json-encode
+        (tool-start (e-json-serialize
                      (list :choices
                            (vector
                             (list :delta

@@ -13,6 +13,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-harness)
@@ -30,6 +31,53 @@
 (defconst e-mcp-test--schema
   '(:type "object" :properties (:text (:type "string")))
   "Reusable object JSON schema for MCP tests.")
+
+(ert-deftest e-mcp-test-wire-json-keeps-canonical-shapes ()
+  "MCP HTTP and stdio parsers preserve canonical nested tool arguments."
+  (let* ((wire
+          "{\"object\":{},\"array\":[],\"flags\":[false,null],\"items\":[{\"empty\":{},\"values\":[1,false]}]}")
+         (expected '(:object nil
+                     :array []
+                     :flags [:json-false :json-null]
+                     :items [(:empty nil :values [1 :json-false])])))
+    (should (equal (e-mcp-http--parse-json wire) expected))
+    (should (equal (e-mcp-stdio--parse-json wire) expected))
+    (should (equal (e-json-parse-string (e-json-serialize expected))
+                   expected))))
+
+(ert-deftest e-mcp-test-http-request-serializes-canonical-tool-arguments ()
+  "MCP HTTP JSON-RPC requests round-trip canonical tool arguments."
+  (let ((session (list :url "http://mcp.example.test"
+                       :headers nil
+                       :session-id nil
+                       :initialized t
+                       :next-id 0))
+        captured)
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (&rest _arguments)
+                 (setq captured url-request-data)
+                 (let ((buffer (generate-new-buffer " *e-mcp-http-response*")))
+                   (with-current-buffer buffer
+                     (insert "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+                             "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"))
+                   buffer))))
+      (e-mcp-http--http-post
+       session
+       "tools/call"
+       (list :name "inspect"
+             :arguments '(:object nil
+                          :array []
+                          :flags [:json-false :json-null]
+                          :items [(:empty nil :values [1 :json-false])])))
+      (let* ((request (e-json-parse-string
+                       (decode-coding-string captured 'utf-8)))
+             (arguments (plist-get (plist-get request :params) :arguments)))
+        (should (equal arguments
+                       '(:object nil
+                         :array []
+                         :flags [:json-false :json-null]
+                         :items [(:empty nil :values [1 :json-false])])))
+        (should (equal (plist-get request :method) "tools/call"))))))
 
 (defun e-mcp-test--server (&optional timeout)
   "Return a valid test MCP server with optional TIMEOUT."

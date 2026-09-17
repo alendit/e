@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -49,7 +49,7 @@
   "The Codex harness helper can run prompt to persisted assistant message."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
-                                    (json-encode
+                                    (e-json-serialize
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))

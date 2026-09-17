@@ -13,11 +13,11 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'subr-x)
 (require 'url)
 (require 'url-http)
 (require 'e-request)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-mcp-protocol)
 (require 'e-mcp-transport)
@@ -31,13 +31,8 @@
     (e-request-hot-path-blocking-error operation)))
 
 (defun e-mcp-http--parse-json (text)
-  "Parse TEXT as JSON into plist-compatible values."
-  (let ((json-object-type 'plist)
-        (json-array-type 'vector)
-        (json-key-type 'keyword)
-        (json-false :json-false)
-        (json-null nil))
-    (json-read-from-string text)))
+  "Parse TEXT into the canonical JSON value representation."
+  (e-json-parse-string text))
 
 ;;; HTTP (Streamable HTTP) transport
 ;;
@@ -132,11 +127,11 @@ Return the parsed JSON-RPC result on success, signal on error."
   (let* ((id (e-mcp-http--http-next-id session))
          (url (plist-get session :url))
          (timeout (or e-mcp-helper-timeout 10))
-         (payload (json-encode
+         (payload (e-json-serialize
                    (list :jsonrpc "2.0"
                          :id id
                          :method method
-                         :params (or params (make-hash-table)))))
+                         :params params)))
          (url-request-method "POST")
          (url-request-extra-headers (e-mcp-http--http-request-headers session))
          (url-request-data (encode-coding-string payload 'utf-8))
@@ -156,11 +151,11 @@ Return the parsed JSON-RPC result on success, signal on error."
   (let* ((id (e-mcp-http--http-next-id session))
          (url (plist-get session :url))
          (timeout (or e-mcp-helper-timeout 10))
-         (payload (json-encode
+         (payload (e-json-serialize
                    (list :jsonrpc "2.0"
                          :id id
                          :method method
-                         :params (or params (make-hash-table)))))
+                         :params params)))
          (settled nil)
          (reservation (e-mcp-transport-reserve 'http))
          timer
@@ -236,10 +231,10 @@ Return the parsed JSON-RPC result on success, signal on error."
   "Send a JSON-RPC notification (no id, no response expected) to SESSION."
   (e-mcp-http--reject-sync-in-hot-path 'e-mcp-http--http-notify)
   (let* ((url (plist-get session :url))
-         (payload (json-encode
+         (payload (e-json-serialize
                    (list :jsonrpc "2.0"
                          :method method
-                         :params (or params (make-hash-table)))))
+                         :params params)))
          (url-request-method "POST")
          (url-request-extra-headers (e-mcp-http--http-request-headers session))
          (url-request-data (encode-coding-string payload 'utf-8))
@@ -250,10 +245,10 @@ Return the parsed JSON-RPC result on success, signal on error."
 (defun e-mcp-http--http-notify-start (session method params)
   "Send a JSON-RPC notification to SESSION asynchronously."
   (let* ((url (plist-get session :url))
-         (payload (json-encode
+         (payload (e-json-serialize
                    (list :jsonrpc "2.0"
                          :method method
-                         :params (or params (make-hash-table)))))
+                         :params params)))
          (url-request-method "POST")
          (url-request-extra-headers (e-mcp-http--http-request-headers session))
          (url-request-data (encode-coding-string payload 'utf-8)))

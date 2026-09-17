@@ -11,7 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'e-backend)
 
 (defvar url-current-object)
@@ -29,7 +29,7 @@
 
 (defun e-openai-test--jwt ()
   "Return a fake JWT with a Codex account-id claim."
-  (let* ((payload (json-encode
+  (let* ((payload (e-json-serialize
                    '(:https://api.openai.com/auth
                      (:chatgpt_account_id "acct-test"))))
          (encoded (base64-encode-string payload 'no-line-break)))
@@ -49,12 +49,7 @@
 
 (defun e-openai-test--without-explicit-cache-fields (body)
   "Return JSON-like BODY without provider-specific explicit cache fields."
-  (let ((copy (json-parse-string
-               (json-encode body)
-               :object-type 'plist
-               :array-type 'array
-               :null-object nil
-               :false-object :json-false)))
+  (let ((copy (e-json-parse-string (e-json-serialize body))))
     (cl-remf copy :prompt_cache_options)
     (dolist (item (append (plist-get copy :input) nil))
       (dolist (content (append (plist-get item :content) nil))

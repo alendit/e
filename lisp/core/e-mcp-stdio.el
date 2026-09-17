@@ -13,9 +13,9 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'subr-x)
 (require 'e-request)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-mcp-protocol)
 (require 'e-mcp-transport)
@@ -61,13 +61,8 @@
     ""))
 
 (defun e-mcp-stdio--parse-json (text)
-  "Parse TEXT as JSON into plist-compatible values."
-  (let ((json-object-type 'plist)
-        (json-array-type 'vector)
-        (json-key-type 'keyword)
-        (json-false :json-false)
-        (json-null nil))
-    (json-read-from-string text)))
+  "Parse TEXT into the canonical JSON value representation."
+  (e-json-parse-string text))
 
 (defun e-mcp-stdio--plist-without (plist key)
   "Return PLIST without KEY and its value."
@@ -135,7 +130,7 @@
 
 (defun e-mcp-stdio--truthy-p (value)
   "Return non-nil when VALUE is JSON truthy for helper protocol booleans."
-  (and value (not (eq value :json-false))))
+  (and value (not (eq value e-json-false))))
 
 (defun e-mcp-stdio--env-entry (entry)
   "Return helper JSON shape for env ENTRY."
@@ -196,7 +191,7 @@ test seam; it is removed from the wire request and never stored globally."
                    (timeout (or (plist-get args :timeout)
                                 e-mcp-helper-timeout))
                    (deadline (+ (float-time) timeout)))
-              (process-send-string process (concat (json-encode request) "\n"))
+              (process-send-string process (concat (e-json-serialize request) "\n"))
               (while (and (not response)
                           (process-live-p process)
                           (< (float-time) deadline))
@@ -307,7 +302,7 @@ TRANSPORT-FUNCTION is an explicit test transport seam and is not retained."
           (unwind-protect
               (progn
                 (setq process (e-mcp-stdio--helper-ensure))
-                (process-send-string process (concat (json-encode request) "\n"))
+                (process-send-string process (concat (e-json-serialize request) "\n"))
                 (when on-event
                   (funcall on-event 'tool-progress
                            (list :message "MCP helper request started")))

@@ -12,8 +12,8 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
+(require 'e-json)
 (require 'e-backend)
 (require 'e-dev-profile)
 (require 'e-harness)
@@ -124,7 +124,7 @@
   "The Codex backend streams parsed events from an injected HTTP requester."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
-                                    (json-encode
+                                    (e-json-serialize
                                      (list :tokens
                                            (list :access_token token
                                                  :refresh_token "refresh")))))
@@ -183,19 +183,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (should (eq websocket 'fake-websocket))
-                 (setq sent (json-parse-string text
-                                               :object-type 'plist
-                                               :array-type 'list
-                                               :null-object nil
-                                               :false-object :json-false))
+                 (setq sent (e-json-parse-string text))
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.output_text.delta"
                              :delta "ok")))
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.completed"
                              :response (:id "resp-ws-1"
                                         :status "completed"))))))
@@ -253,13 +249,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                (lambda (websocket _text)
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.content_part.done"
                              :part (:type "output_text"
                                     :text "candidate answer"))))
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.output_item.done"
                              :item (:type "message"
                                     :content
@@ -267,7 +263,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                       :text "candidate answer")]))))
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.completed"
                              :response (:id "resp-ws-1"
                                         :status "completed"))))))
@@ -327,7 +323,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should-not done-status)
         (funcall on-message
                  'fake-websocket
-                 (json-encode
+                 (e-json-serialize
                   '(:type "response.completed"
                     :response (:id "resp-ws-1" :status "completed"))))
         (should (e-openai-test--wait-until (lambda () done-status) 0.2))
@@ -361,13 +357,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                (lambda (websocket _text)
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.completed"
                              :response (:id "resp-ws-1"
                                         :status "completed"))))
                  (funcall on-message
                           websocket
-                          (json-encode
+                          (e-json-serialize
                            '(:type "response.output_text.delta"
                              :delta "late")))))
               ((symbol-function 'websocket-close)
@@ -423,17 +419,13 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (let* ((payload
-                         (json-parse-string text
-                                            :object-type 'plist
-                                            :array-type 'list
-                                            :null-object nil
-                                            :false-object :json-false))
+                         (e-json-parse-string text))
                         (response-id
                          (if (null sends) "resp-one" "resp-two")))
                    (push payload sends)
                    (funcall on-message
                             websocket
-                            (json-encode
+                            (e-json-serialize
                              `(:type "response.completed"
                                :response (:id ,response-id
                                           :status "completed")))))))
@@ -517,15 +509,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (let ((payload
-                        (json-parse-string text
-                                           :object-type 'plist
-                                           :array-type 'list
-                                           :null-object nil
-                                           :false-object :json-false)))
+                        (e-json-parse-string text)))
                    (push payload sends)
                    (funcall on-message
                             websocket
-                            (json-encode
+                            (e-json-serialize
                              `(:type "response.completed"
                                :response
                                (:id ,(if (= (length sends) 1)
@@ -609,15 +597,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (let ((payload
-                        (json-parse-string text
-                                           :object-type 'plist
-                                           :array-type 'list
-                                           :null-object nil
-                                           :false-object :json-false)))
+                        (e-json-parse-string text)))
                    (push payload sends)
                    (funcall on-message
                             websocket
-                            (json-encode
+                            (e-json-serialize
                              `(:type "response.completed"
                                :response
                                (:id ,(if (= (length sends) 1)
@@ -693,22 +677,18 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
                  (let ((payload
-                        (json-parse-string text
-                                           :object-type 'plist
-                                           :array-type 'list
-                                           :null-object nil
-                                           :false-object :json-false)))
+                        (e-json-parse-string text)))
                    (push payload sends)
                    (pcase (length sends)
                      (1
                       (funcall on-message websocket
-                               (json-encode
+                               (e-json-serialize
                                 '(:type "response.completed"
                                   :response (:id "resp-one"
                                              :status "completed")))))
                      (2
                       (funcall on-message websocket
-                               (json-encode
+                               (e-json-serialize
                                 '(:type "response.failed"
                                   :response
                                   (:error
@@ -717,19 +697,19 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                                     :message "previous_response_id not cached"))))))
                      (3
                       (funcall on-message websocket
-                               (json-encode
+                               (e-json-serialize
                                 '(:type "response.completed"
                                   :response (:id "resp-two"
                                              :status "completed")))))
                      (4
                       (funcall on-message websocket
-                               (json-encode
+                               (e-json-serialize
                                 '(:type "response.completed"
                                   :response (:id "resp-three"
                                              :status "completed")))))
                      (5
                       (funcall on-message websocket
-                               (json-encode
+                               (e-json-serialize
                                 '(:type "response.completed"
                                   :response (:id "resp-four"
                                              :status "completed")))))))))
@@ -878,25 +858,20 @@ result from the canonical messages supplied by the caller."
                 ((symbol-function 'websocket-send-text)
                  (lambda (websocket text)
                    (let ((payload
-                          (json-parse-string
-                           text
-                           :object-type 'plist
-                           :array-type 'list
-                           :null-object nil
-                           :false-object :json-false)))
+                          (e-json-parse-string text)))
                      (push payload sends)
                      (pcase (length sends)
                        (1
                         (funcall on-message
                                  websocket
-                                 (json-encode
+                                 (e-json-serialize
                                   '(:type "response.completed"
                                     :response (:id "resp-latest"
                                                :status "completed")))))
                        (2
                         (funcall on-message
                                  websocket
-                                 (json-encode
+                                 (e-json-serialize
                                   (if (equal error-form "error")
                                       '(:type "error"
                                         :code "previous_response_not_found"
@@ -911,7 +886,7 @@ result from the canonical messages supplied by the caller."
                        (3
                         (funcall on-message
                                  websocket
-                                 (json-encode
+                                 (e-json-serialize
                                   '(:type "response.completed"
                                     :response (:id "resp-recovered"
                                                :status "completed")))))
@@ -1157,21 +1132,17 @@ result from the canonical messages supplied by the caller."
                  'fake-websocket))
               ((symbol-function 'websocket-send-text)
                (lambda (websocket text)
-                 (let* ((payload (json-parse-string text
-                                                    :object-type 'plist
-                                                    :array-type 'list
-                                                    :null-object :json-null
-                                                    :false-object :json-false))
+                 (let* ((payload (e-json-parse-string text))
                         (index (length sends)))
                    (push payload sends)
                    (funcall on-message
                             websocket
-                            (json-encode
+                            (e-json-serialize
                              `(:type "response.output_text.done"
                                :text ,(if (= index 0) "answer one" "answer two"))))
                    (funcall on-message
                             websocket
-                            (json-encode
+                            (e-json-serialize
                              `(:type "response.completed"
                                :response
                                (:id ,(if (= index 0) "resp-local-1" "resp-local-2")
@@ -1220,26 +1191,26 @@ result from the canonical messages supplied by the caller."
           (should (eq (plist-get second-response :store) :json-false))
           (should-not (plist-member second-response :previous_response_id))
           (should (equal (plist-get second-response :input)
-                         '((:type "message"
+                         [(:type "message"
                             :role "user"
-                            :content ((:type "input_text" :text "one")))
+                            :content [(:type "input_text" :text "one")])
                            (:type "reasoning"
                             :id "rs-websocket"
                             :encrypted_content "ciphertext"
-                            :summary ((:type "summary_text"
-                                       :text "diagnostic")))
+                            :summary [(:type "summary_text"
+                                       :text "diagnostic")])
                            (:type "message"
                             :role "assistant"
-                            :content ((:type "output_text" :text "answer one")))
+                            :content [(:type "output_text" :text "answer one")])
                            (:type "message"
                             :role "user"
-                            :content ((:type "input_text" :text "two"))))))
+                            :content [(:type "input_text" :text "two")])]))
           ;; The replayed reasoning summary is always an input array, even
           ;; when the provider returned one object in its output item.
-          (let ((reasoning (nth 1 (plist-get second-response :input))))
+          (let ((reasoning (aref (plist-get second-response :input) 1)))
             (should (plist-member reasoning :summary))
             (should (equal (plist-get reasoning :summary)
-                           '((:type "summary_text" :text "diagnostic"))))))
+                           [(:type "summary_text" :text "diagnostic")]))))
         (should (seq-some (lambda (item)
                             (eq (plist-get item :type)
                                 'provider-anchor-candidate))

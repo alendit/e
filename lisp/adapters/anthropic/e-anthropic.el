@@ -19,13 +19,13 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
 (require 'url)
 (require 'e-backend)
 (require 'e-harness)
 (require 'e-request)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-work)
 
@@ -305,13 +305,17 @@ condition list.  Return a cancellable `e-backend-request' handle."
 
 (defun e-anthropic--context-window-table-from-json (text)
   "Return a model-name -> max-input-tokens hash parsed from model-list TEXT."
-  (let* ((payload (json-parse-string text :object-type 'alist
-                                     :array-type 'list :null-object nil))
-         (data (alist-get 'data payload))
+  (let* ((payload (e-json-parse-string text))
+         (data (plist-get payload :data))
          (table (make-hash-table :test 'equal)))
-    (dolist (entry data)
-      (let ((name (alist-get 'id entry))
-            (limit (alist-get 'max_input_tokens entry)))
+    (unless (vectorp data)
+      (signal 'e-anthropic-backend-error
+              (list "Model catalog data is not a JSON array" data)))
+    ;; The catalog is an application-owned hash table.  This is the explicit
+    ;; provider-domain projection from canonical array/object values.
+    (dolist (entry (append data nil))
+      (let ((name (plist-get entry :id))
+            (limit (plist-get entry :max_input_tokens)))
         (when (and (stringp name) (integerp limit))
           (puthash name limit table))))
     (when (zerop (hash-table-count table))
@@ -466,8 +470,8 @@ Return nil when neither an instructions option nor a system message is present."
 
 (defun e-anthropic--tool-input (arguments)
   "Return Messages tool input from backend-neutral ARGUMENTS.
-Anthropic requires an object, so nil arguments become an empty JSON object."
-  (or arguments (make-hash-table :test 'equal)))
+Anthropic requires an object; canonical nil is its empty object."
+  arguments)
 
 (defun e-anthropic--message (message)
   "Map backend-neutral MESSAGE to a Messages turn."
@@ -747,11 +751,7 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
 
 (defun e-anthropic--parse-json (value)
   "Parse VALUE as JSON into plist data."
-  (json-parse-string value
-                     :object-type 'plist
-                     :array-type 'list
-                     :null-object nil
-                     :false-object :json-false))
+  (e-json-parse-string value))
 
 (defun e-anthropic--number-or-nil (value)
   "Return VALUE when it is numeric, otherwise nil."
@@ -1231,7 +1231,7 @@ request and backend-neutral context."
                   (or base-url (e-anthropic--provider-base-url profile)))
             :headers headers
             :metadata metadata
-            :body (json-encode body-data)))))
+            :body (e-json-serialize body-data)))))
 
 (cl-defun e-anthropic-backend-create
     (&key provider base-url request-function name model)
