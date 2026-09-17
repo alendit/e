@@ -144,6 +144,121 @@
     (should (equal (e-harness-session-title harness "session-1")
                    "String renamed"))))
 
+(ert-deftest e-actions-test-call-preserves-list-of-plist-array ()
+  "Schema-declared list arrays keep each object as an array element."
+  (let* ((seen nil)
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (parameters
+          '(:type "object"
+            :properties
+            (:sections (:type "array"
+                        :items (:type "object"
+                                :properties
+                                (:title (:type "string")
+                                 :metadata (:type "object")))))))
+         (capability
+          (e-capability-create
+           :id 'array-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :parameters parameters
+                  :runner (lambda (arguments _context)
+                            (setq seen arguments)
+                            "ok"))))))
+    (e-harness-activate-capability harness capability)
+    (let ((sections
+           '((:title "first"
+              :metadata (("source" . "alist")))
+             (:title "second"
+              :metadata (:source "plist")))))
+      (should
+       (equal
+        (e-actions-call 'array-action :run (list :sections sections)
+                        (list :harness harness))
+        "ok")))
+    (should
+     (equal seen
+            '(:sections ((:title "first" :metadata (:source "alist"))
+                         (:title "second" :metadata (:source "plist"))))))))
+
+(ert-deftest e-actions-test-call-preserves-vector-of-plist-array ()
+  "Schema-declared vector arrays keep each object as a vector element."
+  (let* ((seen nil)
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (parameters
+          '(:type "object"
+            :properties
+            (:sections (:type "array"
+                        :items (:type "object"
+                                :properties
+                                (:title (:type "string")
+                                 :metadata (:type "object")))))))
+         (capability
+          (e-capability-create
+           :id 'vector-array-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :parameters parameters
+                  :runner (lambda (arguments _context)
+                            (setq seen arguments)
+                            "ok"))))))
+    (e-harness-activate-capability harness capability)
+    (let ((sections
+           [(:title "first"
+             :metadata (("source" . "vector-alist")))
+            (:title "second"
+             :metadata (:source "vector-plist"))]))
+      (should
+       (equal
+        (e-actions-call 'vector-array-action :run (list :sections sections)
+                        (list :harness harness))
+        "ok")))
+    (should
+     (equal seen
+            '(:sections [(:title "first" :metadata (:source "vector-alist"))
+                         (:title "second"
+                          :metadata (:source "vector-plist"))])))))
+
+(ert-deftest e-actions-test-call-normalizes-nested-object-containers ()
+  "Schema-declared nested objects accept plists, alists, and hash tables."
+  (let* ((seen nil)
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (hash-object (make-hash-table :test #'equal))
+         (parameters
+          '(:type "object"
+            :properties
+            (:plist (:type "object")
+             :alist (:type "object")
+             :hash (:type "object"))))
+         (capability
+          (e-capability-create
+           :id 'nested-object-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :parameters parameters
+                  :runner (lambda (arguments _context)
+                            (setq seen arguments)
+                            "ok"))))))
+    (puthash "source" "hash" hash-object)
+    (e-harness-activate-capability harness capability)
+    (should
+     (equal
+      (e-actions-call
+       'nested-object-action :run
+       (list :plist '(:source "plist")
+             :alist '(("source" . "alist"))
+             :hash hash-object)
+       (list :harness harness))
+      "ok"))
+    (should
+     (equal seen
+            '(:plist (:source "plist")
+              :alist (:source "alist")
+              :hash (:source "hash"))))))
+
 (ert-deftest e-actions-test-call-uses-current-tool-context ()
   "Action dispatch uses `e-tools-current-context' when options omit context."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
