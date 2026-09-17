@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+Done.
 
 This work was opened after the Daily reconciliation action exposed a list-of-
 plists corruption path.  A schema-aware compatibility normalizer repaired the
@@ -52,62 +52,62 @@ records.
 
 * Ordered migration checklist
 
-** TODO F94-DP1: Establish the value contract
+** DONE F94-DP1: Establish the value contract
 
-- [ ] Add the shared canonical JSON module and public false/null sentinels.
-- [ ] Add exact predicates, rejecting assertion, parser, and serializer.
-- [ ] Prove nested objects/arrays, arrays of objects, empty object/array,
+- [X] Add the shared canonical JSON module and public false/null sentinels.
+- [X] Add exact predicates, rejecting assertion, parser, and serializer.
+- [X] Prove nested objects/arrays, arrays of objects, empty object/array,
   false/null, invalid containers, non-finite numbers, and cycles.
 
-** TODO F94-DP2: Canonical provider and codec boundaries
+** DONE F94-DP2: Canonical provider and codec boundaries
 
-- [ ] Make OpenAI, Anthropic, and MCP decoders produce plist objects, vector
+- [X] Make OpenAI, Anthropic, and MCP decoders produce plist objects, vector
   arrays, =:json-false=, and =:json-null= exactly once.
-- [ ] Make request encoders assert and serialize canonical JSON.
-- [ ] Migrate session, catalog, checkpoint, and temporary invocation JSON;
+- [X] Make request encoders assert and serialize canonical JSON.
+- [X] Migrate session, catalog, checkpoint, and temporary invocation JSON;
   retain only the named legacy reader needed for existing durable files.
-- [ ] Prove provider decode and persistence round trips without shape loss.
+- [X] Prove provider decode and persistence round trips without shape loss.
 
-** TODO F94-DP3: Canonical tool and action dispatch
+** DONE F94-DP3: Canonical tool and action dispatch
 
-- [ ] Make model-facing tools and capability actions accept and carry only
+- [X] Make model-facing tools and capability actions accept and carry only
   canonical JSON values.
-- [ ] Migrate direct e callers, schemas, and fixtures to vector arrays and
+- [X] Migrate direct e callers, schemas, and fixtures to vector arrays and
   explicit false/null sentinels.
-- [ ] Prove provider decode -> dispatch -> application consumption.
-- [ ] Delete recursive action normalization, tool reparsing/coercion, JSON
+- [X] Prove provider decode -> dispatch -> application consumption.
+- [X] Delete recursive action normalization, tool reparsing/coercion, JSON
   fingerprint normalization, and their compatibility tests.
 
-** TODO F94-DP4: Canonical Grimoire boundaries
+** DONE F94-DP4: Canonical Grimoire boundaries
 
-- [ ] Migrate Daily, source-process, semantic, graph, quest, and Agenda JSON
+- [X] Migrate Daily, source-process, semantic, graph, quest, and Agenda JSON
   adapters plus their fixtures.
-- [ ] Map the canonical Daily section vector explicitly into publication
+- [X] Map the canonical Daily section vector explicitly into publication
   domain records and remove string-key/container fallbacks.
-- [ ] Prove Grimoire reconciliation and raw/embedded persistence round trips.
+- [X] Prove Grimoire reconciliation and raw/embedded persistence round trips.
 
-** TODO F94-DP5: Rebase Daily coordinator ownership correction
+** DONE F94-DP5: Rebase Daily coordinator ownership correction
 
-- [ ] Give each reconciliation attempt a fresh bounded Daily-owned coordinator
+- [X] Give each reconciliation attempt a fresh bounded Daily-owned coordinator
   session; the long-lived canvas owner is not the execution context.
-- [ ] Observe coordinator activity and recover exactly once when a terminal
+- [X] Observe coordinator activity and recover exactly once when a terminal
   turn omits =daily-run/:reconcile=.
-- [ ] Own =awaiting-reconciliation -> publishing -> finalized|failed= in the
+- [X] Own =awaiting-reconciliation -> publishing -> finalized|failed= in the
   Daily application while Board remains delivery-only.
-- [ ] Remove model-supplied publication revision authority and retain typed
+- [X] Remove model-supplied publication revision authority and retain typed
   optional-gap injection.
-- [ ] Replace stale =:apply=/:finalize= graphical/configured coverage with the
+- [X] Replace stale =:apply=/:finalize= graphical/configured coverage with the
   canonical =:reconcile= completion path.
 
-** TODO F94-DP6: Verification and deletion proof
+** DONE F94-DP6: Verification and deletion proof
 
-- [ ] Run focused provider, codec, tool, action, persistence, and Grimoire
+- [X] Run focused provider, codec, tool, action, persistence, and Grimoire
   suites after each owning package.
-- [ ] Run graphical tests for the coordinator/user-visible path.
-- [ ] Run =bash e2e/run-current-config-tests.sh= after configured Grimoire
+- [X] Run graphical tests for the coordinator/user-visible path.
+- [X] Run =bash e2e/run-current-config-tests.sh= after configured Grimoire
   changes.
-- [ ] Confirm the normalizer/coercion helpers and obsolete fixtures are gone.
-- [ ] Commit semantic slices and leave both repositories clean except for
+- [X] Confirm the normalizer/coercion helpers and obsolete fixtures are gone.
+- [X] Commit semantic slices and leave both repositories clean except for
   enumerated pre-existing user changes.
 
 * Required scenarios
@@ -132,3 +132,35 @@ records.
 - Grimoire Daily string-key and list/vector compatibility accessors.
 - Stale model-facing =:apply=/:finalize= and model-supplied revision paths.
 
+* Completion evidence
+
+The e migration was delivered in semantic commits =0e023667=, =e7cd30b2=,
+=d6e2bf52=, =9740ef9b=, =a7f12efb=, =c150d4e6=, =fb2398c5=, and
+=58ed0d97=.  Grimoire's non-Daily codecs were delivered in =fd49efb=; the
+Daily coordinator, canonical reconciliation boundary, and recovery ownership
+were delivered in =2074803=.
+
+The completed contract uses =nil= only for an empty JSON object and =[]= for
+an empty array.  =:json-false= and =:json-null= remain distinct.  Provider
+decode, schema validation, tool dispatch, action dispatch, application mapping,
+and canonical persistence no longer guess among lists, plists, alists, and hash
+tables.  The one retained compatibility boundary is the named read-only legacy
+session migration adapter; ordinary runtime-store tagged Elisp data remains an
+explicitly separate domain.
+
+Deletion audit found no remaining recursive action normalizer, tool JSON-string
+reparser/coercer, JSON fingerprint normalizer, Daily string-key/container
+fallback, terminal-recovery queue, or public =:apply=/:finalize= reconciliation
+surface.  The original list-of-plists corruption path is rejected at the
+canonical action boundary and Daily consumes only a vector of keyword-plist
+section objects.
+
+Acceptance evidence: focused canonical curation passed 31/31, OpenAI curation
+passed 10/10, and the mixed modernchat/Org Canvas regression set passed 3/3.
+The full e repository suite completed 2638 tests with 2637 expected and only the
+pre-existing =e-dev-test-reload-refreshes-defaults= baseline failure.  The
+Grimoire Daily coordinator/run/publication suites passed 84/84; the isolated
+two-phase graphical Daily completion scenario passed both phases; and the exact
+configured cold-start gate passed 8/8.  The user's running Emacs was not
+reloaded or mutated.  Core runtime consumers require a full restart to use the
+new representation immediately.

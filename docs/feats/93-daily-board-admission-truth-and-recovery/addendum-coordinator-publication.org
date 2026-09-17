@@ -123,6 +123,38 @@ configured cold-start gate passes 8/8.  Parent acceptance independently reran
 daily-run 50/50, publication 25/25, topic-commit 12/12, and the cold-start gate
 8/8.  No running Emacs or canonical Board was reloaded or mutated.
 
+** Post-acceptance ownership correction
+
+Feature 94's caller migration exposed one remaining lifecycle error in this
+accepted design: continuation delivery had been treated as if Board also owned
+application completion.  It does not.  Board owns the durable participant,
+terminal fan-in, continuation claim, and delivery observation.  Once delivery
+occurs, a fresh bounded Daily-owned coordinator session owns the application
+attempt, including reconciliation action observation, publication, and failure.
+The canvas owner remains the stable Board/presentation identity and is never
+reused as the execution context.
+
+Each attempt observes its attached turn port.  A canonical =daily-run/:reconcile=
+action-start marker proves that application processing has begun.  If the turn
+finishes, fails, or is cancelled without that marker, Daily starts exactly one
+fresh retry; a second omission becomes a durable Daily failure.  Every async
+continuation is total: success, validation error, runtime error, and
+cancellation all settle the owning Work, so an idle Board cannot coexist with
+a silently pending Daily controller.
+
+The public lifecycle is now =started -> awaiting-reconciliation -> publishing
+-> finalized|failed=.  Materialized and published remain private recovery
+subphases of the Daily publication service.  Reconciliation accepts only the
+canonical JSON section array (a vector of keyword-plist objects); the Daily
+application explicitly maps it into publication-domain records.  Board neither
+understands this representation nor owns the subsequent lifecycle.
+
+The correction is delivered in Grimoire commit =2074803=.  Acceptance reran the
+coordinator/run/publication suites 84/84, both phases of the isolated graphical
+Daily scenario, and the configured cold-start gate 8/8.  It preserves the
+earlier Board delivery contracts and removes application-finalization state
+from Board reasoning.
+
 * Compatibility and removals
 
 - Preserve SQLite Board/run/task/attempt and publication lifecycle formats.
