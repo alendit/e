@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-json)
 
 (define-error 'e-mcp-backend-error "MCP helper backend error")
 (define-error 'e-mcp-backend-timeout "MCP helper backend timeout"
@@ -57,12 +58,9 @@
                  command)))
 
 (defun e-mcp-protocol--json-object-p (value)
-  "Return non-nil when VALUE is an Emacs JSON object representation."
-  (or (hash-table-p value)
-      (and (listp value)
-           (cl-evenp (length value))
-           (cl-loop for (key _item) on value by #'cddr
-                    always (keywordp key)))))
+  "Return non-nil when VALUE is a canonical JSON object."
+  (and (listp value)
+       (e-json-value-p value)))
 
 (defun e-mcp-server-create (&rest args)
   "Create an MCP server spec from keyword ARGS.
@@ -96,6 +94,11 @@ A server must specify either COMMAND (stdio) or URL (HTTP), but not both."
     (e-mcp-protocol--non-empty-string name 'mcp-tool-name)
     (unless (e-mcp-protocol--json-object-p schema)
       (signal 'wrong-type-argument (list 'mcp-input-schema schema)))
+    (condition-case error-data
+        (e-json-schema-assert-schema schema)
+      ((e-json-error e-json-schema-error)
+       (signal 'e-mcp-protocol-error
+               (list (error-message-string error-data)))))
     tool))
 
 (defun e-mcp-protocol-tool-from-wire (server-id item)

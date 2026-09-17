@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-json)
 (require 'e-capabilities)
 (require 'e-session)
 (require 'e-tools)
@@ -41,6 +42,67 @@
     (if limit
         (cl-subseq tail 0 (min limit (length tail)))
       (copy-sequence tail))))
+
+(defun e-evidence-tools--model-value (value)
+  "Return canonical model data for evidence VALUE.
+Unknown durable record fields are deliberately rendered through the bounded
+text preview projector instead of being treated as JSON-shaped Lisp."
+  (cond
+   ((e-json-value-p value) value)
+   ((stringp value) value)
+   (t (or (plist-get (e-tools-result-content-preview value 8192 48 5)
+                     :text)
+          e-json-null))))
+
+(defun e-evidence-tools--model-message (message)
+  "Return canonical projection of durable MESSAGE."
+  (list :id (or (plist-get message :id) e-json-null)
+        :turn-id (or (plist-get message :turn-id) e-json-null)
+        :role (if (symbolp (plist-get message :role))
+                  (symbol-name (plist-get message :role))
+                (or (plist-get message :role) e-json-null))
+        :content (e-evidence-tools--model-value
+                  (plist-get message :content))))
+
+(defun e-evidence-tools--model-activity (event)
+  "Return canonical projection of durable activity EVENT."
+  (list :id (or (plist-get event :id) e-json-null)
+        :turn-id (or (plist-get event :turn-id) e-json-null)
+        :event-type (if (symbolp (plist-get event :event-type))
+                        (symbol-name (plist-get event :event-type))
+                      (or (plist-get event :event-type) e-json-null))
+        :payload (e-evidence-tools--model-value
+                  (plist-get event :payload))))
+
+(defun e-evidence-tools--model-messages (result)
+  "Return canonical model projection of message evidence RESULT."
+  (let ((messages (plist-get result :messages)))
+    (list :session-id (plist-get result :session-id)
+          :offset (plist-get result :offset)
+          :limit (or (plist-get result :limit) e-json-null)
+          :total (plist-get result :total)
+          :messages (vconcat (mapcar #'e-evidence-tools--model-message messages)))))
+
+(defun e-evidence-tools--model-activity-events (result)
+  "Return canonical model projection of activity evidence RESULT."
+  (let ((events (plist-get result :activity-events)))
+    (list :session-id (plist-get result :session-id)
+          :offset (plist-get result :offset)
+          :limit (or (plist-get result :limit) e-json-null)
+          :total (plist-get result :total)
+          :activity-events
+          (vconcat (mapcar #'e-evidence-tools--model-activity events)))))
+
+(defun e-evidence-tools--model-tool-result (result)
+  "Return canonical model projection of one tool-result evidence RESULT."
+  (when result
+    (list :session-id (plist-get result :session-id)
+          :turn-id (plist-get result :turn-id)
+          :tool-call-id (plist-get result :tool-call-id)
+          :message (e-evidence-tools--model-message
+                    (plist-get result :message))
+          :result (e-evidence-tools--model-value
+                   (plist-get result :result)))))
 
 (cl-defun e-evidence-fetch-messages (store session-id &key offset limit)
   "Return a read-only message evidence slice for SESSION-ID in STORE."
@@ -101,13 +163,14 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
                  :properties (:offset (:type "integer" :minimum 0)
                               :limit (:type "integer" :minimum 0)))
    :work
-   (e-tools-cheap-work
+    (e-tools-cheap-work
     "tool.evidence-messages"
     (lambda (arguments)
-      (e-evidence-fetch-messages
-       store session-id
-       :offset (plist-get arguments :offset)
-       :limit (plist-get arguments :limit)))))
+      (e-evidence-tools--model-messages
+       (e-evidence-fetch-messages
+        store session-id
+        :offset (plist-get arguments :offset)
+        :limit (plist-get arguments :limit))))))
   (e-tools-register
    registry
    :name e-evidence-tools--activity-tool
@@ -119,10 +182,11 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
    (e-tools-cheap-work
     "tool.evidence-activity"
     (lambda (arguments)
-      (e-evidence-fetch-activity-events
-       store session-id
-       :offset (plist-get arguments :offset)
-       :limit (plist-get arguments :limit)))))
+      (e-evidence-tools--model-activity-events
+       (e-evidence-fetch-activity-events
+        store session-id
+        :offset (plist-get arguments :offset)
+        :limit (plist-get arguments :limit))))))
   (e-tools-register
    registry
    :name e-evidence-tools--tool-result-tool
@@ -135,14 +199,16 @@ TURN-ID and TOOL-CALL-ID identify the tool result."
    (e-tools-cheap-work
     "tool.evidence-result"
     (lambda (arguments)
-      (or (e-evidence-fetch-tool-result
-           store session-id
-           (plist-get arguments :turn_id)
-           (plist-get arguments :tool_call_id))
+      (or (e-evidence-tools--model-tool-result
+           (e-evidence-fetch-tool-result
+            store session-id
+            (plist-get arguments :turn_id)
+            (plist-get arguments :tool_call_id)))
           (list :session-id session-id
                 :turn-id (plist-get arguments :turn_id)
                 :tool-call-id (plist-get arguments :tool_call_id)
-                :result nil))))))
+                :message e-json-null
+                :result e-json-null))))))
 
 (defun e-evidence-retrieval-capability-create (store session-id)
   "Return a read-only evidence retrieval capability for STORE and SESSION-ID."

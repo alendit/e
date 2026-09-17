@@ -148,9 +148,8 @@ already full."
   (let ((value (plist-get arguments key)))
     (cond
      ((null value) nil)
-     ((vectorp value) (mapcar #'identity value))
-     ((listp value) value)
-     (t (signal 'wrong-type-argument (list 'sequencep value))))))
+     ((vectorp value) (append value nil))
+     (t (signal 'wrong-type-argument (list 'vectorp value))))))
 
 (defun e-web-tools--executable-path (program &optional label)
   "Return executable path for PROGRAM or signal a backend error.
@@ -280,7 +279,7 @@ LABEL names the backend in error messages and defaults to \"backend\"."
     (dolist (result (append (plist-get (plist-get payload :web) :results) nil))
       (setq rank (1+ rank))
       (push (e-web-tools--normalize-search-result result rank) results))
-    (nreverse results)))
+    (vconcat (nreverse results))))
 
 (defun e-web-tools--normalize-ddgr-result (result rank)
   "Normalize ddgr RESULT at one-based RANK."
@@ -297,7 +296,7 @@ PAYLOAD is the flat result list ddgr emits with --json."
     (dolist (result (append payload nil))
       (setq rank (1+ rank))
       (push (e-web-tools--normalize-ddgr-result result rank) results))
-    (nreverse results)))
+    (vconcat (nreverse results))))
 
 (defun e-web-tools--ddgr-freshness (freshness)
   "Map a bx-style FRESHNESS token to ddgr's -t span (d/w/m/y), else nil."
@@ -383,7 +382,7 @@ operators because ddgr's --site accepts only a single domain."
          (content (list :capability "web.search"
                         :backend (symbol-name backend)
                         :query query
-                        :results (cdr payload-results)
+                           :results (cdr payload-results)
                         :diagnostics nil)))
     (when (e-web-tools--truthy-p (plist-get arguments :include_raw))
       (setq content (append content (list :raw (car payload-results)))))
@@ -523,9 +522,10 @@ operators because ddgr's --site accepts only a single domain."
 HTTP fields are an ordered multimap, so keep repeated names as separate
 records instead of exposing implementation-facing dotted pairs or collapsing
 them into an object."
-  (mapcar (lambda (header)
-            (list :name (car header) :value (cdr header)))
-          headers))
+  (vconcat
+   (mapcar (lambda (header)
+             (list :name (car header) :value (cdr header)))
+           headers)))
 
 (defun e-web-tools--response-status (header-text)
   "Return numeric HTTP status from HEADER-TEXT."
@@ -643,7 +643,7 @@ them into an object."
                           links)
                     (setq start close-end))
                 (setq start label-start)))))))
-    (nreverse links)))
+    (vconcat (nreverse links))))
 
 (defun e-web-tools--markdown (title text links)
   "Return simple Markdown from TITLE, TEXT, and LINKS."

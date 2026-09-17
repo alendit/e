@@ -12,9 +12,9 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'subr-x)
+(require 'e-json)
 (require 'e-request)
 (require 'e-work)
 
@@ -72,6 +72,8 @@ delete PATH after its replacement write succeeds."
   "Tool arguments do not match the declared schema")
 (define-error 'e-tools-invalid-definition
   "Tool definition is not compatible with the declared tool schema contract")
+(define-error 'e-tools-invalid-result-content
+  "Tool result content is not a canonical JSON value or text carrier")
 
 (defconst e-tools-nested-tool-default-budget 20
   "Default maximum number of nested tool calls per parent tool execution.")
@@ -88,15 +90,17 @@ other live runtime objects held by `e-tools-current-context'."
   (let* ((context (e-tools-current-context))
          (call (plist-get context :tool-call))
          (registry (plist-get context :tools)))
-    (list :session-id (plist-get context :session-id)
-          :turn-id (plist-get context :turn-id)
-          :tool-call-id (plist-get call :id)
-          :tool-call-name (plist-get call :name)
-          :deadline (plist-get context :deadline)
-          :nested (and (plist-get context :nested) t)
-          :parent-tool-call-id (plist-get context :parent-tool-call-id)
-          :tool-names (and (e-tools-registry-p registry)
-                           (copy-sequence (e-tools-registry-order registry))))))
+    (list :session-id (or (plist-get context :session-id) e-json-null)
+          :turn-id (or (plist-get context :turn-id) e-json-null)
+          :tool-call-id (or (plist-get call :id) e-json-null)
+          :tool-call-name (or (plist-get call :name) e-json-null)
+          :deadline (or (plist-get context :deadline) e-json-null)
+          :nested (if (plist-get context :nested) t e-json-false)
+          :parent-tool-call-id (or (plist-get context :parent-tool-call-id)
+                                   e-json-null)
+          :tool-names (if (e-tools-registry-p registry)
+                          (vconcat (e-tools-registry-order registry))
+                        []))))
 
 (defun e-tools-current-registry ()
   "Return the active tool registry from `e-tools-current-context'."
@@ -274,6 +278,7 @@ BLOCKING-CLASS may be `cheap', `network', `process', `helper', `filesystem',
 WORK is the canonical `e-work-spec' lifecycle for the tool."
   (unless (e-work-spec-p work)
     (signal 'wrong-type-argument (list 'e-work-spec-p work)))
+  (setq parameters (e-tools--canonical-parameters parameters))
   (when blocking-class
     (setq metadata (plist-put metadata :blocking-class blocking-class)))
   (unless (gethash name (e-tools-registry-tools registry))
@@ -284,242 +289,62 @@ WORK is the canonical `e-work-spec' lifecycle for the tool."
                  :description description
                  :parameters parameters
                  :metadata metadata
-                  :work work)
+                 :work work)
            (e-tools-registry-tools registry)))
 
-(defun e-tools--empty-json-object ()
-  "Return an empty object suitable for `json-encode'."
-  (make-hash-table :test 'equal))
-
 (defun e-tools--plist-p (value)
-  "Return non-nil when VALUE is a keyword plist."
-  (and (listp value)
-       (cl-evenp (length value))
-       (cl-loop for (key _value) on value by #'cddr
-                always (keywordp key))))
+  "Return non-nil when VALUE is a canonical JSON object plist."
+  (and (listp value) (e-json-value-p value)))
 
-(defun e-tools--reparse-json-string (value)
-  "Return VALUE parsed from a JSON string, or VALUE unchanged on parse failure.
-Uses the adapter decode settings: objects become plists, arrays become lists."
-  (condition-case nil
-      (json-parse-string value
-                         :object-type 'plist
-                         :array-type 'list
-                         :null-object nil
-                         :false-object :json-false)
-    (error value)))
-
-(defun e-tools--coerce-argument (value schema)
-  "Return VALUE coerced to SCHEMA's declared JSON type.
-When SCHEMA declares an object or array but VALUE arrived as a JSON string,
-parse it back into data.  Providers that JSON-stringify nested tool arguments
-\(notably Bedrock) deliver object- and array-typed arguments this way.  Scalar
-schemas and non-string values pass through unchanged, so a field the schema
-declares a string is never reparsed even when its text is valid JSON."
-  (let ((type (and (listp schema) (plist-get schema :type))))
-    (cond
-     ((and (stringp value) (member type '("object" "array")))
-      ;; Reparse once, then re-run: a stringified object may still hold
-      ;; inner values the same provider stringified independently.  When the
-      ;; string is not valid JSON, `e-tools--reparse-json-string' returns it
-      ;; unchanged; re-coercing the identical string would recurse forever
-      ;; (a truncated/malformed argument once blew the Lisp eval depth and
-      ;; aborted the turn).  Stop when reparsing made no progress.
-      (let ((reparsed (e-tools--reparse-json-string value)))
-        (if (equal reparsed value)
-            value
-          (e-tools--coerce-argument reparsed schema))))
-     ((and (equal type "object") (e-tools--plist-p value))
-      (e-tools--coerce-arguments value schema))
-     (t value))))
-
-(defun e-tools--coerce-arguments (arguments parameters)
-  "Return ARGUMENTS with each value coerced to PARAMETERS' declared types.
-PARAMETERS is the tool's JSON Schema.  Non-plist ARGUMENTS pass through
-unchanged.  See `e-tools--coerce-argument'."
-  (if (not (e-tools--plist-p arguments))
-      arguments
-    (let ((properties (and (listp parameters) (plist-get parameters :properties)))
-          (result nil))
-      (cl-loop for (key value) on arguments by #'cddr do
-               (push key result)
-               (push (e-tools--coerce-argument
-                      value (and properties (plist-get properties key)))
-                     result))
-      (nreverse result))))
-
-(defun e-tools--schema-property-key (name)
-  "Return the plist key represented by JSON Schema property NAME."
-  (cond
-   ((keywordp name) name)
-   ((symbolp name) (intern (concat ":" (symbol-name name))))
-   ((stringp name) (intern (concat ":" name)))
-   (t nil)))
-
-(defun e-tools--schema-list (value)
-  "Return JSON Schema array VALUE as a Lisp list."
-  (cond
-   ((vectorp value) (append value nil))
-   ((listp value) value)
-   (t nil)))
-
-(defun e-tools--schema-property-name (name)
-  "Return the JSON name represented by schema property NAME."
-  (cond
-   ((keywordp name) (substring (symbol-name name) 1))
-   ((symbolp name) (symbol-name name))
-   ((stringp name) name)
-   (t nil)))
-
-(defun e-tools--schema-property-entry (properties name)
-  "Return a present/value pair for NAME in schema PROPERTIES, or nil.
-PROPERTIES may be the plist, hash-table, or alist form accepted by the
-provider-neutral schema boundary.  A present/value pair is used so a
-property whose schema is nil is still distinguishable from an absent one."
-  (let ((target (e-tools--schema-property-name name)))
-    (cond
-     ((hash-table-p properties)
-      (catch 'found
-        (maphash
-         (lambda (key value)
-           (when (equal (e-tools--schema-property-name key) target)
-             (throw 'found (cons t value))))
-         properties)
-        nil))
-     ((e-tools--plist-p properties)
-      (catch 'found
-        (let ((rest properties))
-          (while rest
-            (let ((key (pop rest))
-                  (value (pop rest)))
-              (when (equal (e-tools--schema-property-name key) target)
-                (throw 'found (cons t value))))))
-        nil))
-     ((listp properties)
-      (catch 'found
-        (dolist (entry properties)
-          (when (and (consp entry)
-                     (equal (e-tools--schema-property-name (car entry))
-                            target))
-            (throw 'found (cons t (cdr entry)))))
-        nil)))))
-
-(defun e-tools--schema-property-present-p (properties name)
-  "Return non-nil when schema PROPERTIES declares JSON property NAME."
-  (and (e-tools--schema-property-entry properties name) t))
-
-(defun e-tools--copy-schema-value (value)
-  "Return a detached copy of schema VALUE, including hash-table children."
+(defun e-tools--copy-canonical-value (value)
+  "Return a detached copy of canonical JSON VALUE."
+  (e-json-assert-value value)
   (cond
    ((stringp value) (copy-sequence value))
    ((vectorp value)
-    (vconcat (mapcar #'e-tools--copy-schema-value (append value nil))))
-   ((hash-table-p value)
-    (let ((copy (copy-hash-table value)))
-      (clrhash copy)
-      (maphash (lambda (key item)
-                 (puthash key (e-tools--copy-schema-value item) copy))
-               value)
-      copy))
+    (vconcat (mapcar #'e-tools--copy-canonical-value (append value nil))))
    ((consp value)
-    (cons (e-tools--copy-schema-value (car value))
-          (e-tools--copy-schema-value (cdr value))))
+    (let ((copy nil)
+          (rest value))
+      (while rest
+        (setq copy (append copy
+                           (list (pop rest)
+                                 (e-tools--copy-canonical-value (pop rest))))))
+      copy))
    (t value)))
 
-(defun e-tools--schema-type-p (value type)
-  "Return non-nil when VALUE conforms to JSON Schema TYPE."
-  (pcase type
-    ("string" (stringp value))
-    ("number" (numberp value))
-    ("integer" (integerp value))
-    ("boolean" (memq value '(t :json-false)))
-    ("object" (e-tools--plist-p value))
-    ("array" (or (listp value) (vectorp value)))
-    ("null" (null value))
-    (_ t)))
-
-(defun e-tools--validate-schema-value (value schema field)
-  "Signal unless VALUE satisfies the supported SCHEMA keywords for FIELD."
-  (let ((type (plist-get schema :type))
-        (enum (and (plist-member schema :enum)
-                   (e-tools--schema-list (plist-get schema :enum)))))
-    (unless (e-tools--schema-type-p value type)
-      (signal 'e-tools-invalid-arguments
-              (list (format "Tool argument %s has the wrong type" field))))
-    (when (and enum (not (member value enum)))
-      (signal 'e-tools-invalid-arguments
-              (list (format "Tool argument %s is not an allowed value" field))))
-    (when (stringp value)
-      (when (and (numberp (plist-get schema :minLength))
-                 (< (length value) (plist-get schema :minLength)))
-        (signal 'e-tools-invalid-arguments
-                (list (format "Tool argument %s is too short" field))))
-      (when (and (numberp (plist-get schema :maxLength))
-                 (> (length value) (plist-get schema :maxLength)))
-        (signal 'e-tools-invalid-arguments
-                (list (format "Tool argument %s is too long" field))))
-      (when (and (plist-get schema :nonBlank)
-                 (string-empty-p (string-trim value)))
-        (signal 'e-tools-invalid-arguments
-                (list (format "Tool argument %s must not be blank" field))))
-      (when (and (plist-get schema :singleLine)
-                 (string-match-p "[\n\r]" value))
-        (signal 'e-tools-invalid-arguments
-                (list (format "Tool argument %s must be one line" field))))
-      (when (and (stringp (plist-get schema :pattern))
-                 (not (string-match-p (plist-get schema :pattern) value)))
-        (signal 'e-tools-invalid-arguments
-                (list (format "Tool argument %s has an invalid format" field)))))))
-
-(defun e-tools--validate-arguments (arguments parameters)
-  "Validate object ARGUMENTS against the supported PARAMETERS schema.
-The runtime enforces object shape, required fields, scalar types, enum values,
-and string length and pattern constraints before transcript persistence."
-  (when (equal (plist-get parameters :type) "object")
-    (unless (e-tools--plist-p arguments)
-      (signal 'e-tools-invalid-arguments
-              (list "Tool arguments must be an object"))))
-  (let ((properties (plist-get parameters :properties)))
-    (dolist (name (e-tools--schema-list (plist-get parameters :required)))
-      (let ((key (e-tools--schema-property-key name)))
-        (unless (and key (plist-member arguments key))
-          (signal 'e-tools-invalid-arguments
-                  (list (format "Missing required tool argument: %s" name))))))
-    (when (e-tools--plist-p arguments)
-      (cl-loop for (key value) on arguments by #'cddr do
-               (cond
-                ((plist-member properties key)
-                 (e-tools--validate-schema-value
-                  value (plist-get properties key) key))
-                ((eq (plist-get parameters :additionalProperties) :json-false)
-                 (signal 'e-tools-invalid-arguments
-                         (list "Tool arguments contain undeclared fields"))))))))
+(defun e-tools--canonical-parameters (parameters)
+  "Return a detached canonical schema for PARAMETERS."
+  (let ((schema (or parameters '(:type "object" :properties nil))))
+    (condition-case error-data
+        (progn
+          (e-json-schema-assert-schema schema)
+          (e-tools--copy-canonical-value schema))
+      ((e-json-error e-json-schema-error)
+       (signal 'e-tools-invalid-definition
+               (list (error-message-string error-data)))))))
 
 (defun e-tools--prepare-call-arguments (call tool)
-  "Coerce and validate CALL arguments against TOOL's runtime schema."
-  (let* ((parameters (plist-get tool :parameters))
-         (arguments (e-tools--coerce-arguments
-                     (plist-get call :arguments) parameters)))
-    (e-tools--validate-arguments arguments parameters)
-    (plist-put call :arguments arguments)))
+  "Validate CALL's canonical arguments against TOOL's runtime schema."
+  (let ((parameters (plist-get tool :parameters))
+        (arguments (plist-get call :arguments)))
+    (condition-case error-data
+        (e-json-schema-assert arguments parameters)
+      ((e-json-error e-json-schema-error)
+       (signal 'e-tools-invalid-arguments
+               (list (error-message-string error-data)))))
+    call))
 
 (defun e-tools--prepare-call-arguments-with-context (call tool)
-  "Validate CALL and retain its prepared arguments when schema validation fails."
+  "Validate CALL and retain its received arguments on schema failure."
   (condition-case err
       (e-tools--prepare-call-arguments call tool)
     (e-tools-invalid-arguments
-     ;; Preserve the detached, schema-coerced operation arguments for the
-     ;; harness archival side channel.  The projected transcript call is built
-     ;; separately and may contain only values safe to show after rejection.
-     (let* ((parameters (plist-get tool :parameters))
-            (arguments (e-tools--coerce-arguments
-                        (plist-get call :arguments) parameters)))
-       (plist-put call :arguments arguments))
      (signal (car err)
              (append (cdr err) (list :prepared-call call))))))
 
 (defun e-tools-prepare-call (registry call)
-  "Return a validated, coerced copy of CALL from REGISTRY.
+  "Return a validated copy of CALL from REGISTRY.
 Unknown tools are returned unchanged so normal missing-tool handling remains
 inside `e-tools-start'."
   (let* ((copy (copy-tree call))
@@ -538,95 +363,70 @@ normal tool error, while rejected text cannot enter transcript or activity."
          (tool (gethash (plist-get copy :name)
                         (e-tools-registry-tools registry)))
          (parameters (and tool (plist-get tool :parameters)))
-         (properties (and (listp parameters)
-                          (plist-get parameters :properties)))
+         (properties (and tool (plist-get parameters :properties)))
          (arguments (plist-get copy :arguments))
          projected)
     (when (and tool (e-tools--plist-p arguments))
       (cl-loop for (key value) on arguments by #'cddr do
                (when (and (plist-member properties key)
                           (condition-case nil
-                              (progn
-                                (e-tools--validate-schema-value
-                                 value (plist-get properties key) key)
-                                t)
-                            (e-tools-invalid-arguments nil)))
+                              (e-json-schema-value-p
+                               value (plist-get properties key))
+                            (e-json-error nil)
+                            (e-json-schema-error nil)))
                  (setq projected (append projected (list key value))))))
     (plist-put copy :arguments projected)))
 
 (defun e-tools--json-key (key)
-  "Return stable JSON object key text for KEY."
-  (cond
-   ((keywordp key)
-    (substring (symbol-name key) 1))
-   ((symbolp key)
-    (symbol-name key))
-   ((stringp key)
-    key)
-   (t
-    (format "%s" key))))
+  "Return stable JSON object key text for canonical keyword KEY."
+  (unless (keywordp key)
+    (signal 'e-json-error
+            (list (format "JSON object keys must be keywords: %S" key))))
+  (substring (symbol-name key) 1))
 
 (defun e-tools--sort-json-object (entries)
   "Return ENTRIES sorted by their string keys."
   (sort entries (lambda (left right)
                   (string< (car left) (car right)))))
 
-(defun e-tools--json-normalize (value)
-  "Return VALUE in a deterministic shape suitable for `json-encode'."
+(defun e-tools--canonical-sort-value (value)
+  "Return canonical VALUE with object keys sorted for deterministic output."
+  (e-json-assert-value value)
   (cond
-   ((or (stringp value)
-        (numberp value)
-        (eq value t)
-        (eq value :json-false)
-        (null value))
-    value)
-   ((keywordp value)
-    (substring (symbol-name value) 1))
-   ((symbolp value)
-    (symbol-name value))
    ((vectorp value)
-    (vconcat (mapcar #'e-tools--json-normalize value)))
-   ((hash-table-p value)
-    (let (entries)
-      (maphash
-       (lambda (key item)
-         (push (cons (e-tools--json-key key)
-                     (e-tools--json-normalize item))
-               entries))
-       value)
-      (e-tools--sort-json-object entries)))
-   ((e-tools--plist-p value)
+    (vconcat (mapcar #'e-tools--canonical-sort-value (append value nil))))
+   ((consp value)
     (let (entries)
       (while value
-        (push (cons (e-tools--json-key (pop value))
-                    (e-tools--json-normalize (pop value)))
-              entries))
-      (e-tools--sort-json-object entries)))
-   ((and (listp value)
-         (cl-every #'consp value))
-    (e-tools--sort-json-object
-     (mapcar (lambda (entry)
-               (cons (e-tools--json-key (car entry))
-                     (e-tools--json-normalize (cdr entry))))
-             value)))
-   ((listp value)
-    (vconcat (mapcar #'e-tools--json-normalize value)))
-   (t
-    (signal 'wrong-type-argument (list 'json-serializable-p value)))))
+        (let ((key (pop value))
+              (item (pop value)))
+          (push (cons (e-tools--json-key key)
+                      (cons key (e-tools--canonical-sort-value item)))
+                entries)))
+      (setq entries
+            (e-tools--sort-json-object entries))
+      (let (result)
+        (dolist (entry entries)
+          (setq result
+                (append result
+                        (list (car (cdr entry))
+                              (cdr (cdr entry))))))
+        result)))
+   (t value)))
 
 (defun e-tools-definition-fingerprint (definition)
-  "Return a stable material fingerprint for provider DEFINITION.
-The JSON-normalized representation makes equivalent plist, alist, and hash
-table schemas compare identically while preserving all material fields."
+  "Return a stable material fingerprint for canonical provider DEFINITION."
   (secure-hash 'sha256
-               (json-encode (e-tools--json-normalize definition))))
+               (e-json-serialize
+                (e-tools--canonical-sort-value definition))))
 
 (defun e-tools-arguments-fingerprint (arguments)
-  "Return a stable SHA-256 fingerprint for normalized tool ARGUMENTS.
-Equivalent JSON objects compare identically regardless of their Lisp object
-representation or property order."
+  "Return a stable SHA-256 fingerprint for canonical tool ARGUMENTS.
+Object key order is normalized only after the value passes the canonical
+representation assertion."
   (secure-hash 'sha256
-               (json-encode (e-tools--json-normalize arguments))))
+               (e-json-serialize
+                (e-tools--canonical-sort-value arguments))))
 
 (defun e-tools-result-content-text (content)
   "Return the model-visible text representation for tool result CONTENT."
@@ -635,10 +435,11 @@ representation or property order."
    ((e-tools-file-content-p content)
     (or (e-tools-file-content-preview content) ""))
    (t
-    (condition-case nil
-        (json-encode (e-tools--json-normalize content))
-      (error
-       (prin1-to-string content))))))
+    (condition-case error-data
+        (e-json-serialize content)
+      (e-json-error
+       (signal 'e-tools-invalid-result-content
+               (list (error-message-string error-data))))))))
 
 (defun e-tools-file-content-valid-p (content)
   "Return non-nil when CONTENT is a valid file-backed text carrier."
@@ -682,10 +483,18 @@ Return the deleted path, or nil when CONTENT does not own a live file."
   "Record truncation in preview STATE."
   (plist-put state :truncated t))
 
-(defun e-tools--preview-normalize (value state depth)
-  "Return a bounded JSON-normalizable preview of VALUE.
+(defun e-tools--preview-key-text (key)
+  "Return display text for arbitrary preview KEY."
+  (cond
+   ((keywordp key) (substring (symbol-name key) 1))
+   ((symbolp key) (symbol-name key))
+   ((stringp key) key)
+   (t (format "%s" key))))
+
+(defun e-tools--preview-project-value (value state depth)
+  "Project arbitrary VALUE into bounded display text data.
 STATE carries shared truncation metadata.  DEPTH is the remaining traversal
-budget."
+budget.  This is a telemetry/display projector, not a JSON value normalizer."
   (let ((max-string-bytes (plist-get state :max-string-bytes))
         (max-items (plist-get state :max-items)))
     (cond
@@ -709,40 +518,41 @@ budget."
         (when (> (length items) max-items)
           (e-tools--preview-note-truncated state))
         (vconcat (mapcar (lambda (item)
-                           (e-tools--preview-normalize
+                           (e-tools--preview-project-value
                             item state (1- depth)))
                          limited))))
      ((hash-table-p value)
       (let (entries)
         (maphash
          (lambda (key item)
-           (push (cons (e-tools--json-key key) item) entries))
+           (push (cons (e-tools--preview-key-text key) item) entries))
          value)
         (setq entries (e-tools--sort-json-object entries))
         (when (> (length entries) max-items)
           (e-tools--preview-note-truncated state))
         (mapcar (lambda (entry)
                   (cons (car entry)
-                        (e-tools--preview-normalize
+                        (e-tools--preview-project-value
                          (cdr entry) state (1- depth))))
                 (seq-take entries max-items))))
      ((e-tools--plist-p value)
       (let (entries)
         (while value
-          (push (cons (e-tools--json-key (pop value)) (pop value)) entries))
+          (push (cons (e-tools--preview-key-text (pop value)) (pop value))
+                entries))
         (setq entries (e-tools--sort-json-object entries))
         (when (> (length entries) max-items)
           (e-tools--preview-note-truncated state))
         (mapcar (lambda (entry)
                   (cons (car entry)
-                        (e-tools--preview-normalize
+                        (e-tools--preview-project-value
                          (cdr entry) state (1- depth))))
                 (seq-take entries max-items))))
      ((listp value)
       (when (> (length value) max-items)
         (e-tools--preview-note-truncated state))
       (vconcat (mapcar (lambda (item)
-                         (e-tools--preview-normalize
+                         (e-tools--preview-project-value
                           item state (1- depth)))
                        (seq-take value max-items))))
      (t
@@ -768,7 +578,7 @@ strings."
                    content
                  (condition-case nil
                      (json-encode
-                      (e-tools--preview-normalize content state depth))
+                      (e-tools--preview-project-value content state depth))
                    (error
                     (e-tools--preview-note-truncated state)
                     (prin1-to-string content)))))
@@ -790,7 +600,8 @@ strings."
                              e-tools-blocking-execute-rejected
                              e-tools-batch-execute-not-allowed
                              e-tools-nested-async-tool-rejected
-                             e-tools-invalid-arguments))
+                             e-tools-invalid-arguments
+                             e-tools-invalid-result-content))
            (stringp (cadr err)))
       (cadr err)
     (e-work-error-message err)))
@@ -811,20 +622,8 @@ strings."
       (signal 'wrong-type-argument (list 'functionp start)))
     (apply start tool-call arguments)))
 
-(defun e-tools--normalize-parameters (parameters)
-  "Return tool PARAMETERS with valid JSON object defaults."
-  (let ((normalized (e-tools--copy-schema-value
-                     (or parameters
-                         (list :type "object"
-                               :properties (e-tools--empty-json-object))))))
-    (when (and (equal (plist-get normalized :type) "object")
-               (null (plist-get normalized :properties)))
-      (plist-put normalized :properties (e-tools--empty-json-object)))
-    normalized))
-
 (defun e-tools--decorated-parameters (parameters)
-  "Return a detached provider-visible schema for PARAMETERS."
-  (e-tools--normalize-parameters parameters))
+  (e-tools--copy-canonical-value parameters))
 
 (defun e-tools-definitions (registry)
   "Return backend-neutral tool definitions for REGISTRY."
@@ -841,21 +640,28 @@ strings."
     (nreverse definitions)))
 
 (defun e-tools-available ()
-  "Return compact active tool descriptors from the current registry."
+  "Return a canonical vector of active tool descriptors."
   (let ((registry (e-tools-current-registry))
         descriptors)
     (dolist (name (e-tools-registry-order registry))
       (let ((tool (gethash name (e-tools-registry-tools registry))))
         (push (list :name (plist-get tool :name)
                     :description (plist-get tool :description)
-                    :parameters (or (plist-get tool :parameters)
-                                    '(:type "object" :properties nil))
-                    :metadata (plist-get tool :metadata))
+                    :parameters
+                    (e-tools--copy-canonical-value
+                     (plist-get tool :parameters)))
               descriptors)))
-    (nreverse descriptors)))
+    (vconcat (nreverse descriptors))))
 
 (defun e-tools-result-create (call status content &optional metadata)
   "Return a structured tool result for CALL with STATUS, CONTENT, and METADATA."
+  (unless (or (stringp content)
+              (e-tools-file-content-valid-p content)
+              (condition-case nil
+                  (progn (e-json-assert-value content) t)
+                (e-json-error nil)))
+    (signal 'e-tools-invalid-result-content
+            (list "Tool result content must be a canonical JSON value or text carrier")))
   (list :tool-call-id (plist-get call :id)
         :name (plist-get call :name)
         :status status
@@ -897,10 +703,18 @@ SUMMARY is optional and should stay compact and high value."
   "Return resource usage metadata for TOOL from optional ARGUMENTS."
   (let ((usage (or (plist-get arguments :resource_usage)
                    (plist-get arguments :resourceUsage))))
-    (when (listp usage)
+    (when (and (listp usage) (e-json-value-p usage))
       (e-tools-resource-usage-metadata
        tool
-       (plist-get usage :resources)
+       ;; Resource metadata is a domain-owned telemetry record.  Convert its
+       ;; canonical JSON array explicitly at this boundary for the existing
+       ;; metadata projector, rather than treating arbitrary lists as JSON.
+       (let ((resources (plist-get usage :resources)))
+         (cond
+          ((vectorp resources) (append resources nil))
+          ((null resources) nil)
+          (t (signal 'e-tools-invalid-arguments
+                     (list "resource_usage.resources must be a JSON array")))))
        (plist-get usage :summary)))))
 
 (defun e-tools-merge-metadata (&rest metadata-list)
@@ -1232,12 +1046,27 @@ handle after allocation and before its runner may execute."
              (finish-ok
               (content)
               (unless settled
-                (setq settled t)
                 (cancel-deadline)
-                (when on-done
-                  (funcall on-done
-                           (e-tools--ok-result-from-content
-                            call name content)))))
+                (condition-case err
+                    (let ((result (e-tools--ok-result-from-content
+                                   call name content)))
+                      (setq settled t)
+                      (when on-done
+                        (funcall on-done result)))
+                  (error
+                   ;; A handler result is part of the strict model-facing
+                   ;; boundary.  If an owner returns a noncanonical value,
+                   ;; settle the call as a normal tool error rather than
+                   ;; leaving batch callers waiting forever after the
+                   ;; completion callback has unwound.
+                   (setq settled t)
+                   (when on-done
+                     (funcall on-done
+                              (e-tools--result
+                               call
+                               'error
+                               (e-tools--condition-message err)
+                               (list :error (car err)))))))))
              (finish-error
               (err)
               (unless settled
@@ -1309,13 +1138,10 @@ handle after allocation and before its runner may execute."
                                          'cheap))
                (lambda ()
                  (let ((e-tools--current-context tool-context))
-                   ;; Coerce arguments to the tool's declared schema types
-                   ;; before dispatch.  Providers that JSON-stringify nested
-                   ;; tool arguments (notably Bedrock) deliver object- and
-                   ;; array-typed arguments as strings; reparse them against
-                   ;; the schema so every tool sees structured data.  This runs
-                   ;; inside the guarded region so a malformed argument fails as
-                   ;; a tool-error result rather than aborting the whole turn.
+                   ;; Assert the provider's canonical arguments against the
+                   ;; declared schema before dispatch.  Validation is
+                   ;; shape-preserving: malformed arguments become a bounded
+                   ;; tool error and never enter the handler.
                    (setq call (e-tools--prepare-call-arguments call tool))
                    (arm-deadline)
                    (cond

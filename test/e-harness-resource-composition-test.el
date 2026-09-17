@@ -185,7 +185,7 @@
                      '(:id "call-3"
                        :name "edit"
                        :arguments (:uri "test://value"
-                                   :edits ((:oldText "a" :newText "b")))))
+                                   :edits [(:oldText "a" :newText "b")])))
                     :content)
                    "edit-result"))
     (should (equal (plist-get
@@ -220,7 +220,7 @@
                      (:write (:scheme "test" :address "value" :uri "test://value")
                              "content")
                      (:edit (:scheme "test" :address "value" :uri "test://value")
-                            ((:oldText "a" :newText "b")))
+                            [(:oldText "a" :newText "b")])
                      (:glob (:scheme "test" :address "" :uri "test://")
                             "*.el" 5 nil)
                      (:search (:scheme "test" :address "" :uri "test://")
@@ -346,7 +346,7 @@
              :content)
             '(:resources [(:uri "e://reference-capability/refs/guide.md"
                             :name "refs/guide.md"
-                            :kind resource)]
+                            :kind "resource")]
               :truncated nil)))
     (let* ((content
             (plist-get

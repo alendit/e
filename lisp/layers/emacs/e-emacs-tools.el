@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'e-json)
 (require 'e-operations)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
@@ -75,28 +76,39 @@ runs a separate process."
   "Return non-nil when BUFFER is visible in a live window."
   (and (get-buffer-window buffer t) t))
 
+(defun e-emacs-tools--json-bool (value)
+  "Return canonical JSON boolean for Lisp truth VALUE."
+  (if value t e-json-false))
+
+(defun e-emacs-tools--json-null (value)
+  "Return VALUE or canonical JSON null when VALUE is absent."
+  (or value e-json-null))
+
 (defun e-emacs-tools--buffer-metadata (buffer)
   "Return metadata for BUFFER."
   (with-current-buffer buffer
     (list :name (buffer-name buffer)
           :mode (symbol-name major-mode)
-          :file buffer-file-name
-          :file-backed (and buffer-file-name t)
-          :modified (buffer-modified-p buffer)
-          :visible (e-emacs-tools--buffer-visible-p buffer))))
+          :file (e-emacs-tools--json-null buffer-file-name)
+          :file-backed (e-emacs-tools--json-bool buffer-file-name)
+          :modified (e-emacs-tools--json-bool (buffer-modified-p buffer))
+          :visible (e-emacs-tools--json-bool
+                    (e-emacs-tools--buffer-visible-p buffer)))))
 
 (defun e-emacs-tools--buffer-updated-at (buffer)
   "Return reliable BUFFER updated time, or nil."
   (with-current-buffer buffer
     (when (and buffer-file-name (file-exists-p buffer-file-name))
-      (file-attribute-modification-time (file-attributes buffer-file-name)))))
+      (format-time-string
+       "%FT%T%z"
+       (file-attribute-modification-time (file-attributes buffer-file-name)) t))))
 
 (defun e-emacs-tools--buffer-resource (buffer)
   "Return public resource result for BUFFER."
   (let ((name (buffer-name buffer)))
     (list :uri (concat "buffer://" name)
           :name name
-          :kind 'buffer
+          :kind "buffer"
           :metadata (append (e-emacs-tools--buffer-metadata buffer)
                             (when-let ((updated-at
                                         (e-emacs-tools--buffer-updated-at buffer)))
@@ -134,7 +146,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
       (when (or (not visible-only)
                 (e-emacs-tools--buffer-visible-p buffer))
         (push (e-emacs-tools--buffer-metadata buffer) buffers)))
-    (nreverse buffers)))
+    (vconcat (nreverse buffers))))
 
 (defun e-emacs-tools--argument-string (arguments key)
   "Return required string argument KEY from ARGUMENTS."
@@ -234,20 +246,22 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     value))
 
 (defun e-emacs-tools--normalize-edits (edits)
-  "Return normalized resource EDITS for exact buffer replacement."
-  (unless (and (listp edits) edits)
+  "Return internal edit records for canonical vector EDITS."
+  (unless (and (vectorp edits) (> (length edits) 0))
     (signal 'e-emacs-tools-edit-invalid
             '("edits must contain at least one replacement")))
-  (cl-loop for edit in edits
-           collect (let ((old-text (e-emacs-tools--edit-field edit :oldText))
-                         (new-text (e-emacs-tools--edit-field edit :newText)))
-                     (when (string-empty-p old-text)
-                       (signal 'e-emacs-tools-edit-invalid
-                               '("oldText must not be empty")))
-                     (when (equal old-text new-text)
-                       (signal 'e-emacs-tools-edit-invalid
-                               '("oldText and newText are identical")))
-                     (list :old-text old-text :new-text new-text))))
+  (let (normalized)
+    (dotimes (_index (length edits) (nreverse normalized))
+      (let* ((edit (aref edits _index))
+             (old-text (e-emacs-tools--edit-field edit :oldText))
+             (new-text (e-emacs-tools--edit-field edit :newText)))
+        (when (string-empty-p old-text)
+          (signal 'e-emacs-tools-edit-invalid
+                  '("oldText must not be empty")))
+        (when (equal old-text new-text)
+          (signal 'e-emacs-tools-edit-invalid
+                  '("oldText and newText are identical")))
+        (push (list :old-text old-text :new-text new-text) normalized)))))
 
 (defun e-emacs-tools--apply-edits-to-current-buffer (edits)
   "Apply exact resource EDITS to the current buffer."
@@ -339,7 +353,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                    updated-after updated-before))
          (truncated (> (length queried) actual-limit)))
     (list :resources (vconcat (seq-take queried actual-limit))
-          :truncated truncated)))
+          :truncated (e-emacs-tools--json-bool truncated))))
 
 (defun e-emacs-tools--current-line-text ()
   "Return current line text without properties."
@@ -388,7 +402,8 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     (let ((ranked (e-resource-pattern-rank-search-matches
                    matches (1+ actual-limit))))
       (list :matches (vconcat (seq-take ranked actual-limit))
-            :truncated (> (length ranked) actual-limit)))))
+            :truncated
+            (e-emacs-tools--json-bool (> (length ranked) actual-limit))))))
 
 (defun e-emacs-tools--read-buffer-resource (uri range)
   "Read parsed buffer URI with structured RANGE."
@@ -409,9 +424,9 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     (with-current-buffer (get-buffer-create name)
       (erase-buffer)
       (insert content)
-      (append
+       (append
        (list :chars (length content)
-             :saved nil)
+             :saved e-json-false)
        (e-emacs-tools--buffer-metadata (current-buffer))))))
 
 (defun e-emacs-tools--edit-buffer-resource (uri edits)
@@ -421,9 +436,9 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     (with-current-buffer (e-emacs-tools--buffer name)
       (let ((replacements (e-emacs-tools--apply-edits-to-current-buffer
                            normalized-edits)))
-        (append
+         (append
          (list :replacements replacements
-               :saved nil)
+               :saved e-json-false)
          (e-emacs-tools--buffer-metadata (current-buffer)))))))
 
 (defun e-emacs-tools--buffer-read-method ()

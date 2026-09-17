@@ -96,9 +96,8 @@
     (let* ((definitions (e-tools-definitions registry))
            (parameters (plist-get (car definitions) :parameters)))
       (should (equal (plist-get parameters :type) "object"))
-      (should (hash-table-p (plist-get parameters :properties)))
+      (should (null (plist-get parameters :properties)))
       (should-not (plist-get parameters :required))
-      (should (= (hash-table-count (plist-get parameters :properties)) 0))
       (should (equal (car definitions)
                      `(:type "function"
                        :name "noop"
@@ -131,8 +130,7 @@
                             :test #'equal))
            (empty-parameters (plist-get empty :parameters))
            (strict-parameters* (plist-get strict :parameters)))
-      (should (hash-table-p (plist-get empty-parameters :properties)))
-      (should (= (hash-table-count (plist-get empty-parameters :properties)) 0))
+      (should (null (plist-get empty-parameters :properties)))
       (should-not (plist-get empty-parameters :required))
       (should (equal (plist-get strict-parameters* :additionalProperties)
                      :json-false))
@@ -169,7 +167,11 @@
   (should (equal (e-tools-result-content-text "plain")
                  "plain"))
   (should (equal (e-tools-result-content-text '(:ok t :items [1 2]))
-                 "{\"items\":[1,2],\"ok\":true}")))
+                 "{\"ok\":true,\"items\":[1,2]}"))
+  (should (equal (e-tools-result-content-text
+                  '(:empty-object nil :empty-array []
+                    :false :json-false :null :json-null))
+                 "{\"empty-object\":{},\"empty-array\":[],\"false\":false,\"null\":null}")))
 
 (ert-deftest e-tools-test-result-content-preview-bounds-structured-materialization ()
   "Display previews bound traversal without changing model-facing text."
@@ -180,8 +182,8 @@
     (should (<= (plist-get preview :shown-bytes) 64))
     (should-not (string-match-p (make-string 80 ?x)
                                 (plist-get preview :text)))
-    (should (string-match-p (make-string 80 ?x)
-                            (e-tools-result-content-text large)))))
+    (should-error (e-tools-result-content-text large)
+                  :type 'e-tools-invalid-result-content)))
 
 (ert-deftest e-tools-test-missing-tool-returns-structured-error ()
   "Unknown tools return structured error results."
@@ -298,7 +300,7 @@
                      :deadline 42
                      :nested t
                      :parent-tool-call-id "parent-1"
-                     :tool-names ("alpha" "inspect"))))
+                     :tool-names ["alpha" "inspect"])))
     (should-not (plist-member summary :harness))
     (should-not (plist-member summary :tools))
     (should-not (plist-member summary :capabilities))))
@@ -526,6 +528,23 @@
                      :content "tool exploded"
                      :metadata (:error error))))))
 
+(ert-deftest e-tools-test-handler-noncanonical-result-is-a-tool-error ()
+  "A handler cannot leak arbitrary Elisp through structured model content."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-test-register registry
+                           :name "bad-result"
+                           :description "Return a noncanonical object."
+                           :handler (lambda (_arguments)
+                                      '(:kind file)))
+    (let ((result (e-tools-execute-batch
+                   registry
+                   '(:id "call-1" :name "bad-result" :arguments nil))))
+      (should (equal (plist-get result :status) 'error))
+      (should (equal (plist-get (plist-get result :metadata) :error)
+                     'e-tools-invalid-result-content))
+      (should (string-match-p "canonical JSON"
+                              (plist-get result :content))))))
+
 (ert-deftest e-tools-test-handler-quit-returns-structured-results ()
   "Tool handler quits remain structured tool results."
   (let ((registry (e-tools-registry-create))
@@ -609,15 +628,13 @@
               '(:id "outer-1" :name "outer" :arguments nil)
               (list :tools registry))
              :content)
-            '((:name "outer"
+            [(:name "outer"
                :description "Return available tools."
-               :parameters (:type "object" :properties nil)
-               :metadata (:capability test))
+               :parameters (:type "object" :properties nil))
               (:name "inner"
                :description "Inner tool."
                :parameters (:type "object"
-                            :properties (:text (:type "string")))
-               :metadata (:capability nested)))))))
+                            :properties (:text (:type "string"))))]))))
 
 (ert-deftest e-tools-test-call-executes-active-tool-from-context ()
   "Nested tool code can call another active tool and receive its result."
@@ -626,7 +643,12 @@
                       :name "outer"
                       :description "Call inner."
                       :handler (lambda (_arguments)
-                                 (e-tools-call "inner" '(:text "hi"))))
+                                 (let ((result (e-tools-call "inner"
+                                                              '(:text "hi"))))
+                                   (list :tool-name (plist-get result :name)
+                                         :status (symbol-name
+                                                  (plist-get result :status))
+                                         :content (plist-get result :content)))))
     (e-tools-test-register registry
                       :name "inner"
                       :description "Return text."
@@ -639,11 +661,7 @@
               '(:id "outer-1" :name "outer" :arguments nil)
               (list :tools registry))
              :content)
-            '(:tool-call-id "outer-1/nested-1"
-              :name "inner"
-              :status ok
-              :content "HI"
-              :metadata nil)))))
+            '(:tool-name "inner" :status "ok" :content "HI")))))
 
 (ert-deftest e-tools-test-call-rejects-long-nested-tool-without-executor ()
   "Default nested calls fail fast for long-class tools."
@@ -653,7 +671,10 @@
                       :name "outer"
                       :description "Call long inner."
                       :handler (lambda (_arguments)
-                                 (e-tools-call "inner" nil)))
+                                 (let ((result (e-tools-call "inner" nil)))
+                                   (list :status (symbol-name
+                                                  (plist-get result :status))
+                                         :message (plist-get result :content)))))
     (e-tools-test-register registry
                       :name "inner"
                       :description "Long async inner."
@@ -669,12 +690,8 @@
               '(:id "outer-1" :name "outer" :arguments nil)
               (list :tools registry))
              :content)
-            '(:tool-call-id "outer-1/nested-1"
-              :name "inner"
-              :status error
-              :content "Nested tool inner is process-class and cannot run synchronously inside another tool; call it as a top-level tool instead."
-              :metadata (:error e-tools-nested-long-tool-rejected
-                         :blocking-class process))))
+            '(:status "error"
+              :message "Nested tool inner is process-class and cannot run synchronously inside another tool; call it as a top-level tool instead.")))
     (should-not started)))
 
 (ert-deftest e-tools-test-call-bang-returns-content-or-signals-tool-error ()
@@ -689,7 +706,12 @@
                               :error (condition-case err
                                          (e-tools-call! "missing" nil)
                                        (e-tools-nested-tool-error
-                                        (cadr err))))))
+                                        (let ((result (cadr err)))
+                                          (list :name (plist-get result :name)
+                                                :status (symbol-name
+                                                         (plist-get result :status))
+                                                :content (plist-get result :content)
+                                                :error "e-tool-missing")))))))
     (e-tools-test-register registry
                       :name "inner"
                       :description "Return text."
@@ -703,11 +725,10 @@
               (list :tools registry))
              :content)
             '(:ok "hi"
-              :error (:tool-call-id "outer-1/nested-2"
-                      :name "missing"
-                      :status error
+              :error (:name "missing"
+                      :status "error"
                       :content "Unknown tool: missing"
-                      :metadata (:error e-tool-missing)))))))
+                      :error "e-tool-missing"))))))
 
 (ert-deftest e-tools-test-call-rejects-recursive-self-call-by-default ()
   "Nested calls reject accidental recursion into the current tool."
@@ -738,9 +759,11 @@
                       (lambda (arguments)
                         (if (plist-get arguments :inner)
                             "inner"
-                          (e-tools-call "outer"
-                                        '(:inner t)
-                                        '(:allow-recursive t)))))
+                          (let ((result (e-tools-call
+                                         "outer"
+                                         '(:inner t)
+                                         '(:allow-recursive t))))
+                            (plist-get result :content)))))
     (should
      (equal (plist-get
              (e-tools-test--execute-with-context
@@ -748,11 +771,7 @@
               '(:id "outer-1" :name "outer" :arguments nil)
               (list :tools registry))
              :content)
-            '(:tool-call-id "outer-1/nested-1"
-              :name "outer"
-              :status ok
-              :content "inner"
-              :metadata nil)))))
+            "inner"))))
 
 (ert-deftest e-tools-test-call-enforces-default-nested-budget ()
   "Nested tool calls are bounded by the context budget."
@@ -808,58 +827,8 @@
     (should (equal (plist-get (plist-get inner-context :tool-call) :id)
                    "outer-1/nested-1"))))
 
-(ert-deftest e-tools-test-coerce-arguments-reparses-stringified-nested ()
-  "Schema-typed object/array arguments arriving as JSON strings are reparsed.
-
-Providers that JSON-stringify nested tool arguments (notably Bedrock) deliver
-object- and array-typed arguments as strings.  The coercion parses them back to
-data, keyed off the declared schema type, and leaves scalars and already-typed
-values untouched."
-  (let ((schema '(:type "object"
-                  :properties (:uri (:type "string")
-                               :edits (:type "array")
-                               :range (:type "object")))))
-    ;; A stringified array decodes to a list.
-    (should (equal (e-tools--coerce-arguments
-                    '(:uri "file://x"
-                      :edits "[{\"oldText\": \"a\", \"newText\": \"b\"}]")
-                    schema)
-                   '(:uri "file://x"
-                     :edits ((:oldText "a" :newText "b")))))
-    ;; A stringified object decodes to a plist.
-    (should (equal (e-tools--coerce-arguments
-                    '(:uri "file://x" :range "{\"start\": 1, \"end\": 2}")
-                    schema)
-                   '(:uri "file://x" :range (:start 1 :end 2))))
-    ;; Well-formed data passes through unchanged.
-    (should (equal (e-tools--coerce-arguments
-                    '(:uri "file://x" :edits ((:oldText "a" :newText "b")))
-                    schema)
-                   '(:uri "file://x" :edits ((:oldText "a" :newText "b")))))))
-
-(ert-deftest e-tools-test-coerce-arguments-does-not-recurse-on-invalid-json ()
-  "A schema-typed string that is not valid JSON is left unchanged.
-
-A truncated or otherwise malformed array/object argument cannot be reparsed;
-`e-tools--reparse-json-string' returns it unchanged.  Re-coercing the identical
-string would recurse until `max-lisp-eval-depth' and abort the turn, so coercion
-must stop when reparsing makes no progress."
-  (let ((schema '(:type "object"
-                  :properties (:edits (:type "array")))))
-    ;; Invalid JSON (unterminated array) passes through untouched instead of
-    ;; recursing forever.
-    (should (equal (e-tools--coerce-arguments
-                    '(:edits "[{\"oldText\": \"a\", ")
-                    schema)
-                   '(:edits "[{\"oldText\": \"a\", ")))))
-
 (ert-deftest e-tools-test-start-malformed-argument-fails-as-tool-result ()
-  "A malformed argument yields a tool-error result, not a turn abort.
-
-Argument coercion runs inside the guarded region of `e-tools-start', so a value
-that cannot be coerced (or a handler that throws) settles the call through the
-error path and reaches `on-done' as a structured error result rather than
-signalling out of the loop."
+  "A noncanonical argument yields a tool-error result, not a turn abort."
   (let ((registry (e-tools-registry-create))
         result)
     (e-tools-test-register registry
@@ -885,14 +854,69 @@ signalling out of the loop."
     (should result)
     (should (eq (plist-get result :status) 'error))))
 
-(ert-deftest e-tools-test-coerce-arguments-preserves-json-valued-strings ()
-  "A schema-declared string is never reparsed, even when it holds valid JSON."
-  (let ((schema '(:type "object"
-                  :properties (:content (:type "string")))))
-    (should (equal (e-tools--coerce-arguments
-                    '(:content "{\"not\": \"reparsed\"}")
-                    schema)
-                   '(:content "{\"not\": \"reparsed\"}")))))
+(ert-deftest e-tools-test-register-rejects-noncanonical-schemas ()
+  "Registration rejects alternate object and array containers in schemas."
+  (let ((registry (e-tools-registry-create))
+        (work (e-tools-cheap-work "test.schema" (lambda (_arguments) "ok"))))
+    (dolist (schema (list '(:type "object" :properties ((:text . (:type "string"))))
+                       '(:type "object" :properties #s(hash-table test equal data ()))
+                       '(:type "object" :properties (:items (:type "array" :items ((:type "string")))))))
+      (should-error
+       (e-tools-register registry :name "invalid" :description "Invalid."
+                         :parameters schema :work work)
+       :type 'e-tools-invalid-definition))))
+
+(ert-deftest e-tools-test-prepare-call-rejects-noncanonical-json-shapes ()
+  "Dispatch rejects list arrays, stringified objects, and hash objects."
+  (let ((registry (e-tools-registry-create)))
+    (e-tools-test-register
+     registry :name "inspect" :description "Inspect input."
+     :parameters (list :type "object"
+                       :properties
+                       (list :items (list :type "array"
+                                           :items '(:type "object"
+                                                    :properties (:value
+                                                                 (:type "string"))))
+                             :object '(:type "object"
+                                       :properties (:value (:type "string")))))
+     :handler (lambda (_arguments) "ok"))
+    (let ((hash (make-hash-table :test 'equal)))
+      (puthash "value" "x" hash)
+      (dolist (arguments (list '(:items ((:value "x")))
+                              '(:items "[{\"value\":\"x\"}]")
+                              (list :object hash)))
+        (should-error
+         (e-tools-prepare-call
+          registry (list :id "call-1" :name "inspect" :arguments arguments))
+         :type 'e-tools-invalid-arguments)))))
+
+(ert-deftest e-tools-test-start-preserves-canonical-arguments-for-dispatch ()
+  "A provider-decoded canonical argument reaches the handler unchanged."
+  (let* ((registry (e-tools-registry-create))
+         seen
+         (arguments '(:items [(:value "x" :missing :json-null)]
+                      :object (:value "y" :empty [] :false :json-false)))
+         (schema (list :type "object"
+                       :properties
+                       (list :items (list :type "array"
+                                           :items (list :type "object"
+                                                         :properties
+                                                         (list :value
+                                                               '(:type "string")
+                                                               :missing
+                                                               '(:type "null"))))
+                             :object (list :type "object"
+                                           :properties
+                                           (list :value '(:type "string")
+                                                 :empty '(:type "array")
+                                                 :false '(:type "boolean")))))))
+    (e-tools-test-register
+     registry :name "inspect" :description "Capture canonical input."
+     :parameters schema
+     :handler (lambda (value) (setq seen value) "ok"))
+    (e-tools-execute-batch
+     registry (list :id "call-1" :name "inspect" :arguments arguments))
+    (should (equal seen arguments))))
 
 (ert-deftest e-tools-test-prepare-call-validates-supported-schema-keywords ()
   "Runtime validation covers compact consumer schemas before dispatch."
@@ -938,24 +962,6 @@ signalling out of the loop."
        (e-tools-prepare-call
         registry (list :id "call-1" :name "compact" :arguments arguments))
        :type 'e-tools-invalid-arguments))))
-
-(ert-deftest e-tools-test-start-coerces-stringified-arguments-before-dispatch ()
-  "Tool handlers receive schema-typed data even from stringifying providers."
-  (let ((registry (e-tools-registry-create))
-        seen)
-    (e-tools-test-register registry
-                      :name "edit"
-                      :description "Capture edits."
-                      :parameters '(:type "object"
-                                    :properties (:edits (:type "array")))
-                      :handler (lambda (arguments)
-                                 (setq seen (plist-get arguments :edits))
-                                 "ok"))
-    (e-tools-execute-batch
-     registry
-     '(:id "call-1" :name "edit"
-       :arguments (:edits "[{\"oldText\": \"a\", \"newText\": \"b\"}]")))
-    (should (equal seen '((:oldText "a" :newText "b"))))))
 
 (provide 'e-tools-test)
 

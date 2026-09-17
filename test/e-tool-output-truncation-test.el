@@ -352,7 +352,7 @@
              result
              (e-tool-output-truncation-test--context harness))))
       (should (plist-get (plist-get truncated :metadata) :truncated))
-      (should (string-prefix-p "{\"items\"" (plist-get truncated :content))))))
+      (should (string-prefix-p "{\"ok\":true" (plist-get truncated :content))))))
 
 (ert-deftest e-tool-output-truncation-test-already-truncated-result-is-unchanged ()
   "Already truncated results are not truncated a second time."

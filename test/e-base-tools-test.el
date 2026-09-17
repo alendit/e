@@ -238,7 +238,7 @@ sleep 5
                    :content)
                   '(:resources [(:uri "file://lisp/core/e-resources.el"
                                   :name "core/e-resources.el"
-                                 :kind file
+                                 :kind "file"
                                  :metadata (:bytes 5))]
                     :truncated nil)))
           (should
@@ -250,7 +250,7 @@ sleep 5
                    :content)
                   '(:resources [(:uri "file://lisp/core/notes.txt"
                                   :name "notes.txt"
-                                  :kind file
+                                  :kind "file"
                                   :metadata (:bytes 6))]
                     :truncated nil)))
           (should
@@ -272,7 +272,7 @@ sleep 5
                    :content)
                   '(:resources [(:uri "file://lisp/core/literal[abc].txt"
                                   :name "literal[abc].txt"
-                                  :kind file
+                                  :kind "file"
                                   :metadata (:bytes 8))]
                     :truncated nil)))
           (should
@@ -284,7 +284,7 @@ sleep 5
                    :content)
                   '(:resources [(:uri "file://z.txt"
                                   :name "z.txt"
-                                  :kind file
+                                  :kind "file"
                                   :metadata (:bytes 5))]
                     :truncated nil)))
           (let* ((content (plist-get
@@ -385,7 +385,7 @@ sleep 5
             :search (lambda (request)
                       (list :matches (vector (list :uri (plist-get request :uri)
                                                    :query (plist-get request :query)
-                                                   :provider 'test-scope))
+                                                   :provider "test-scope"))
                             :truncated nil))))
           (let ((matches (plist-get
                           (plist-get
@@ -398,7 +398,7 @@ sleep 5
                            :content)
                           :matches)))
             (should (= (length matches) 1))
-            (should (eq (plist-get (aref matches 0) :provider) 'test-scope))
+            (should (equal (plist-get (aref matches 0) :provider) "test-scope"))
             (should (equal (plist-get (aref matches 0) :query) "needle"))))
       (e-search-providers-reset)
       (delete-directory directory t))))
@@ -611,8 +611,8 @@ sleep 5
                          "resource_sync_status"
                          (list :uri (concat "file://" sec-file)))))
             (should (equal (plist-get status :status) 'ok))
-            (should (eq (plist-get (plist-get status :content) :status)
-                        'coherent))
+            (should (equal (plist-get (plist-get status :content) :status)
+                           "coherent"))
             (should (plist-get (plist-get status :content) :disk-exists)))
           (dolist (call (list (list registry
                                     "glob"
@@ -689,8 +689,8 @@ sleep 5
                          registry
                          "edit"
                          '(:uri "file://sample.txt"
-                           :edits ((:oldText "alpha" :newText "ALPHA")
-                                   (:oldText "gamma" :newText "GAMMA"))))))
+                           :edits [(:oldText "alpha" :newText "ALPHA")
+                                   (:oldText "gamma" :newText "GAMMA")]))))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (plist-get (plist-get result :content) :replacements)
                            2))
@@ -714,7 +714,7 @@ sleep 5
                          registry
                          "edit"
                          '(:uri "file://sample.txt"
-                           :edits ((:oldText "after" :newText "done"))))))
+                           :edits [(:oldText "after" :newText "done")]))))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (with-temp-buffer
                              (let ((coding-system-for-read 'utf-8))
@@ -732,16 +732,16 @@ sleep 5
         (progn
           (write-region "alpha beta beta gamma" nil file nil 'silent)
           (dolist (case '(("missing" (:uri "file://sample.txt"
-                                     :edits ((:oldText "missing" :newText "x"))))
+                                     :edits [(:oldText "missing" :newText "x")]))
                           ("unique" (:uri "file://sample.txt"
-                                    :edits ((:oldText "beta" :newText "x"))))
+                                    :edits [(:oldText "beta" :newText "x")]))
                           ("empty" (:uri "file://sample.txt"
-                                   :edits ((:oldText "" :newText "x"))))
+                                   :edits [(:oldText "" :newText "x")]))
                           ("overlap" (:uri "file://sample.txt"
-                                     :edits ((:oldText "alpha beta" :newText "x")
-                                             (:oldText "beta beta" :newText "y"))))
+                                     :edits [(:oldText "alpha beta" :newText "x")
+                                             (:oldText "beta beta" :newText "y")]))
                           ("No changes" (:uri "file://sample.txt"
-                                        :edits ((:oldText "alpha" :newText "alpha"))))))
+                                        :edits [(:oldText "alpha" :newText "alpha")]))))
             (let ((result (e-base-tools-test--execute registry "edit" (cadr case))))
               (should (equal (plist-get result :status) 'error))
               (should (string-match-p (car case) (plist-get result :content))))))
@@ -758,7 +758,7 @@ sleep 5
                        registry
                        "edit"
                        '(:uri "file://nested/file.txt"
-                         :edits ((:oldText "old" :newText "new"))))))
+                         :edits [(:oldText "old" :newText "new")]))))
           (should (equal (plist-get result :status) 'error))
           (should (string-match-p "File is not readable"
                                   (plist-get result :content)))
@@ -891,8 +891,8 @@ the user when the buffer's coding could not encode the new content."
           (let ((status (e-base-tools-test--execute
                          status-registry "resource_sync_status"
                          '(:uri "file://sample.txt"))))
-            (should (eq (plist-get (plist-get status :content) :status)
-                        'stale)))
+            (should (equal (plist-get (plist-get status :content) :status)
+                           "stale")))
           (let ((result (e-base-tools-test--execute
                          registry "write"
                          '(:uri "file://sample.txt" :content "new"))))
@@ -923,8 +923,8 @@ the user when the buffer's coding could not encode the new content."
           (let ((result (e-base-tools-test--execute
                          registry "edit"
                          '(:uri "file://sample.txt"
-                           :edits ((:oldText "disk"
-                                    :newText "new"))))))
+                           :edits [(:oldText "disk"
+                                    :newText "new")]))))
             (should (equal (plist-get result :status) 'error))
             (should (string-match-p "stale"
                                     (plist-get result :content)))
@@ -1047,16 +1047,16 @@ content, and it must return in well under the wall-clock a full diff would take.
                          registry "resource_sync_status"
                          '(:uri "file://sample.txt"))))
             (should (equal (plist-get result :status) 'ok))
-            (should (eq (plist-get (plist-get result :content) :status)
-                        'needs-save)))
+            (should (equal (plist-get (plist-get result :content) :status)
+                           "needs-save")))
           (with-current-buffer buffer
             (set-buffer-modified-p nil))
           (write-region "disk changed" nil file nil 'silent)
           (let ((result (e-base-tools-test--execute
                          registry "resource_sync_status"
                          '(:uri "file://sample.txt"))))
-            (should (eq (plist-get (plist-get result :content) :status)
-                        'stale))
+            (should (equal (plist-get (plist-get result :content) :status)
+                           "stale"))
             (should (plist-get (plist-get result :content) :disk-exists))
             (should-not (plist-member (plist-get result :content)
                                       :disk-readable))))
@@ -1147,8 +1147,8 @@ picker."
                           "bash"
                           '(:command "printf ok"
                             :resource_usage
-                            (:resources ((:uri "file://notes.org"
-                                          :operation read))
+                            (:resources [(:uri "file://notes.org"
+                                          :operation "read")]
                              :summary "checked notes"))))
                  (metadata (plist-get result :metadata)))
             (should (equal (plist-get result :status) 'ok))

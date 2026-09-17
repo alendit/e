@@ -1222,7 +1222,7 @@ schedules it behind the owning session's active commit barrier."
                                          (setq archival-call archival
                                                archival-rejected-p t
                                                archival-received-arguments
-                                               (e-tools--copy-schema-value
+                                               (e-tools--copy-canonical-value
                                                 (plist-get archival :arguments)))
                                          (let ((rejected
                                                 (e-tools-project-call-for-rejection

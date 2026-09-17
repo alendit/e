@@ -37,20 +37,6 @@
         (setq options (cons (plist-get arguments key)
                             (cons key options)))))))
 
-(defun e-operations--coerce-edits (edits)
-  "Return EDITS normalized to a list of edit plists.
-
-Some models send a single edit object instead of a one-element array; wrap a
-lone edit object (a plist bearing `:oldText') into a single-item list.  A
-well-formed list is returned unchanged.
-
-Stringified arguments are not handled here.  Providers that JSON-stringify
-nested tool arguments (notably Bedrock) are reparsed against the tool schema in
-`e-tools--coerce-arguments' before dispatch, so `edits' arrives as data."
-  (if (and (listp edits) (plist-member edits :oldText))
-      (list edits)
-    edits))
-
 (defconst e-operation-read
   (e-operation-create
    :id 'read
@@ -120,8 +106,7 @@ nested tool arguments (notably Bedrock) are reparsed against the tool schema in
    :dispatch (lambda (call arguments)
                (funcall call
                         (e-operations--argument-string arguments :uri)
-                        (e-operations--coerce-edits
-                         (plist-get arguments :edits))))))
+                        (plist-get arguments :edits)))))
 
 (defconst e-operation-glob
   (e-operation-create

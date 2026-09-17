@@ -606,6 +606,22 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
         :kind 'file
         :metadata (e-base-tools-file--file-metadata absolute query-metadata)))
 
+(defun e-base-tools-file--model-file-result (resource)
+  "Project internal file RESOURCE into a canonical model result.
+Discovery keeps adapter-owned symbols and time values while it sorts and
+filters.  The model-facing projection names those values explicitly and
+retains only JSON-compatible metadata."
+  (let* ((metadata (plist-get resource :metadata))
+         (model-metadata (list :bytes (plist-get metadata :bytes)))
+         (updated-at (plist-get metadata :updated-at)))
+    (when (or (numberp updated-at) (consp updated-at))
+      (setq model-metadata
+            (plist-put model-metadata :updated-at (float-time updated-at))))
+    (list :uri (plist-get resource :uri)
+          :name (plist-get resource :name)
+          :kind "file"
+          :metadata model-metadata)))
+
 (defun e-base-tools-file--file-query-field-functions ()
   "Return file:// resource query field functions."
   `(("name" . ,(lambda (resource) (plist-get resource :name)))
@@ -667,7 +683,9 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                (queried (e-base-tools-file--file-apply-query
                          resources sort-by sort-order created-after created-before
                          updated-after updated-before)))
-          (list :resources (vconcat queried)
+          (list :resources
+                (vconcat (mapcar #'e-base-tools-file--model-file-result
+                                 queried))
                 :truncated nil))
       (let* ((lines (e-base-tools-file--process-lines
                      (e-base-tools-file--find-executable "fd" '("fdfind"))
@@ -709,7 +727,9 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                        updated-after updated-before))
              (truncated (> (length queried) actual-limit))
              (selected (seq-take queried actual-limit)))
-        (list :resources (vconcat selected)
+        (list :resources
+              (vconcat (mapcar #'e-base-tools-file--model-file-result
+                               selected))
 	      :truncated truncated)))))
 
 (defun e-base-tools-file--file-glob-content
@@ -734,7 +754,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                      (attributes (file-attributes absolute)))
                 (list :uri (concat "file://" relative)
                       :name (e-base-tools-file--file-result-name absolute scope)
-                      :kind 'file
+                      :kind "file"
                       :metadata (list :bytes (file-attribute-size attributes)))))
             selected))
           :truncated truncated)))
@@ -757,7 +777,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
              (metadata (list :operation 'glob :scheme "file")))
         (e-resource-pattern-compile-glob actual-pattern)
         (if (file-regular-p scope)
-            (list :immediate
+                  (list :immediate
                   (list :resources
                         (if-let ((single
                                   (e-base-tools-file--file-glob-single-result
@@ -766,7 +786,8 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                                    actual-pattern
                                    actual-case-sensitive
                                    advanced)))
-                            (vector single)
+                            (vector (e-base-tools-file--model-file-result
+                                     single))
                           [])
                         :truncated nil)
                   :metadata metadata)
@@ -1167,25 +1188,102 @@ result plist; otherwise return nil so the caller runs the default backend."
   (with-current-buffer buffer
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun e-base-tools-file--model-symbol (value)
+  "Project domain symbol VALUE to its model-facing string."
+  (if (symbolp value) (symbol-name value) value))
+
+(defun e-base-tools-file--model-bool (value)
+  "Project domain boolean VALUE to the canonical JSON boolean values."
+  (if value t e-json-false))
+
+(defun e-base-tools-file--model-coherence-metadata (metadata)
+  "Project known coherence METADATA into a canonical object."
+  (let (result)
+    (dolist (key '(:name :file))
+      (when (stringp (plist-get metadata key))
+        (setq result (append result (list key (plist-get metadata key))))))
+    (when (plist-member metadata :modified)
+      (setq result (append result
+                           (list :modified
+                                 (e-base-tools-file--model-bool
+                                  (plist-get metadata :modified))))))
+    (when (plist-member metadata :visible)
+      (setq result (append result
+                           (list :visible
+                                 (e-base-tools-file--model-bool
+                                  (plist-get metadata :visible))))))
+    (when (plist-member metadata :selected-window)
+      (setq result (append result
+                           (list :selected-window
+                                 (e-base-tools-file--model-bool
+                                  (plist-get metadata :selected-window))))))
+    (when (stringp (plist-get metadata :disk-error))
+      (setq result (append result
+                           (list :disk-error (plist-get metadata :disk-error)))))
+    result))
+
+(defun e-base-tools-file--model-coherence-view (view)
+  "Project coherence VIEW into a canonical model object."
+  (let ((result (list :uri (plist-get view :uri)
+                      :canonical-uri (plist-get view :canonical-uri)
+                      :label (plist-get view :label)
+                      :kind (e-base-tools-file--model-symbol
+                             (plist-get view :kind))
+                      :role (e-base-tools-file--model-symbol
+                             (plist-get view :role))
+                      :status (e-base-tools-file--model-symbol
+                               (plist-get view :status))
+                      :modified (e-base-tools-file--model-bool
+                                 (plist-get view :modified))
+                      :live (e-base-tools-file--model-bool
+                             (plist-get view :live))
+                      :visible (e-base-tools-file--model-bool
+                                (plist-get view :visible))
+                      :selected-window (e-base-tools-file--model-bool
+                                        (plist-get view :selected-window))
+                      :priority (or (plist-get view :priority) 0))))
+    (plist-put result :metadata
+               (e-base-tools-file--model-coherence-metadata
+                (plist-get view :metadata)))))
+
 (defun e-base-tools-file--sync-status-group->result (group)
   "Return model-facing sync status RESULT for generic coherence GROUP."
-  (let ((group (e-resource-coherence-group-with-status group)))
-    (append
-     (list :uri (plist-get group :subject-uri)
-           :canonical-uri (plist-get group :canonical-uri)
-           :status (plist-get group :status)
-           :views (e-resource-coherence-group-views group))
-     (when-let ((file (plist-get (plist-get group :metadata) :file)))
-       (list :file file
-             :disk-exists (file-exists-p file)
-             :disk-error (plist-get (plist-get group :metadata) :disk-error)
-             :buffers (mapcar (lambda (view)
-                                (append (copy-sequence
-                                         (plist-get view :metadata))
-                                        (list :status
-                                              (plist-get view :status))))
-                              (e-resource-coherence-views-by-kind
-                               group 'buffer)))))))
+  (let* ((group (e-resource-coherence-group-with-status group))
+         (metadata (plist-get group :metadata))
+         (result (list :uri (plist-get group :subject-uri)
+                       :canonical-uri (plist-get group :canonical-uri)
+                       :status (e-base-tools-file--model-symbol
+                                (plist-get group :status))
+                       :views (vconcat
+                               (mapcar #'e-base-tools-file--model-coherence-view
+                                       (e-resource-coherence-group-views group))))))
+    (when-let ((file (plist-get metadata :file)))
+      (setq result
+            (append result
+                    (list :file file
+                          :disk-exists
+                          (e-base-tools-file--model-bool
+                           (file-exists-p file))
+                          :buffers
+                          (vconcat
+                           (mapcar
+                            (lambda (view)
+                              (let ((view (e-base-tools-file--model-coherence-view
+                                           view)))
+                                (list :name (plist-get view :label)
+                                      :file file
+                                      :status (plist-get view :status)
+                                      :modified (plist-get view :modified)
+                                      :visible (plist-get view :visible)
+                                      :selected-window
+                                      (plist-get view :selected-window))))
+                            (e-resource-coherence-views-by-kind
+                             group 'buffer)))))))
+      (when (stringp (plist-get metadata :disk-error))
+        (setq result
+              (append result
+                      (list :disk-error (plist-get metadata :disk-error)))))
+    result))
 
 (defun e-base-tools-file--sync-status-for-uri (uri directory)
   "Return generic linked-resource coherence status for parsed URI in DIRECTORY."
@@ -1324,11 +1422,11 @@ result plist; otherwise return nil so the caller runs the default backend."
     value))
 
 (defun e-base-tools-file--normalize-edits (edits)
-  "Return normalized EDITS for exact replacement."
-  (unless (and (listp edits) edits)
+  "Project canonical EDITS array into internal replacement records."
+  (unless (and (vectorp edits) (> (length edits) 0))
     (signal 'e-base-tools-edit-invalid
             '("edits must contain at least one replacement")))
-  (cl-loop for edit in edits
+  (cl-loop for edit across edits
            collect (let ((old-text (e-base-tools-file--edit-field edit :oldText))
                          (new-text (e-base-tools-file--edit-field edit :newText)))
                      (list :old-text (e-base-tools-file--normalize-line-endings old-text)

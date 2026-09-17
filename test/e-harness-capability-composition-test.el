@@ -372,7 +372,7 @@
            (parameters (plist-get tool :parameters)))
       (should tool)
       (should (equal (plist-get parameters :type) "object"))
-      (should (hash-table-p (plist-get parameters :properties)))
+      (should (null (plist-get parameters :properties)))
       (should (equal tool
                      `(:type "function"
                        :name "noop"

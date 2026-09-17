@@ -122,6 +122,49 @@
     (should-error (e-json-serialize value)
                   :type 'e-json-error)))
 
+(ert-deftest e-json-test-schema-validates-canonical-values-without-reshaping ()
+  "The shared schema subset validates nested canonical values unchanged."
+  (let* ((schema '(:type "object"
+                   :properties (:name (:type "string" :minLength 1)
+                                :enabled (:type "boolean")
+                                :sections (:type "array"
+                                            :items (:type "object"
+                                                    :required ["title"]
+                                                    :properties
+                                                    (:title (:type "string")
+                                                     :gaps (:type "array"
+                                                            :items (:type "null"))))))
+                   :required ["name" "sections"]
+                   :additionalProperties :json-false))
+         (value '(:name "Daily"
+                  :enabled :json-false
+                  :sections [(:title "one" :gaps [:json-null])])))
+    (should (eq (e-json-schema-assert value schema) value))
+    (should (e-json-schema-value-p value schema))
+    (should (e-json-schema-value-p '(:name "Daily" :sections [] ) schema))
+    (dolist (invalid (list '(:sections [])
+                           '(:name "" :sections [])
+                           '(:name "Daily" :sections [(:gaps [])])
+                           '(:name "Daily" :sections [] :extra t)))
+      (should-error (e-json-schema-assert invalid schema)
+                    :type 'e-json-schema-error))
+    (should-error (e-json-schema-assert
+                   '(:name "Daily" :sections ((:title "one")))
+                   schema)
+                  :type 'e-json-error)))
+
+(ert-deftest e-json-test-schema-rejects-noncanonical-schema-shapes ()
+  "Schema objects and arrays use the same strict canonical representation."
+  (let ((hash (make-hash-table :test 'equal)))
+    (dolist (schema (list '(:type "object" :properties ((:name . (:type "string"))))
+                         '(:type "object" :properties #s(hash-table test equal data ()))
+                         '(:type "array" :items ((:type "string")))
+                         '(:type "object" :required ("name"))
+                         '(:type "object" :unknown t)
+                         (list :type "object" :properties hash)))
+      (should-error (e-json-schema-assert-schema schema)
+                    :type 'e-json-error))))
+
 (provide 'e-json-test)
 
 ;;; e-json-test.el ends here

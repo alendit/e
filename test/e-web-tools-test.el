@@ -93,18 +93,18 @@ JSON
           (should (equal (plist-get content :backend) "bx"))
           (should (equal (plist-get content :query) "emacs agents"))
           (should (equal (plist-get content :results)
-                         '((:rank 1
+                         [(:rank 1
                             :title "One"
                             :url "https://example.com/one"
                             :snippet "First snippet"
                             :source "Example"
                             :date "May 23, 2026")
-                           (:rank 2
-                            :title "Two"
-                            :url "https://example.org/two"
-                            :snippet "Second snippet"
-                            :source "Example Org"
-                            :date "2026-05-22"))))
+                          (:rank 2
+                           :title "Two"
+                           :url "https://example.org/two"
+                           :snippet "Second snippet"
+                           :source "Example Org"
+                           :date "2026-05-22")]))
           (should (plist-get content :raw)))
       (delete-directory directory t))))
 
@@ -207,18 +207,18 @@ JSON
         (should (equal (plist-get content :content_type)
                        "text/html; charset=utf-8"))
         (should (equal (plist-get content :headers)
-                       '((:name "content-type"
+                       [(:name "content-type"
                           :value "text/html; charset=utf-8")
-                         (:name "set-cookie" :value "first=1")
-                         (:name "set-cookie" :value "second=2"))))
+                        (:name "set-cookie" :value "first=1")
+                        (:name "set-cookie" :value "second=2")]))
         (should (string-match-p "Example Title" (plist-get content :text)))
         (should (string-match-p "Hello" (plist-get content :text)))
         (should-not (string-match-p "ignored" (plist-get content :text)))
         (should (string-match-p "# Example Title"
                                 (plist-get content :markdown)))
         (should (equal (plist-get content :links)
-                       '((:text "Next page"
-                          :url "https://example.com/next"))))
+                       [(:text "Next page"
+                         :url "https://example.com/next")]))
         (should (string-match-p "<html>" (plist-get content :html)))
         (should-not (plist-get (plist-get content :diagnostics)
                                :truncated))))))

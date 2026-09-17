@@ -192,7 +192,7 @@ and optional range."
   (append
    (list :uri (e-store-entry-uri entry)
          :name (e-store--entry-name entry root-address)
-         :kind 'resource)
+         :kind "resource")
    (when-let ((metadata (e-store-entry-metadata entry)))
      (list :metadata (copy-sequence metadata)))))
 

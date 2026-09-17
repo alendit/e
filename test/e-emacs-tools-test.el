@@ -22,6 +22,7 @@
 (require 'e-emacs-capabilities)
 (require 'e-emacs-tools)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -122,7 +123,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                                         :limit 5)))
                          :content))
                (resources (append (plist-get content :resources) nil)))
-          (should (equal (plist-get content :truncated) nil))
+          (should (eq (plist-get content :truncated) e-json-false))
           (should (equal (mapcar (lambda (entry)
                                    (plist-get entry :uri))
                                  resources)
@@ -161,7 +162,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                                 :score 1409
                                 :matched-terms ["needle"]
                                 :rank 1)]
-                    :truncated nil)))
+                                :truncated :json-false)))
           (should
            (equal (plist-get
                    (e-tools-execute-batch
@@ -181,7 +182,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                                 :score 1418
                                 :matched-terms ["needle" "again"]
                                 :rank 1)]
-                    :truncated nil))))
+                                :truncated :json-false))))
       (kill-buffer alpha)
       (kill-buffer beta))))
 
@@ -205,7 +206,7 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                            "new text"))
             (should (buffer-modified-p buffer))
             (let ((content (plist-get result :content)))
-              (should-not (plist-get content :saved))
+              (should (eq (plist-get content :saved) e-json-false))
               (should (plist-get content :modified))
               (should (plist-get content :file-backed))
               (should (equal (plist-get content :file)
@@ -233,10 +234,10 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                            "created text"))
             (should-not (with-current-buffer buffer buffer-file-name))
             (let ((content (plist-get result :content)))
-              (should-not (plist-get content :saved))
+              (should (eq (plist-get content :saved) e-json-false))
               (should (plist-get content :modified))
-              (should-not (plist-get content :file-backed))
-              (should-not (plist-get content :file)))))
+              (should (eq (plist-get content :file-backed) e-json-false))
+              (should (eq (plist-get content :file) e-json-null)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -253,16 +254,16 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                          `(:id "call-1"
                            :name "edit"
                            :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
-                                      :edits ((:oldText "beta"
-                                               :newText "delta")))))))
+                                      :edits [(:oldText "beta"
+                                               :newText "delta")])))))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (with-current-buffer buffer (buffer-string))
                            "alpha delta gamma"))
             (let ((content (plist-get result :content)))
-              (should-not (plist-get content :saved))
+              (should (eq (plist-get content :saved) e-json-false))
               (should (plist-get content :modified))
-              (should-not (plist-get content :file-backed))
-              (should-not (plist-get content :file)))))
+              (should (eq (plist-get content :file-backed) e-json-false))
+              (should (eq (plist-get content :file) e-json-null)))))
       (kill-buffer buffer))))
 
 (ert-deftest e-emacs-tools-test-edit-buffer-rejects-invalid-replacements ()
@@ -279,8 +280,8 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                            `(:id "call-1"
                              :name "edit"
                              :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
-                                        :edits ((:oldText "missing"
-                                                 :newText "x")))))
+                                        :edits [(:oldText "missing"
+                                                 :newText "x")])))
                           :status)
                          'error))
           (should (equal (plist-get
@@ -289,8 +290,8 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                            `(:id "call-2"
                              :name "edit"
                              :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
-                                        :edits ((:oldText "beta"
-                                                 :newText "x")))))
+                                        :edits [(:oldText "beta"
+                                                 :newText "x")])))
                           :status)
                          'error))
           (should (equal (plist-get
@@ -299,8 +300,8 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                            `(:id "call-3"
                              :name "edit"
                              :arguments (:uri ,(concat "buffer://" (buffer-name buffer))
-                                        :edits ((:oldText "alpha"
-                                                 :newText "alpha")))))
+                                        :edits [(:oldText "alpha"
+                                                 :newText "alpha")])))
                           :status)
                          'error)))
       (kill-buffer buffer))))
@@ -314,8 +315,8 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                    `(:id "call-1"
                      :name "edit"
                      :arguments (:uri ,(concat "buffer://" name)
-                                :edits ((:oldText "old"
-                                         :newText "new")))))))
+                                :edits [(:oldText "old"
+                                         :newText "new")])))))
       (should (equal (plist-get result :status) 'error))
       (should (string-match-p "No buffer named"
                               (plist-get result :content)))

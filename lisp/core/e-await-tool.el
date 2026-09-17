@@ -22,6 +22,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-work)
 (require 'e-waitable)
@@ -114,10 +115,35 @@ never serializes or walks an unbounded result on the Emacs main thread."
     (not overflow)))
 
 (defun e-await-tool--inline-or-reference (value ref)
-  "Return VALUE when bounded, otherwise one tombstone referring to REF."
+  "Return canonical VALUE when bounded, otherwise one tombstone for REF."
   (if (e-await-tool--inline-value-p value)
       value
-    (list :omitted t :result-ref ref :reason 'inline-budget-exceeded)))
+    (list :omitted t :result-ref ref :reason "inline-budget-exceeded")))
+
+(defun e-await-tool--model-value (value ref)
+  "Project one work VALUE into canonical model-visible data.
+Canonical values retain their shape.  Tool result envelopes retain only their
+canonical identity/status/content projection; arbitrary subsystem values use
+the explicitly textual bounded preview projector."
+  (cond
+   ((e-tools-result-p value)
+    (e-await-tool--model-value
+     (list :tool-call-id (or (plist-get value :tool-call-id) e-json-null)
+           :name (or (plist-get value :name) e-json-null)
+           :status (if (symbolp (plist-get value :status))
+                       (symbol-name (plist-get value :status))
+                     (or (plist-get value :status) e-json-null))
+           :content (e-await-tool--model-value
+                     (plist-get value :content) ref))
+     ref))
+   ((e-tools-file-content-p value)
+    (list :omitted t :result-ref ref :reason "file-content"))
+   ((e-json-value-p value)
+    (e-await-tool--inline-or-reference value ref))
+   (t
+    (let ((preview (e-tools-result-content-preview
+                    value e-await-tool-max-inline-result-bytes 32 4)))
+      (or (plist-get preview :text) e-json-null)))))
 
 (defun e-await-tool--resolve-references (refs)
   "Resolve every REF in REFS, rejecting the complete request on any failure."
@@ -145,31 +171,44 @@ never serializes or walks an unbounded result on the Emacs main thread."
          (outputs (and (listp result) (plist-get result :outputs))))
     (append
      (list :ref ref
-           :state state
+           :state (if (symbolp state) (symbol-name state) state)
            ;; Surface a subsystem-normalized summary/outputs when the work result
            ;; carries them; otherwise expose the raw result under :result.
-           :summary (e-await-tool--inline-or-reference summary ref)
-           :outputs (e-await-tool--inline-or-reference outputs ref)
-           :result (e-await-tool--inline-or-reference result ref)
-           :error (e-await-tool--inline-or-reference
-                   (plist-get snapshot :error) ref))
+           :summary (or (and summary
+                             (e-await-tool--model-value summary ref))
+                        e-json-null)
+           :outputs (or (and outputs
+                             (e-await-tool--model-value outputs ref))
+                        e-json-null)
+           :result (or (and result
+                            (e-await-tool--model-value result ref))
+                       e-json-null)
+           :error (or (and (plist-get snapshot :error)
+                           (e-await-tool--model-value
+                            (plist-get snapshot :error) ref))
+                      e-json-null))
      (when pending
-       (list :progress (e-await-tool--inline-or-reference progress ref)
-             :progress-sequence (and (listp progress)
-                                     (plist-get progress :sequence))
+       (list :progress (or (and progress
+                                (e-await-tool--model-value progress ref))
+                           e-json-null)
+             :progress-sequence (or (and (listp progress)
+                                         (plist-get progress :sequence))
+                                    e-json-null)
              :progress-age-seconds
              (let ((at (and (listp progress) (plist-get progress :at))))
-               (and (numberp at) (max 0.0 (- (float-time) at)))))))))
+               (if (numberp at)
+                   (max 0.0 (- (float-time) at))
+                 e-json-null)))))))
 
 (defun e-await-tool--report (mode reason pairs)
   "Return the compact await report for MODE, REASON, and frozen PAIRS."
-  (list :settled (eq reason 'complete)
-        :reason reason
-        :mode mode
+  (list :settled (if (eq reason 'complete) t e-json-false)
+        :reason (if (symbolp reason) (symbol-name reason) reason)
+        :mode (if (symbolp mode) (symbol-name mode) mode)
         :results
-        (mapcar (lambda (pair)
-                  (e-await-tool--result-entry (car pair) (cdr pair)))
-                pairs)))
+        (vconcat (mapcar (lambda (pair)
+                          (e-await-tool--result-entry (car pair) (cdr pair)))
+                        pairs))))
 
 (cl-defun e-await-tool--start
     (&key arguments context on-done on-error &allow-other-keys)

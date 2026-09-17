@@ -13,6 +13,7 @@
 
 (require 'ert)
 (require 'e-await-tool)
+(require 'e-json)
 (require 'e-tools)
 (require 'e-waitable)
 (require 'e-work)
@@ -49,6 +50,10 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
      (list :id "call-1" :name "await" :arguments arguments)
      :on-done (lambda (value) (setq result value)))
     result))
+
+(defun e-await-tool-test--first-result (content)
+  "Return the first canonical result entry from CONTENT."
+  (aref (plist-get content :results) 0))
 
 (ert-deftest e-await-tool-test-registered-as-model-facing-tool ()
   "Await is a model-facing tool (unlike the subagents actions)."
@@ -122,10 +127,10 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
             (e-work-finish a '(:summary "done" :outputs [:x]))
             (let ((content (plist-get result :content)))
               (should (plist-get content :settled))
-              (should (eq (plist-get content :reason) 'complete))
-              (let ((entry (car (plist-get content :results))))
+              (should (equal (plist-get content :reason) "complete"))
+              (let ((entry (e-await-tool-test--first-result content)))
                 (should (equal (plist-get entry :ref) "fake:a"))
-                (should (eq (plist-get entry :state) 'finished))
+                (should (equal (plist-get entry :state) "finished"))
                 (should (equal (plist-get entry :summary) "done"))))))
       (e-work-cancel a))))
 
@@ -143,10 +148,11 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
              :on-done (lambda (v) (setq result v)))
             (sleep-for 0.2)
             (let ((content (plist-get result :content)))
-              (should-not (plist-get content :settled))
-              (should (eq (plist-get content :reason) 'timed-out))
-              (should (memq (plist-get (car (plist-get content :results)) :state)
-                            '(started progress))))))
+              (should (eq (plist-get content :settled) e-json-false))
+              (should (equal (plist-get content :reason) "timed-out"))
+              (should (member (plist-get (e-await-tool-test--first-result content)
+                                         :state)
+                              '("started" "progress"))))))
       (e-work-cancel a))))
 
 (ert-deftest e-await-tool-test-unknown-reference-rejects-the-whole-request ()
@@ -230,7 +236,8 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
             (e-work-finish
              handle
              (make-string (1+ e-await-tool-max-inline-result-bytes) ?x))
-            (let* ((entry (car (plist-get (plist-get result :content) :results)))
+            (let* ((entry (e-await-tool-test--first-result
+                           (plist-get result :content)))
                    (reported (plist-get entry :result)))
               (should (plist-get reported :omitted))
               (should (equal (plist-get reported :result-ref) "fake:large")))))
@@ -254,7 +261,8 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
              (e-tools-file-content-create
               :path path :preview "small" :original-bytes 1000000
               :original-lines 1 :preview-bytes 5 :preview-lines 1))
-            (let* ((entry (car (plist-get (plist-get result :content) :results)))
+            (let* ((entry (e-await-tool-test--first-result
+                           (plist-get result :content)))
                    (reported (plist-get entry :result)))
               (should (plist-get reported :omitted))
               (should-not (string-match-p
@@ -283,11 +291,14 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
              '(:id "c" :name "await" :arguments (:refs ["fake:a"] :timeout 0.05))
              :on-done (lambda (value) (setq result value)))
             (sleep-for 0.2)
-            (let ((entry (car (plist-get (plist-get result :content) :results))))
-              (should (eq (plist-get (plist-get result :content) :reason) 'timed-out))
+            (let ((entry (e-await-tool-test--first-result
+                          (plist-get result :content))))
+              (should (equal (plist-get (plist-get result :content) :reason)
+                             "timed-out"))
               (should (= (plist-get entry :progress-sequence) 7))
-              (should (equal (plist-get (plist-get entry :progress) :summary)
-                             "Finished focused ERT"))
+              (should (string-match-p
+                       "Finished focused ERT"
+                       (plist-get entry :progress)))
               (should (numberp (plist-get entry :progress-age-seconds)))
               (should (memq (plist-get (e-work-status handle) :state)
                             '(started progress))))))
@@ -319,8 +330,10 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
                                :sequence 1
                                :event tool-started :summary "Started long build" :at 0.0))
             (let ((first (window)))
-              (should (eq (plist-get (plist-get first :content) :reason) 'timed-out))
-              (should (= (plist-get (car (plist-get (plist-get first :content) :results))
+              (should (equal (plist-get (plist-get first :content) :reason)
+                             "timed-out"))
+              (should (= (plist-get (e-await-tool-test--first-result
+                                     (plist-get first :content))
                                     :progress-sequence)
                          1)))
             (e-work-progress handle
@@ -328,8 +341,10 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
                                :sequence 2
                                :event tool-finished :summary "Finished build phase" :at 1.0))
             (let ((second (window)))
-              (should (eq (plist-get (plist-get second :content) :reason) 'timed-out))
-              (should (= (plist-get (car (plist-get (plist-get second :content) :results))
+              (should (equal (plist-get (plist-get second :content) :reason)
+                             "timed-out"))
+              (should (= (plist-get (e-await-tool-test--first-result
+                                     (plist-get second :content))
                                     :progress-sequence)
                          2)))
             (should (memq (plist-get (e-work-status handle) :state) '(started progress)))))

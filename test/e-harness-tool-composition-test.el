@@ -1289,9 +1289,20 @@ Return request options, persisted anchors, and the final context."
                :name "outer"
                :description "Call inner."
                :handler (lambda (_arguments)
-                          (e-tools-call
-                           "inner" '(:text "raw")
-                           '(:metadata (:purpose "chain-test")))))
+                          (let ((result
+                                 (e-tools-call
+                                  "inner" '(:text "raw")
+                                  '(:metadata (:purpose "chain-test")))))
+                            ;; Nested lifecycle results are internal records;
+                            ;; project the fields deliberately before exposing
+                            ;; one as the outer model-visible content value.
+                            (list :tool-call-id
+                                  (plist-get result :tool-call-id)
+                                  :name (plist-get result :name)
+                                  :status (symbol-name
+                                           (plist-get result :status))
+                                  :content (plist-get result :content)
+                                  :metadata nil))))
               (e-tools-test-register
                registry
                :name "inner"
@@ -1351,7 +1362,7 @@ Return request options, persisted anchors, and the final context."
               :status ok
               :content (:tool-call-id "outer-1/nested-1"
                         :name "inner"
-                        :status ok
+                        :status "ok"
                         :content "prepared-post"
                         :metadata nil)
               :metadata nil)))
