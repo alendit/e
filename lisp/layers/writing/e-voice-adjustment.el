@@ -34,6 +34,7 @@
 (require 'e-actions)
 (require 'e-capabilities)
 (require 'e-context)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-skills)
 (require 'e-voice-storage)
@@ -269,8 +270,43 @@ front; a new tell is prepended and the store is truncated to
     (:label (:type "string"
              :description "Short stable name for the tell, e.g. \"bolded-not stress\". Reuse the same label for the same move.")
      :description (:type "string"
-                   :description "One-line description of what the tell is and why it reads as an LLM voice.")))
+                   :description "One-line description of what the tell is and why it reads as an LLM voice."))
+    :additionalProperties :json-false)
   "Parameters for the voice-adjustment record action.")
+
+(defun e-voice-adjustment--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((null value) e-json-null)
+   (t (format "%s" value))))
+
+(defun e-voice-adjustment--canonical-tell (value)
+  "Project internal tell VALUE into canonical JSON."
+  (list :key (e-voice-adjustment--canonical-string (plist-get value :key))
+        :label (e-voice-adjustment--canonical-string
+                (plist-get value :label))
+        :description (e-voice-adjustment--canonical-string
+                      (plist-get value :description))
+        :count (or (plist-get value :count) 0)
+        :last (e-voice-adjustment--canonical-string (plist-get value :last))))
+
+(defun e-voice-adjustment--canonical-result (value)
+  "Project a voice-adjustment action VALUE into canonical JSON."
+  (cond
+   ((plist-member value :tells)
+    (list :max (or (plist-get value :max) 0)
+          :count (or (plist-get value :count) 0)
+          :tells (vconcat (mapcar #'e-voice-adjustment--canonical-tell
+                                  (or (plist-get value :tells) nil)))))
+   ((plist-member value :retained)
+    (list :key (e-voice-adjustment--canonical-string (plist-get value :key))
+          :label (e-voice-adjustment--canonical-string
+                  (plist-get value :label))
+          :retained (or (plist-get value :retained) 0)))
+   ((plist-member value :count)
+    (list :count (or (plist-get value :count) 0)))
+   (t (e-json-assert-value value))))
 
 (defun e-voice-adjustment--action (id description parameters runner)
   "Return a cheap voice-adjustment action ID described by DESCRIPTION.
@@ -280,7 +316,9 @@ PARAMETERS is its input schema and RUNNER implements the action."
    :owner 'voice-adjustment
    :description description
    :parameters parameters
-   :runner runner))
+   :runner (lambda (arguments context)
+              (e-voice-adjustment--canonical-result
+              (funcall runner arguments context)))))
 
 (defun e-voice-adjustment-capability-create ()
   "Create the voice-adjustment capability."
@@ -317,14 +355,14 @@ PARAMETERS is its input schema and RUNNER implements the action."
     (e-voice-adjustment--action
      "voice_adjustment_list"
      "List cached writing tells, most recently corrected first."
-     '(:type "object" :properties nil)
+     nil
      (lambda (_arguments _context)
        (e-voice-adjustment--list)))
     :clear
     (e-voice-adjustment--action
      "voice_adjustment_clear"
      "Clear every cached writing tell."
-     '(:type "object" :properties nil)
+     nil
      (lambda (_arguments _context)
        (e-voice-adjustment--clear))))))
 

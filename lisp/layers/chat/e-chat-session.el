@@ -17,6 +17,7 @@
 (require 'e-chat-service)
 (require 'e-context)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-request)
 (require 'e-session)
 (require 'e-work)
@@ -232,6 +233,16 @@ avoids a redundant durable read without installing a metadata mirror."
 (defun e-chat-session--action-session-id (context)
   "Return CONTEXT session id for a chat-session action."
   (plist-get context :session-id))
+
+(defun e-chat-session--canonical-attachment (attachment)
+  "Project ATTACHMENT into the canonical action result object.
+Attachment persistence keeps ordinary Elisp lists and nil-valued optional
+fields internally; the action boundary uses a vector for collections and the
+explicit JSON false sentinel for boolean fields."
+  (list :id (or (plist-get attachment :id) e-json-null)
+        :uri (or (plist-get attachment :uri) e-json-null)
+        :label (or (plist-get attachment :label) e-json-null)
+        :canvas (if (plist-get attachment :canvas) t e-json-false)))
 
 (defun e-chat-session--action (handler caller &optional parameters work)
   "Return chat-session action descriptor for HANDLER."
@@ -502,7 +513,8 @@ request-time source descriptor."
                       :metadata (plist-get arguments :metadata)))
                    '(:type "object"
                      :properties (:prompt (:type "string")
-                                  :references (:type "array")
+                                  :references (:type "array"
+                                                :items (:type "string"))
                                   :metadata (:type "object"))
                      :required ["prompt"]))
                   :steer
@@ -530,7 +542,8 @@ request-time source descriptor."
                       :metadata (plist-get arguments :metadata)))
                    '(:type "object"
                      :properties (:prompt (:type "string")
-                                  :references (:type "array")
+                                  :references (:type "array"
+                                                :items (:type "string"))
                                   :metadata (:type "object"))
                      :required ["prompt"]))
                   :abort
@@ -553,10 +566,13 @@ request-time source descriptor."
                   (e-chat-session--action
                    #'e-chat-session-rename
                    (lambda (context arguments)
-                     (e-chat-session-rename
-                      (e-chat-session--action-harness context)
-                      (e-chat-session--action-session-id context)
-                      (plist-get arguments :name)))
+                     (let ((session-id
+                            (e-chat-session--action-session-id context))
+                           (name (plist-get arguments :name)))
+                       (e-chat-session-rename
+                        (e-chat-session--action-harness context)
+                        session-id name)
+                       (list :session-id session-id :name name)))
                    '(:type "object"
                      :properties (:name (:type "string"))
                      :required ["name"]))
@@ -586,11 +602,12 @@ request-time source descriptor."
                   (e-chat-session--action
                    #'e-chat-session-attach-context
                    (lambda (context arguments)
-                     (e-chat-session-attach-context
-                      (e-chat-session--action-harness context)
-                      (e-chat-session--action-session-id context)
-                      (plist-get arguments :attachment)
-                      :canvas (plist-get arguments :canvas)))
+                     (e-chat-session--canonical-attachment
+                      (e-chat-session-attach-context
+                       (e-chat-session--action-harness context)
+                       (e-chat-session--action-session-id context)
+                       (plist-get arguments :attachment)
+                       :canvas (plist-get arguments :canvas))))
                    '(:type "object"
                      :properties (:attachment (:type "object")
                                   :canvas (:type "boolean"))
@@ -599,10 +616,12 @@ request-time source descriptor."
                   (e-chat-session--action
                    #'e-chat-session-detach-context
                    (lambda (context arguments)
-                     (e-chat-session-detach-context
-                      (e-chat-session--action-harness context)
-                      (e-chat-session--action-session-id context)
-                      (plist-get arguments :attachment)))
+                     (vconcat
+                      (mapcar #'e-chat-session--canonical-attachment
+                              (e-chat-session-detach-context
+                               (e-chat-session--action-harness context)
+                               (e-chat-session--action-session-id context)
+                               (plist-get arguments :attachment)))))
                    '(:type "object"
                      :properties (:attachment (:type "string"))
                      :required ["attachment"]))

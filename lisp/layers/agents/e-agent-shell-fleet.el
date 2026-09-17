@@ -16,6 +16,7 @@
 (require 'e-agent-shell)
 (require 'e-agent-shell-work)
 (require 'e-capabilities)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-skills)
 
@@ -60,6 +61,14 @@
   "Return required work id from ARGUMENTS."
   (e-agent-shell-fleet--argument-string arguments :work-id))
 
+(defun e-agent-shell-fleet--optional-string (arguments key)
+  "Return optional canonical string KEY as a domain string or nil."
+  (let ((value (plist-get arguments key)))
+    (cond
+     ((or (null value) (eq value e-json-null)) nil)
+     ((stringp value) value)
+     (t (signal 'wrong-type-argument (list 'stringp key))))))
+
 (defun e-agent-shell-fleet--subscribe (registry work-id buffer)
   "Subscribe REGISTRY WORK-ID to events from BUFFER."
   (let ((subscription
@@ -85,20 +94,25 @@
 (defun e-agent-shell-fleet--handoff-work (registry arguments)
   "Start and submit Agent Shell work described by ARGUMENTS."
   (let* ((prompt (e-agent-shell-fleet--argument-string arguments :prompt))
-         (project-root (plist-get arguments :project-root))
-         (agent-id (plist-get arguments :agent-id))
+         (project-root (e-agent-shell-fleet--optional-string
+                        arguments :project-root))
+         (agent-id (e-agent-shell-fleet--optional-string arguments :agent-id))
          (buffer (e-agent-shell-start-worker
                   :project-root project-root
                   :agent-id agent-id
-                  :background (plist-get arguments :background)
-                  :no-focus (plist-get arguments :no-focus)
-                  :session-strategy (plist-get arguments :session-strategy)))
+                  :background (eq (plist-get arguments :background) t)
+                  :no-focus (eq (plist-get arguments :no-focus) t)
+                  :session-strategy
+                  (e-agent-shell-fleet--optional-string
+                   arguments :session-strategy)))
          (record (e-agent-shell-work-create
                   registry
                   :shell-buffer buffer
                   :agent-id agent-id
                   :project-root project-root
-                  :agent-session-id (plist-get arguments :agent-session-id)
+                  :agent-session-id
+                  (e-agent-shell-fleet--optional-string
+                   arguments :agent-session-id)
                   :transcript-file (e-agent-shell-transcript-file buffer)
                   :origin 'e-created
                   :prompt prompt))
@@ -160,16 +174,131 @@
   "Interrupt work in REGISTRY."
   (let* ((work-id (e-agent-shell-fleet--work-id arguments))
          (buffer (e-agent-shell-work-buffer registry work-id)))
-    (e-agent-shell-interrupt buffer :force (plist-get arguments :force))
+    (e-agent-shell-interrupt buffer :force
+                             (eq (plist-get arguments :force) t))
     (e-agent-shell-work-mark-interrupted registry work-id)))
 
-(defun e-agent-shell-fleet--action (id handler)
+(defun e-agent-shell-fleet--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((symbolp value) (symbol-name value))
+   ((null value) e-json-null)
+   (t (format "%s" value))))
+
+(defun e-agent-shell-fleet--canonical-value (value)
+  "Project known Agent Shell VALUE into canonical JSON."
+  (if (e-json-value-p value)
+      value
+    (e-agent-shell-fleet--canonical-string value)))
+
+(defun e-agent-shell-fleet--canonical-record (value)
+  "Project one Agent Shell work VALUE into canonical JSON."
+  (list :work-id (e-agent-shell-fleet--canonical-string
+                  (plist-get value :work-id))
+        :status (e-agent-shell-fleet--canonical-string
+                 (plist-get value :status))
+        :agent-id (e-agent-shell-fleet--canonical-string
+                   (plist-get value :agent-id))
+        :project-root (e-agent-shell-fleet--canonical-string
+                       (plist-get value :project-root))
+        :shell-buffer (e-agent-shell-fleet--canonical-string
+                       (plist-get value :shell-buffer))
+        :agent-session-id (e-agent-shell-fleet--canonical-string
+                           (plist-get value :agent-session-id))
+        :transcript-file (e-agent-shell-fleet--canonical-string
+                          (plist-get value :transcript-file))
+        :origin (e-agent-shell-fleet--canonical-string
+                 (plist-get value :origin))
+        :prompt-summary (e-agent-shell-fleet--canonical-string
+                         (plist-get value :prompt-summary))
+        :last-event (e-agent-shell-fleet--canonical-string
+                     (plist-get value :last-event))
+        :last-event-at (e-agent-shell-fleet--canonical-string
+                        (plist-get value :last-event-at))
+        :latest-response-preview (e-agent-shell-fleet--canonical-string
+                                  (plist-get value :latest-response-preview))
+        :usage (e-agent-shell-fleet--canonical-value
+                (plist-get value :usage))
+        :changed-files (vconcat (mapcar #'e-agent-shell-fleet--canonical-string
+                                        (or (plist-get value :changed-files)
+                                            nil)))
+        :error (e-agent-shell-fleet--canonical-string
+                (plist-get value :error))))
+
+(defun e-agent-shell-fleet--canonical-result (value)
+  "Project Agent Shell action VALUE into canonical JSON."
+  (cond
+   ((and (listp value) (plist-member value :excerpt))
+    (list :work-id (e-agent-shell-fleet--canonical-string
+                    (plist-get value :work-id))
+          :excerpt (e-agent-shell-fleet--canonical-string
+                    (plist-get value :excerpt))
+          :truncated (if (plist-get value :truncated) t e-json-false)
+          :limit (or (plist-get value :limit) 0)))
+   ((and (listp value) (plist-member value :work-id))
+    (e-agent-shell-fleet--canonical-record value))
+   ((listp value)
+    (vconcat (mapcar #'e-agent-shell-fleet--canonical-record value)))
+   (t (e-json-assert-value value))))
+
+(defconst e-agent-shell-fleet--handoff-parameters
+  '(:type "object"
+    :properties (:prompt (:type "string")
+                 :project-root (:type "string")
+                 :agent-id (:type "string")
+                 :agent-session-id (:type "string")
+                 :background (:type "boolean")
+                 :no-focus (:type "boolean")
+                 :session-strategy (:type "string"))
+    :required ["prompt"]
+    :additionalProperties :json-false)
+  "Canonical handoff-work parameters.")
+
+(defconst e-agent-shell-fleet--buffer-parameters
+  '(:type "object"
+    :properties (:buffer (:type "string"))
+    :required ["buffer"]
+    :additionalProperties :json-false)
+  "Canonical adopt-work parameters.")
+
+(defconst e-agent-shell-fleet--work-id-parameters
+  '(:type "object"
+    :properties (:work-id (:type "string"))
+    :required ["work-id"]
+    :additionalProperties :json-false)
+  "Canonical work-id parameters.")
+
+(defconst e-agent-shell-fleet--read-parameters
+  '(:type "object"
+    :properties (:work-id (:type "string") :limit (:type "integer"))
+    :required ["work-id"]
+    :additionalProperties :json-false)
+  "Canonical read-work parameters.")
+
+(defconst e-agent-shell-fleet--followup-parameters
+  '(:type "object"
+    :properties (:work-id (:type "string") :prompt (:type "string"))
+    :required ["work-id" "prompt"]
+    :additionalProperties :json-false)
+  "Canonical send-followup parameters.")
+
+(defconst e-agent-shell-fleet--interrupt-parameters
+  '(:type "object"
+    :properties (:work-id (:type "string") :force (:type "boolean"))
+    :required ["work-id"]
+    :additionalProperties :json-false)
+  "Canonical interrupt-work parameters.")
+
+(defun e-agent-shell-fleet--action (id handler &optional parameters)
   "Return Agent Shell cheap work action descriptor for ID and HANDLER."
   (e-action-cheap-create
    :id (format "agent_shell_fleet_%s" id)
    :owner 'agent-shell-fleet
+   :parameters parameters
    :runner (lambda (arguments _context)
-             (funcall handler arguments))))
+             (e-agent-shell-fleet--canonical-result
+              (funcall handler arguments)))))
 
 (cl-defun e-capability-with-agent-shell-create
     (&key (id 'agent-shell-fleet) (name "Agent Shell Fleet") registry)
@@ -186,12 +315,14 @@ REGISTRY defaults to `e-agent-shell-fleet-default-registry'."
 	           (e-agent-shell-fleet--action
 	            "handoff_work"
 	            (lambda (arguments)
-	              (e-agent-shell-fleet--handoff-work registry arguments)))
+	              (e-agent-shell-fleet--handoff-work registry arguments))
+            e-agent-shell-fleet--handoff-parameters)
 	           :adopt-work
 	           (e-agent-shell-fleet--action
 	            "adopt_work"
 	            (lambda (arguments)
-	              (e-agent-shell-fleet--adopt-work registry arguments)))
+	              (e-agent-shell-fleet--adopt-work registry arguments))
+            e-agent-shell-fleet--buffer-parameters)
 	           :list-work
 	           (e-agent-shell-fleet--action
 	            "list_work"
@@ -201,22 +332,26 @@ REGISTRY defaults to `e-agent-shell-fleet-default-registry'."
 	           (e-agent-shell-fleet--action
 	            "work_status"
 	            (lambda (arguments)
-	              (e-agent-shell-fleet--work-status registry arguments)))
+	              (e-agent-shell-fleet--work-status registry arguments))
+            e-agent-shell-fleet--work-id-parameters)
 	           :read-work
 	           (e-agent-shell-fleet--action
 	            "read_work"
 	            (lambda (arguments)
-	              (e-agent-shell-fleet--read-work registry arguments)))
+	              (e-agent-shell-fleet--read-work registry arguments))
+            e-agent-shell-fleet--read-parameters)
 	           :send-followup
 	           (e-agent-shell-fleet--action
 	            "send_followup"
 	            (lambda (arguments)
-	              (e-agent-shell-fleet--send-followup registry arguments)))
+	              (e-agent-shell-fleet--send-followup registry arguments))
+            e-agent-shell-fleet--followup-parameters)
 	           :interrupt-work
 	           (e-agent-shell-fleet--action
 	            "interrupt_work"
 	            (lambda (arguments)
-	              (e-agent-shell-fleet--interrupt-work registry arguments))))
+	              (e-agent-shell-fleet--interrupt-work registry arguments))
+            e-agent-shell-fleet--interrupt-parameters))
      :skills
      (list
       (e-skill-spec-create

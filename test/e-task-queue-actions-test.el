@@ -114,11 +114,11 @@
                              capability :read-task
                              (list :task-id task-id))
                             :outputs))
-      (should (eq (plist-get (e-task-queue-actions-test--call
+      (should (equal (plist-get (e-task-queue-actions-test--call
                               capability :cancel-task
                               (list :task-id task-id))
                              :status)
-                  'cancelled)))))
+                  "cancelled")))))
 
 (ert-deftest e-task-queue-actions-test-string-instance-id-resolves ()
   "A string `harness-instance-id', as the action schema advertises, resolves."
@@ -134,7 +134,7 @@
                     capability :enqueue
                     (list :prompt "go"
                           :harness-instance-id "chat-test"))))
-      (should (eq (plist-get record :status) 'running))
+      (should (equal (plist-get record :status) "running"))
       (should (eq settled-harness expected)))))
 
 (ert-deftest e-task-queue-actions-test-pause-resume-round-trip ()
@@ -151,16 +151,16 @@ pausing a running task lands it `paused' rather than leaving it running."
            (record (e-task-queue-actions-test--call
                     capability :enqueue (list :prompt "work")))
            (task-id (plist-get record :task-id)))
-      (should (eq (plist-get (e-task-queue-actions-test--call
+      (should (equal (plist-get (e-task-queue-actions-test--call
                               capability :pause-task
                               (list :task-id task-id))
                              :status)
-                  'paused))
-      (should (eq (plist-get (e-task-queue-actions-test--call
+                  "paused"))
+      (should (equal (plist-get (e-task-queue-actions-test--call
                               capability :resume-task
                               (list :task-id task-id))
                              :status)
-                  'running)))))
+                  "running")))))
 
 (ert-deftest e-task-queue-actions-test-pause-all-gates-queue ()
   "The pause-all action gates the queue so enqueued work stays queued."

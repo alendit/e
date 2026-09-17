@@ -14,6 +14,7 @@
 (require 'e-context-inspection)
 (require 'e-capabilities)
 (require 'e-dev)
+(require 'e-json)
 (require 'e-layers)
 
 (defun e-dev-layer--argument-string (arguments key &optional default)
@@ -22,17 +23,30 @@
     (cond
      ((null value) default)
      ((stringp value) value)
-     ((symbolp value) (symbol-name value))
      (t default))))
 
 (defun e-dev-layer--argument-files (arguments)
   "Return reload file list from ARGUMENTS."
   (let ((files (plist-get arguments :files)))
-    (cond
-     ((vectorp files) (append files nil))
-     ((listp files) files)
-     ((stringp files) (list files))
-     (t nil))))
+    (if (vectorp files) (append files nil) nil)))
+
+(defun e-dev-layer--canonical-entry (entry)
+  "Project one internal reload ENTRY into canonical JSON."
+  (list :id (or (plist-get entry :id) e-json-null)
+        :reason (or (plist-get entry :reason) e-json-null)
+        :files (vconcat (mapcar (lambda (file) (or file e-json-null))
+                                (or (plist-get entry :files) nil)))
+        :scope (if (plist-get entry :scope)
+                   (symbol-name (plist-get entry :scope))
+                 e-json-null)
+        :created-at (or (plist-get entry :created-at) e-json-null)))
+
+(defun e-dev-layer--canonical-result (value)
+  "Project an e-dev action VALUE into canonical JSON."
+  (list :required (if (plist-get value :required) t e-json-false)
+        :count (or (plist-get value :count) 0)
+        :entries (vconcat (mapcar #'e-dev-layer--canonical-entry
+                                  (or (plist-get value :entries) nil)))))
 
 (defun e-dev-layer--reload-actions ()
   "Return e-dev reload notification actions."
@@ -42,10 +56,11 @@
 	    :owner 'e-dev
 	    :runner
 	    (lambda (arguments _context)
-	      (e-dev-mark-reload-required
-	       (e-dev-layer--argument-string arguments :reason "e source changed")
-	       (e-dev-layer--argument-files arguments)
-	       (intern (e-dev-layer--argument-string arguments :scope "restart"))))
+	      (e-dev-layer--canonical-result
+	       (e-dev-mark-reload-required
+	        (e-dev-layer--argument-string arguments :reason "e source changed")
+	        (e-dev-layer--argument-files arguments)
+	        (intern (e-dev-layer--argument-string arguments :scope "restart")))))
     :description
     "Mark the running Emacs as needing a supported extension reload or a restart."
     :parameters
@@ -53,14 +68,16 @@
       :properties (:reason (:type "string")
                    :files (:type "array" :items (:type "string"))
                    :scope (:type "string"))
-	      :required []))
+	      :required []
+      :additionalProperties :json-false))
 	   :reload-required-status
 	   (e-action-cheap-create
 	    :owner 'e-dev
 	    :runner (lambda (_arguments _context)
-	              (e-dev-reload-required-status))
+	              (e-dev-layer--canonical-result
+	               (e-dev-reload-required-status)))
 	    :description "Return pending explicit e reload status without reloading."
-	    :parameters '(:type "object" :properties nil :required []))))
+	    :parameters nil)))
 
 (defun e-dev-layer--reload-capability-create ()
   "Create the e-dev reload notification capability."

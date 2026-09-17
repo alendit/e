@@ -24,12 +24,76 @@
 
 (require 'e-annotation-org)
 (require 'e-capabilities)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-skills)
+(require 'e-telemetry)
 
 (autoload 'e-annotation-answer-dispatch "e-annotation-answer")
 (autoload 'e-annotation-answer-sweep "e-annotation-answer")
 (autoload 'e-annotations-answer "e-annotation-answer" nil t)
+
+(defun e-annotations--string-or-null (value)
+  "Return VALUE when it is a string, otherwise canonical JSON null."
+  (if (stringp value) value e-json-null))
+
+(defun e-annotations--message-result (message)
+  "Project backend MESSAGE into one canonical action result object."
+  (list :author (e-annotations--string-or-null (plist-get message :author))
+        :created (e-annotations--string-or-null (plist-get message :created))
+        :body (e-annotations--string-or-null (plist-get message :body))))
+
+(defun e-annotations--thread-result (thread)
+  "Project backend THREAD into one canonical action result object."
+  (list :id (e-annotations--string-or-null (plist-get thread :id))
+        :state (e-annotations--string-or-null (plist-get thread :state))
+        :author (e-annotations--string-or-null (plist-get thread :author))
+        :created (e-annotations--string-or-null (plist-get thread :created))
+        :range-text (e-annotations--string-or-null
+                     (plist-get thread :range-text))
+        :actionable (if (plist-get thread :actionable)
+                        t
+                      e-json-false)
+        :messages (vconcat
+                   (mapcar #'e-annotations--message-result
+                           (plist-get thread :messages)))))
+
+(defun e-annotations--list-result (result)
+  "Project backend listing RESULT into canonical action JSON."
+  (list :file (e-annotations--string-or-null (plist-get result :file))
+        :count (or (plist-get result :count) 0)
+        :threads (vconcat
+                  (mapcar #'e-annotations--thread-result
+                          (plist-get result :threads)))))
+
+(defun e-annotations--mutation-result (result &optional include-effects)
+  "Project annotation mutation RESULT into canonical action JSON.
+When INCLUDE-EFFECTS is non-nil, hook effects are deliberately represented as
+bounded textual diagnostics because extension hooks are arbitrary Elisp and do
+not have a shared structured contract."
+  (let ((projected
+         (list :file (e-annotations--string-or-null (plist-get result :file))
+               :id (e-annotations--string-or-null (plist-get result :id)))))
+    (dolist (key '(:author :state :start :end))
+      (when (plist-member result key)
+        (setq projected
+              (plist-put projected key
+                         (let ((value (plist-get result key)))
+                           (cond
+                            ((memq key '(:author :state))
+                             (e-annotations--string-or-null value))
+                            ((integerp value) value)
+                            (t e-json-null)))))))
+    (when include-effects
+      (setq projected
+            (plist-put
+             projected :effects
+             (vconcat
+              (mapcar
+               (lambda (effect)
+                 (list :text (e-telemetry-preview effect)))
+               (plist-get result :effects))))))
+    projected))
 
 (defconst e-annotations-org-annotate-skill
   (string-join
@@ -82,9 +146,10 @@
    (e-action-cheap-create
     :owner 'annotations
     :runner (lambda (arguments _context)
-              (e-annotation-org-list
-               :file (plist-get arguments :file)
-               :actionable-only (eq (plist-get arguments :actionable_only) t)))
+              (e-annotations--list-result
+               (e-annotation-org-list
+                :file (plist-get arguments :file)
+                :actionable-only (eq (plist-get arguments :actionable_only) t))))
     :description "List org-annotate threads on an Org file. With actionable_only, return only threads still awaiting an agent answer (open state, non-agent last author)."
     :parameters '(:type "object"
                   :properties (:file (:type "string")
@@ -94,12 +159,13 @@
    (e-action-cheap-create
     :owner 'annotations
     :runner (lambda (arguments _context)
-              (e-annotation-org-reply
-               :file (plist-get arguments :file)
-               :id (or (plist-get arguments :id)
-                       (plist-get arguments :annotation_id))
-               :body (plist-get arguments :body)
-               :author (plist-get arguments :author)))
+              (e-annotations--mutation-result
+               (e-annotation-org-reply
+                :file (plist-get arguments :file)
+                :id (or (plist-get arguments :id)
+                        (plist-get arguments :annotation_id))
+                :body (plist-get arguments :body)
+                :author (plist-get arguments :author))))
     :description "Append an agent reply to an org-annotate thread. Append-only; does not change state."
     :parameters '(:type "object"
                   :properties (:file (:type "string")
@@ -111,12 +177,13 @@
    (e-action-cheap-create
     :owner 'annotations
     :runner (lambda (arguments _context)
-              (e-annotation-org-add
-               :file (plist-get arguments :file)
-               :start (plist-get arguments :start)
-               :end (plist-get arguments :end)
-               :body (plist-get arguments :body)
-               :author (plist-get arguments :author)))
+              (e-annotations--mutation-result
+               (e-annotation-org-add
+                :file (plist-get arguments :file)
+                :start (plist-get arguments :start)
+                :end (plist-get arguments :end)
+                :body (plist-get arguments :body)
+                :author (plist-get arguments :author))))
     :description "Create a new org-annotate thread (a proposal) anchored to an Org file region. Omit start/end to anchor without a covered range."
     :parameters '(:type "object"
                   :properties (:file (:type "string")
@@ -129,13 +196,15 @@
    (e-action-cheap-create
     :owner 'annotations
     :runner (lambda (arguments _context)
-              (e-annotation-org-resolve
-               :file (plist-get arguments :file)
-               :id (or (plist-get arguments :id)
-                       (plist-get arguments :annotation_id))
-               :state (plist-get arguments :state)
-               :reply (plist-get arguments :reply)
-               :author (plist-get arguments :author)))
+              (e-annotations--mutation-result
+               (e-annotation-org-resolve
+                :file (plist-get arguments :file)
+                :id (or (plist-get arguments :id)
+                        (plist-get arguments :annotation_id))
+                :state (plist-get arguments :state)
+                :reply (plist-get arguments :reply)
+                :author (plist-get arguments :author))
+               t))
     :description "Set an org-annotate thread's state (default resolved), optionally appending a reply first, and fire the resolve hook. Resolving records state but does not apply domain mutations itself."
     :parameters '(:type "object"
                   :properties (:file (:type "string")

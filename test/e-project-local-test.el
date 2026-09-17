@@ -463,9 +463,10 @@ Steps.")
                     (e-actions-call 'layer-selection :list nil
                                     (list :harness harness)))
                    (project-local
-                    (cl-find 'project-local layers
-                             :key (lambda (entry)
-                                    (plist-get entry :id)))))
+                    (cl-find-if (lambda (entry)
+                                  (equal (plist-get entry :id)
+                                         "project-local"))
+                                layers)))
               (should (plist-get project-local :enabled))
               (should (plist-get project-local :active)))
             (should (e-shell-get-active 'topic harness))))
@@ -1053,7 +1054,7 @@ layer's skills on every call, so an unchanged root must reuse the snapshot."
                      :inspect
                      (list :directory project)
                      (list :harness harness)))
-                   (capability (car (plist-get result :capabilities))))
+                   (capability (aref (plist-get result :capabilities) 0)))
               (should-not e-project-local-test--unexpected-inspect-load)
               (should (equal (plist-get result :directory)
                              (file-name-as-directory project)))
@@ -1243,8 +1244,9 @@ layer's skills on every call, so an unchanged root must reuse the snapshot."
                        :timeout 1))))
               (should e-project-local-test--prime-action-loaded)
               (should (equal (plist-get result :status) "primed"))
-              (should (eq (plist-get result :layer-id) 'project-local))
-              (should (member 'topic (plist-get result :shell-ids))))))
+              (should (equal (plist-get result :layer-id) "project-local"))
+              (should (member "topic"
+                              (append (plist-get result :shell-ids) nil))))))
       (delete-directory project t))))
 
 (ert-deftest e-project-local-test-byte-compile-project-local-files ()

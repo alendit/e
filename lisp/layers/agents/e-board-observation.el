@@ -17,6 +17,7 @@
 (require 'e-capabilities)
 (require 'e-chat-service)
 (require 'e-board-sqlite-service)
+(require 'e-json)
 (require 'e-session-async)
 (require 'e-session-storage)
 (require 'e-work)
@@ -141,7 +142,7 @@ state or a live transcript cache."
 (defun e-board-observation--read (context arguments)
   "Return a durable participant projection or raw transcript page."
   (let ((participant-id (e-board-observation--participant-id arguments)))
-    (if (plist-get arguments :raw)
+    (if (eq (plist-get arguments :raw) t)
         (e-board-observation-session-page-start
          (e-chat-service-session-store (plist-get context :harness))
          participant-id
@@ -149,6 +150,153 @@ state or a live transcript cache."
              e-board-observation-raw-page-limit))
       (e-board-observation-activity-participant-start
        (e-board-observation--context-target context) participant-id))))
+
+(defun e-board-observation--canonical-string (value)
+  "Return VALUE as a canonical string or explicit JSON null."
+  (cond
+   ((stringp value) value)
+   ((null value) e-json-null)
+   ((symbolp value) (symbol-name value))
+   (t (format "%s" value))))
+
+(defun e-board-observation--canonical-number (value)
+  "Return finite numeric VALUE or explicit JSON null."
+  (if (and (numberp value) (e-json-value-p value)) value e-json-null))
+
+(defun e-board-observation--canonical-value (value)
+  "Return canonical VALUE, or an explicit null for omitted domain data."
+  (if (e-json-value-p value) value e-json-null))
+
+(defun e-board-observation--canonical-participant (value)
+  "Project durable participant VALUE into the observation JSON shape."
+  (list :id (e-board-observation--canonical-string (plist-get value :id))
+        :name (e-board-observation--canonical-string
+               (plist-get value :name))
+        :author (e-board-observation--canonical-string
+                 (plist-get value :author))
+        :principal (e-board-observation--canonical-string
+                    (plist-get value :principal))
+        :controller (e-board-observation--canonical-string
+                     (plist-get value :controller))
+        :role (e-board-observation--canonical-string (plist-get value :role))
+        :state (e-board-observation--canonical-string
+                (plist-get value :state))
+        :subscription-id (e-board-observation--canonical-string
+                          (plist-get value :subscription-id))
+        :tags (vconcat (mapcar #'e-board-observation--canonical-string
+                               (or (plist-get value :tags) nil)))
+        :metadata (e-board-observation--canonical-value
+                   (plist-get value :metadata))))
+
+(defun e-board-observation--canonical-outcome (value)
+  "Project participant OUTCOME VALUE into canonical JSON."
+  (list :source (e-board-observation--canonical-string
+                 (plist-get value :source))
+        :status (e-board-observation--canonical-string
+                 (plist-get value :status))
+        :summary (e-board-observation--canonical-string
+                  (plist-get value :summary))
+        :error (e-board-observation--canonical-string (plist-get value :error))
+        :result (e-board-observation--canonical-value
+                 (plist-get value :result))
+        :outputs (vconcat (mapcar #'e-board-observation--canonical-value
+                                  (or (plist-get value :outputs) nil)))
+        :finished-at (e-board-observation--canonical-number
+                      (plist-get value :finished-at))))
+
+(defun e-board-observation--canonical-row (value)
+  "Project one participant activity ROW into canonical JSON."
+  (list :participant-id (e-board-observation--canonical-string
+                         (plist-get value :participant-id))
+        :session-id (e-board-observation--canonical-string
+                     (plist-get value :session-id))
+        :name (e-board-observation--canonical-string (plist-get value :name))
+        :principal (e-board-observation--canonical-string
+                    (plist-get value :principal))
+        :role (e-board-observation--canonical-string (plist-get value :role))
+        :state (e-board-observation--canonical-string
+                (plist-get value :state))
+        :participant (e-board-observation--canonical-participant
+                      (plist-get value :participant))
+        :run-id (e-board-observation--canonical-string (plist-get value :run-id))
+        :task-key (e-board-observation--canonical-string
+                   (plist-get value :task-key))
+        :attempt (e-board-observation--canonical-number
+                  (plist-get value :attempt))
+        :subagent-role (e-board-observation--canonical-string
+                        (plist-get value :subagent-role))
+        :outcome (if (plist-member value :outcome)
+                     (e-board-observation--canonical-outcome
+                      (plist-get value :outcome))
+                   e-json-null)))
+
+(defun e-board-observation--canonical-page (value)
+  "Project an activity PAGE into canonical JSON."
+  (list :board-id (e-board-observation--canonical-string
+                   (plist-get value :board-id))
+        :generation (e-board-observation--canonical-number
+                     (plist-get value :generation))
+        :revision (e-board-observation--canonical-number
+                   (plist-get value :revision))
+        :after (e-board-observation--canonical-string (plist-get value :after))
+        :participants
+        (vconcat (mapcar #'e-board-observation--canonical-row
+                         (or (plist-get value :participants) nil)))
+        :next (e-board-observation--canonical-string (plist-get value :next))
+        :cursor (e-board-observation--canonical-string
+                 (plist-get value :cursor))
+        :bytes (e-board-observation--canonical-number (plist-get value :bytes))))
+
+(defun e-board-observation--canonical-message (value)
+  "Project one durable transcript MESSAGE into canonical JSON."
+  (list :id (e-board-observation--canonical-string (plist-get value :id))
+        :role (e-board-observation--canonical-string (plist-get value :role))
+        :content (cond
+                  ((stringp (plist-get value :content))
+                   (plist-get value :content))
+                  ((e-json-value-p (plist-get value :content))
+                   (plist-get value :content))
+                  ((null (plist-get value :content)) e-json-null)
+                  (t (format "%s" (plist-get value :content))))
+        :name (e-board-observation--canonical-string (plist-get value :name))
+        :tool-call-id (e-board-observation--canonical-string
+                       (plist-get value :tool-call-id))
+        :turn-id (e-board-observation--canonical-string
+                  (plist-get value :turn-id))
+        :display (e-board-observation--canonical-string
+                  (plist-get value :display))
+        :details (e-board-observation--canonical-value
+                  (plist-get value :details))))
+
+(defun e-board-observation--canonical-message-page (value)
+  "Project a raw durable message PAGE into canonical JSON."
+  (list :session-id (e-board-observation--canonical-string
+                     (plist-get value :session-id))
+        :messages
+        (vconcat (mapcar #'e-board-observation--canonical-message
+                         (or (plist-get value :messages) nil)))
+        :limit (e-board-observation--canonical-number (plist-get value :limit))
+        :truncated (if (eq (plist-get value :truncated) t)
+                       t e-json-false)
+        :byte-count (e-board-observation--canonical-number
+                     (plist-get value :byte-count))
+        :byte-limit (e-board-observation--canonical-number
+                     (plist-get value :byte-limit))
+        :high-water (e-board-observation--canonical-number
+                     (plist-get value :high-water))))
+
+(defun e-board-observation--canonical-result (value)
+  "Project one Board observation result into canonical JSON."
+  (cond
+   ((and (listp value) (plist-member value :participants))
+    (e-board-observation--canonical-page value))
+   ((and (listp value) (plist-member value :messages))
+    (e-board-observation--canonical-message-page value))
+   ((and (listp value) (plist-member value :participant-id))
+    (e-board-observation--canonical-row value))
+   ((e-json-value-p value) value)
+   (t (signal 'e-json-error
+              (list "Board observation returned a noncanonical result")))))
 
 (defun e-board-observation--action (handler parameters description)
   "Return an async observation action descriptor for HANDLER."
@@ -162,7 +310,7 @@ state or a live transcript cache."
     :owner 'board-observation
     :runner
     (lambda (parent arguments context)
-      (let ((child (funcall handler context arguments)))
+    (let ((child (funcall handler context arguments)))
         (unless (e-work-handle-p child)
           (signal 'e-board-observation-error
                   (list "Board observation handler did not return work")))
@@ -172,8 +320,11 @@ state or a live transcript cache."
          child
          (lambda (settled)
            (pcase (plist-get (e-work-status settled) :state)
-             ('finished (e-work-finish parent
-                                       (e-work-handle-result settled)))
+             ('finished
+              (e-work-finish
+               parent
+               (e-board-observation--canonical-result
+                (e-work-handle-result settled))))
              ('failed (e-work-fail parent (e-work-handle-error settled)))
              ('cancelled (e-work-cancel parent)))))
         :deferred)))))
@@ -183,7 +334,8 @@ state or a live transcript cache."
     :properties
     (:after (:type "string" :description "Opaque Board activity cursor.")
      :limit (:type "integer" :description "Maximum participant rows."))
-    :required [])
+    :required []
+    :additionalProperties :json-false)
   "Action parameters for bounded Board participant listing.")
 
 (defconst e-board-observation--participant-parameters
@@ -191,7 +343,8 @@ state or a live transcript cache."
     :properties
     (:participant-id
      (:type "string" :description "Durable Board participant/session id."))
-    :required ["participant-id"])
+    :required ["participant-id"]
+    :additionalProperties :json-false)
   "Action parameters for one durable participant lookup.")
 
 (defconst e-board-observation--read-parameters
@@ -204,7 +357,8 @@ state or a live transcript cache."
       :description "Return a bounded durable transcript page.")
      :limit
      (:type "integer" :description "Maximum raw transcript messages."))
-    :required ["participant-id"])
+    :required ["participant-id"]
+    :additionalProperties :json-false)
   "Action parameters for durable participant reads.")
 
 (defun e-board-observation-parent-alist ()

@@ -20,6 +20,7 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-harness-activity)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-session)
 (require 'e-session-async)
@@ -271,6 +272,154 @@ SQLite selects the semantic marker association before its exact bound."
       (when (vectorp chain)
         (plist-put copy :trigger-chain (append chain nil))))
     copy))
+
+(defconst e-process-reporting--canonical-string-keys
+  '(:type :report-type :id :marker-id :evidence-id :created-at :signal :note
+    :session-id :turn-id :project-root :session-uri :messages-uri
+    :activity-uri :process-reports-uri :provider-request-id :tool-call-id
+    :action-call-id :outcome :status :decision-note :target-reference
+    :estimation-method :scope :measurement-status :serialization
+    :tokenizer-revision :model :reasoning-effort :prompt-cache-key-sha256
+    :event-type :call-id :name :activity-event-id :parent-tool-call-id)
+  "Known process-reporting result fields whose values are strings.
+Symbols from activity and persistence internals are deliberately projected to
+their textual API identifiers at the action boundary.")
+
+(defconst e-process-reporting--canonical-number-keys
+  '(:provider-request-count :measured-request-count :marker-count
+    :marker-follow-up-request-count :provider-request-ordinal :actual-bytes
+    :paired-bytes :direct-context-delta-bytes :passive-surface-bytes
+    :active-marker-bytes :input-tokens :cached-input-tokens
+    :cache-creation-input-tokens :output-tokens :reasoning-output-tokens
+    :total-tokens :bytes :message-count)
+  "Known process-reporting result fields whose values are numeric.")
+
+(defconst e-process-reporting--canonical-boolean-keys
+  '(:suppressed :marker-follow-up :provider-tokenizer-used
+    :behavioral-estimate :prompt-cache-key-present :marker-follow-up)
+  "Known process-reporting result fields whose values are booleans.")
+
+(defconst e-process-reporting--canonical-array-keys
+  '(:trigger-chain :marker-ids :session-evidence :provider-request-ids
+    :marker-follow-up-call-ids :requests :triage :extractions
+    :caused-by-tool-calls)
+  "Known process-reporting result fields whose values are arrays.")
+
+(defconst e-process-reporting--canonical-object-keys
+  '(:trigger :marker :shape :actual-shape :without-passive-shape
+    :without-active-shape :paired-shape :token-usage)
+  "Known process-reporting result fields whose values are objects.")
+
+(defconst e-process-reporting--canonical-text-keys
+  '(:arguments-preview :result-preview :error-preview :content)
+  "Known process-reporting result fields that carry textual diagnostics.")
+
+(defun e-process-reporting--canonical-result-value (value)
+  "Project one known process-reporting VALUE into canonical JSON.
+This is an owner-specific result mapping, not a general Elisp-to-JSON
+normalizer: only the named process-reporting record fields below are mapped,
+and opaque diagnostic values use the explicitly textual telemetry projector."
+  (cond
+   ((null value) nil)
+   ((or (stringp value) (numberp value) (eq value t)
+        (eq value e-json-false) (eq value e-json-null)) value)
+   ((symbolp value) (symbol-name value))
+   ((vectorp value)
+    (vconcat (mapcar #'e-process-reporting--canonical-result-value
+                     (append value nil))))
+   ((and (listp value) (keywordp (car value)))
+    (e-process-reporting--canonical-record value))
+   (t
+    (plist-get (e-telemetry-preview value) :content))))
+
+(defun e-process-reporting--canonical-record (record)
+  "Project one process-reporting RECORD into canonical JSON.
+The record schema is owned here, so arrays become vectors and activity symbols
+are mapped to strings without changing the persisted domain record."
+  (let ((copy (copy-tree record t)))
+    (dolist (key e-process-reporting--canonical-string-keys)
+      (when (plist-member copy key)
+        (setq copy
+              (plist-put copy key
+                         (let ((value (plist-get copy key)))
+                           (if (null value)
+                               e-json-null
+                             (if (symbolp value)
+                                 (symbol-name value)
+                               value)))))))
+    (dolist (key e-process-reporting--canonical-number-keys)
+      (when (plist-member copy key)
+        (setq copy (plist-put copy key
+                              (if (numberp (plist-get copy key))
+                                  (plist-get copy key)
+                                e-json-null)))))
+    (dolist (key e-process-reporting--canonical-boolean-keys)
+      (when (plist-member copy key)
+        (setq copy (plist-put copy key
+                              (if (plist-get copy key)
+                                  t
+                                e-json-false)))))
+    (dolist (key e-process-reporting--canonical-array-keys)
+      (when (plist-member copy key)
+        (let ((value (plist-get copy key)))
+          (setq copy
+                (plist-put copy key
+                           (vconcat
+                            (mapcar #'e-process-reporting--canonical-result-value
+                                    (if (vectorp value)
+                                        (append value nil)
+                                      value))))))))
+    (dolist (key e-process-reporting--canonical-object-keys)
+      (when (plist-member copy key)
+        (setq copy
+              (plist-put copy key
+                         (e-process-reporting--canonical-result-value
+                          (plist-get copy key))))))
+    (dolist (key e-process-reporting--canonical-text-keys)
+      (when (plist-member copy key)
+        (setq copy
+              (plist-put copy key
+                         (let ((value (plist-get copy key)))
+                           (cond
+                            ((null value) e-json-null)
+                            ((stringp value) value)
+                            (t (plist-get (e-telemetry-preview value)
+                                          :content))))))))
+    ;; Preserve already-canonical extension fields; reject no domain record
+    ;; detail by guessing its container.  Unexpected opaque fields get the
+    ;; explicit bounded textual telemetry projection.
+    (let ((rest copy))
+      (while rest
+        (let* ((key (pop rest))
+               (value (pop rest)))
+          (unless (or (memq key e-process-reporting--canonical-string-keys)
+                      (memq key e-process-reporting--canonical-number-keys)
+                      (memq key e-process-reporting--canonical-boolean-keys)
+                      (memq key e-process-reporting--canonical-array-keys)
+                      (memq key e-process-reporting--canonical-object-keys)
+                      (memq key e-process-reporting--canonical-text-keys))
+            (unless (e-json-value-p value)
+              (setq copy
+                    (plist-put copy key
+                               (e-process-reporting--canonical-result-value
+                                value)))))))
+    copy)))
+
+(defun e-process-reporting--canonical-action-result (value)
+  "Project one settled action VALUE into canonical JSON."
+  (cond
+   ((and (listp value) (keywordp (car value)))
+    (e-process-reporting--canonical-record value))
+   ;; Process-reporting list/read reducers own these list-of-record values as
+   ;; collections.  Convert this known result shape to a canonical array at
+   ;; the action boundary; no general Lisp-list compatibility is admitted.
+   ((and (consp value) (listp (car value))
+         (keywordp (car (car value))))
+    (vconcat (mapcar #'e-process-reporting--canonical-record value)))
+   ((vectorp value)
+    (vconcat (mapcar #'e-process-reporting--canonical-result-value
+                     (append value nil))))
+   (t (e-process-reporting--canonical-result-value value))))
 
 (defun e-process-reporting--marker (reports marker-id)
   "Return marker MARKER-ID from REPORTS."
@@ -1132,7 +1281,8 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
     (lambda (parent arguments context)
       (condition-case err
           (e-process-reporting--forward-result
-           parent (funcall runner arguments context))
+           parent (funcall runner arguments context)
+           #'e-process-reporting--canonical-action-result)
         ((error quit) (e-work-fail parent err)))
       :deferred))))
 

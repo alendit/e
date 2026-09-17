@@ -16,6 +16,7 @@
 (require 'e-board-orchestration)
 (require 'e-board-sqlite-service)
 (require 'e-chat-service)
+(require 'e-json)
 (require 'e-work)
 
 (defun e-board-orchestration-actions-assignment-from-metadata (metadata)
@@ -262,11 +263,285 @@ The stable assignment key makes callback retries no-ops at the board boundary."
   (e-board-orchestration-actions-run-set
    (e-board-orchestration-actions--context-target context)))
 
+(defun e-board-orchestration-actions--canonical-string (value)
+  "Return VALUE as a canonical string or explicit JSON null."
+  (cond
+   ((stringp value) value)
+   ((null value) e-json-null)
+   ((symbolp value) (symbol-name value))
+   (t (format "%s" value))))
+
+(defun e-board-orchestration-actions--canonical-number (value)
+  "Return finite numeric VALUE or explicit JSON null."
+  (if (and (numberp value) (e-json-value-p value)) value e-json-null))
+
+(defun e-board-orchestration-actions--canonical-bool (value)
+  "Return VALUE as a canonical JSON boolean."
+  (if (eq value t) t e-json-false))
+
+(defun e-board-orchestration-actions--canonical-value (value)
+  "Return canonical VALUE, or explicit null for a domain-owned value."
+  (if (e-json-value-p value) value e-json-null))
+
+(defun e-board-orchestration-actions--canonical-output (value)
+  "Project one orchestration output VALUE into canonical JSON."
+  (list :kind (e-board-orchestration-actions--canonical-string
+               (plist-get value :kind))
+        :uri (e-board-orchestration-actions--canonical-string
+              (plist-get value :uri))
+        :value (e-board-orchestration-actions--canonical-string
+                (plist-get value :value))
+        :label (e-board-orchestration-actions--canonical-string
+                (plist-get value :label))))
+
+(defun e-board-orchestration-actions--canonical-report (value)
+  "Project one terminal REPORT VALUE into canonical JSON."
+  (list :run-id (e-board-orchestration-actions--canonical-string
+                 (plist-get value :run-id))
+        :task-key (e-board-orchestration-actions--canonical-string
+                   (plist-get value :task-key))
+        :attempt (e-board-orchestration-actions--canonical-number
+                  (plist-get value :attempt))
+        :status (e-board-orchestration-actions--canonical-string
+                 (plist-get value :status))
+        :summary (e-board-orchestration-actions--canonical-string
+                  (plist-get value :summary))
+        :error (e-board-orchestration-actions--canonical-string
+                (plist-get value :error))
+        :participant-session-id
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :participant-session-id))
+        :outputs
+        (vconcat (mapcar #'e-board-orchestration-actions--canonical-output
+                         (or (plist-get value :outputs) nil)))
+        :result (e-board-orchestration-actions--canonical-value
+                 (plist-get value :result))))
+
+(defun e-board-orchestration-actions--canonical-task (value)
+  "Project one reduced orchestration TASK into canonical JSON."
+  (list :task-key (e-board-orchestration-actions--canonical-string
+                   (plist-get value :task-key))
+        :required (e-board-orchestration-actions--canonical-bool
+                   (plist-get value :required))
+        :accepted-attempt
+        (e-board-orchestration-actions--canonical-number
+         (plist-get value :accepted-attempt))
+        :state (e-board-orchestration-actions--canonical-string
+                (plist-get value :state))
+        :accepted-report
+        (if (plist-get value :accepted-report)
+            (e-board-orchestration-actions--canonical-report
+             (plist-get value :accepted-report))
+          e-json-null)))
+
+(defun e-board-orchestration-actions--canonical-conflict (value)
+  "Project one orchestration CONFLICT VALUE into canonical JSON."
+  (list :run-id (e-board-orchestration-actions--canonical-string
+                 (plist-get value :run-id))
+        :task-key (e-board-orchestration-actions--canonical-string
+                   (plist-get value :task-key))
+        :attempt (e-board-orchestration-actions--canonical-number
+                  (plist-get value :attempt))
+        :reason (e-board-orchestration-actions--canonical-string
+                 (plist-get value :reason))))
+
+(defun e-board-orchestration-actions--canonical-deadline (value)
+  "Project an orchestration DEADLINE VALUE into canonical JSON."
+  (list :kind (e-board-orchestration-actions--canonical-string
+               (plist-get value :kind))
+        :at (e-board-orchestration-actions--canonical-number
+             (plist-get value :at))
+        :expired (e-board-orchestration-actions--canonical-bool
+                  (plist-get value :expired))))
+
+(defun e-board-orchestration-actions--canonical-continuation (value)
+  "Project a durable CONTINUATION VALUE into canonical JSON."
+  (list :session-id (e-board-orchestration-actions--canonical-string
+                     (plist-get value :session-id))
+        :prompt (e-board-orchestration-actions--canonical-string
+                 (plist-get value :prompt))
+        :publication-key (e-board-orchestration-actions--canonical-string
+                          (plist-get value :publication-key))
+        :state (e-board-orchestration-actions--canonical-string
+                (plist-get value :state))
+        :claims
+        (vconcat
+         (mapcar
+          (lambda (claim)
+            (list :run-id (e-board-orchestration-actions--canonical-string
+                           (plist-get claim :run-id))
+                  :publication-key
+                  (e-board-orchestration-actions--canonical-string
+                   (plist-get claim :publication-key))
+                  :status
+                  (e-board-orchestration-actions--canonical-string
+                   (plist-get claim :status))
+                  :error
+                  (e-board-orchestration-actions--canonical-string
+                   (plist-get claim :error))))
+          (or (plist-get value :claims) nil)))))
+
+(defun e-board-orchestration-actions--canonical-manifest (value)
+  "Project a durable orchestration MANIFEST into canonical JSON."
+  (list :run-id (e-board-orchestration-actions--canonical-string
+                 (plist-get value :run-id))
+        :tasks (vconcat (mapcar #'e-board-orchestration-actions--canonical-task
+                                (or (plist-get value :tasks) nil)))
+        :deadline (if (plist-get value :deadline)
+                      (e-board-orchestration-actions--canonical-deadline
+                       (plist-get value :deadline))
+                    e-json-null)
+        :continuation (if (plist-get value :continuation)
+                          (e-board-orchestration-actions--canonical-continuation
+                           (plist-get value :continuation))
+                        e-json-null)
+        :descriptor (e-board-orchestration-actions--canonical-value
+                     (plist-get value :descriptor))))
+
+(defun e-board-orchestration-actions--canonical-projection (value)
+  "Project one reduced orchestration PROJECTION into canonical JSON."
+  (list :run-id (e-board-orchestration-actions--canonical-string
+                 (plist-get value :run-id))
+        :state (e-board-orchestration-actions--canonical-string
+                (plist-get value :state))
+        :manifest (if (plist-get value :manifest)
+                      (e-board-orchestration-actions--canonical-manifest
+                       (plist-get value :manifest))
+                    e-json-null)
+        :tasks (vconcat (mapcar #'e-board-orchestration-actions--canonical-task
+                                (or (plist-get value :tasks) nil)))
+        :accepted-reports
+        (vconcat (mapcar #'e-board-orchestration-actions--canonical-report
+                         (or (plist-get value :accepted-reports) nil)))
+        :conflicts
+        (vconcat (mapcar #'e-board-orchestration-actions--canonical-conflict
+                         (or (plist-get value :conflicts) nil)))
+        :deadline (if (plist-get value :deadline)
+                      (e-board-orchestration-actions--canonical-deadline
+                       (plist-get value :deadline))
+                    e-json-null)
+        :continuation (if (plist-get value :continuation)
+                          (e-board-orchestration-actions--canonical-continuation
+                           (plist-get value :continuation))
+                        e-json-null)
+        :terminal-status
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :terminal-status))
+        :tasks-truncated (e-board-orchestration-actions--canonical-bool
+                          (plist-get value :tasks-truncated))
+        :accepted-reports-truncated
+        (e-board-orchestration-actions--canonical-bool
+         (plist-get value :accepted-reports-truncated))
+        :conflicts-truncated
+        (e-board-orchestration-actions--canonical-bool
+         (plist-get value :conflicts-truncated))))
+
+(defun e-board-orchestration-actions--canonical-counts (value)
+  "Project one bounded state-count object VALUE into canonical JSON."
+  (list :total (or (plist-get value :total) 0)
+        :pending (or (plist-get value :pending) 0)
+        :running (or (plist-get value :running) 0)
+        :done (or (plist-get value :done) 0)
+        :failed (or (plist-get value :failed) 0)
+        :cancelled (or (plist-get value :cancelled) 0)
+        :other (or (plist-get value :other) 0)))
+
+(defun e-board-orchestration-actions--canonical-run-entry (value)
+  "Project one consumer-shaped RUN entry into canonical JSON."
+  (list :board-id (e-board-orchestration-actions--canonical-string
+                   (plist-get value :board-id))
+        :run-id (e-board-orchestration-actions--canonical-string
+                 (plist-get value :run-id))
+        :label (e-board-orchestration-actions--canonical-string
+                (plist-get value :label))
+        :lifecycle (e-board-orchestration-actions--canonical-string
+                    (plist-get value :lifecycle))
+        :active-p (e-board-orchestration-actions--canonical-bool
+                   (plist-get value :active-p))
+        :actionable-rank (or (plist-get value :actionable-rank) 0)
+        :required-count (or (plist-get value :required-count) 0)
+        :optional-count (or (plist-get value :optional-count) 0)
+        :required-total (or (plist-get value :required-total) 0)
+        :optional-total (or (plist-get value :optional-total) 0)
+        :required-state-counts
+        (e-board-orchestration-actions--canonical-counts
+         (plist-get value :required-state-counts))
+        :optional-state-counts
+        (e-board-orchestration-actions--canonical-counts
+         (plist-get value :optional-state-counts))
+        :required-complete (or (plist-get value :required-complete) 0)
+        :optional-active (e-board-orchestration-actions--canonical-bool
+                          (plist-get value :optional-active))
+        :participant-count (or (plist-get value :participant-count) 0)
+        :participant-total (or (plist-get value :participant-total) 0)
+        :admission-count (or (plist-get value :admission-count) 0)
+        :admission-total (or (plist-get value :admission-total) 0)
+        :latest-event-at
+        (e-board-orchestration-actions--canonical-number
+         (plist-get value :latest-event-at))
+        :latest-event-position (or (plist-get value :latest-event-position) 0)
+        :conflicts
+        (vconcat (mapcar #'e-board-orchestration-actions--canonical-conflict
+                         (or (plist-get value :conflicts) nil)))
+        :deadline
+        (if (plist-get value :deadline)
+            (e-board-orchestration-actions--canonical-deadline
+             (plist-get value :deadline))
+          e-json-null)
+        :failure (e-board-orchestration-actions--canonical-string
+                  (plist-get value :failure))
+        :restore-state (e-board-orchestration-actions--canonical-string
+                        (plist-get value :restore-state))
+        :attention-p (e-board-orchestration-actions--canonical-bool
+                      (plist-get value :attention-p))
+        :completion-state
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :completion-state))
+        :completion-delivery-state
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :completion-delivery-state))
+        :continuation-state
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :continuation-state))))
+
+(defun e-board-orchestration-actions--canonical-run-set (value)
+  "Project a consumer-shaped RUN-SET into canonical JSON."
+  (list :board-id (e-board-orchestration-actions--canonical-string
+                   (plist-get value :board-id))
+        :restore-state (e-board-orchestration-actions--canonical-string
+                        (plist-get value :restore-state))
+        :ready-p (e-board-orchestration-actions--canonical-bool
+                  (plist-get value :ready-p))
+        :status (e-board-orchestration-actions--canonical-string
+                 (plist-get value :status))
+        :runs (vconcat (mapcar #'e-board-orchestration-actions--canonical-run-entry
+                               (or (plist-get value :runs) nil)))
+        :active-count (or (plist-get value :active-count) 0)
+        :active-run-count (or (plist-get value :active-run-count) 0)
+        :omitted-count (or (plist-get value :omitted-count) 0)
+        :bytes (or (plist-get value :bytes) 0)))
+
+(defun e-board-orchestration-actions--canonical-result (value)
+  "Project one Board orchestration action VALUE into canonical JSON."
+  (cond
+   ((and (listp value) (plist-member value :runs))
+    (e-board-orchestration-actions--canonical-run-set value))
+   ((and (listp value) (plist-member value :manifest))
+    (e-board-orchestration-actions--canonical-projection value))
+   ((and (listp value) (plist-member value :run-id))
+    (e-board-orchestration-actions--canonical-projection value))
+   ((listp value)
+    (vconcat (mapcar #'e-board-orchestration-actions--canonical-projection value)))
+   ((e-json-value-p value) value)
+   (t (signal 'e-json-error
+              (list "Board orchestration returned a noncanonical result")))))
+
 (defconst e-board-orchestration-actions--run-id-parameters
   '(:type "object"
     :properties
     (:run-id (:type "string" :description "Durable board run id from its manifest."))
-    :required ["run-id"])
+    :required ["run-id"]
+    :additionalProperties :json-false)
   "Action parameters for one durable run lookup.")
 
 (defun e-board-orchestration-actions--action (handler parameters description)
@@ -282,7 +557,7 @@ The stable assignment key makes callback retries no-ops at the board boundary."
     (lambda (parent arguments context)
       (let ((result (funcall handler context arguments)))
         (if (not (e-work-handle-p result))
-            result
+            (e-board-orchestration-actions--canonical-result result)
           (setf (e-work-handle-cancel-function parent)
                 (lambda (_handle) (e-work-cancel result)))
           (e-work-on-settle
@@ -290,7 +565,10 @@ The stable assignment key makes callback retries no-ops at the board boundary."
            (lambda (settled)
              (pcase (plist-get (e-work-status settled) :state)
                ('finished
-                (e-work-finish parent (e-work-handle-result settled)))
+                (e-work-finish
+                 parent
+                 (e-board-orchestration-actions--canonical-result
+                  (e-work-handle-result settled))))
                ('failed (e-work-fail parent (e-work-handle-error settled)))
                ('cancelled (e-work-cancel parent)))))
           :deferred))))))

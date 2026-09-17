@@ -24,6 +24,7 @@
 (require 'e-capabilities)
 (require 'e-board-sqlite-service)
 (require 'e-cron)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-skills)
 
@@ -133,6 +134,92 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
    ((stringp value) (intern value))
    (t (signal 'wrong-type-argument (list key value)))))
 
+(defun e-cron-actions--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((symbolp value) (symbol-name value))
+   ((null value) e-json-null)
+   (t (format "%s" value))))
+
+(defun e-cron-actions--domain-when (value)
+  "Map canonical recurrence VALUE into the cron domain plist."
+  (let ((when (copy-tree value t)))
+    (dolist (key '(:every :at :on))
+      (when (eq (plist-get when key) e-json-null)
+        (setq when (plist-put when key nil))))
+    (when (plist-member when :on)
+      (let ((days (plist-get when :on)))
+        (unless (vectorp days)
+          (signal 'wrong-type-argument (list 'vectorp :on)))
+        (setq when
+              (plist-put when :on
+                         (mapcar (lambda (day)
+                                   (intern (e-cron-actions--canonical-string day)))
+                                 (append days nil))))))
+    when))
+
+(defun e-cron-actions--domain-action (value)
+  "Map canonical action VALUE into the cron routing domain plist."
+  (let ((publish (plist-get value :publish)))
+    (unless (and (listp value) (listp publish))
+      (signal 'e-cron-actions-invalid-action (list value)))
+    (list :publish
+          (list :content (plist-get publish :content)
+                :tags (let ((tags (plist-get publish :tags)))
+                        (if (vectorp tags) (append tags nil) nil))
+                :attributes (or (plist-get publish :attributes) nil)))))
+
+(defun e-cron-actions--canonical-action-spec (value)
+  "Project internal cron action VALUE into canonical JSON."
+  (let ((publish (plist-get value :publish)))
+    (list :publish
+          (list :content (e-cron-actions--canonical-string
+                          (plist-get publish :content))
+                :tags (vconcat (mapcar #'e-cron-actions--canonical-string
+                                       (or (plist-get publish :tags) nil)))
+                :attributes (or (plist-get publish :attributes) nil)))))
+
+(defun e-cron-actions--canonical-when (value)
+  "Project internal recurrence VALUE into canonical JSON."
+  (let ((on (plist-get value :on)))
+    (list :every (or (plist-get value :every) e-json-null)
+          :at (e-cron-actions--canonical-string (plist-get value :at))
+          :on (vconcat (mapcar #'e-cron-actions--canonical-string
+                               (or on nil))))))
+
+(defun e-cron-actions--canonical-descriptor (value)
+  "Project internal schedule VALUE into canonical JSON."
+  (list :id (e-cron-actions--canonical-string (plist-get value :id))
+        :when (e-cron-actions--canonical-when (plist-get value :when))
+        :action (e-cron-actions--canonical-action-spec
+                 (plist-get value :action))
+        :catch-up (e-cron-actions--canonical-string
+                   (plist-get value :catch-up))
+        :enabled (if (plist-get value :enabled) t e-json-false)
+        :has-guard (if (plist-get value :has-guard) t e-json-false)
+        :next-fire (e-cron-actions--canonical-string
+                    (plist-get value :next-fire))
+        :last-fire (e-cron-actions--canonical-string
+                    (plist-get value :last-fire))
+        :last-guard-result (e-cron-actions--canonical-string
+                            (plist-get value :last-guard-result))
+        :last-guard-at (e-cron-actions--canonical-string
+                        (plist-get value :last-guard-at))))
+
+(defun e-cron-actions--canonical-result (value)
+  "Project a cron action VALUE into canonical JSON."
+  (cond
+   ((and (listp value) (plist-member value :removed))
+    (list :id (e-cron-actions--canonical-string (plist-get value :id))
+          :removed (if (eq (plist-get value :removed) t)
+                       t e-json-false)))
+   ((and (listp value) (plist-member value :id))
+    (e-cron-actions--canonical-descriptor value))
+   ((listp value)
+    (vconcat (mapcar #'e-cron-actions--canonical-descriptor value)))
+   (t (e-json-assert-value value))))
+
 (defun e-cron-actions--required-id (arguments)
   "Return the required schedule id symbol from ARGUMENTS."
   (or (e-cron-actions--symbol (plist-get arguments :id) :id)
@@ -158,15 +245,15 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
   "Register a schedule described by ARGUMENTS and return its descriptor."
   (e-cron-actions--describe
    (e-cron-actions-register
-    :id (e-cron-actions--required-id arguments)
-    :when (plist-get arguments :when)
-    :action (plist-get arguments :action)
+   :id (e-cron-actions--required-id arguments)
+    :when (e-cron-actions--domain-when (plist-get arguments :when))
+    :action (e-cron-actions--domain-action (plist-get arguments :action))
     :catch-up (or (e-cron-actions--symbol (plist-get arguments :catch-up)
                                           :catch-up)
                   'skip)
     :metadata (plist-get arguments :metadata)
     :enabled (if (plist-member arguments :enabled)
-                 (and (plist-get arguments :enabled) t)
+                 (eq (plist-get arguments :enabled) t)
                t))))
 
 (defun e-cron-actions--list (_arguments)
@@ -199,7 +286,8 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
    :owner 'cron
    :parameters parameters
    :runner (lambda (arguments _context)
-             (funcall handler arguments))))
+             (e-cron-actions--canonical-result
+              (funcall handler arguments)))))
 
 (defconst e-cron-actions--register-parameters
   '(:type "object"
@@ -209,10 +297,22 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
       :description "Stable schedule id.")
      :when
      (:type "object"
-      :description "Recurrence: (:every SECONDS) or (:at \"HH:MM\" :on (mon ...)).")
+      :properties (:every (:type "number")
+                   :at (:type "string")
+                   :on (:type "array" :items (:type "string")))
+      :description "Recurrence object with every seconds, an HH:MM time, or weekday strings.")
      :action
      (:type "object"
-      :description "Action spec: (:publish (:content STRING :tags LIST :attributes PLIST)).")
+      :properties (:publish
+                   (:type "object"
+                    :properties (:content (:type "string")
+                                 :tags (:type "array" :items (:type "string"))
+                                 :attributes (:type "object"))
+                    :required ["content"]
+                    :additionalProperties :json-false))
+      :required ["publish"]
+      :additionalProperties :json-false
+      :description "Action spec publishing string content with optional tag and attribute arrays/objects.")
      :catch-up
      (:type "string"
       :description "Missed-fire policy: skip (default) or run.")
@@ -222,7 +322,8 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
      :enabled
      (:type "boolean"
       :description "Arm immediately. Defaults to true."))
-    :required ["id" "when" "action"])
+    :required ["id" "when" "action"]
+    :additionalProperties :json-false)
   "Action parameters for schedule registration.")
 
 (defconst e-cron-actions--id-parameters
@@ -231,7 +332,8 @@ Actions arrive as JSON, so an id or handler name reaches here as a string."
     (:id
      (:type "string"
       :description "Schedule id."))
-    :required ["id"])
+    :required ["id"]
+    :additionalProperties :json-false)
   "Action parameters for schedule lookup operations.")
 
 (defun e-cron-capability-create ()

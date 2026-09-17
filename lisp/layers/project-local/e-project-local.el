@@ -26,6 +26,7 @@
 (require 'cl-lib)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-startup)
 (require 'e-skills)
@@ -781,6 +782,74 @@ revalidates via `e-project-local--discovered-capabilities'."
           :allowed (and (e-project-local--root-allowed-p directory) t)
           :readable (and (e-skills-readable-file-p file) t))))
 
+(defun e-project-local--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((symbolp value) (symbol-name value))
+   ((null value) e-json-null)
+   (t (format "%s" value))))
+
+(defun e-project-local--canonical-bool (value)
+  "Return VALUE as a canonical JSON boolean."
+  (if value t e-json-false))
+
+(defun e-project-local--canonical-file-summary (value)
+  "Project internal extension-file VALUE into canonical JSON."
+  (list :id (e-project-local--canonical-string (plist-get value :id))
+        :directory (e-project-local--canonical-string
+                    (plist-get value :directory))
+        :file (e-project-local--canonical-string (plist-get value :file))
+        :allowed (e-project-local--canonical-bool
+                  (plist-get value :allowed))
+        :readable (e-project-local--canonical-bool
+                   (plist-get value :readable))))
+
+(defun e-project-local--canonical-string-vector (value)
+  "Project a list or vector of ids VALUE into canonical strings."
+  (vconcat
+   (mapcar #'e-project-local--canonical-string
+           (if (vectorp value) (append value nil) value))))
+
+(defun e-project-local--canonical-inspection (value)
+  "Project internal inspection VALUE into canonical JSON."
+  (list :directory (e-project-local--canonical-string
+                    (plist-get value :directory))
+        :allowed (e-project-local--canonical-bool
+                  (plist-get value :allowed))
+        :has-extensions (e-project-local--canonical-bool
+                         (plist-get value :has-extensions))
+        :capabilities
+        (vconcat (mapcar #'e-project-local--canonical-file-summary
+                         (or (plist-get value :capabilities) nil)))
+        :layers
+        (vconcat (mapcar #'e-project-local--canonical-file-summary
+                         (or (plist-get value :layers) nil)))))
+
+(defun e-project-local--canonical-result (value)
+  "Project a project-local action VALUE into canonical JSON."
+  (let ((result
+         (if (plist-member value :status)
+             (list :status (e-project-local--canonical-string
+                            (plist-get value :status))
+                   :reason (e-project-local--canonical-string
+                            (plist-get value :reason))
+                   :layer-id (e-project-local--canonical-string
+                              (plist-get value :layer-id))
+                   :capability-ids
+                   (e-project-local--canonical-string-vector
+                    (plist-get value :capability-ids))
+                   :required-layers
+                   (e-project-local--canonical-string-vector
+                    (plist-get value :required-layers))
+                   :shell-ids
+                   (e-project-local--canonical-string-vector
+                    (plist-get value :shell-ids)))
+           nil)))
+    (if (plist-member value :directory)
+        (append result (e-project-local--canonical-inspection value))
+      result)))
+
 (defun e-project-local--inspection (directory)
   "Return no-load project-local extension inspection for DIRECTORY."
   (let* ((root (e-skills-normalize-directory directory))
@@ -834,7 +903,8 @@ revalidates via `e-project-local--discovered-capabilities'."
 (defconst e-project-local--action-parameters
   '(:type "object"
     :properties (:directory (:type "string"))
-    :required [])
+    :required []
+    :additionalProperties :json-false)
   "Common project-local action parameters.")
 
 (defun e-project-local--cheap-action-descriptor (runner description)
@@ -844,7 +914,8 @@ revalidates via `e-project-local--discovered-capabilities'."
    :description description
    :parameters e-project-local--action-parameters
    :runner (lambda (arguments context)
-             (funcall runner context arguments))))
+             (e-project-local--canonical-result
+              (funcall runner context arguments)))))
 
 (defun e-project-local--prime-action-runner (fallback handle arguments context)
   "Schedule project-local prime work for FALLBACK on HANDLE."
@@ -854,7 +925,8 @@ revalidates via `e-project-local--discovered-capabilities'."
      (condition-case err
          (e-work-finish
           handle
-          (e-project-local--action-prime fallback context arguments))
+          (e-project-local--canonical-result
+           (e-project-local--action-prime fallback context arguments)))
        (error
         (e-work-fail handle err)))))
   :deferred)

@@ -13,7 +13,46 @@
 
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-layers)
+
+(defun e-layer-selection--string-or-null (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((symbolp value) (symbol-name value))
+   ((null value) e-json-null)
+   (t (format "%s" value))))
+
+(defun e-layer-selection--canonical-bool (value)
+  "Return VALUE as a canonical JSON boolean."
+  (if value t e-json-false))
+
+(defun e-layer-selection--canonical-record (value)
+  "Project one internal layer-selection VALUE into canonical JSON."
+  (list :id (e-layer-selection--string-or-null (plist-get value :id))
+        :name (e-layer-selection--string-or-null (plist-get value :name))
+        :summary (e-layer-selection--string-or-null
+                  (plist-get value :summary))
+        :enabled (e-layer-selection--canonical-bool
+                  (plist-get value :enabled))
+        :active (e-layer-selection--canonical-bool
+                 (plist-get value :active))))
+
+(defun e-layer-selection--canonical-result (value)
+  "Project an internal layer-selection VALUE into canonical JSON."
+  (if (and (listp value)
+           (or (null value) (keywordp (car value)))
+           (plist-member value :status))
+      (list :status (e-layer-selection--string-or-null
+                     (plist-get value :status))
+            :layer-id (e-layer-selection--string-or-null
+                       (plist-get value :layer-id))
+            :enabled (e-layer-selection--canonical-bool
+                      (plist-get value :enabled))
+            :active (e-layer-selection--canonical-bool
+                     (plist-get value :active)))
+    (vconcat (mapcar #'e-layer-selection--canonical-record value))))
 
 (defun e-layer-selection-list (harness)
   "Return known layer state for HARNESS."
@@ -48,10 +87,9 @@
 (defun e-layer-selection--action-layer-id (arguments)
   "Return layer id from action ARGUMENTS."
   (let ((layer (plist-get arguments :layer)))
-    (cond
-     ((symbolp layer) layer)
-     ((stringp layer) (intern layer))
-     (t (user-error "Layer action requires :layer")))))
+    (unless (stringp layer)
+      (user-error "Layer action requires a canonical string :layer"))
+    (intern layer)))
 
 (defun e-layer-selection--action (handler caller description &optional parameters)
   "Return layer-selection cheap work action descriptor for HANDLER.
@@ -62,7 +100,8 @@ DESCRIPTION explains the action contract to callers."
    :description description
    :parameters parameters
    :runner (lambda (arguments context)
-             (funcall caller context arguments))))
+             (e-layer-selection--canonical-result
+              (funcall caller context arguments)))))
 
 (defun e-layer-selection-capability-create ()
   "Create the generic layer-selection capability."
@@ -86,7 +125,8 @@ DESCRIPTION explains the action contract to callers."
           "Enable one globally registered layer. Pass an exact id returned by :list; project-local extension ids are not valid here."
           '(:type "object"
             :properties (:layer (:type "string"))
-            :required ["layer"]))
+            :required ["layer"]
+            :additionalProperties :json-false))
          :disable
          (e-layer-selection--action
           #'e-layer-selection-disable
@@ -97,7 +137,8 @@ DESCRIPTION explains the action contract to callers."
           "Disable one explicitly enabled globally registered layer. Pass an exact id returned by :list."
           '(:type "object"
             :properties (:layer (:type "string"))
-            :required ["layer"]))
+            :required ["layer"]
+            :additionalProperties :json-false))
          :toggle
          (e-layer-selection--action
           #'e-layer-selection-toggle
@@ -108,7 +149,8 @@ DESCRIPTION explains the action contract to callers."
           "Toggle one globally registered layer. Pass an exact id returned by :list; project-local extension ids are not valid here."
           '(:type "object"
             :properties (:layer (:type "string"))
-            :required ["layer"])))))
+            :required ["layer"]
+            :additionalProperties :json-false)))))
 
 (provide 'e-layer-selection)
 

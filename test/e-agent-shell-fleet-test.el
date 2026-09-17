@@ -79,7 +79,7 @@
                            :agent-id "codex")))
                    (work-id (plist-get handoff :work-id)))
               (should (string-prefix-p "asw_" work-id))
-              (should (eq (plist-get handoff :status) 'busy))
+              (should (equal (plist-get handoff :status) "busy"))
               (should (equal (plist-get handoff :shell-buffer)
                              " *agent-shell-fleet*"))
               (should (equal sent (list (list buffer "Do feature 34"))))
@@ -103,12 +103,12 @@
                capability :send-followup
                (list :work-id work-id :prompt "continue"))
               (should (equal (car sent) (list buffer "continue")))
-              (should (eq (plist-get
+              (should (equal (plist-get
                            (e-agent-shell-fleet-test--call
                             capability :interrupt-work
                             (list :work-id work-id :force t))
                            :status)
-                          'interrupted))
+                          "interrupted"))
               (should (equal interrupted (list buffer t))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
@@ -137,8 +137,8 @@
           (let ((record (e-agent-shell-fleet-test--call
                          capability :adopt-work
                          (list :buffer " *agent-shell-manual*"))))
-            (should (eq (plist-get record :origin) 'adopted))
-            (should (eq (plist-get record :status) 'blocked))
+            (should (equal (plist-get record :origin) "adopted"))
+            (should (equal (plist-get record :status) "blocked"))
             (should (equal (plist-get record :agent-session-id)
                            "manual-session"))
             (should (= (length (e-agent-shell-work-list registry)) 1))))
@@ -163,18 +163,19 @@
                    (lambda (candidate)
                      (should (eq candidate buffer))
                      status)))
-          (should (eq (plist-get
-                       (car (e-agent-shell-fleet-test--call
-                             capability :list-work nil))
+          (should (equal (plist-get
+                       (aref (e-agent-shell-fleet-test--call
+                              capability :list-work nil)
+                             0)
                        :status)
-                      'blocked))
+                      "blocked"))
           (setq status 'finished)
-          (should (eq (plist-get
+          (should (equal (plist-get
                        (e-agent-shell-fleet-test--call
                         capability :work-status
                         (list :work-id work-id))
                        :status)
-                      'finished)))
+                      "finished")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -198,17 +199,18 @@
                      (lambda (candidate)
                        (should (eq candidate buffer))
                        'ready)))
-            (should (eq (plist-get
+            (should (equal (plist-get
                          (e-agent-shell-fleet-test--call
                           capability :work-status
                           (list :work-id work-id))
                          :status)
-                        'finished))
-            (should (eq (plist-get
-                         (car (e-agent-shell-fleet-test--call
-                               capability :list-work nil))
+                        "finished"))
+            (should (equal (plist-get
+                         (aref (e-agent-shell-fleet-test--call
+                                capability :list-work nil)
+                               0)
                          :status)
-                        'finished))))
+                        "finished"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

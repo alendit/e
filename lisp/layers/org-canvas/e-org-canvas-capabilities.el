@@ -18,6 +18,7 @@
 (require 'e-context)
 (require 'e-harness)
 (require 'e-hooks)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-session)
 (require 'e-session-async)
@@ -362,7 +363,7 @@ metadata while the corresponding SQLite write remains in flight."
      ((vectorp path)
       (setq path (append path nil)))
      ((stringp path)
-      (setq path (split-string path "/" t "[[:space:]\n]+"))))
+      (signal 'wrong-type-argument (list 'vectorp :heading_path))))
     (when (and (listp path)
                (cl-every #'stringp path))
       path)))
@@ -615,18 +616,19 @@ and returns the number of paragraphs whose text changed."
   (e-action-cheap-create
    :owner 'org-canvas
    :runner (lambda (arguments context)
-             (funcall handler
-                      (e-org-canvas--require-tool-session
-                       (plist-get context :harness)
-                       (plist-get context :session-id))
-                      arguments))
+             (e-json-assert-value
+              (funcall handler
+                       (e-org-canvas--require-tool-session
+                        (plist-get context :harness)
+                        (plist-get context :session-id))
+                       arguments)))
    :description description
-   :parameters (or parameters '(:type "object" :properties nil))
+   :parameters parameters
    :requires-session t))
 
 (defun e-org-canvas--actions ()
   "Return Org Canvas action plist."
-  (let ((empty-object '(:type "object" :properties ())))
+  (let ((empty-object nil))
     (list
      :visibility-state
      (e-org-canvas--action
@@ -649,7 +651,9 @@ and returns the number of paragraphs whose text changed."
         :properties (:point (:type "number")
                      :heading_path (:type "array"
                                     :items (:type "string"))
-                     :operation (:type "string"))))
+                     :operation (:type "string"))
+        :required []
+        :additionalProperties :json-false))
      :show-all
      (e-org-canvas--action
       "Show all headings in the current Org Canvas buffer."

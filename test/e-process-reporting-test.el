@@ -9,6 +9,7 @@
 (require 'e-actions)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-process-reporting)
 (require 'e-session)
 (require 'e-session-async)
@@ -279,7 +280,7 @@
                      store "session-1" :record-type "process-report"
                      :limit e-process-reporting-record-limit))))
         (should (= (length listed) 1))
-        (should (equal (plist-get (car listed) :status) "closed"))
+        (should (equal (plist-get (aref listed 0) :status) "closed"))
         (should (= (length (plist-get read :triage)) 1))
         (should (= (length (plist-get read :extractions)) 1))
         (should (= (plist-get cost :measured-request-count) 1))
@@ -497,8 +498,8 @@
              (e-process-reporting-test--await-action
               harness :list '(:status "closed"))))
         (should (= (length closed) 1))
-        (should (equal (plist-get (car closed) :marker-id) marker-id))
-        (should (equal (plist-get (car closed) :status) "closed"))))))
+        (should (equal (plist-get (aref closed 0) :marker-id) marker-id))
+        (should (equal (plist-get (aref closed 0) :status) "closed"))))))
 
 (ert-deftest e-process-reporting-test-extraction-validates-raw-marker-bound-before-reads ()
   "Raw extraction cardinality is bounded before dedupe or exact marker reads."
@@ -632,11 +633,11 @@
         (should (stringp (plist-get trigger :activity-event-id)))
         (should (= (length (plist-get record :trigger-chain)) 1))
         (should (equal (plist-get trigger :activity-event-id)
-                       (plist-get (car (plist-get record :trigger-chain))
+                       (plist-get (aref (plist-get record :trigger-chain) 0)
                                   :activity-event-id)))
-        (should-not (plist-get trigger :arguments-preview))
-        (should-not (plist-get trigger :result-preview))
-        (should-not (plist-get trigger :error-preview))
+        (should (eq (plist-get trigger :arguments-preview) e-json-null))
+        (should (eq (plist-get trigger :result-preview) e-json-null))
+        (should (eq (plist-get trigger :error-preview) e-json-null))
         (should-not (string-match-p "REDACTED" serialized))
         (should-not (string-match-p "top-secret\\|private-value" serialized))))))
 
@@ -752,7 +753,7 @@
          :paired-shape (:sha256 "d" :bytes 80)))
       (let* ((report (e-process-reporting-test--call-action
                       harness :cost-report nil))
-             (entry (car (plist-get report :requests))))
+             (entry (aref (plist-get report :requests) 0)))
         (should (equal (plist-get report :scope)
                        "request-shape-counterfactual"))
         (should (= (plist-get entry :direct-context-delta-bytes) 60))
@@ -763,8 +764,8 @@
         (should (plist-get entry :marker-follow-up))
         (should (equal (plist-get report :estimation-method)
                        "backend-neutral-serialized-utf-8-bytes"))
-        (should-not (plist-get report :provider-tokenizer-used))
-        (should-not (plist-get report :behavioral-estimate))))))
+        (should (eq (plist-get report :provider-tokenizer-used) e-json-false))
+        (should (eq (plist-get report :behavioral-estimate) e-json-false))))))
 
 (ert-deftest e-process-reporting-test-request-shape-measurement-is-explicit-and-owned ()
   "Explicit accounting removes only capability-owned marker surfaces."
@@ -810,14 +811,14 @@
          :provider-request-ordinal 1))
       (let* ((report (e-process-reporting-test--call-action
                       harness :cost-report nil))
-             (entry (car (plist-get report :requests))))
+             (entry (aref (plist-get report :requests) 0)))
         (should (equal (plist-get report :measurement-status)
                        "not-recorded"))
         (should (= (plist-get report :measured-request-count) 0))
-        (should-not (plist-get report :direct-context-delta-bytes))
+        (should (eq (plist-get report :direct-context-delta-bytes) e-json-null))
         (should (equal (plist-get entry :measurement-status)
                        "not-recorded"))
-        (should-not (plist-get entry :actual-bytes))))))
+        (should (eq (plist-get entry :actual-bytes) e-json-null))))))
 
 (ert-deftest e-process-reporting-test-reports-use-session-store-not-transcript ()
   (e-process-reporting-test--with-store (store directory)
@@ -1035,9 +1036,9 @@
                '(:signal "success" :note "Running parent mattered."))
               :trigger-chain)))
         (should (= (length chain) 2))
-        (should (equal (plist-get (car chain) :call-id) "action-1"))
-        (should (equal (plist-get (cadr chain) :call-id) "run-1"))
-        (should (equal (plist-get (cadr chain) :event-type) "tool-started"))))))
+        (should (equal (plist-get (aref chain 0) :call-id) "action-1"))
+        (should (equal (plist-get (aref chain 1) :call-id) "run-1"))
+        (should (equal (plist-get (aref chain 1) :event-type) "tool-started"))))))
 
 (ert-deftest e-process-reporting-test-trigger-chain-keeps-latest-independent-operation ()
   (dolist (history
@@ -1067,7 +1068,7 @@
                         '(:signal "success" :note "Latest operation mattered.")))
                (chain (plist-get marker :trigger-chain)))
           (should (= (length chain) 1))
-          (should (equal (plist-get (car chain) :call-id) (car (last history)))))))))
+          (should (equal (plist-get (aref chain 0) :call-id) (car (last history)))))))))
 
 (ert-deftest e-process-reporting-test-completed-request-is-not-current ()
   (e-process-reporting-test--with-store (store directory)
@@ -1081,7 +1082,7 @@
       (let ((marker (e-process-reporting-test--call-action
                      harness :mark
                      '(:signal "success" :note "Runtime action."))))
-        (should-not (plist-get marker :provider-request-id))))))
+        (should (eq (plist-get marker :provider-request-id) e-json-null))))))
 
 (provide 'e-process-reporting-test)
 

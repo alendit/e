@@ -20,6 +20,7 @@
 (require 'e-dev-layer)
 (require 'e-harness)
 (require 'e-harness-base)
+(require 'e-json)
 (require 'e-resources)
 (require 'e-tools)
 
@@ -110,7 +111,7 @@
                        (e-harness-resources harness "session-1" "turn-1")
                        "tmp://default_context.md")))
         (should (equal (plist-get metadata :uri) "tmp://default_context.md"))
-        (should (eq (plist-get metadata :mode) 'pre-prompt))
+        (should (equal (plist-get metadata :mode) "pre-prompt"))
         (should (equal (plist-get metadata :message-count) 4))
         (should (eq seen-purpose 'preview))
         (should (string-match-p "capability instructions" content))
@@ -157,7 +158,7 @@
              (content (e-resources-read
                        (e-harness-resources harness "session-1" "turn-1")
                        "tmp://context.md")))
-        (should (eq (plist-get metadata :mode) 'full))
+        (should (equal (plist-get metadata :mode) "full"))
         (should (equal (plist-get metadata :message-count) 4))
         (should (eq seen-purpose 'preview))
         (should (string-match-p "system guidance" content))
@@ -232,7 +233,8 @@
        (equal
         (e-actions-call 'context-inspection :recent-failures nil
                         (list :harness harness))
-        '((:session-id "session-1" :turn-id "turn-1")))))))
+        [(:session-id "session-1" :turn-id "turn-1"
+          :error :json-null :details :json-null)])))))
 
 (ert-deftest e-context-inspection-test-failure-detail-includes-turn-timeline ()
   "Failure detail maps a detached bounded SQLite turn timeline."
@@ -311,7 +313,7 @@
 (ert-deftest e-context-inspection-test-raw-provider-preview-unavailable ()
   "Raw provider preview returns an explicit unavailable shape by default."
   (let ((preview (e-context-inspection-raw-provider-preview)))
-    (should-not (plist-get preview :available))
+    (should (eq (plist-get preview :available) e-json-false))
     (should (equal (plist-get preview :source) "unavailable"))))
 
 (provide 'e-context-inspection-test)

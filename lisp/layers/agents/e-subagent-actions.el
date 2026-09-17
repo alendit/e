@@ -19,6 +19,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-chat-service)
+(require 'e-json)
 (require 'e-subagent-live)
 (require 'e-subagent-runner)
 
@@ -38,12 +39,41 @@ inventory or terminal projection.")
     value))
 
 (defun e-subagent-actions--schedule (value)
-  "Normalize a schedule VALUE from the action surface."
+  "Map canonical schedule VALUE to the runner's domain symbol."
   (cond
    ((null value) nil)
-   ((symbolp value) value)
    ((stringp value) (intern (string-remove-prefix ":" value)))
-   (t (signal 'wrong-type-argument (list 'symbolp :schedule)))))
+   (t (signal 'wrong-type-argument (list 'stringp :schedule)))))
+
+(defun e-subagent-actions--seed-message (value)
+  "Map one canonical seed message VALUE to the session domain form."
+  (unless (and (listp value)
+               (stringp (plist-get value :role))
+               (stringp (plist-get value :content)))
+    (signal 'wrong-type-argument (list 'canonical-seed-message value)))
+  (list :role (intern (plist-get value :role))
+        :content (plist-get value :content)))
+
+(defun e-subagent-actions--seed-messages (arguments)
+  "Map canonical seed-message vector in ARGUMENTS to a domain list."
+  (let ((messages (plist-get arguments :seed-messages)))
+    (and messages
+         (mapcar #'e-subagent-actions--seed-message
+                 (append messages nil)))))
+
+(defun e-subagent-actions--layer-config (arguments)
+  "Map canonical layer-config object in ARGUMENTS to an owner alist."
+  (let ((value (plist-get arguments :layer-config))
+        result)
+    (while value
+      (let* ((key (pop value))
+             (config (pop value)))
+        (unless (or (null config) (listp config))
+          (signal 'wrong-type-argument
+                  (list 'canonical-capability-config config)))
+        (push (cons (intern (substring (symbol-name key) 1)) config)
+              result)))
+    (nreverse result)))
 
 (defun e-subagent-actions--publication-target (context)
   "Return CONTEXT's explicit parent-session SQL publication target."
@@ -101,7 +131,7 @@ record live."
    :source-turn-id (plist-get context :turn-id)
    :type (plist-get arguments :type)
    :prompt (plist-get arguments :prompt)
-   :seed-messages (plist-get arguments :seed-messages)
+   :seed-messages (e-subagent-actions--seed-messages arguments)
    :label (plist-get arguments :label)
    :schedule (e-subagent-actions--schedule (plist-get arguments :schedule))))
 
@@ -135,9 +165,12 @@ record live."
   "Configure a spawnable type's shared harness from ARGUMENTS."
   (e-subagent-configure-type
    (plist-get arguments :type)
-   :enable-layers (plist-get arguments :enable-layers)
-   :disable-layers (plist-get arguments :disable-layers)
-   :layer-config (plist-get arguments :layer-config)))
+   :enable-layers (and (plist-member arguments :enable-layers)
+                       (append (plist-get arguments :enable-layers) nil))
+   :disable-layers (and (plist-member arguments :disable-layers)
+                        (append (plist-get arguments :disable-layers) nil))
+   :layer-config (and (plist-member arguments :layer-config)
+                      (e-subagent-actions--layer-config arguments))))
 
 (defun e-subagent-actions--report (live context arguments)
   "Record a child-reported structured result for CONTEXT's own session."
@@ -151,6 +184,91 @@ record live."
       (list :status 'ignored
             :reason "Calling session is not a tracked subagent")))
 
+(defun e-subagent-actions--canonical-string (value)
+  "Return VALUE as a canonical string or explicit JSON null."
+  (cond
+   ((stringp value) value)
+   ((null value) e-json-null)
+   ((symbolp value) (symbol-name value))
+   (t (format "%s" value))))
+
+(defun e-subagent-actions--canonical-output (value)
+  "Project one owner output VALUE into canonical JSON."
+  (list :kind (e-subagent-actions--canonical-string (plist-get value :kind))
+        :uri (e-subagent-actions--canonical-string (plist-get value :uri))
+        :value (e-subagent-actions--canonical-string
+                (plist-get value :value))
+        :label (e-subagent-actions--canonical-string (plist-get value :label))))
+
+(defun e-subagent-actions--canonical-record (value)
+  "Project transient subagent record VALUE into canonical JSON."
+  (list :board-id (e-subagent-actions--canonical-string
+                   (plist-get value :board-id))
+        :participant-id (e-subagent-actions--canonical-string
+                         (plist-get value :participant-id))
+        :session-id (e-subagent-actions--canonical-string
+                     (plist-get value :session-id))
+        :parent-session-id (e-subagent-actions--canonical-string
+                            (plist-get value :parent-session-id))
+        :type (e-subagent-actions--canonical-string (plist-get value :type))
+        :role (e-subagent-actions--canonical-string (plist-get value :role))
+        :label (e-subagent-actions--canonical-string (plist-get value :label))
+        :schedule (e-subagent-actions--canonical-string
+                   (plist-get value :schedule))
+        :status (e-subagent-actions--canonical-string
+                 (plist-get value :status))
+        :await-ref (e-subagent-actions--canonical-string
+                    (plist-get value :await-ref))
+        :work-id (e-subagent-actions--canonical-string
+                  (plist-get value :work-id))
+        :run-id (e-subagent-actions--canonical-string
+                 (plist-get value :run-id))
+        :task-key (e-subagent-actions--canonical-string
+                   (plist-get value :task-key))
+        :attempt (if (integerp (plist-get value :attempt))
+                     (plist-get value :attempt)
+                   e-json-null)
+        :result-summary (e-subagent-actions--canonical-string
+                         (plist-get value :result-summary))
+        :error (e-subagent-actions--canonical-string
+                (plist-get value :error))
+        :outputs (vconcat (mapcar #'e-subagent-actions--canonical-output
+                                  (or (plist-get value :outputs) nil)))
+        :result (let ((result (plist-get value :result)))
+                  (if (e-json-value-p result) result e-json-null))))
+
+(defun e-subagent-actions--canonical-config-result (value)
+  "Project configure-type VALUE without exposing domain config records."
+  (list :type (e-subagent-actions--canonical-string (plist-get value :type))
+        :enabled-layers
+        (vconcat (mapcar #'e-subagent-actions--canonical-string
+                         (or (plist-get value :enabled-layers) nil)))
+        :configured-capabilities
+        (vconcat
+         (mapcar (lambda (entry)
+                   (e-subagent-actions--canonical-string (car entry)))
+                 (or (plist-get value :capability-config) nil)))))
+
+(defun e-subagent-actions--canonical-result (value)
+  "Project one subagent action VALUE into canonical JSON."
+  (cond
+   ((and (listp value) (plist-member value :reported))
+    (list :participant-id
+          (e-subagent-actions--canonical-string
+           (plist-get value :participant-id))
+          :session-id
+          (e-subagent-actions--canonical-string
+           (plist-get value :session-id))
+          :reported (if (eq (plist-get value :reported) t)
+                        t e-json-false)))
+   ((and (listp value) (plist-member value :enabled-layers))
+    (e-subagent-actions--canonical-config-result value))
+   ((and (listp value) (plist-member value :participant-id))
+    (e-subagent-actions--canonical-record value))
+   ((e-json-value-p value) value)
+   (t (signal 'e-json-error
+              (list "Subagent action returned a noncanonical result")))))
+
 (defun e-subagent-actions--action (live handler parameters)
   "Return a cheap work action descriptor binding LIVE into HANDLER.
 HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
@@ -158,7 +276,8 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
    :owner 'subagents
    :parameters parameters
    :runner (lambda (arguments context)
-             (funcall handler live context arguments))))
+             (e-subagent-actions--canonical-result
+              (funcall handler live context arguments)))))
 
 (defconst e-subagent-actions--spawn-parameters
   '(:type "object"
@@ -171,6 +290,11 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
       :description "The child's task prompt.")
      :seed-messages
      (:type "array"
+      :items (:type "object"
+              :properties (:role (:type "string")
+                           :content (:type "string"))
+              :required ["role" "content"]
+              :additionalProperties :json-false)
       :description "Optional explicit context messages appended before the task prompt.")
      :label
      (:type "string"
@@ -178,7 +302,8 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
      :schedule
      (:type "string"
       :description "direct (default) or queue."))
-    :required ["type" "prompt"])
+    :required ["type" "prompt"]
+    :additionalProperties :json-false)
   "Action parameters for subagent spawn.")
 
 (defconst e-subagent-actions--participant-id-parameters
@@ -187,7 +312,8 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
     (:participant-id
      (:type "string"
       :description "Durable participant/session id returned by spawn."))
-    :required ["participant-id"])
+    :required ["participant-id"]
+    :additionalProperties :json-false)
   "Action parameters for subagent lookup operations.")
 
 (defconst e-subagent-actions--steer-parameters
@@ -202,7 +328,8 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
      :reason
      (:type "string"
       :description "Optional bounded audit reason; it is not sent to the child."))
-    :required ["participant-id" "prompt"])
+    :required ["participant-id" "prompt"]
+    :additionalProperties :json-false)
   "Action parameters for steer and send.")
 
 (defconst e-subagent-actions--send-parameters
@@ -214,7 +341,8 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
      :prompt
      (:type "string"
       :description "Prompt to queue as a follow-up turn."))
-    :required ["participant-id" "prompt"])
+    :required ["participant-id" "prompt"]
+    :additionalProperties :json-false)
   "Action parameters for send.")
 
 (defconst e-subagent-actions--intervention-parameters
@@ -226,7 +354,8 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
      :reason
      (:type "string"
       :description "Optional bounded audit reason; it is not sent to the child."))
-    :required ["participant-id"])
+    :required ["participant-id"]
+    :additionalProperties :json-false)
   "Action parameters for interrupt and shutdown.")
 
 (defconst e-subagent-actions--report-parameters
@@ -234,14 +363,22 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
     :properties
     (:outputs
      (:type "array"
-      :description "Structured artifact list, each (:kind :value|:uri :label).")
+      :items (:type "object"
+              :properties (:kind (:type "string")
+                           :uri (:type "string")
+                           :value (:type "string")
+                           :label (:type "string"))
+              :required ["kind"]
+              :additionalProperties :json-false)
+      :description "Structured artifact list, each with string kind and uri/value/label.")
      :result
      (:type "object"
       :description "Optional bounded application-owned structured result.")
      :summary
      (:type "string"
       :description "Short result summary."))
-    :required [])
+    :required []
+    :additionalProperties :json-false)
   "Action parameters for the child-side report action.")
 
 (defconst e-subagent-actions--configure-type-parameters
@@ -252,14 +389,17 @@ HANDLER is called as (LIVE CONTEXT ARGUMENTS)."
       :description "Spawnable subagent type id to configure, e.g. tool-user.")
      :enable-layers
      (:type "array"
+      :items (:type "string")
       :description "Layer ids to enable on the type's shared harness, e.g. [\"web\"].")
      :disable-layers
      (:type "array"
+      :items (:type "string")
       :description "Layer ids to disable on the type's shared harness.")
      :layer-config
      (:type "object"
-      :description "Alist mapping a capability id to its option plist, e.g. ((agents-std-context :skills-include (\"writing\"))). Generic way to pass or overwrite a layer's configuration."))
-    :required ["type"])
+      :description "Object mapping capability ids to canonical option objects."))
+    :required ["type"]
+    :additionalProperties :json-false)
   "Action parameters for configuring a spawnable type's harness.")
 
 (defun e-subagent-actions-parent-alist (&optional live)

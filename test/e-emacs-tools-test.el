@@ -678,7 +678,7 @@ point, so the test loop must yield rather than spin the CPU."
                        (list :harness harness :session-id session-id)))
                (job-id (plist-get start :job_id)))
     (should (stringp job-id))
-    (should (eq (plist-get start :status) 'running))
+    (should (equal (plist-get start :status) "running"))
     (should (e-emacs-tools-test--wait-until
              (lambda ()
                (eq (plist-get (e-elisp-job-result job-id) :status) 'ok))

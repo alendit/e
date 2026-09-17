@@ -100,7 +100,7 @@
           (e-resources-edit
            resources
            (concat "buffer://" (buffer-name buffer))
-           '((:oldText "old" :newText "new")))
+           [(:oldText "old" :newText "new")])
           (should (equal (with-current-buffer buffer (buffer-string))
                          "new"))
           (should (equal (mapcar #'e-operation-id

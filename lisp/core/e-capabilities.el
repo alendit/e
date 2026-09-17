@@ -17,6 +17,7 @@
 (require 'cl-lib)
 (require 'e-context)
 (require 'e-hooks)
+(require 'e-json)
 (require 'e-message-details)
 (require 'e-resources)
 (require 'e-store)
@@ -60,6 +61,20 @@
   tool-metadata
   work)
 
+(defconst e-action-empty-parameters
+  '(:type "object"
+    :properties nil
+    :required []
+    :additionalProperties :json-false)
+  "Strict canonical schema for an action that takes no arguments.")
+
+(defun e-capabilities--copy-schema (schema)
+  "Return a detached canonical copy of action SCHEMA.
+SCHEMA has already passed the shared canonical schema validator when this
+helper is called.  `copy-tree' with VECP non-nil preserves nested vectors while
+leaving the canonical keyword/scalar representation unchanged."
+  (copy-tree schema t))
+
 (cl-defun e-action-create
     (&key description parameters requires-session tool-metadata work)
   "Create a work-backed capability action descriptor.
@@ -67,12 +82,22 @@ Actions must execute through `e-work-start'.  Cheap immediate actions should use
 `e-action-cheap-create', which still creates a `:cheap' work spec."
   (unless (e-work-spec-p work)
     (signal 'wrong-type-argument (list 'e-work-spec-p work)))
-  (e-action--create
-   :description description
-   :parameters (or parameters (e-work-spec-parameters work))
-   :requires-session requires-session
-   :tool-metadata tool-metadata
-   :work work))
+  (let ((schema (or parameters
+                    (e-work-spec-parameters work)
+                    e-action-empty-parameters)))
+    (condition-case error-data
+        (progn
+          (e-json-schema-assert-schema schema)
+          (e-action--create
+           :description description
+           :parameters (e-capabilities--copy-schema schema)
+           :requires-session requires-session
+           :tool-metadata tool-metadata
+           :work work))
+      (e-json-error
+       (signal 'wrong-type-argument
+               (list 'canonical-action-schema
+                     (error-message-string error-data)))))))
 
 (cl-defun e-action-cheap-create
     (&key id description parameters requires-session tool-metadata owner runner)

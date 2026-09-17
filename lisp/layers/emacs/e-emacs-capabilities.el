@@ -17,6 +17,7 @@
 (require 'e-context)
 (require 'e-elisp-job)
 (require 'e-emacs-tools)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-skills)
 (require 'e-tools)
@@ -294,6 +295,25 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
           :match (and (plist-get state :match) t)
           :shell_buffer (plist-get state :shell-buffer))))
 
+(defun e-workspace-awareness--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (if (stringp value) value e-json-null))
+
+(defun e-workspace-awareness--canonical-result (value)
+  "Project workspace action VALUE into canonical JSON."
+  (list :current (e-workspace-awareness--canonical-string
+                  (plist-get value :current))
+        :shell (e-workspace-awareness--canonical-string
+                (plist-get value :shell))
+        :match (if (eq (plist-get value :match) t) t e-json-false)
+        :shell_buffer (e-workspace-awareness--canonical-string
+                       (plist-get value :shell_buffer))
+        :buffer (e-workspace-awareness--canonical-string
+                 (plist-get value :buffer))
+        :workspace (e-workspace-awareness--canonical-string
+                    (plist-get value :workspace))
+        :focused (if (eq (plist-get value :focused) t) t e-json-false)))
+
 (defun e-workspace-awareness--argument-string (arguments key)
   "Return required string argument KEY from ARGUMENTS."
   (let ((value (plist-get arguments key)))
@@ -310,7 +330,7 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
 (defun e-workspace-awareness--focus-buffer (buffer &optional add-to-workspace)
   "Focus BUFFER through workspace-aware display helpers.
 When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
-  (let ((workspace (e-workspace-awareness--buffer-target-workspace buffer)))
+    (let ((workspace (e-workspace-awareness--buffer-target-workspace buffer)))
     (when add-to-workspace
       (e-workspace-add-buffer buffer workspace))
     (e-workspace-pop-to-buffer buffer :workspace workspace)
@@ -324,9 +344,10 @@ When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
   (e-action-cheap-create
    :owner 'workspace-awareness
    :runner (lambda (arguments context)
-             (funcall caller context arguments))
+             (e-workspace-awareness--canonical-result
+              (funcall caller context arguments)))
    :description description
-   :parameters (or parameters '(:type "object" :properties nil))))
+   :parameters parameters))
 
 (defun e-workspace-awareness--actions ()
   "Return workspace-awareness action plist."
@@ -343,13 +364,14 @@ When ADD-TO-WORKSPACE is non-nil, add BUFFER to its target workspace first."
       (let* ((name (e-workspace-awareness--argument-string arguments :buffer))
              (buffer (or (get-buffer name)
                          (user-error "No buffer named %s" name))))
-        (e-workspace-awareness--focus-buffer
+         (e-workspace-awareness--focus-buffer
          buffer
-         (plist-get arguments :add_to_workspace))))
+         (eq (plist-get arguments :add_to_workspace) t))))
     '(:type "object"
       :properties (:buffer (:type "string")
                    :add_to_workspace (:type "boolean"))
-      :required ["buffer"]))
+      :required ["buffer"]
+      :additionalProperties :json-false))
    :show-shell
    (e-workspace-awareness--action
     "Show the active e shell buffer in its workspace."

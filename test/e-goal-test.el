@@ -52,12 +52,13 @@
                        :title "Finish feature"
                        :objective "Complete the plan safely"
                        :reference-uri "file://plan.org"
-                       :steps '("Implement slice" "Review slice")
-                       :success-criteria '("Tests passed")))))
-      (should-not (plist-get goal :achieved))
+                       :steps [(:title "Implement slice")
+                               (:title "Review slice")]
+                       :success-criteria [(:title "Tests passed")]))))
+      (should (eq (plist-get goal :achieved) e-json-false))
       (let ((action (e-goal-test--call
                      capability :next-action (list :goal-id "feature"))))
-        (should (eq (plist-get action :kind) 'step))
+        (should (equal (plist-get action :kind) "step"))
         (should (equal (plist-get (plist-get action :step) :id)
                        "step-1"))
         (should (string-match-p "Do only this step: step-1"
@@ -68,7 +69,7 @@
        capability :record-step
        (list :goal-id "feature"
              :step-id "step-1"
-             :status 'done
+             :status "done"
              :evidence "commit abc"))
       (should (equal (plist-get
                       (plist-get (e-goal-test--call
@@ -81,11 +82,11 @@
        capability :record-step
        (list :goal-id "feature"
              :step-id "step-2"
-             :status 'done
+             :status "done"
              :evidence "review clean"))
       (let ((action (e-goal-test--call
                      capability :next-action (list :goal-id "feature"))))
-        (should (eq (plist-get action :kind) 'criterion))
+        (should (equal (plist-get action :kind) "criterion"))
         (should (string-match-p "Verify success criterion criterion-1"
                                 (plist-get action :prompt))))
       (e-goal-test--call
@@ -97,11 +98,11 @@
       (let ((status (e-goal-test--call
                      capability :assess-goal (list :goal-id "feature"))))
         (should (plist-get status :achieved))
-        (should (eq (plist-get status :computed-status) 'achieved)))
+        (should (equal (plist-get status :computed-status) "achieved")))
       (let ((action (e-goal-test--call
                      capability :next-action (list :goal-id "feature"))))
-        (should (eq (plist-get action :status) 'achieved))
-        (should-not (plist-get action :prompt))))))
+        (should (equal (plist-get action :status) "achieved"))
+        (should (eq (plist-get action :prompt) e-json-null))))))
 
 (ert-deftest e-goal-test-blocker-prevents-achievement-until-cleared ()
   "Unresolved blockers prevent achievement even when work is complete."
@@ -111,13 +112,13 @@
      capability :define-goal
      (list :goal-id "blocked"
            :title "Blocked goal"
-           :steps '("Implement")
-           :success-criteria '("Reviewed")))
+           :steps [(:title "Implement")]
+           :success-criteria [(:title "Reviewed")]))
     (e-goal-test--call
      capability :record-step
      (list :goal-id "blocked"
            :step-id "step-1"
-           :status 'done))
+           :status "done"))
     (e-goal-test--call
      capability :record-criterion
      (list :goal-id "blocked"
@@ -131,11 +132,11 @@
            :description "Need user decision"))
     (let ((status (e-goal-test--call
                    capability :assess-goal (list :goal-id "blocked"))))
-      (should-not (plist-get status :achieved))
-      (should (eq (plist-get status :computed-status) 'blocked)))
+      (should (eq (plist-get status :achieved) e-json-false))
+      (should (equal (plist-get status :computed-status) "blocked")))
     (let ((action (e-goal-test--call
                    capability :next-action (list :goal-id "blocked"))))
-      (should (eq (plist-get action :status) 'blocked))
+      (should (equal (plist-get action :status) "blocked"))
       (should (string-match-p "Resolve or clear"
                               (plist-get action :prompt))))
     (let ((status (e-goal-test--call
@@ -144,7 +145,7 @@
                          :blocker-id "b1"
                          :evidence "user approved"))))
       (should (plist-get status :achieved))
-      (should (eq (plist-get status :computed-status) 'achieved)))))
+      (should (equal (plist-get status :computed-status) "achieved")))))
 
 (ert-deftest e-goal-test-harness-advanced-includes-goal-capability ()
   "Harness advanced layer includes the Goal capability."

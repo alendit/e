@@ -16,6 +16,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-skills)
 (require 'e-task-queue)
@@ -148,13 +149,77 @@ expects and pass an existing keyword or nil through unchanged."
   (e-task-queue-resume-all queue)
   (e-task-queue-list queue))
 
+(defun e-task-queue-actions--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((symbolp value) (symbol-name value))
+   ((null value) e-json-null)
+   (t (format "%s" value))))
+
+(defun e-task-queue-actions--canonical-value (value)
+  "Project task output VALUE into canonical JSON or bounded text."
+  (if (e-json-value-p value)
+      value
+    (e-task-queue-actions--canonical-string value)))
+
+(defun e-task-queue-actions--canonical-record (value)
+  "Project one internal task VALUE into canonical JSON."
+  (list :task-id (e-task-queue-actions--canonical-string
+                  (plist-get value :task-id))
+        :status (e-task-queue-actions--canonical-string
+                 (plist-get value :status))
+        :prompt (e-task-queue-actions--canonical-string
+                 (plist-get value :prompt))
+        :origin-prompt (e-task-queue-actions--canonical-string
+                        (plist-get value :origin-prompt))
+        :summary (e-task-queue-actions--canonical-string
+                  (plist-get value :summary))
+        :prompt-summary (e-task-queue-actions--canonical-string
+                         (plist-get value :prompt-summary))
+        :metadata (e-task-queue-actions--canonical-value
+                   (plist-get value :metadata))
+        :harness-instance-id (e-task-queue-actions--canonical-string
+                              (plist-get value :harness-instance-id))
+        :enqueued-at (e-task-queue-actions--canonical-string
+                      (plist-get value :enqueued-at))
+        :started-at (e-task-queue-actions--canonical-string
+                     (plist-get value :started-at))
+        :finished-at (e-task-queue-actions--canonical-string
+                      (plist-get value :finished-at))
+        :session-id (e-task-queue-actions--canonical-string
+                     (plist-get value :session-id))
+        :retries (or (plist-get value :retries) 0)
+        :attempt-id (e-task-queue-actions--canonical-string
+                     (plist-get value :attempt-id))
+        :attempt-number (or (plist-get value :attempt-number) 0)
+        :outputs (vconcat (mapcar #'e-task-queue-actions--canonical-value
+                                  (or (plist-get value :outputs) nil)))
+        :error (e-task-queue-actions--canonical-string
+                (plist-get value :error))))
+
+(defun e-task-queue-actions--canonical-result (value)
+  "Project a task-queue action VALUE into canonical JSON."
+  (cond
+   ((and (listp value) (plist-member value :task-id))
+    (e-task-queue-actions--canonical-record value))
+   ((and (listp value) (plist-member value :outputs))
+    (list :task-id (e-task-queue-actions--canonical-string
+                    (plist-get value :task-id))
+          :outputs (vconcat (mapcar #'e-task-queue-actions--canonical-value
+                                    (or (plist-get value :outputs) nil)))))
+   ((listp value)
+    (vconcat (mapcar #'e-task-queue-actions--canonical-record value)))
+   (t (e-json-assert-value value))))
+
 (defun e-task-queue-actions--action (handler parameters)
   "Return a task queue cheap work action descriptor for HANDLER."
-  (e-action-cheap-create
+ (e-action-cheap-create
    :owner 'task-queue
    :parameters parameters
    :runner (lambda (arguments _context)
-             (funcall handler arguments))))
+             (e-task-queue-actions--canonical-result
+              (funcall handler arguments)))))
 
 (defun e-task-queue-actions--enqueue-work (queue)
   "Return work spec that enqueues background agent work on QUEUE."
@@ -168,7 +233,9 @@ expects and pass an existing keyword or nil through unchanged."
    :prompt (lambda (arguments _context)
              (plist-get arguments :prompt))
    :summary (lambda (arguments _context)
-              (plist-get arguments :summary))))
+              (plist-get arguments :summary))
+   :result-shaper (lambda (raw _arguments _context)
+                    (e-task-queue-actions--canonical-result raw))))
 
 (defconst e-task-queue-actions--enqueue-parameters
   '(:type "object"
@@ -185,7 +252,8 @@ expects and pass an existing keyword or nil through unchanged."
      :harness-instance-id
      (:type "string"
       :description "Harness instance id to run on. Defaults to the queue default."))
-    :required ["prompt"])
+    :required ["prompt"]
+    :additionalProperties :json-false)
   "Action parameters for task queue enqueue.")
 
 (defconst e-task-queue-actions--task-id-parameters
@@ -194,7 +262,8 @@ expects and pass an existing keyword or nil through unchanged."
     (:task-id
      (:type "string"
       :description "Task id returned by enqueue."))
-    :required ["task-id"])
+    :required ["task-id"]
+    :additionalProperties :json-false)
   "Action parameters for task lookup operations.")
 
 (cl-defun e-task-queue-capability-create (&key (id 'task-queue) (name "Task Queue") queue)

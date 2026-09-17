@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'e-capabilities)
+(require 'e-json)
 (require 'e-store)
 (require 'subr-x)
 
@@ -97,12 +98,29 @@
      (t (signal 'wrong-type-argument (list 'stringp key))))))
 
 (defun e-goal--argument-list (arguments key)
-  "Return list argument KEY from ARGUMENTS."
+  "Return canonical vector argument KEY as a domain list."
   (let ((value (plist-get arguments key)))
     (cond
      ((null value) nil)
-     ((listp value) value)
-     (t (signal 'wrong-type-argument (list 'listp key))))))
+     ((vectorp value) (append value nil))
+     (t (signal 'wrong-type-argument (list 'vectorp key))))))
+
+(defun e-goal--argument-optional-string (arguments key)
+  "Return optional canonical string KEY as a domain string or nil."
+  (let ((value (plist-get arguments key)))
+    (cond
+     ((or (null value) (eq value e-json-null)) nil)
+     ((stringp value) value)
+     (t (signal 'wrong-type-argument (list 'stringp key))))))
+
+(defun e-goal--argument-status (arguments key default)
+  "Return canonical string status KEY as an internal symbol."
+  (let ((value (if (plist-member arguments key)
+                   (plist-get arguments key)
+                 default)))
+    (unless (stringp value)
+      (signal 'wrong-type-argument (list 'stringp key)))
+    (intern value)))
 
 (defun e-goal--allowed-status-p (status allowed)
   "Return non-nil when STATUS is in ALLOWED."
@@ -123,9 +141,7 @@
 
 (defun e-goal--normalize-step (step index)
   "Return normalized STEP at one-based INDEX."
-  (let* ((plist (if (stringp step)
-                    (list :title step)
-                  step)))
+  (let* ((plist step))
     (unless (and (listp plist) (or (null plist) (keywordp (car plist))))
       (signal 'wrong-type-argument (list 'goal-step step)))
     (let ((id (or (plist-get plist :id)
@@ -139,11 +155,13 @@
       (append (list :id id
                     :title title
                     :status (e-goal--normalize-status
-                             (plist-get plist :status)
+                             (and (plist-member plist :status)
+                                  (e-goal--argument-status
+                                   plist :status "pending"))
                              '(pending in-progress done skipped blocked)
                              'pending)
                     :required (if (plist-member plist :required)
-                                  (plist-get plist :required)
+                                  (eq (plist-get plist :required) t)
                                 t))
               (cl-loop for (key value) on plist by #'cddr
                        unless (memq key '(:id :title :description :status
@@ -152,9 +170,7 @@
 
 (defun e-goal--normalize-criterion (criterion index)
   "Return normalized success CRITERION at one-based INDEX."
-  (let* ((plist (if (stringp criterion)
-                    (list :title criterion)
-                  criterion)))
+  (let* ((plist criterion))
     (unless (and (listp plist) (or (null plist) (keywordp (car plist))))
       (signal 'wrong-type-argument (list 'goal-criterion criterion)))
     (let ((id (or (plist-get plist :id)
@@ -167,8 +183,9 @@
         (signal 'wrong-type-argument (list 'goal-criterion-title criterion)))
       (append (list :id id
                     :title title
-                    :verified (and (plist-get plist :verified) t)
-                    :evidence (plist-get plist :evidence))
+                    :verified (eq (plist-get plist :verified) t)
+                    :evidence (e-goal--argument-optional-string
+                               plist :evidence))
               (cl-loop for (key value) on plist by #'cddr
                        unless (memq key '(:id :title :description :verified
                                                :evidence))
@@ -301,13 +318,117 @@
                              (blockers 'blocked)
                              (t (plist-get goal :status)))))))
 
+(defun e-goal--canonical-string (value)
+  "Return VALUE as a canonical string or JSON null."
+  (cond
+   ((stringp value) value)
+   ((null value) e-json-null)
+   ((symbolp value) (symbol-name value))
+   (t (format "%s" value))))
+
+(defun e-goal--canonical-bool (value)
+  "Return VALUE as a canonical JSON boolean."
+  (if (eq value t) t e-json-false))
+
+(defun e-goal--canonical-step (value)
+  "Project internal goal STEP VALUE into canonical JSON."
+  (list :id (e-goal--canonical-string (plist-get value :id))
+        :title (e-goal--canonical-string (plist-get value :title))
+        :status (e-goal--canonical-string (plist-get value :status))
+        :required (e-goal--canonical-bool (plist-get value :required))
+        :evidence (e-goal--canonical-string (plist-get value :evidence))
+        :notes (e-goal--canonical-string (plist-get value :notes))))
+
+(defun e-goal--canonical-criterion (value)
+  "Project internal goal CRITERION VALUE into canonical JSON."
+  (list :id (e-goal--canonical-string (plist-get value :id))
+        :title (e-goal--canonical-string (plist-get value :title))
+        :verified (e-goal--canonical-bool (plist-get value :verified))
+        :evidence (e-goal--canonical-string (plist-get value :evidence))
+        :notes (e-goal--canonical-string (plist-get value :notes))))
+
+(defun e-goal--canonical-blocker (value)
+  "Project internal goal BLOCKER VALUE into canonical JSON."
+  (list :id (e-goal--canonical-string (plist-get value :id))
+        :description (e-goal--canonical-string
+                      (plist-get value :description))
+        :resolved (e-goal--canonical-bool (plist-get value :resolved))
+        :evidence (e-goal--canonical-string (plist-get value :evidence))))
+
+(defun e-goal--canonical-history (value)
+  "Project internal goal HISTORY VALUE into canonical JSON."
+  (list :event (e-goal--canonical-string (plist-get value :event))
+        :step-id (e-goal--canonical-string (plist-get value :step-id))
+        :criterion-id (e-goal--canonical-string (plist-get value :criterion-id))
+        :status (e-goal--canonical-string (plist-get value :status))
+        :verified (e-goal--canonical-bool (plist-get value :verified))
+        :evidence (e-goal--canonical-string (plist-get value :evidence))
+        :notes (e-goal--canonical-string (plist-get value :notes))))
+
+(defun e-goal--canonical-status (value)
+  "Project internal goal STATUS VALUE into canonical JSON."
+  (list :goal-id (e-goal--canonical-string (plist-get value :goal-id))
+        :title (e-goal--canonical-string (plist-get value :title))
+        :objective (e-goal--canonical-string (plist-get value :objective))
+        :reference-uri (e-goal--canonical-string
+                        (plist-get value :reference-uri))
+        :status (e-goal--canonical-string (plist-get value :status))
+        :steps (vconcat (mapcar #'e-goal--canonical-step
+                                (or (plist-get value :steps) nil)))
+        :success-criteria
+        (vconcat (mapcar #'e-goal--canonical-criterion
+                         (or (plist-get value :success-criteria) nil)))
+        :blockers (vconcat (mapcar #'e-goal--canonical-blocker
+                                   (or (plist-get value :blockers) nil)))
+        :history (vconcat (mapcar #'e-goal--canonical-history
+                                  (or (plist-get value :history) nil)))
+        :achieved (e-goal--canonical-bool (plist-get value :achieved))
+        :unresolved-blockers
+        (vconcat (mapcar #'e-goal--canonical-blocker
+                         (or (plist-get value :unresolved-blockers) nil)))
+        :computed-status (e-goal--canonical-string
+                          (plist-get value :computed-status))))
+
+(defun e-goal--canonical-next-action (value)
+  "Project internal next-action VALUE into canonical JSON."
+  (list :goal-id (e-goal--canonical-string (plist-get value :goal-id))
+        :status (e-goal--canonical-string (plist-get value :status))
+        :achieved (e-goal--canonical-bool (plist-get value :achieved))
+        :kind (e-goal--canonical-string (plist-get value :kind))
+        :step (if (plist-get value :step)
+                  (e-goal--canonical-step (plist-get value :step))
+                e-json-null)
+        :criterion (if (plist-get value :criterion)
+                       (e-goal--canonical-criterion
+                        (plist-get value :criterion))
+                     e-json-null)
+        :blockers (vconcat (mapcar #'e-goal--canonical-blocker
+                                   (or (plist-get value :blockers) nil)))
+        :prompt (e-goal--canonical-string (plist-get value :prompt))
+        :message (e-goal--canonical-string (plist-get value :message))))
+
+(defun e-goal--canonical-result (value)
+  "Project a goal action VALUE into canonical JSON."
+  (cond
+   ((and (listp value)
+         (plist-member value :goal-id)
+         (or (plist-member value :kind)
+             (plist-member value :prompt)))
+    (e-goal--canonical-next-action value))
+   ((and (listp value) (plist-member value :goal-id))
+    (e-goal--canonical-status value))
+   ((listp value)
+    (vconcat (mapcar #'e-goal--canonical-status value)))
+   (t (e-json-assert-value value))))
+
 (defun e-goal-define (registry arguments)
   "Define a goal in REGISTRY from ARGUMENTS."
   (let* ((goal-id (or (e-goal--argument-string arguments :goal-id)
                       (e-goal--next-id registry "goal")))
          (title (e-goal--argument-string arguments :title "Untitled goal"))
-         (objective (e-goal--argument-string arguments :objective))
-         (reference-uri (e-goal--argument-string arguments :reference-uri))
+         (objective (e-goal--argument-optional-string arguments :objective))
+         (reference-uri (e-goal--argument-optional-string
+                         arguments :reference-uri))
          (steps (e-goal--normalize-steps
                  (e-goal--argument-list arguments :steps)))
          (criteria (e-goal--normalize-criteria
@@ -395,15 +516,19 @@
          (step (or (e-goal--find-by-id (plist-get goal :steps) step-id)
                    (user-error "No step %s in goal %s" step-id goal-id)))
          (status (e-goal--normalize-status
-                  (plist-get arguments :status)
+                  (and (plist-member arguments :status)
+                       (e-goal--argument-status
+                        arguments :status (symbol-name (plist-get step :status))))
                   '(pending in-progress done skipped blocked)
                   (plist-get step :status)))
          (updated (copy-sequence step)))
     (plist-put updated :status status)
     (when (plist-member arguments :evidence)
-      (plist-put updated :evidence (plist-get arguments :evidence)))
+      (plist-put updated :evidence
+                 (e-goal--argument-optional-string arguments :evidence)))
     (when (plist-member arguments :notes)
-      (plist-put updated :notes (plist-get arguments :notes)))
+      (plist-put updated :notes
+                 (e-goal--argument-optional-string arguments :notes)))
     (plist-put goal :steps
                (e-goal--replace-by-id (plist-get goal :steps) updated))
     (push (list :event 'step-recorded
@@ -427,18 +552,21 @@
                         (user-error "No criterion %s in goal %s"
                                     criterion-id goal-id)))
          (updated (copy-sequence criterion)))
-    (plist-put updated :verified (and (plist-get arguments :verified) t))
+    (plist-put updated :verified (eq (plist-get arguments :verified) t))
     (when (plist-member arguments :evidence)
-      (plist-put updated :evidence (plist-get arguments :evidence)))
+      (plist-put updated :evidence
+                 (e-goal--argument-optional-string arguments :evidence)))
     (when (plist-member arguments :notes)
-      (plist-put updated :notes (plist-get arguments :notes)))
+      (plist-put updated :notes
+                 (e-goal--argument-optional-string arguments :notes)))
     (plist-put goal :success-criteria
                (e-goal--replace-by-id (plist-get goal :success-criteria)
                                       updated))
     (push (list :event 'criterion-recorded
                 :criterion-id criterion-id
                 :verified (plist-get updated :verified)
-                :evidence (plist-get arguments :evidence)
+                :evidence (e-goal--argument-optional-string
+                           arguments :evidence)
                 :notes (plist-get arguments :notes))
           (plist-get goal :history))
     (when (e-goal-achieved-p goal)
@@ -458,7 +586,8 @@
     (push (list :id blocker-id
                 :description description
                 :resolved nil
-                :evidence (plist-get arguments :evidence))
+                :evidence (e-goal--argument-optional-string
+                           arguments :evidence))
           (plist-get goal :blockers))
     (plist-put goal :status 'blocked)
     (e-goal--status goal)))
@@ -474,7 +603,8 @@
          (updated (copy-sequence blocker)))
     (plist-put updated :resolved t)
     (when (plist-member arguments :evidence)
-      (plist-put updated :evidence (plist-get arguments :evidence)))
+      (plist-put updated :evidence
+                 (e-goal--argument-optional-string arguments :evidence)))
     (plist-put goal :blockers
                (e-goal--replace-by-id (plist-get goal :blockers) updated))
     (unless (e-goal--blockers goal)
@@ -499,7 +629,8 @@
                            (e-goal--argument-string arguments :goal-id))))
     (plist-put goal :status 'stopped)
     (when (plist-member arguments :reason)
-      (plist-put goal :stop-reason (plist-get arguments :reason)))
+      (plist-put goal :stop-reason
+                 (e-goal--argument-optional-string arguments :reason)))
     (e-goal--status goal)))
 
 (defun e-goal--resource-provider ()
@@ -512,12 +643,97 @@
      :description "Goal controller loop and achievement predicate."
      :content e-goal-process-reference)))
 
-(defun e-goal--action (handler)
+(defconst e-goal--id-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string"))
+    :required ["goal-id"]
+    :additionalProperties :json-false)
+  "Canonical parameters for a goal lookup action.")
+
+(defconst e-goal--define-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string")
+                 :title (:type "string")
+                 :objective (:type "string")
+                 :reference-uri (:type "string")
+                 :steps (:type "array"
+                          :items (:type "object"
+                                  :properties (:id (:type "string")
+                                               :title (:type "string")
+                                               :description (:type "string")
+                                               :status (:type "string")
+                                               :required (:type "boolean"))
+                                  :required ["title"]
+                                  :additionalProperties :json-false))
+                 :success-criteria (:type "array"
+                                     :items (:type "object"
+                                             :properties (:id (:type "string")
+                                                          :title (:type "string")
+                                                          :description (:type "string")
+                                                          :verified (:type "boolean")
+                                                          :evidence (:type "string"))
+                                             :required ["title"]
+                                             :additionalProperties :json-false)))
+    :required []
+    :additionalProperties :json-false)
+  "Canonical parameters for defining a goal.")
+
+(defconst e-goal--record-step-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string")
+                 :step-id (:type "string")
+                 :status (:type "string")
+                 :evidence (:type "string")
+                 :notes (:type "string"))
+    :required ["goal-id" "step-id"]
+    :additionalProperties :json-false)
+  "Canonical parameters for recording a step.")
+
+(defconst e-goal--record-criterion-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string")
+                 :criterion-id (:type "string")
+                 :verified (:type "boolean")
+                 :evidence (:type "string")
+                 :notes (:type "string"))
+    :required ["goal-id" "criterion-id"]
+    :additionalProperties :json-false)
+  "Canonical parameters for recording a criterion.")
+
+(defconst e-goal--record-blocker-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string")
+                 :blocker-id (:type "string")
+                 :description (:type "string")
+                 :evidence (:type "string"))
+    :required ["goal-id" "description"]
+    :additionalProperties :json-false)
+  "Canonical parameters for recording a blocker.")
+
+(defconst e-goal--clear-blocker-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string")
+                 :blocker-id (:type "string")
+                 :evidence (:type "string"))
+    :required ["goal-id" "blocker-id"]
+    :additionalProperties :json-false)
+  "Canonical parameters for clearing a blocker.")
+
+(defconst e-goal--stop-parameters
+  '(:type "object"
+    :properties (:goal-id (:type "string")
+                 :reason (:type "string"))
+    :required ["goal-id"]
+    :additionalProperties :json-false)
+  "Canonical parameters for stopping a goal.")
+
+(defun e-goal--action (handler &optional parameters)
   "Return goal cheap work action descriptor for HANDLER."
   (e-action-cheap-create
    :owner 'goal
+   :parameters parameters
    :runner (lambda (arguments _context)
-             (funcall handler arguments))))
+             (e-goal--canonical-result (funcall handler arguments)))))
 
 (cl-defun e-goal-capability-create
     (&key (id 'goal) (name "Goal") registry)
@@ -534,7 +750,8 @@ REGISTRY defaults to `e-goal-default-registry'."
      (list :define-goal
            (e-goal--action
             (lambda (arguments)
-              (e-goal-define registry arguments)))
+              (e-goal-define registry arguments))
+            e-goal--define-parameters)
            :list-goals
            (e-goal--action
             (lambda (arguments)
@@ -542,35 +759,43 @@ REGISTRY defaults to `e-goal-default-registry'."
            :goal-status
            (e-goal--action
             (lambda (arguments)
-              (e-goal-status registry arguments)))
+              (e-goal-status registry arguments))
+            e-goal--id-parameters)
            :next-action
            (e-goal--action
             (lambda (arguments)
-              (e-goal-next-action registry arguments)))
+              (e-goal-next-action registry arguments))
+            e-goal--id-parameters)
            :record-step
            (e-goal--action
             (lambda (arguments)
-              (e-goal-record-step registry arguments)))
+              (e-goal-record-step registry arguments))
+            e-goal--record-step-parameters)
            :record-criterion
            (e-goal--action
             (lambda (arguments)
-              (e-goal-record-criterion registry arguments)))
+              (e-goal-record-criterion registry arguments))
+            e-goal--record-criterion-parameters)
            :record-blocker
            (e-goal--action
             (lambda (arguments)
-              (e-goal-record-blocker registry arguments)))
+              (e-goal-record-blocker registry arguments))
+            e-goal--record-blocker-parameters)
            :clear-blocker
            (e-goal--action
             (lambda (arguments)
-              (e-goal-clear-blocker registry arguments)))
+              (e-goal-clear-blocker registry arguments))
+            e-goal--clear-blocker-parameters)
            :assess-goal
            (e-goal--action
             (lambda (arguments)
-              (e-goal-assess registry arguments)))
+              (e-goal-assess registry arguments))
+            e-goal--id-parameters)
            :stop-goal
            (e-goal--action
             (lambda (arguments)
-              (e-goal-stop registry arguments)))))))
+              (e-goal-stop registry arguments))
+            e-goal--stop-parameters)))))
 
 (provide 'e-goal)
 

@@ -17,6 +17,7 @@
 (require 'e-context-inspection)
 (require 'e-harness)
 (require 'e-layer-selection)
+(require 'e-json)
 (require 'e-layers)
 (require 'e-request)
 (require 'e-runtime-context)
@@ -73,10 +74,15 @@
 (defun e-layer--compact-session-action-result (record)
   "Return the action-facing result plist for compaction RECORD."
   (list :message (e-layer--compact-session-result-message record)
-        :compaction-id (plist-get record :id)
-        :first-kept-entry-id (plist-get record :first-kept-entry-id)
-        :tokens-before (plist-get record :tokens-before)
-        :tokens-kept (plist-get record :tokens-kept)))
+        :compaction-id (or (plist-get record :id) e-json-null)
+        :first-kept-entry-id (or (plist-get record :first-kept-entry-id)
+                                 e-json-null)
+        :tokens-before (if (numberp (plist-get record :tokens-before))
+                           (plist-get record :tokens-before)
+                         e-json-null)
+        :tokens-kept (if (numberp (plist-get record :tokens-kept))
+                         (plist-get record :tokens-kept)
+                       e-json-null)))
 
 (cl-defun e-layer--compact-session-action-request
     (context arguments &key on-done on-error &allow-other-keys)
@@ -145,7 +151,8 @@
                               (:type "string")
                               :keep_recent_tokens
                               (:type "integer"))
-                 :required [])
+                 :required []
+                 :additionalProperties :json-false)
    :requires-session t))
 
 (defun e-core-layer-create ()

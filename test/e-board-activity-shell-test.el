@@ -328,7 +328,7 @@
                                "action-participant"))
                 (should (equal (plist-get read :participant-id)
                                "action-participant"))
-                (should (equal (plist-get (car (plist-get raw :messages))
+                (should (equal (plist-get (aref (plist-get raw :messages) 0)
                                           :content)
                                "two")))))
         (ignore-errors (e-session-sqlite-store-close store))

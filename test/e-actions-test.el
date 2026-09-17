@@ -47,7 +47,9 @@
            :actions
            (list :run
                  (e-action-create
-                  :parameters nil
+                  :parameters '(:type "object"
+                                :properties (:value (:type "string"))
+                                :required ["value"])
                   :work (e-work-spec-create
                          :id "action_work"
                          :execution 'cheap
@@ -129,23 +131,38 @@
       (list :harness harness :session-id "session-1"))
      :type 'e-actions-invalid-arguments)))
 
-(ert-deftest e-actions-test-call-normalizes-string-names-and-arguments ()
-  "Action dispatch accepts JSON-like string names and argument keys."
+(ert-deftest e-actions-test-call-rejects-noncanonical-argument-containers ()
+  "Action dispatch rejects stringified objects and alternate containers."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))
-         (arguments (make-hash-table :test #'equal)))
-    (e-harness-activate-capability harness (e-chat-session-capability-create))
+         (called nil)
+         (capability
+          (e-capability-create
+           :id 'strict-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :parameters '(:type "object"
+                                :properties (:name (:type "string"))
+                                :required ["name"])
+                  :runner (lambda (_arguments _context)
+                            (setq called t)
+                            "ok"))))))
+    (e-harness-activate-capability harness capability)
     (e-harness-create-session harness :id "session-1")
-    (puthash "name" "String renamed" arguments)
-    (e-actions-call
-     "chat-session"
-     ":rename"
-     arguments
-     (list :harness harness :session-id "session-1"))
-    (should (equal (e-harness-session-title harness "session-1")
-                   "String renamed"))))
+    (dolist (arguments
+             (list '(("name" . "string-alist"))
+                   (let ((table (make-hash-table :test #'equal)))
+                     (puthash "name" "hash" table)
+                     table)
+                   "{\"name\":\"stringified\"}"))
+      (should-error
+       (e-actions-call 'strict-action :run arguments
+                       (list :harness harness :session-id "session-1"))
+       :type 'e-actions-invalid-arguments))
+    (should-not called)))
 
-(ert-deftest e-actions-test-call-preserves-list-of-plist-array ()
-  "Schema-declared list arrays keep each object as an array element."
+(ert-deftest e-actions-test-call-preserves-canonical-array-of-objects ()
+  "Canonical vectors of objects reach the runner without reshaping."
   (let* ((seen nil)
          (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
          (parameters
@@ -155,7 +172,8 @@
                         :items (:type "object"
                                 :properties
                                 (:title (:type "string")
-                                 :metadata (:type "object")))))))
+                                 :metadata (:type "object")
+                                 :enabled (:type "boolean")))))))
          (capability
           (e-capability-create
            :id 'array-action
@@ -168,10 +186,12 @@
                             "ok"))))))
     (e-harness-activate-capability harness capability)
     (let ((sections
-           '((:title "first"
-              :metadata (("source" . "alist")))
-             (:title "second"
-              :metadata (:source "plist")))))
+           [(:title "first"
+             :metadata (:source "plist")
+             :enabled :json-false)
+            (:title "second"
+             :metadata nil
+             :enabled t)]))
       (should
        (equal
         (e-actions-call 'array-action :run (list :sections sections)
@@ -179,11 +199,44 @@
         "ok")))
     (should
      (equal seen
-            '(:sections ((:title "first" :metadata (:source "alist"))
-                         (:title "second" :metadata (:source "plist"))))))))
+            '(:sections [(:title "first"
+                          :metadata (:source "plist")
+                          :enabled :json-false)
+                         (:title "second"
+                          :metadata nil
+                          :enabled t)])))))
+
+(ert-deftest e-actions-test-rejects-list-of-plist-array-before-runner ()
+  "The old list-of-plists action shape is rejected before execution."
+  (let* ((called nil)
+         (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
+         (parameters
+          '(:type "object"
+            :properties (:sections (:type "array"
+                                       :items (:type "object"
+                                               :properties
+                                               (:title (:type "string")))))
+            :required ["sections"]))
+         (capability
+          (e-capability-create
+           :id 'array-action
+           :actions
+           (list :run
+                 (e-action-cheap-create
+                  :parameters parameters
+                  :runner (lambda (_arguments _context)
+                            (setq called t)
+                            "ok"))))))
+    (e-harness-activate-capability harness capability)
+    (should-error
+     (e-actions-call 'array-action :run
+                     '(:sections ((:title "first") (:title "second")))
+                     (list :harness harness))
+     :type 'e-actions-invalid-arguments)
+    (should-not called)))
 
 (ert-deftest e-actions-test-call-preserves-vector-of-plist-array ()
-  "Schema-declared vector arrays keep each object as a vector element."
+  "Canonical vector arrays keep each object and sentinel unchanged."
   (let* ((seen nil)
          (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
          (parameters
@@ -193,7 +246,8 @@
                         :items (:type "object"
                                 :properties
                                 (:title (:type "string")
-                                 :metadata (:type "object")))))))
+                                 :metadata (:type "object")
+                                 :enabled (:type "boolean")))))))
          (capability
           (e-capability-create
            :id 'vector-array-action
@@ -207,9 +261,11 @@
     (e-harness-activate-capability harness capability)
     (let ((sections
            [(:title "first"
-             :metadata (("source" . "vector-alist")))
+             :metadata (:source "vector-plist")
+             :enabled :json-false)
             (:title "second"
-             :metadata (:source "vector-plist"))]))
+             :metadata (:source "vector-plist-2")
+             :enabled t)]))
       (should
        (equal
         (e-actions-call 'vector-array-action :run (list :sections sections)
@@ -217,21 +273,24 @@
         "ok")))
     (should
      (equal seen
-            '(:sections [(:title "first" :metadata (:source "vector-alist"))
+            '(:sections [(:title "first"
+                          :metadata (:source "vector-plist")
+                          :enabled :json-false)
                          (:title "second"
-                          :metadata (:source "vector-plist"))])))))
+                          :metadata (:source "vector-plist-2")
+                          :enabled t)])))))
 
-(ert-deftest e-actions-test-call-normalizes-nested-object-containers ()
-  "Schema-declared nested objects accept plists, alists, and hash tables."
+(ert-deftest e-actions-test-call-preserves-nested-canonical-objects ()
+  "Canonical nested objects, arrays, and sentinels reach the runner unchanged."
   (let* ((seen nil)
          (harness (e-harness-create :backend (e-backend-fake-create :items nil)))
-         (hash-object (make-hash-table :test #'equal))
          (parameters
           '(:type "object"
             :properties
-            (:plist (:type "object")
-             :alist (:type "object")
-             :hash (:type "object"))))
+            (:object (:type "object")
+             :array (:type "array" :items (:type "object"))
+             :false (:type "boolean")
+             :null (:type "null"))))
          (capability
           (e-capability-create
            :id 'nested-object-action
@@ -242,22 +301,16 @@
                   :runner (lambda (arguments _context)
                             (setq seen arguments)
                             "ok"))))))
-    (puthash "source" "hash" hash-object)
     (e-harness-activate-capability harness capability)
-    (should
-     (equal
-      (e-actions-call
-       'nested-object-action :run
-       (list :plist '(:source "plist")
-             :alist '(("source" . "alist"))
-             :hash hash-object)
-       (list :harness harness))
-      "ok"))
-    (should
-     (equal seen
-            '(:plist (:source "plist")
-              :alist (:source "alist")
-              :hash (:source "hash"))))))
+    (let ((arguments
+           '(:object (:source "plist")
+             :array [(:source "array")]
+             :false :json-false
+             :null :json-null)))
+      (should (equal (e-actions-call 'nested-object-action :run arguments
+                                     (list :harness harness))
+                     "ok"))
+      (should (equal seen arguments)))))
 
 (ert-deftest e-actions-test-call-uses-current-tool-context ()
   "Action dispatch uses `e-tools-current-context' when options omit context."
@@ -284,6 +337,9 @@
             :run
             (e-action-create
              :requires-session t
+             :parameters '(:type "object"
+                           :properties (:value (:type "string"))
+                           :required ["value"])
              :work (e-work-spec-create
                     :id "async_action"
                     :execution 'cooperative
@@ -325,9 +381,9 @@
         (should-not awaited)
         (funcall finish)
         (let* ((content (plist-get awaited :content))
-               (entry (car (plist-get content :results))))
+               (entry (aref (plist-get content :results) 0)))
           (should (plist-get content :settled))
-          (should (eq (plist-get entry :state) 'finished))
+          (should (equal (plist-get entry :state) "finished"))
           (should (equal (plist-get entry :result) '(:echo "later"))))))
     (let ((finished
            (cl-find 'action-finished

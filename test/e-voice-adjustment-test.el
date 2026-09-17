@@ -103,7 +103,7 @@
      '(:label "Catalog prose" :description "System-tour prose."))
     (let ((listed (e-voice-adjustment-test--call capability :list nil)))
       (should (= (plist-get listed :count) 1))
-      (should (equal (plist-get (car (plist-get listed :tells)) :label)
+      (should (equal (plist-get (aref (plist-get listed :tells) 0) :label)
                      "Catalog prose")))
     (should (= (plist-get
                 (e-voice-adjustment-test--call capability :clear nil)

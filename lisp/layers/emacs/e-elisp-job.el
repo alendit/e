@@ -17,6 +17,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
+(require 'e-json)
 (require 'e-waitable)
 (require 'e-work)
 
@@ -89,12 +90,12 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
 (defun e-elisp-job--load-path (arguments directory)
   "Return normalized load path entries from ARGUMENTS rooted at DIRECTORY."
   (let ((value (plist-get arguments :load_path)))
-    (when (vectorp value)
-      (setq value (append value nil)))
     (cond
      ((null value) nil)
-     ((and (listp value) (seq-every-p #'stringp value))
-      (mapcar (lambda (entry) (expand-file-name entry directory)) value))
+     ((and (vectorp value)
+           (seq-every-p #'stringp (append value nil)))
+      (mapcar (lambda (entry) (expand-file-name entry directory))
+              (append value nil)))
      (t
       (signal 'e-elisp-job-invalid
               '("load_path must be an array of directory strings"))))))
@@ -405,6 +406,44 @@ When INCLUDE-CONTENT is non-nil, include the current bounded content preview."
              (e-elisp-job--content collector
                                    (e-elisp-job--message job)))))))
 
+(defun e-elisp-job--canonical-number-or-null (value)
+  "Return VALUE as a canonical finite number or JSON null."
+  (if (numberp value) value e-json-null))
+
+(defun e-elisp-job--canonical-snapshot (value)
+  "Project internal Elisp job snapshot VALUE into canonical JSON."
+  (list :job_id (or (plist-get value :job_id) e-json-null)
+        :await_ref (or (plist-get value :await-ref) e-json-null)
+        :operation (or (plist-get value :operation) e-json-null)
+        :status (symbol-name (or (plist-get value :status) 'unknown))
+        :started_at (e-elisp-job--canonical-number-or-null
+                     (plist-get value :started_at))
+        :finished_at (e-elisp-job--canonical-number-or-null
+                      (plist-get value :finished_at))
+        :metadata (let ((metadata (plist-get value :metadata)))
+                    (list :exit_code
+                          (e-elisp-job--canonical-number-or-null
+                           (plist-get metadata :exit_code))
+                          :output_file (or (plist-get metadata :output_file)
+                                           e-json-null)
+                          :truncated (if (plist-get metadata :truncated)
+                                         t e-json-false)
+                          :original_bytes
+                          (e-elisp-job--canonical-number-or-null
+                           (plist-get metadata :original_bytes))
+                          :original_lines
+                          (e-elisp-job--canonical-number-or-null
+                           (plist-get metadata :original_lines))
+                          :shown_bytes
+                          (e-elisp-job--canonical-number-or-null
+                           (plist-get metadata :shown_bytes))
+                          :shown_lines
+                          (e-elisp-job--canonical-number-or-null
+                           (plist-get metadata :shown_lines))
+                          :tmp_uri (or (plist-get metadata :tmp_uri)
+                                       e-json-null)))
+        :content (or (plist-get value :content) e-json-null)))
+
 (defun e-elisp-job-run-batch (arguments &optional action-context)
   "Start an async Emacs batch job from ARGUMENTS.
 ARGUMENTS is a plist with :code and optional :directory, :load_path, and
@@ -512,7 +551,8 @@ ARGUMENTS is a plist with :code and optional :directory, :load_path, and
   (e-action-cheap-create
    :owner 'elisp-job
    :runner (lambda (arguments context)
-             (funcall caller context arguments))
+             (e-elisp-job--canonical-snapshot
+              (funcall caller context arguments)))
    :description description
    :parameters parameters))
 

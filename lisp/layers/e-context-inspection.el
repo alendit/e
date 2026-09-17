@@ -16,10 +16,12 @@
 (require 'cl-lib)
 (require 'e-capabilities)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-resources)
 (require 'e-session)
 (require 'e-session-async)
 (require 'e-tools)
+(require 'e-telemetry)
 (require 'e-work)
 (require 'subr-x)
 
@@ -102,6 +104,114 @@
   (if (stringp content)
       content
     (prin1-to-string content)))
+
+(defun e-context-inspection--canonical-or-text (value)
+  "Keep canonical VALUE or explicitly project arbitrary VALUE to text.
+Context timelines contain domain-owned event and message records whose fields
+are not a JSON contract.  This named diagnostic projection preserves canonical
+payloads and makes the remaining opaque values textual rather than pretending
+that arbitrary Elisp is structured JSON."
+  (if (e-json-value-p value)
+      value
+    (plist-get (e-telemetry-preview value) :content)))
+
+(defun e-context-inspection--canonical-bool (value)
+  "Return canonical JSON boolean for truthy domain VALUE."
+  (if value t e-json-false))
+
+(defun e-context-inspection--canonical-string (value)
+  "Return VALUE when it is a string, otherwise canonical JSON null."
+  (if (stringp value) value e-json-null))
+
+(defun e-context-inspection--canonical-or-null (value)
+  "Return canonical VALUE, using explicit null for absent VALUE."
+  (if (null value)
+      e-json-null
+    (e-context-inspection--canonical-or-text value)))
+
+(defun e-context-inspection--canonical-failure (failure)
+  "Project one detached failure record into canonical action JSON."
+  (list :session-id
+        (e-context-inspection--canonical-string
+         (plist-get failure :session-id))
+        :turn-id
+        (e-context-inspection--canonical-string
+         (plist-get failure :turn-id))
+        :error
+        (e-context-inspection--canonical-or-null (plist-get failure :error))
+        :details
+        (e-context-inspection--canonical-or-null
+         (plist-get failure :details))))
+
+(defun e-context-inspection--canonical-failure-detail (detail)
+  "Project one failure DETAIL domain record into canonical action JSON."
+  (list :session
+        (let ((session (plist-get detail :session)))
+          (list :id (e-context-inspection--canonical-string
+                     (plist-get session :id))
+                :title (e-context-inspection--canonical-string
+                        (plist-get session :title))
+                :project-root (e-context-inspection--canonical-string
+                               (plist-get session :project-root))
+                :metadata (e-context-inspection--canonical-or-null
+                           (plist-get session :metadata))))
+        :turn
+        (let ((turn (plist-get detail :turn)))
+          (list :id (e-context-inspection--canonical-string
+                     (plist-get turn :id))
+                :created-at (e-context-inspection--canonical-string
+                             (plist-get turn :created-at))))
+        :events
+        (vconcat
+         (mapcar
+          (lambda (event)
+            (list :id (e-context-inspection--canonical-string
+                       (plist-get event :id))
+                  :turn-id (e-context-inspection--canonical-string
+                            (plist-get event :turn-id))
+                  :event-type (if (symbolp (plist-get event :event-type))
+                                  (symbol-name (plist-get event :event-type))
+                                (e-context-inspection--canonical-string
+                                 (plist-get event :event-type)))
+                  :created-at (e-context-inspection--canonical-string
+                               (e-context-inspection--event-created-at event))
+                  :payload (e-context-inspection--canonical-or-null
+                            (plist-get event :payload))))
+          (plist-get detail :events)))
+        :messages
+        (vconcat
+         (mapcar
+          (lambda (message)
+            (list :id (e-context-inspection--canonical-string
+                       (plist-get message :id))
+                  :turn-id (e-context-inspection--canonical-string
+                            (plist-get message :turn-id))
+                  :role (if (symbolp (plist-get message :role))
+                            (symbol-name (plist-get message :role))
+                          (e-context-inspection--canonical-string
+                           (plist-get message :role)))
+                  :content (e-context-inspection--canonical-or-null
+                            (plist-get message :content))))
+          (plist-get detail :messages)))
+        :tool-calls
+        (vconcat
+         (mapcar
+          (lambda (call)
+            (list :message (e-context-inspection--canonical-or-null
+                            (plist-get call :message))
+                  :tool-call (e-context-inspection--canonical-or-null
+                              (plist-get call :tool-call))
+                  :result (e-context-inspection--canonical-or-null
+                           (plist-get call :result))))
+          (plist-get detail :tool-calls)))
+        :terminal-error
+        (e-context-inspection--canonical-or-null
+         (plist-get detail :terminal-error))
+        :diagnostics
+        (e-context-inspection--canonical-or-null
+         (plist-get detail :diagnostics))
+        :truncated (e-context-inspection--canonical-bool
+                    (plist-get detail :truncated))))
 
 (defun e-context-inspection--session-project-root (session)
   "Return project root metadata from SESSION when present."
@@ -212,9 +322,9 @@
 No current adapter exposes a stable raw diagnostic attachment to this layer, so
 v1 reports an explicit unavailable shape."
   (ignore harness session-id turn-id)
-  (list :available nil
-        :response-kind nil
-        :preview nil
+  (list :available e-json-false
+        :response-kind e-json-null
+        :preview e-json-null
         :source "unavailable"))
 
 (defun e-context-inspection--failure-detail-from-query
@@ -375,7 +485,7 @@ exported.  This is the default context e sends before the first user prompt."
      uri
      content)
     (list :uri uri
-          :mode mode
+          :mode (symbol-name mode)
           :message-count (length (plist-get context :messages))
           :bytes (string-bytes content))))
 
@@ -418,22 +528,22 @@ exported.  This is the default context e sends before the first user prompt."
 	               :harness (plist-get context :harness)
 	               :session-id (or (e-context-inspection--argument-string
 	                                arguments :session_id)
-	                               (plist-get context :session-id))
+                               (plist-get context :session-id))
 	               :turn-id (or (e-context-inspection--argument-string
 	                             arguments :turn_id)
-	                            (plist-get context :turn-id))
+                            (plist-get context :turn-id))
 	               :uri (e-context-inspection--argument-string
-	                     arguments
-	                     :uri
-	                     e-context-inspection-default-uri)
+                     arguments
+                     :uri
+                     e-context-inspection-default-uri)
 	               :include-transcript
 	               (eq (e-context-inspection--argument-boolean
-	                    arguments :include_transcript)
-	                   t)
+                    arguments :include_transcript)
+                   t)
 	               :include-metadata
 	               (not (eq (e-context-inspection--argument-boolean
-	                         arguments :include_metadata t)
-	                        :json-false))))
+                         arguments :include_metadata t)
+                        :json-false))))
 	    :description "Export the current e LLM context to a writable URI-addressed resource."
 	    :parameters '(:type "object"
                   :properties (:uri (:type "string")
@@ -445,10 +555,14 @@ exported.  This is the default context e sends before the first user prompt."
 	   :recent-failures
 	   (e-context-inspection--async-action
 	    (lambda (arguments context)
-	              (e-context-inspection-recent-failures-start
-	               :harness (plist-get context :harness)
-	               :limit (e-context-inspection--argument-positive-integer
-	                       arguments :limit)))
+	              (e-context-inspection--map-work
+	               (e-context-inspection-recent-failures-start
+	                :harness (plist-get context :harness)
+	                :limit (e-context-inspection--argument-positive-integer
+                        arguments :limit))
+	               (lambda (failures)
+	                 (vconcat (mapcar #'e-context-inspection--canonical-failure
+                                  failures)))))
 	    :description "List recent failed e turns from the current harness session store."
 	    :parameters '(:type "object"
 	                  :properties (:limit (:type "integer" :minimum 1
@@ -457,14 +571,16 @@ exported.  This is the default context e sends before the first user prompt."
 	   :failure-detail
 	   (e-context-inspection--async-action
 	    (lambda (arguments context)
-	              (e-context-inspection-failure-detail-start
-	               :harness (plist-get context :harness)
-	               :session-id (or (e-context-inspection--argument-string
-	                                arguments :session_id)
-	                               (plist-get context :session-id))
-	               :turn-id (or (e-context-inspection--argument-string
-	                             arguments :turn_id)
-	                            (plist-get context :turn-id))))
+	              (e-context-inspection--map-work
+	               (e-context-inspection-failure-detail-start
+	                :harness (plist-get context :harness)
+	                :session-id (or (e-context-inspection--argument-string
+                                 arguments :session_id)
+                                (plist-get context :session-id))
+	                :turn-id (or (e-context-inspection--argument-string
+                              arguments :turn_id)
+                             (plist-get context :turn-id)))
+	               #'e-context-inspection--canonical-failure-detail))
 	    :description "Return one failed e turn timeline with prompt messages, activity, terminal error, session id, turn id, and project root."
 	    :parameters '(:type "object"
                   :properties (:session_id (:type "string")

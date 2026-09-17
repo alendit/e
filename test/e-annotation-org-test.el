@@ -173,7 +173,7 @@ The annotation is created headless with author `user' so it is actionable."
       (let* ((listed (e-actions-call 'annotations :list
                                      (list :file file :actionable_only t)
                                      context))
-             (id (plist-get (car (plist-get listed :threads)) :id)))
+             (id (plist-get (aref (plist-get listed :threads) 0) :id)))
         (should (= 1 (plist-get listed :count)))
         (e-actions-call 'annotations :reply
                         (list :file file :id id :body "Answer.")

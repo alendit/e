@@ -18,6 +18,7 @@
 (require 'e-capabilities)
 (require 'e-harness)
 (require 'e-harness-activity)
+(require 'e-json)
 (require 'e-session)
 (require 'e-telemetry)
 (require 'e-tools)
@@ -34,207 +35,10 @@
   "e capability action is not available" 'e-actions-error)
 (define-error 'e-actions-invalid-arguments
   "e action arguments are invalid" 'e-actions-error)
+(define-error 'e-actions-invalid-result
+  "e action result is not canonical JSON" 'e-actions-error)
 (define-error 'e-actions-invalid-spec
   "e action descriptor is invalid" 'e-actions-error)
-
-(defun e-actions--proper-list-p (value)
-  "Return non-nil when VALUE is a proper list.
-
-An alist uses dotted pairs for entries, so `listp' alone is not enough to
-distinguish an object from a JSON array represented as a Lisp list."
-  (let ((tail value))
-    (while (consp tail)
-      (setq tail (cdr tail)))
-    (null tail)))
-
-(defun e-actions--plist-p (value)
-  "Return non-nil when VALUE is a keyword plist."
-  (and (e-actions--proper-list-p value)
-       (cl-evenp (length value))
-       (cl-loop for (key _value) on value by #'cddr
-                always (keywordp key))))
-
-(defun e-actions--plist-array-p (value)
-  "Return non-nil when VALUE is a non-empty list of keyword plists."
-  (and (e-actions--proper-list-p value)
-       (consp value)
-       (cl-every #'e-actions--plist-p value)))
-
-(defun e-actions--alist-p (value &optional allow-plist-elements)
-  "Return non-nil when VALUE is an alist with action-compatible keys.
-
-When ALLOW-PLIST-ELEMENTS is non-nil, a proper pair such as \=`(:name VALUE)
-is accepted even though the same shape can also be one object in a list of
-plists.  A declared object schema supplies that disambiguation."
-  (and (e-actions--proper-list-p value)
-       (or allow-plist-elements
-           (not (e-actions--plist-array-p value)))
-       (cl-every (lambda (entry)
-                   (and (consp entry)
-                        (let ((key (car entry)))
-                          (or (keywordp key)
-                              (symbolp key)
-                              (stringp key)))))
-                 value)))
-
-(defun e-actions--argument-key (key)
-  "Return KEY as a keyword for action arguments."
-  (cond
-   ((keywordp key) key)
-   ((symbolp key) (intern (concat ":" (symbol-name key))))
-   ((stringp key) (intern (concat ":" (string-remove-prefix ":" key))))
-   (t (signal 'e-actions-invalid-arguments
-              (list (format "Unsupported action argument key: %S" key))))))
-
-(defun e-actions--schema-type (schema)
-  "Return the JSON type declared by SCHEMA, or nil."
-  (and (e-actions--proper-list-p schema)
-       (plist-get schema :type)))
-
-(defun e-actions--schema-property-name (name)
-  "Return the JSON property name represented by NAME."
-  (cond
-   ((keywordp name) (substring (symbol-name name) 1))
-   ((symbolp name) (symbol-name name))
-   ((stringp name) (string-remove-prefix ":" name))
-   (t nil)))
-
-(defun e-actions--alist-entry-value (entry &optional schema)
-  "Return the value carried by alist ENTRY under SCHEMA.
-
-Both dotted entries, such as \=`(NAME . VALUE), and two-element list entries,
-such as \=`(NAME VALUE), are accepted.  A one-element list value remains a
-list when SCHEMA declares an array; this preserves the distinction between a
-scalar two-element alist entry and an array-valued property."
-  (let ((tail (cdr entry)))
-    (if (and (consp tail)
-             (null (cdr tail))
-             (not (equal (e-actions--schema-type schema) "array")))
-        (car tail)
-      tail)))
-
-(defun e-actions--schema-property (schema key)
-  "Return the child schema for KEY in object SCHEMA, when declared.
-
-Provider adapters may represent `:properties' as a plist, alist, or hash
-table.  Compare their JSON names rather than relying on one concrete Elisp
-container or key spelling."
-  (let* ((properties (and (e-actions--proper-list-p schema)
-                          (plist-get schema :properties)))
-         (target (e-actions--schema-property-name key)))
-    (cond
-     ((hash-table-p properties)
-      (catch 'found
-        (maphash
-         (lambda (property child-schema)
-           (when (equal (e-actions--schema-property-name property) target)
-             (throw 'found child-schema)))
-         properties)
-        nil))
-     ((e-actions--plist-p properties)
-      (let ((rest properties)
-            found)
-        (while rest
-          (let ((property (pop rest))
-                (child-schema (pop rest)))
-            (when (equal (e-actions--schema-property-name property) target)
-              (setq found child-schema)
-              (setq rest nil))))
-        found))
-     ((e-actions--alist-p properties)
-      (let ((entry
-             (cl-find-if
-              (lambda (candidate)
-                (equal (e-actions--schema-property-name (car candidate))
-                       target))
-              properties)))
-        (when entry
-          (e-actions--alist-entry-value entry)))))))
-
-(defun e-actions--arguments-plist (value &optional schema)
-  "Return VALUE normalized to an action argument plist using SCHEMA."
-  (cond
-   ((null value) nil)
-   ((e-actions--plist-p value)
-    (let ((rest value)
-          result)
-      (while rest
-        (let* ((key (pop rest))
-               (item (pop rest))
-               (child-schema (e-actions--schema-property schema key)))
-          (push key result)
-          (push (e-actions--argument-value item child-schema) result)))
-      (nreverse result)))
-   ((hash-table-p value)
-    (let (result)
-      (maphash (lambda (key item)
-                 (let* ((argument-key (e-actions--argument-key key))
-                        (child-schema
-                         (e-actions--schema-property schema argument-key)))
-                   (push argument-key result)
-                   (push (e-actions--argument-value item child-schema)
-                         result)))
-               value)
-      (nreverse result)))
-   ((e-actions--alist-p value
-                         (equal (e-actions--schema-type schema) "object"))
-    (let (result)
-      (dolist (entry value)
-        (let* ((argument-key (e-actions--argument-key (car entry)))
-               (child-schema
-                (e-actions--schema-property schema argument-key))
-               (item (e-actions--alist-entry-value entry child-schema)))
-          (push argument-key result)
-          (push (e-actions--argument-value item child-schema) result)))
-      (nreverse result)))
-   (t
-    (signal 'e-actions-invalid-arguments
-            (list (format "Action arguments must be an object/plist, got %S"
-                          value))))))
-
-(defun e-actions--argument-value (value &optional schema)
-  "Return VALUE normalized according to JSON SCHEMA.
-
-Objects become keyword plists, while arrays retain their input list/vector
-shape and recursively normalize each item.  When no schema is available,
-hash tables, plists, and alists still identify objects; a list of such objects
-therefore remains an array instead of being mistaken for an alist."
-  (let ((type (e-actions--schema-type schema)))
-    (cond
-     ((null value) nil)
-     ((hash-table-p value)
-      (e-actions--arguments-plist value schema))
-     ((equal type "object")
-      (if (or (e-actions--plist-p value)
-              (e-actions--alist-p value t))
-          (e-actions--arguments-plist value schema)
-        value))
-     ((equal type "array")
-      (let ((items-schema
-             (and (e-actions--proper-list-p schema)
-                  (plist-get schema :items))))
-        (cond
-         ((vectorp value)
-          (vconcat
-           (mapcar (lambda (item)
-                     (e-actions--argument-value item items-schema))
-                   (append value nil))))
-         ((e-actions--proper-list-p value)
-          (mapcar (lambda (item)
-                    (e-actions--argument-value item items-schema))
-                  value))
-         (t value))))
-     ((vectorp value)
-      (vconcat
-       (mapcar (lambda (item) (e-actions--argument-value item))
-               (append value nil))))
-     ((e-actions--plist-p value)
-      (e-actions--arguments-plist value))
-     ((e-actions--alist-p value)
-      (e-actions--arguments-plist value))
-     ((e-actions--proper-list-p value)
-      (mapcar (lambda (item) (e-actions--argument-value item)) value))
-     (t value))))
 
 (defun e-actions--capability-id (value)
   "Return VALUE as a capability id symbol."
@@ -288,32 +92,43 @@ therefore remains an array instead of being mistaken for an alist."
                harness session-id turn-id
                :requested-capability-id capability-id)))
 
-(defun e-actions--schema-required (parameters)
-  "Return required keys from action PARAMETERS schema."
-  (let ((required (plist-get parameters :required)))
-    (cond
-     ((vectorp required) (append required nil))
-     ((listp required) required)
-     (t nil))))
-
 (defun e-actions--validate-arguments (action arguments)
-  "Validate ARGUMENTS against ACTION's compact parameter schema."
-  (when (e-action-p action)
-    (let ((parameters (e-action-parameters action)))
-      (dolist (name (e-actions--schema-required parameters))
-        (let ((key (e-actions--argument-key name)))
-          (unless (plist-member arguments key)
-            (signal 'e-actions-invalid-arguments
-                    (list (format "Missing required action argument: %s"
-                                  (if (stringp name)
-                                      name
-                                    (symbol-name name))))))))
-      (when (eq (plist-get parameters :additionalProperties) :json-false)
-        (let ((properties (plist-get parameters :properties)))
-          (cl-loop for key in arguments by #'cddr do
-                   (unless (plist-member properties key)
-                     (signal 'e-actions-invalid-arguments
-                             (list "Action arguments contain undeclared fields")))))))))
+  "Validate canonical ARGUMENTS against ACTION's canonical schema.
+Return ARGUMENTS unchanged.  The action boundary accepts only the shared
+canonical JSON representation; it never reparses or reshapes Lisp containers."
+  (unless (e-action-p action)
+    (signal 'e-actions-invalid-spec (list "Not an e-action descriptor")))
+  (condition-case error-data
+      (e-json-schema-assert arguments (e-action-parameters action))
+    ((e-json-error e-json-schema-error)
+     (signal 'e-actions-invalid-arguments
+             (list (error-message-string error-data))))))
+
+(defun e-actions--validate-result (value)
+  "Validate immediate structured action VALUE without reshaping it.
+Action adapters own any mapping from domain records into canonical JSON.  The
+dispatcher only enforces that the value crossing the model-facing boundary is
+already canonical; strings, numbers, vectors, objects, and explicit sentinels
+are returned unchanged.  A domain adapter may return an existing Work handle;
+pending handles use the established detached `work:' reference contract, while
+settled handles are validated recursively."
+  (cond
+   ((e-work-handle-p value)
+    (pcase (plist-get (e-work-status value) :state)
+      ('finished (e-actions--validate-result (e-work-handle-result value)))
+      ('failed
+       (let ((error-data (e-work-handle-error value)))
+         (signal (car error-data) (cdr error-data))))
+      ('cancelled (signal 'e-work-cancelled (list value)))
+      (_
+       (e-work-detach-register value)
+       (format "work:%s" (e-work-handle-id value)))))
+   (t
+    (condition-case error-data
+        (e-json-assert-value value)
+      (e-json-error
+       (signal 'e-actions-invalid-result
+               (list (error-message-string error-data))))))))
 
 (defun e-actions--preview (value)
   "Return a compact redacted printable preview for VALUE."
@@ -394,9 +209,8 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
               (signal 'e-actions-no-active-session
                       (list (format "Action %S/%S requires an active session"
                                     capability-id action-key))))
-            (let* ((arguments
-                    (e-actions--arguments-plist
-                     arguments (e-action-parameters action-spec)))
+            (let* ((arguments (e-actions--validate-arguments
+                               action-spec arguments))
                    (action-context (list :harness harness
                                          :session-id session-id
                                          :turn-id turn-id
@@ -405,7 +219,6 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                                          :action action-key
                                          :action-call-id call-id
                                          :context context)))
-              (e-actions--validate-arguments action-spec arguments)
               ;; Rejected arguments never cross the durable activity boundary.
               ;; Only a schema-valid payload is eligible for started/finished
               ;; telemetry; failures before this point retain no caller values.
@@ -452,7 +265,9 @@ OPTIONS may include `:harness', `:session-id', `:turn-id', or `:context'."
                                       :on-error (make-fail settled)))
                        (dispatch-result
                         (pcase (plist-get (e-work-status request) :state)
-                          ('finished (e-work-handle-result request))
+                          ('finished
+                           (e-actions--validate-result
+                            (e-work-handle-result request)))
                           ('failed
                            (let ((err (e-work-handle-error request)))
                              (signal (car err) (cdr err))))
