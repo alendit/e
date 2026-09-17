@@ -14,7 +14,6 @@
 (require 'ert)
 (require 'seq)
 (require 'e-operations)
-(require 'json)
 (require 'e-resources)
 (require 'e-goodnite-resources)
 (require 'e-goodnite)

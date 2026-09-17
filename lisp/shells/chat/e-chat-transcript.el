@@ -9,7 +9,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'pp)
 (require 'subr-x)
 (require 'e-chat-service)

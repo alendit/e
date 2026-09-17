@@ -619,10 +619,23 @@
                        "e-runtime-store-ownership-test--unauthorized-direct-worker")))
                   (with-current-buffer output
                     (goto-char (point-min))
-                    (let ((response
-                           (e-runtime-store--unpack
-                            (buffer-substring-no-properties
-                             (line-beginning-position) (line-end-position)))))
+                    (let (response)
+                      ;; A source-loaded child may emit byte-compiler warnings
+                      ;; before its one-line protocol response.  Decode the
+                      ;; first valid frame rather than treating chatter as
+                      ;; base64 transport data.
+                      (while (and (not response) (not (eobp)))
+                        (condition-case nil
+                            (setq response
+                                  (e-runtime-store--unpack
+                                   (buffer-substring-no-properties
+                                    (line-beginning-position)
+                                    (line-end-position))))
+                          (error nil))
+                        (unless response
+                          (forward-line 1)))
+                      (unless response
+                        (error "Unauthorized worker omitted protocol response"))
                       (should-not (plist-get response :ok))
                       (should
                        (eq (plist-get response :error-symbol)

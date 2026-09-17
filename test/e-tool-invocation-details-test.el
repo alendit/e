@@ -13,7 +13,7 @@
 
 (require 'cl-lib)
 (require 'ert)
-(require 'json)
+(require 'e-json)
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
@@ -157,6 +157,30 @@ ordinary tool implementation used by the test capability."
     (should (equal (plist-get (plist-get decoded :result) :status) "ok"))
     (should (equal (plist-get (plist-get decoded :result) :metadata)
                    '(:note "portable" :semantic t)))))
+
+(ert-deftest e-tool-invocation-details-test-preserves-canonical-empty-and-sentinels ()
+  "Temporary invocation JSON preserves empty objects, arrays, false, and null."
+  (let* ((empty-object (make-hash-table :test 'equal))
+         (arguments (list :empty-object empty-object
+                          :empty-array []
+                          :false e-json-false
+                          :null e-json-null
+                          :objects (vector (list :value e-json-null))))
+         (document
+          (e-tool-invocation-details--document
+           (e-tool-invocation-details-test--call arguments)
+           (e-tool-invocation-details-test--result)))
+         (encoded (e-tool-invocation-details-encode document))
+         (decoded (e-tool-invocation-details-decode encoded))
+         (round-trip (plist-get decoded :arguments)))
+    (should (e-json-value-p (e-json-parse-string encoded)))
+    (should (null (plist-get round-trip :empty-object)))
+    (should (equal (plist-get round-trip :empty-array) []))
+    (should (eq (plist-get round-trip :false) e-json-false))
+    (should (eq (plist-get round-trip :null) e-json-null))
+    (should (vectorp (plist-get round-trip :objects)))
+    (should (eq (plist-get (aref (plist-get round-trip :objects) 0) :value)
+                e-json-null))))
 
 (ert-deftest e-tool-invocation-details-test-rejected-call-keeps-received-only ()
   "Rejected raw arguments are archived separately from executed arguments."

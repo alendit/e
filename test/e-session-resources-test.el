@@ -12,7 +12,6 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)

@@ -12,7 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
@@ -842,7 +842,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
 (defun e-base-tools-file--search-match-from-rg-json
     (line directory scope glob-pattern query options)
   "Return a ranked search match plist for rg JSON LINE, or nil."
-  (let* ((object (json-parse-string line :object-type 'plist :array-type 'list))
+  (let* ((object (e-json-parse-string line))
          (type (plist-get object :type)))
     (when (equal type "match")
       (let* ((data (plist-get object :data))

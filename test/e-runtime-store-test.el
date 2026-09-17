@@ -253,7 +253,7 @@
 (ert-deftest e-runtime-store-codec-round-trips-exact-tagged-values ()
   "Exact nested Lisp values survive and unsupported live values fail early."
   (let* ((map (make-hash-table :test 'equal))
-         (value (list nil t :json-false 'symbol :keyword "λ🧵" 42 1.5
+         (value (list nil t :json-false :json-null 'symbol :keyword "λ🧵" 42 1.5
                       '(a . b) [nil :x])))
     (puthash "list" value map)
     (let ((decoded (e-runtime-store-codec-decode
@@ -277,7 +277,7 @@
                          unibyte
                          all-octets
                          "λ🧵"
-                         (list :nested [nil t :json-false "leaf"])))
+                         (list :nested [nil t :json-false :json-null "leaf"])))
       (let* ((form (e-runtime-store-codec--form value))
              (printed (e-runtime-store-codec--print-form form))
              (exact (string-bytes printed)))

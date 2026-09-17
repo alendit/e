@@ -12,7 +12,7 @@
 
 ;;; Code:
 
-(require 'json)
+(require 'e-json)
 (require 'cl-lib)
 (require 'e-capabilities)
 (require 'e-context)
@@ -97,16 +97,14 @@ Filtering is performed before any ordering, bounds, or count is derived."
   "Return canonical JSON for one model-facing receipt VIEW."
   (let ((object
          (append
-          (list (cons "tool_call_id"
-                      (format "%s" (plist-get view :tool-call-id)))
-                (cons "tool" (format "%s" (plist-get view :tool)))
-                (cons "status" (format "%s" (plist-get view :status))))
+          (list :tool_call_id (format "%s" (plist-get view :tool-call-id))
+                :tool (format "%s" (plist-get view :tool))
+                :status (format "%s" (plist-get view :status)))
           (when (plist-member view :details-uri)
-            (list (cons "details_uri" (plist-get view :details-uri))))
-          (list (cons "details" (format "%s" (plist-get view :details)))
-                (cons "details_lifetime"
-                      (format "%s" (plist-get view :details-lifetime)))))))
-    (json-encode object)))
+            (list :details_uri (plist-get view :details-uri)))
+          (list :details (format "%s" (plist-get view :details))
+                :details_lifetime (format "%s" (plist-get view :details-lifetime))))))
+    (e-json-serialize object)))
 
 (defun e-harness-base--receipt-block-content (views omitted)
   "Return deterministic receipt block CONTENT for VIEWS and OMITTED count."

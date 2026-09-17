@@ -13,7 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'profiler)
 (require 'seq)
 (require 'e)
@@ -123,6 +123,42 @@ Return a plist containing written profiler files."
       (push (cons 'metadata (e-dev-profile--metadata-alist metadata)) record))
     (nreverse record)))
 
+(defun e-dev-profile--value-to-json (value)
+  "Project profiling domain VALUE into canonical JSON.
+
+Profiling metadata is authored as alists by this module.  Keep that domain
+choice at this named file-format adapter; `e-json' itself never guesses an
+alist versus an array."
+  (cond
+   ((or (null value) (eq value t) (eq value :json-false)
+        (eq value :json-null) (stringp value) (numberp value)) value)
+   ((vectorp value)
+    (vconcat (mapcar #'e-dev-profile--value-to-json (append value nil))))
+   ((and (consp value)
+         (cl-every #'consp value)
+         (cl-every (lambda (entry)
+                     (or (symbolp (car entry)) (stringp (car entry))))
+                   value))
+    (let (result)
+      (dolist (entry value (nreverse result))
+        (let ((key (car entry)))
+          (push (intern (concat ":"
+                                (if (keywordp key)
+                                    (substring (symbol-name key) 1)
+                                  (if (symbolp key)
+                                      (symbol-name key)
+                                    key))))
+                result)
+          (push (e-dev-profile--value-to-json (cdr entry)) result)))))
+   ((listp value)
+    (vconcat (mapcar #'e-dev-profile--value-to-json value)))
+   (t
+    (signal 'e-json-error (list "Unsupported profiling JSON value" value)))))
+
+(defun e-dev-profile--record-to-json (record)
+  "Project profiling RECORD alist into its canonical JSON object."
+  (e-dev-profile--value-to-json record))
+
 (cl-defun e-dev-profile-record (event &key duration-ms session-id turn-id buffer-name metadata)
   "Record profiling EVENT with optional scalar timing fields.
 Return non-nil when a record was written."
@@ -132,7 +168,7 @@ Return non-nil when a record was written."
                    event duration-ms session-id turn-id buffer-name metadata))
           (coding-system-for-write 'utf-8))
       (with-temp-buffer
-        (insert (json-encode record))
+        (insert (e-json-serialize (e-dev-profile--record-to-json record)))
         (insert "\n")
         (append-to-file (point-min) (point-max) e-dev-profile--current-file)))
     t))
@@ -228,16 +264,31 @@ the e trace in `e-dev-profile-directory'."
           e-dev-profile--latest-native-files native-files)
     file))
 
+(defun e-dev-profile--json-to-domain (value)
+  "Project canonical profiling JSON VALUE into the report domain."
+  (cond
+   ((vectorp value)
+    (vconcat (mapcar #'e-dev-profile--json-to-domain (append value nil))))
+   ((and (consp value)
+         (cl-evenp (length value))
+         (cl-loop for (key _item) on value by #'cddr always (keywordp key)))
+    (let (result)
+      (while value
+        (let* ((key (pop value))
+               (item (pop value)))
+          (push (cons (intern (substring (symbol-name key) 1))
+                      (e-dev-profile--json-to-domain item)) result)))
+      (nreverse result)))
+   (t value)))
+
 (defun e-dev-profile--read-json-lines (file)
-  "Read JSONL profiling records from FILE."
+  "Read JSONL profiling records from FILE through the canonical parser."
   (with-temp-buffer
     (insert-file-contents file)
-    (let ((json-object-type 'alist)
-          (json-array-type 'list)
-          (json-key-type 'symbol)
-          records)
+    (let (records)
       (dolist (line (split-string (buffer-string) "\n" t))
-        (push (json-read-from-string line) records))
+        (push (e-dev-profile--json-to-domain
+               (e-json-parse-string line)) records))
       (nreverse records))))
 
 (defun e-dev-profile--record-duration (record)

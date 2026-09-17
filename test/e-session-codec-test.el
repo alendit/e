@@ -23,12 +23,12 @@
     (should (eq (plist-get message :display) 'expanded))))
 
 (ert-deftest e-session-codec-test-context-sequences-are-explicit-arrays ()
-  "A one-element keyword-plist sequence is not flattened into a JSON object."
+  "A one-element keyword-plist sequence is an explicit JSON array."
   (let* ((record '(:messages ((:role user :content "hello"))))
          (encoded (e-session-codec--context-record-for-json record))
          (messages (plist-get encoded :messages)))
     (should (vectorp messages))
-    (should (equal (aref messages 0) '(:role user :content "hello")))))
+    (should (equal (aref messages 0) '(:role "user" :content "hello")))))
 
 (ert-deftest e-session-codec-test-context-schema-is-deterministic ()
   "The codec accepts fixed context types and rejects unknown ones."

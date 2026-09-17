@@ -9,7 +9,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'project)
 (require 'subr-x)
 (require 'e-capabilities)

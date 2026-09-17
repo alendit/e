@@ -16,7 +16,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
@@ -49,25 +49,37 @@
                 always (keywordp key))))
 
 (defun e-tool-invocation-details--object-entry (key value)
-  "Return a normalized JSON object entry for KEY and VALUE."
+  "Return a canonical JSON object entry for KEY and VALUE."
   (unless (or (stringp key) (symbolp key) (numberp key))
     (signal 'e-tool-invocation-details-nonportable (list key)))
-  (cons (cond ((keywordp key) (substring (symbol-name key) 1))
-              ((symbolp key) (symbol-name key))
-              ((stringp key) key)
-              (t (number-to-string key)))
+  (cons (intern
+         (concat ":"
+                 (cond ((keywordp key) (substring (symbol-name key) 1))
+                       ((symbolp key) (symbol-name key))
+                       ((stringp key) key)
+                       (t (number-to-string key)))))
         value))
 
 (defun e-tool-invocation-details--portable-value
     (value &optional metadata stack)
-  "Return a detached JSON-compatible VALUE.
+  "Return a detached canonical JSON VALUE.
 When METADATA is non-nil, unsupported nested values are omitted from semantic
 metadata rather than leaking live implementation objects.  STACK detects
 cycles and prevents a malformed handler value from recursing indefinitely."
   (cond
-   ((or (stringp value) (numberp value) (eq value t)
-        (eq value :json-false) (null value))
-    (if (stringp value) (copy-sequence value) value))
+   ((stringp value)
+    ;; `json-serialize' only accepts multibyte text.  Tool arguments can still
+    ;; contain an explicitly byte-oriented unibyte string (for example a shell
+    ;; command containing octal bytes); project that string to the JSON
+    ;; boundary without changing the executed call.  File-backed result bytes
+    ;; use the separate base64 stream path below and remain byte-exact.
+    (if (multibyte-string-p value)
+        (copy-sequence value)
+      (decode-coding-string value 'iso-latin-1)))
+   ((or (numberp value) (eq value t)
+        (eq value e-json-false) (eq value e-json-null))
+    value)
+   ((null value) e-json-null)
    ((memq value stack)
     (if metadata
         e-tool-invocation-details--omit
@@ -82,16 +94,16 @@ cycles and prevents a malformed handler value from recursing indefinitely."
     (if metadata e-tool-invocation-details--omit
       (signal 'e-tool-invocation-details-nonportable (list value))))
    ((vectorp value)
-    (vconcat
-     (cl-loop for item across value
-              for normalized =
-              (e-tool-invocation-details--portable-value
-               item metadata (cons value stack))
-              unless (eq normalized e-tool-invocation-details--omit)
-              collect normalized)))
+    (let (items)
+      (dotimes (index (length value))
+        (let ((normalized
+               (e-tool-invocation-details--portable-value
+                (aref value index) metadata (cons value stack))))
+          (unless (eq normalized e-tool-invocation-details--omit)
+            (push normalized items))))
+      (vconcat (nreverse items))))
    ((hash-table-p value)
-    (let ((source-nonempty (> (hash-table-count value) 0))
-          entries)
+    (let ((source-nonempty (> (hash-table-count value) 0)) entries)
       (maphash
        (lambda (key item)
          (let ((normalized
@@ -103,12 +115,16 @@ cycles and prevents a malformed handler value from recursing indefinitely."
        value)
       (setq entries
             (sort entries (lambda (left right)
-                           (string< (car left) (car right)))))
+                           (string< (symbol-name (car left))
+                                    (symbol-name (car right))))))
       (cond
-       (entries entries)
+       (entries
+        (apply #'append
+               (mapcar (lambda (entry) (list (car entry) (cdr entry)))
+                       entries)))
        ((and metadata source-nonempty)
         e-tool-invocation-details--omit)
-       (t (make-hash-table :test 'equal)))))
+       (t nil))))
    ((e-tool-invocation-details--plist-p value)
     (let ((container value)
           (source-nonempty (not (null value)))
@@ -124,15 +140,18 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                   entries))))
       (setq entries
             (sort entries (lambda (left right)
-                           (string< (car left) (car right)))))
+                           (string< (symbol-name (car left))
+                                    (symbol-name (car right))))))
       (cond
-       (entries entries)
+       (entries
+        (apply #'append
+               (mapcar (lambda (entry) (list (car entry) (cdr entry)))
+                       entries)))
        ((and metadata source-nonempty)
         e-tool-invocation-details--omit)
-       (t (make-hash-table :test 'equal)))))
+       (t nil))))
    ((and (listp value) (cl-every #'consp value))
-    (let ((source-nonempty (not (null value)))
-          entries)
+    (let ((source-nonempty (not (null value))) entries)
       (dolist (entry value)
         (let ((normalized
                (e-tool-invocation-details--portable-value
@@ -143,20 +162,25 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                   entries))))
       (setq entries
             (sort entries (lambda (left right)
-                           (string< (car left) (car right)))))
+                           (string< (symbol-name (car left))
+                                    (symbol-name (car right))))))
       (cond
-       (entries entries)
+       (entries
+        (apply #'append
+               (mapcar (lambda (entry) (list (car entry) (cdr entry)))
+                       entries)))
        ((and metadata source-nonempty)
         e-tool-invocation-details--omit)
-       (t (make-hash-table :test 'equal)))))
+       (t nil))))
    ((listp value)
-    (vconcat
-     (cl-loop for item in value
-              for normalized =
-              (e-tool-invocation-details--portable-value
-               item metadata (cons value stack))
-              unless (eq normalized e-tool-invocation-details--omit)
-              collect normalized)))
+    (let (items)
+      (dolist (item value)
+        (let ((normalized
+               (e-tool-invocation-details--portable-value
+                item metadata (cons value stack))))
+          (unless (eq normalized e-tool-invocation-details--omit)
+            (push normalized items))))
+      (vconcat (nreverse items))))
    (t
     (if metadata e-tool-invocation-details--omit
       (signal 'e-tool-invocation-details-nonportable (list value))))))
@@ -198,18 +222,18 @@ cycles and prevents a malformed handler value from recursing indefinitely."
                            e-tool-invocation-details--base64-content-encoding)))
       (signal 'e-tool-invocation-details-invalid (list result)))
     (append
-     (list (cons "status"
-                 (e-tool-invocation-details--portable-value
-                  (plist-get result :status)))
-           (cons "content" content))
+     (list :status
+           (e-tool-invocation-details--portable-value
+            (plist-get result :status))
+           :content content)
      (when (or raw-string-p declared-encoding)
-       (list (cons "content_encoding"
-                   (or declared-encoding
-                       e-tool-invocation-details--base64-content-encoding))))
-     (list (cons "metadata"
+       (list :content_encoding
+             (or declared-encoding
+                 e-tool-invocation-details--base64-content-encoding)))
+     (list :metadata
                  (if (eq metadata e-tool-invocation-details--omit)
-                     (make-hash-table :test 'equal)
-                   metadata))))))
+                     nil
+                   metadata)))))
 
 (defun e-tool-invocation-details--document-wire (document)
   "Validate DOCUMENT and return its canonical JSON object shape."
@@ -235,10 +259,9 @@ cycles and prevents a malformed handler value from recursing indefinitely."
     (unless (or (and arguments-p (not received-p))
                 (and received-p (not arguments-p)))
       (signal 'e-tool-invocation-details-invalid (list document)))
-    (let ((wire
-           (list (cons "version" version)
-                 (cons "tool_call_id" call-id)
-                 (cons "tool" tool))))
+    (let ((wire (list :version version
+                      :tool_call_id call-id
+                      :tool tool)))
       (let ((value (if arguments-p
                        (plist-get document :arguments)
                      (plist-get document :received-arguments))))
@@ -248,11 +271,11 @@ cycles and prevents a malformed handler value from recursing indefinitely."
           (signal 'e-tool-invocation-details-nonportable (list value)))
         (setq wire
               (append wire
-                      (list (cons (if arguments-p "arguments"
-                                    "received_arguments")
-                                  (e-tool-invocation-details--portable-value
-                                   (or value (make-hash-table :test 'equal))))))))
-      (append wire (list (cons "result" result))))))
+                      (list (if arguments-p :arguments
+                              :received_arguments)
+                            (e-json-assert-value
+                             (or value (make-hash-table :test 'equal)))))))
+      (append wire (list :result result)))))
 
 (defun e-tool-invocation-details--document-plist (parsed)
   "Return strict Lisp DOCUMENT from parsed JSON PARSED."
@@ -320,7 +343,7 @@ cycles and prevents a malformed handler value from recursing indefinitely."
 
 (defun e-tool-invocation-details-encode (document)
   "Validate DOCUMENT and encode canonical UTF-8 JSON text."
-  (json-encode
+  (e-json-serialize
    (e-tool-invocation-details--document-wire
     (let* ((copy (copy-sequence document))
            (arguments-p (plist-member copy :arguments))
@@ -348,13 +371,9 @@ cycles and prevents a malformed handler value from recursing indefinitely."
   (unless (stringp text)
     (signal 'e-tool-invocation-details-invalid (list text)))
   (condition-case err
-      (e-tool-invocation-details--document-plist
-       (json-parse-string text
-                          :object-type 'plist
-                          :array-type 'list
-                          :null-object nil
-                          :false-object :json-false))
-    (json-parse-error
+    (e-tool-invocation-details--document-plist
+       (e-json-parse-string text))
+    (e-json-error
      (signal 'e-tool-invocation-details-invalid (cdr err)))))
 
 (defun e-tool-invocation-details--safe-fragment (value fallback)
@@ -529,7 +548,7 @@ Return nil for invalid UTF-8.  FINAL-P makes an incomplete suffix invalid."
          (utf8-p
           (e-tool-invocation-details--source-utf8-p
            (e-tools-file-content-path carrier)))
-         (encoded-sentinel (json-encode-string sentinel))
+         (encoded-sentinel (e-json-serialize sentinel))
          encoded start finish)
     (setq result (plist-put result :content sentinel))
     (unless utf8-p

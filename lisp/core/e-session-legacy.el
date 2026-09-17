@@ -12,13 +12,34 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'parse-time)
 (require 'seq)
 (require 'subr-x)
 (require 'e-session-codec)
 
 (define-error 'e-session-legacy-error "Invalid legacy session store")
+
+(defun e-session-legacy--domain-value (value)
+  "Project canonical legacy JSON VALUE into the retired list domain.
+
+This is the sole read-only compatibility adapter for the historical JSONL,
+catalog, and checkpoint schemas.  Physical parsing remains canonical and
+therefore keeps arrays as vectors and null as `e-json-null' until this point."
+  (cond
+   ((eq value e-json-null) nil)
+   ((vectorp value)
+    (mapcar #'e-session-legacy--domain-value (append value nil)))
+   ((e-session-codec--keyword-plist-p value)
+    (let ((copy (copy-sequence value))
+          (tail value))
+      (while tail
+        (let ((key (pop tail))
+              (item (pop tail)))
+          (plist-put copy key
+                     (e-session-legacy--domain-value item))))
+      copy))
+   (t value)))
 
 (defun e-session-legacy--journal-directory (root)
   "Return the retired journal directory below legacy ROOT."
@@ -60,8 +81,9 @@ rejects it rather than silently importing a prefix."
                        (line-beginning-position) (line-end-position))))
             (unless (string-empty-p line)
               (condition-case err
-                  (push (e-session-codec-json-read-line
-                         (decode-coding-string line 'utf-8))
+                  (push (e-session-legacy--domain-value
+                         (e-session-codec-json-read-line
+                          (decode-coding-string line 'utf-8)))
                         records)
                 (error
                  (signal 'e-session-legacy-error
@@ -84,9 +106,8 @@ reported so an operator receives a complete source-quality assessment."
           (with-temp-buffer
             (let ((coding-system-for-read 'utf-8))
               (insert-file-contents file))
-            (json-parse-buffer :object-type 'plist :array-type 'list
-                               :null-object e-session-codec-json-null
-                               :false-object :json-false))
+            (e-session-legacy--domain-value
+             (e-json-parse-string (buffer-string))))
         (error
          (signal 'e-session-legacy-error
                  (list "Malformed legacy session catalog" file
@@ -312,9 +333,8 @@ position.  All other semantic fields are preserved exactly."
                     (with-temp-buffer
                       (let ((coding-system-for-read 'utf-8))
                         (insert-file-contents file))
-                      (json-parse-buffer
-                       :object-type 'plist :array-type 'list
-                       :null-object nil :false-object :json-false)))
+                      (e-session-legacy--domain-value
+                       (e-json-parse-string (buffer-string)))))
                    (offset (plist-get source-value :journal-byte-offset))
                    (position
                     (e-session-legacy--journal-position-at-offset

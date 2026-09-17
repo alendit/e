@@ -13,7 +13,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'pp)
 (require 'project)
 (require 'subr-x)

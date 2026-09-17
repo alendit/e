@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-json)
 (require 'e)
 (require 'e-base)
 (require 'e-base-tools)
@@ -1290,7 +1291,7 @@ picker."
                         uri nil))
                  (details (e-tool-invocation-details-decode wire))
                  (archived (plist-get (plist-get details :result) :content)))
-            (should (json-parse-string wire))
+            (should (e-json-value-p (e-json-parse-string wire)))
             (should (string-match-p
                      "\\\"content_encoding\\\":\\\"base64-utf8-bytes\\\""
                      wire))

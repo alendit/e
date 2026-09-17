@@ -12,10 +12,10 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-json)
 (require 'e-request)
 (require 'e-tools)
 (require 'e-work)
-(require 'json)
 (require 'subr-x)
 (require 'url)
 (require 'url-expand)
@@ -236,14 +236,10 @@ LABEL names the backend in error messages and defaults to \"backend\"."
         (kill-buffer stderr)))))
 
 (defun e-web-tools--parse-json (text)
-  "Parse JSON TEXT into plists."
+  "Parse JSON TEXT into canonical values for the web adapter."
   (condition-case err
-      (json-parse-string text
-                         :object-type 'plist
-                         :array-type 'list
-                         :null-object nil
-                         :false-object :json-false)
-    (error
+      (e-json-parse-string text)
+    (e-json-error
      (signal 'e-web-invalid-response
              (list (format "Invalid bx JSON: %s"
                            (error-message-string err)))))))
@@ -281,7 +277,7 @@ LABEL names the backend in error messages and defaults to \"backend\"."
   "Return normalized web search results from bx PAYLOAD."
   (let ((rank 0)
         results)
-    (dolist (result (plist-get (plist-get payload :web) :results))
+    (dolist (result (append (plist-get (plist-get payload :web) :results) nil))
       (setq rank (1+ rank))
       (push (e-web-tools--normalize-search-result result rank) results))
     (nreverse results)))
@@ -298,7 +294,7 @@ LABEL names the backend in error messages and defaults to \"backend\"."
 PAYLOAD is the flat result list ddgr emits with --json."
   (let ((rank 0)
         results)
-    (dolist (result payload)
+    (dolist (result (append payload nil))
       (setq rank (1+ rank))
       (push (e-web-tools--normalize-ddgr-result result rank) results))
     (nreverse results)))
@@ -962,7 +958,7 @@ them into an object."
          (deadline (+ (float-time)
                       (or timeout e-web-browser-helper-timeout)))
          response)
-    (process-send-string process (concat (json-encode request) "\n"))
+    (process-send-string process (concat (e-json-serialize request) "\n"))
     (while (and (not response)
                 (process-live-p process)
                 (< (float-time) deadline))
@@ -1126,7 +1122,7 @@ them into an object."
             (setq request (append (list :id id :op operation)
                                   request-arguments))
             (setq deadline (+ (float-time) timeout))
-            (process-send-string process (concat (json-encode request) "\n"))
+            (process-send-string process (concat (e-json-serialize request) "\n"))
             (setf (e-work-handle-metadata handle)
                   (append (e-work-handle-metadata handle)
                           (list :process process

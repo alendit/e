@@ -125,7 +125,22 @@
                       :samples 3
                       :warmups 1)))
       (with-temp-file baseline-file
-        (insert "{\"format\":1,\"scenarios\":{\"fake.fast\":{\"owner\":\"e-dev\",\"metrics\":{\"elapsed-ms\":{\"baseline\":10.0,\"direction\":\"lower-is-better\",\"fail_ratio\":1.5,\"fail_delta\":10.0,\"warn_ratio\":1.2,\"warn_delta\":5.0,\"variance_ratio\":0.5,\"samples\":3}}}}}}"))
+        (insert
+         (e-json-serialize
+          (list :format 1
+                :scenarios
+                (list :fake.fast
+                      (list :owner "e-dev"
+                            :metrics
+                            (list :elapsed-ms
+                                  (list :baseline 10.0
+                                        :direction "lower-is-better"
+                                        :fail_ratio 1.5
+                                        :fail_delta 10.0
+                                        :warn_ratio 1.2
+                                        :warn_delta 5.0
+                                        :variance_ratio 0.5
+                                        :samples 3))))))))
       (e-dev-perf-register-scenario scenario)
       (let* ((run (e-dev-perf-run :scenario-ids '("fake.fast")
                                   :baseline-file baseline-file
@@ -144,7 +159,7 @@
   "Baseline loading rejects unsupported formats."
   (e-dev-perf-test--with-isolated-registry
     (with-temp-file e-dev-perf-baseline-file
-      (insert "{\"format\":99,\"scenarios\":{}}"))
+      (insert (e-json-serialize (list :format 99 :scenarios nil))))
     (should-error (e-dev-perf-load-baseline e-dev-perf-baseline-file)
                   :type 'user-error)))
 

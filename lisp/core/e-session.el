@@ -14,7 +14,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
 (require 'seq)
 (require 'e-request)
 (require 'e-session-aggregate)
@@ -171,8 +170,7 @@ the storage owner's state representation."
                                                    (plist-get root :timestamp))
                                    :message-count 0))))
                   (e-session-aggregate-install-index-session store session))))
-          (file-error nil)
-          (json-parse-error nil))))))
+          (file-error nil))))))
 
 (defun e-session--checkpoint-projection-operation (store)
   "Return an operation that projects STORE's latest SESSION-ID checkpoint."
@@ -407,7 +405,7 @@ session application boundary, not a generic transaction builder."
     (let ((checkpoint
            (condition-case err
                (e-session-storage-read-resume-checkpoint store session-id)
-             ((file-error file-missing json-parse-error)
+             ((file-error file-missing)
               (signal 'e-session-checkpoint-invalid
                       (list session-id file err))))))
       (unless (e-session-catalog-checkpoint-valid-p checkpoint session-id)

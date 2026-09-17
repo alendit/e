@@ -12,7 +12,7 @@
 ;;; Code:
 
 (require 'ert)
-(require 'json)
+(require 'e-json)
 (require 'e)
 (require 'e-dev-profile)
 
@@ -20,12 +20,10 @@
   "Return JSON objects read from FILE."
   (with-temp-buffer
     (insert-file-contents file)
-    (let ((json-object-type 'alist)
-          (json-array-type 'list)
-          (json-key-type 'symbol)
-          records)
+    (let (records)
       (dolist (line (split-string (buffer-string) "\n" t))
-        (push (json-read-from-string line) records))
+        (push (e-dev-profile--json-to-domain
+               (e-json-parse-string line)) records))
       (nreverse records))))
 
 (defmacro e-dev-profile-test--with-temp-profile (&rest body)

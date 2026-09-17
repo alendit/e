@@ -5,7 +5,8 @@
 
 ;;; Code:
 
-(require 'json)
+(require 'cl-lib)
+(require 'e-json)
 (require 'subr-x)
 
 (defun e-goodnite-demand-legacy-decode-file (file)
@@ -21,12 +22,37 @@ Return nil when FILE is absent.  Malformed non-empty lines signal."
                        (buffer-substring-no-properties
                         (line-beginning-position) (line-end-position)))))
             (unless (string-empty-p line)
-              (push (json-parse-string
-                     line :object-type 'plist :array-type 'list
-                     :false-object nil :null-object nil)
+              ;; This reader is intentionally named as the compatibility
+              ;; boundary for the retired JSONL demand log.  Its domain is
+              ;; still the ordered list of event plists; the physical value
+              ;; is canonical before this projection.
+              (push (e-goodnite-demand-legacy--domain-value
+                     (e-json-parse-string line))
                     events)))
           (forward-line 1))
         (nreverse events)))))
+
+(defun e-goodnite-demand-legacy--domain-value (value)
+  "Project canonical JSON VALUE into the retired demand-log domain.
+
+The old reader exposed arrays as lists.  Keep that compatibility contract in
+  this explicitly named adapter instead of teaching `e-json' to accept lists."
+  (cond
+   ((eq value e-json-null) nil)
+   ((vectorp value)
+    (mapcar #'e-goodnite-demand-legacy--domain-value (append value nil)))
+   ((and (consp value)
+         (cl-evenp (length value))
+         (cl-loop for (key _item) on value by #'cddr always (keywordp key)))
+    (let ((copy (copy-sequence value))
+          (tail value))
+      (while tail
+        (let ((key (pop tail))
+              (item (pop tail)))
+          (plist-put copy key
+                     (e-goodnite-demand-legacy--domain-value item))))
+      copy))
+   (t value)))
 
 (provide 'e-goodnite-demand-legacy)
 

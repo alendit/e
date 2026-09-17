@@ -15,7 +15,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'seq)
 (require 'subr-x)
 (require 'e)
@@ -128,14 +128,33 @@
       (alist-get (if (symbolp key) (symbol-name key) (intern key))
                  alist nil nil #'equal)))
 
+(defun e-dev-perf--canonical-to-domain (value)
+  "Project canonical performance JSON VALUE into its alist domain.
+
+The parser has already fixed objects as plists and arrays as vectors.  This
+named adapter is the only place where performance reports regain their
+historical alist/list domain representation."
+  (cond
+   ((vectorp value)
+    (mapcar #'e-dev-perf--canonical-to-domain (append value nil)))
+   ((and (consp value)
+         (cl-evenp (length value))
+         (cl-loop for (key _item) on value by #'cddr always (keywordp key)))
+    (let (result)
+      (while value
+        (let* ((key (pop value))
+               (item (pop value)))
+          (push (cons (intern (substring (symbol-name key) 1))
+                      (e-dev-perf--canonical-to-domain item)) result)))
+      (nreverse result)))
+   (t value)))
+
 (defun e-dev-perf--json-read-file (file)
-  "Read JSON FILE as an alist."
+  "Read JSON FILE through the canonical parser and perf projection."
   (with-temp-buffer
     (insert-file-contents file)
-    (let ((json-object-type 'alist)
-          (json-array-type 'list)
-          (json-key-type 'symbol))
-      (json-read))))
+    (e-dev-perf--canonical-to-domain
+     (e-json-parse-string (buffer-string)))))
 
 (defun e-dev-perf-load-baseline (&optional file)
   "Load and validate performance baseline FILE."
@@ -465,44 +484,99 @@ artifacts under `e-dev-perf-run-directory'."
     (e-dev-perf-report-run run)
     run))
 
-(defun e-dev-perf--json-key (key)
-  "Return JSON key for plist KEY."
-  (cond
-   ((keywordp key) (substring (symbol-name key) 1))
-   ((symbolp key) (symbol-name key))
-   ((stringp key) key)
-   (t (format "%s" key))))
+(defun e-dev-perf--json-keyword (key)
+  "Return canonical keyword for domain KEY."
+  (intern (concat ":"
+                  (cond ((keywordp key) (substring (symbol-name key) 1))
+                        ((symbolp key) (symbol-name key))
+                        ((stringp key) key)
+                        (t (format "%s" key))))))
 
-(defun e-dev-perf--json-normalize (value)
-  "Return VALUE normalized for JSON encoding."
+(defun e-dev-perf--json-optional (value)
+  "Return VALUE as a JSON scalar, preserving an explicit null."
   (cond
-   ((or (stringp value) (numberp value) (eq value t) (eq value :json-false)
-        (null value))
-    value)
-   ((keywordp value) (substring (symbol-name value) 1))
-   ((symbolp value) (symbol-name value))
-   ((vectorp value) (vconcat (mapcar #'e-dev-perf--json-normalize value)))
-   ((and (listp value)
-         (cl-evenp (length value))
-         (cl-loop for (key _value) on value by #'cddr always (keywordp key)))
-    (let (entries)
-      (while value
-        (push (cons (e-dev-perf--json-key (pop value))
-                    (e-dev-perf--json-normalize (pop value)))
-              entries))
-      (sort entries (lambda (left right) (string< (car left) (car right))))))
-   ((and (listp value)
-         (cl-every (lambda (entry)
-                     (and (consp entry)
-                          (not (keywordp (car entry)))))
-                   value))
-    (mapcar (lambda (entry)
-              (cons (e-dev-perf--json-key (car entry))
-                    (e-dev-perf--json-normalize (cdr entry))))
-            value))
-   ((listp value)
-    (vconcat (mapcar #'e-dev-perf--json-normalize value)))
-   (t (format "%S" value))))
+   ((null value) e-json-null)
+   ((and (symbolp value)
+         (not (memq value '(t :json-false :json-null))))
+    (symbol-name value))
+   (t value)))
+
+(defun e-dev-perf--environment-to-json (environment)
+  "Project run ENVIRONMENT plist into canonical JSON."
+  (list :emacs-version (e-dev-perf--json-optional
+                        (plist-get environment :emacs-version))
+        :system-type (e-dev-perf--json-optional
+                      (plist-get environment :system-type))
+        :native-compilation (if (plist-get environment :native-compilation)
+                                t e-json-false)
+        :commit (e-dev-perf--json-optional (plist-get environment :commit))))
+
+(defun e-dev-perf--sample-to-json (sample)
+  "Project one metric SAMPLE plist into canonical JSON."
+  (let (result)
+    (while sample
+      (let ((key (pop sample))
+            (value (pop sample)))
+        (setq result (append result
+                             (list (e-dev-perf--json-keyword key)
+                                   (e-dev-perf--json-optional value))))))
+    result))
+
+(defun e-dev-perf--summary-to-json (summary)
+  "Project one metric SUMMARY plist into canonical JSON."
+  (let (result)
+    (while summary
+      (let ((key (pop summary))
+            (value (pop summary)))
+        (setq result
+              (append result
+                      (list (e-dev-perf--json-keyword key)
+                            (if (eq key :values)
+                                (vconcat (mapcar #'e-dev-perf--json-optional value))
+                              (e-dev-perf--json-optional value)))))))
+    result))
+
+(defun e-dev-perf--metrics-to-json (metrics)
+  "Project metric ALIST METRICS into a canonical JSON object."
+  (let (result)
+    (dolist (entry metrics result)
+      (setq result
+            (append result
+                    (list (e-dev-perf--json-keyword (car entry))
+                          (e-dev-perf--summary-to-json (cdr entry))))))))
+
+(defun e-dev-perf--verdicts-to-json (verdicts)
+  "Project verdict ALIST VERDICTS into a canonical JSON object."
+  (let (result)
+    (dolist (entry verdicts result)
+      (setq result
+            (append result
+                    (list (e-dev-perf--json-keyword (car entry))
+                          (e-dev-perf--summary-to-json (cdr entry))))))))
+
+(defun e-dev-perf--scenario-to-json (scenario)
+  "Project one run SCENARIO plist into canonical JSON."
+  (list :id (e-dev-perf--json-optional (plist-get scenario :id))
+        :title (e-dev-perf--json-optional (plist-get scenario :title))
+        :owner (e-dev-perf--json-optional (plist-get scenario :owner))
+        :samples (vconcat (mapcar #'e-dev-perf--sample-to-json
+                                  (plist-get scenario :samples)))
+        :metrics (e-dev-perf--metrics-to-json
+                  (plist-get scenario :metrics))
+        :verdicts (e-dev-perf--verdicts-to-json
+                   (plist-get scenario :verdicts))))
+
+(defun e-dev-perf--run-to-json (run)
+  "Project performance RUN plist into canonical JSON."
+  (list :format (plist-get run :format)
+        :id (plist-get run :id)
+        :created-at (plist-get run :created-at)
+        :baseline-file (e-dev-perf--json-optional
+                        (plist-get run :baseline-file))
+        :environment (e-dev-perf--environment-to-json
+                      (plist-get run :environment))
+        :scenarios (vconcat (mapcar #'e-dev-perf--scenario-to-json
+                                    (plist-get run :scenarios)))))
 
 (defun e-dev-perf-run-result-file (run &optional extension)
   "Return artifact path for RUN with EXTENSION."
@@ -516,7 +590,7 @@ artifacts under `e-dev-perf-run-directory'."
         (org-file (e-dev-perf-run-result-file run "org"))
         (coding-system-for-write 'utf-8))
     (with-temp-file json-file
-      (insert (json-encode (e-dev-perf--json-normalize run)))
+      (insert (e-json-serialize (e-dev-perf--run-to-json run)))
       (insert "\n"))
     (with-temp-file org-file
       (insert (e-dev-perf-format-report run)))
@@ -642,12 +716,41 @@ artifacts under `e-dev-perf-run-directory'."
               baseline-scenarios)))
     (make-directory (file-name-directory baseline-file) t)
     (with-temp-file baseline-file
-      (insert (json-encode
-               `((format . 1)
-                 (created_at . ,created-at)
-                 (source . "updated-from-run")
-                 (environment_class . "default")
-                 (scenarios . ,(nreverse baseline-scenarios)))))
+      (insert
+       (e-json-serialize
+        (list :format 1
+              :created_at created-at
+              :source "updated-from-run"
+              :environment_class "default"
+              :scenarios
+              (let (result)
+                (dolist (scenario (nreverse baseline-scenarios) result)
+                  (setq result
+                        (append result
+                                (list (e-dev-perf--json-keyword (car scenario))
+                                      (let (scenario-object)
+                                        (dolist (field (cdr scenario) scenario-object)
+                                          (setq scenario-object
+                                                (append scenario-object
+                                                        (list (e-dev-perf--json-keyword
+                                                               (car field))
+                                                              (if (eq (car field) 'metrics)
+                                                                  (let (metric-object)
+                                                                    (dolist (metric (cdr field) metric-object)
+                                                                      (setq metric-object
+                                                                            (append metric-object
+                                                                                    (list (e-dev-perf--json-keyword (car metric))
+                                                                                          (let (summary-object)
+                                                                                            (dolist (summary-field (cdr metric) summary-object)
+                                                                                              (setq summary-object
+                                                                                                    (append summary-object
+                                                                                                            (list (e-dev-perf--json-keyword
+                                                                                                                   (car summary-field))
+                                                                                                                  (e-dev-perf--json-optional
+                                                                                                                   (cdr summary-field))))))
+                                                                                            summary-object))))))
+                                                                    metric-object)
+                                                                (e-dev-perf--json-optional (cdr field)))))))))))))))
       (insert "\n"))
     baseline-file))
 

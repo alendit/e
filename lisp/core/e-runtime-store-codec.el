@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-json)
 
 (define-error 'e-runtime-store-codec-error "Runtime store value is invalid")
 (define-error 'e-runtime-store-codec-too-large
@@ -110,7 +111,8 @@ the total size of an intentionally unmaterialized value."
   (cond
    ((null value) [nil])
    ((eq value t) [true])
-   ((eq value :json-false) [false])
+   ((eq value e-json-false) [false])
+   ((eq value e-json-null) [null])
    ((integerp value) (vector 'integer (number-to-string value)))
    ((floatp value)
     (unless (e-runtime-store-codec--finite-number-p value)
@@ -396,7 +398,8 @@ the encoder's sort keys."
            (cond
             ((null thing) (start 'nil) (finish))
             ((eq thing t) (start 'true) (finish))
-            ((eq thing :json-false) (start 'false) (finish))
+            ((eq thing e-json-false) (start 'false) (finish))
+            ((eq thing e-json-null) (start 'null) (finish))
             ((integerp thing) (start 'integer) (item) (atom (number-to-string thing)) (finish))
             ((floatp thing) (unless (e-runtime-store-codec--finite-number-p thing)
                               (signal 'e-runtime-store-codec-error (list "Non-finite number" thing)))
@@ -453,7 +456,8 @@ complete oversized representation is constructed."
         (signal 'e-runtime-store-codec-error (list "Invalid nil" value)))
       nil)
      ((eq tag 'true) t)
-     ((eq tag 'false) :json-false)
+     ((eq tag 'false) e-json-false)
+     ((eq tag 'null) e-json-null)
      ((eq tag 'integer)
       (let ((text (and (= (length value) 2) (aref value 1))))
         (unless (and (stringp text) (string-match-p "\\`-?[0-9]+\\'" text))

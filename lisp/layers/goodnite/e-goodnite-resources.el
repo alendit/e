@@ -26,7 +26,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-capabilities)
@@ -510,17 +510,15 @@ fails, or reports no index (so the caller falls back to lexical search)."
                              (buffer-substring-no-properties
                               (line-beginning-position) (line-end-position)))))
                   (unless (string-empty-p line)
-                    (let ((parsed (json-parse-string
-                                   line :object-type 'plist :array-type 'list
-                                   :false-object nil :null-object nil)))
-                      (and (plist-get parsed :indexed) parsed)))))))
+                    (let ((parsed (e-json-parse-string line)))
+                      (and (eq (plist-get parsed :indexed) t) parsed)))))))
         (error nil)))))
 
 (defun e-goodnite-resources--semantic-matches (result scope limit)
   "Return RESULT's matches as e match plists, filtered to SCOPE, capped at LIMIT."
   (let ((matches nil)
         (rank 0))
-    (dolist (m (plist-get result :matches))
+    (dolist (m (append (plist-get result :matches) nil))
       (when (or (null scope) (equal (plist-get m :type) scope))
         (setq rank (1+ rank))
         (push (list :uri (plist-get m :uri)
@@ -547,7 +545,7 @@ is always lexical, since it targets one known entry."
                  (list :matches (e-goodnite-resources--semantic-matches
                                  result (e-goodnite-resources--search-scope uri)
                                  limit)
-                       :truncated (and (plist-get result :truncated) t)))))
+                       :truncated (eq (plist-get result :truncated) t)))))
         (e-goodnite-resources--search-lexical uri query options))))
 
 (defun e-goodnite-resources--scrub (text)

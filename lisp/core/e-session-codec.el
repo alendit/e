@@ -14,32 +14,28 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'json)
+(require 'e-json)
 (require 'subr-x)
 (require 'e-context-lifetime)
 
 (define-error 'e-session-codec-error "Session durable value error")
 
-(defconst e-session-codec-json-null
-  (make-symbol "e-session-codec-json-null")
-  "Sentinel used by physical readers to preserve JSON null presence.
+(defconst e-session-codec-json-null e-json-null
+  "Compatibility alias for the canonical physical JSON-null sentinel.
 
-An empty JSON object is represented by the Lisp value nil when parsed as a
-plist, so index readers use this distinct value for JSON null until the
-semantic projection boundary can classify the two shapes.  It is never
-written to a durable file or returned by ordinary record decoding.")
+Legacy callers may still name this variable while crossing the retired
+session JSONL boundary; new code uses `e-json-null' directly.")
 
 (defun e-session-codec-json-null-p (value)
   "Return non-nil when VALUE is the physical JSON-null sentinel."
   (eq value e-session-codec-json-null))
 
 (defun e-session-codec-index-value-from-json (value)
-  "Return detached index VALUE with physical JSON nulls mapped to nil.
+  "Return detached legacy index VALUE with JSON nulls mapped to nil.
 
-The index reader keeps JSON null distinct until the caller has had a chance to
-classify fields whose empty-object shape is meaningful.  This operation is
-the pure recursive value mapping for every other index field; it preserves an
-empty plist as nil and never mutates its input."
+This is a read-only compatibility projection for the retired index schema.
+Physical parsing is canonical; the projection deliberately restores the old
+list-oriented domain only after that boundary."
   (cond
    ((e-session-codec-json-null-p value) nil)
    ((vectorp value)
@@ -130,7 +126,11 @@ through the current session runtime.")
     (car results)))
 
 (defun e-session-codec--context-value-for-json (value)
-  "Return context VALUE with semantic sequences encoded as JSON arrays."
+  "Return session-domain VALUE as canonical JSON.
+
+Context and session record values use proper Lisp lists for semantic arrays.
+This named record projection is the owning application boundary that maps
+those arrays to vectors; `e-json' itself never guesses a list shape."
   (cond
    ((vectorp value)
     (vconcat (mapcar #'e-session-codec--context-value-for-json
@@ -146,7 +146,12 @@ through the current session runtime.")
                               (e-session-codec--context-value-for-json item))))))
       result))
    ((consp value)
+    (unless (proper-list-p value)
+      (signal 'e-session-codec-error (list "Dotted session JSON value" value)))
     (vconcat (mapcar #'e-session-codec--context-value-for-json value)))
+   ((and (symbolp value)
+         (not (memq value '(t :json-false :json-null))))
+    (symbol-name value))
    (t value)))
 
 (defun e-session-codec--context-record-for-json (record)
@@ -157,8 +162,20 @@ through the current session runtime.")
   "Encode RECORD VALUE at semantic KEY."
   (pcase key
     ((or :context-record :promotion :erasure)
-     (and value (e-session-codec--context-record-for-json value)))
-    (_ (e-session-codec--copy-value value))))
+     (if (null value)
+         e-json-null
+       (e-session-codec--context-record-for-json value)))
+    ;; These fields are JSON-like session domain values too.  Keep their
+    ;; conversion explicit at the record boundary instead of allowing a
+    ;; generic JSON parser/serializer to reinterpret their containers.
+    ((or :message :payload :metadata :range :fingerprints :report
+         :turn-options :records)
+     (if (null value)
+         e-json-null
+       (e-session-codec--context-value-for-json value)))
+    (_ (if (null value)
+           e-json-null
+         (e-session-codec--context-value-for-json value)))))
 
 (defun e-session-codec-record-for-json (record)
   "Return detached semantic RECORD in the existing JSONL representation."
@@ -279,12 +296,8 @@ entry's own parent."
                  (list "Unsupported semantic entry" (plist-get entry :type)))))))
 
 (defun e-session-codec-json-read-line (line)
-  "Parse one JSONL LINE as a plist without touching session state."
-  (json-parse-string line
-                     :object-type 'plist
-                     :array-type 'list
-                     :null-object nil
-                     :false-object :json-false))
+  "Parse one JSONL LINE into the canonical JSON representation."
+  (e-json-parse-string line))
 
 (defun e-session-codec--known-role (role)
   "Return ROLE normalized for semantic transcript values."
@@ -414,30 +427,33 @@ entry's own parent."
 (defun e-session-codec--decode-record-value (key value)
   "Decode one physical RECORD VALUE at semantic KEY."
   (pcase key
-    ((or :context-record :promotion :erasure)
+   ((or :context-record :promotion :erasure)
      (and value
           (e-session-codec--context-value-from-json value)))
-    (_ value)))
+    ((or :message :payload :metadata :range :fingerprints :report
+         :turn-options :records)
+     (and value (e-session-codec--context-value-from-json value)))
+    (_ (if (eq value e-json-null) nil value))))
 
 (defun e-session-codec--context-value-from-json (value)
-  "Detach context VALUE after JSON parsing.
-JSON arrays are intentionally left as lists: the semantic context lifetime
-reader accepts either list or vector sequences."
+  "Project canonical session-domain VALUE after JSON parsing.
+
+This explicit application projection restores semantic list arrays for the
+session aggregate while preserving the canonical parser contract."
   (cond
+   ((eq value e-json-null) nil)
    ((vectorp value)
     (mapcar #'e-session-codec--context-value-from-json (append value nil)))
-   ((consp value)
-    (if (e-session-codec--keyword-plist-p value)
-        (let ((copy (copy-sequence value))
-              (tail value))
-          (while tail
-            (let ((key (pop tail)))
-              (when (consp tail)
-                (plist-put copy key
-                           (e-session-codec--context-value-from-json
-                            (pop tail))))))
-          copy)
-      (mapcar #'e-session-codec--context-value-from-json value)))
+   ((e-session-codec--keyword-plist-p value)
+    (let ((copy (copy-sequence value))
+          (tail value))
+      (while tail
+        (let ((key (pop tail)))
+          (when (consp tail)
+            (plist-put copy key
+                       (e-session-codec--context-value-from-json
+                        (pop tail))))))
+      copy))
    (t value)))
 
 (defun e-session-codec-decode-record (record)

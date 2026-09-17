@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'e-json)
 (require 'seq)
 (require 'subr-x)
 (require 'e-session-codec)
@@ -466,10 +467,12 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
   "Return JSON-ready checkpoint value for SESSION at journal OFFSET."
   (let ((checkpoint
          (e-session-catalog-checkpoint-value session offset)))
-    (plist-put
-     checkpoint :records
-     (vconcat (mapcar #'e-session-codec-record-for-json
-                      (append (plist-get checkpoint :records) nil))))))
+    (setq checkpoint
+          (plist-put
+           checkpoint :records
+           (vconcat (mapcar #'e-session-codec-record-for-json
+                            (append (plist-get checkpoint :records) nil)))))
+    (e-json-assert-value checkpoint)))
 
 (defun e-session-catalog-index-entry (session &optional file)
   "Return the detached catalog projection for SESSION."
