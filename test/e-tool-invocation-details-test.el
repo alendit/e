@@ -182,6 +182,37 @@ ordinary tool implementation used by the test capability."
     (should (eq (plist-get (aref (plist-get round-trip :objects) 0) :value)
                 e-json-null))))
 
+(ert-deftest e-tool-invocation-details-test-empty-arguments-preserve-field-presence ()
+  "An explicit empty argument object remains present and is not JSON null."
+  (let* ((result (e-tool-invocation-details-test--result))
+         (cases
+          (list
+           (list :arguments
+                 (e-tool-invocation-details--document
+                  (list :id "empty-arguments" :name "echo" :arguments nil)
+                  result))
+           (list :received-arguments
+                 (e-tool-invocation-details--document
+                  (list :id "empty-received" :name "echo")
+                  result t nil)))))
+    (dolist (case cases)
+      (let* ((key (car case))
+             (document (cadr case))
+             (wire-key (if (eq key :arguments) :arguments :received_arguments))
+             (decoded (e-tool-invocation-details-decode
+                       (e-tool-invocation-details-encode document)))
+             (wire (e-json-parse-string
+                    (e-tool-invocation-details-encode document))))
+        (should (plist-member wire wire-key))
+        (should (null (plist-get wire wire-key)))
+        (should-not (eq (plist-get wire wire-key) e-json-null))
+        (should (plist-member decoded key))
+        (should (null (plist-get decoded key)))
+        (should-not (plist-member decoded
+                                  (if (eq key :arguments)
+                                      :received-arguments
+                                    :arguments)))))))
+
 (ert-deftest e-tool-invocation-details-test-rejected-call-keeps-received-only ()
   "Rejected raw arguments are archived separately from executed arguments."
   (let* ((call (list :id "rejected" :name "echo"))

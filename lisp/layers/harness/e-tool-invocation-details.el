@@ -273,8 +273,10 @@ cycles and prevents a malformed handler value from recursing indefinitely."
               (append wire
                       (list (if arguments-p :arguments
                               :received_arguments)
-                            (e-json-assert-value
-                             (or value (make-hash-table :test 'equal)))))))
+                            ;; Canonical nil is the empty JSON object.  Keep
+                            ;; the field present so decode can distinguish an
+                            ;; empty object from a missing field.
+                            (e-json-assert-value value)))))
       (append wire (list :result result)))))
 
 (defun e-tool-invocation-details--document-plist (parsed)
@@ -349,17 +351,21 @@ cycles and prevents a malformed handler value from recursing indefinitely."
            (arguments-p (plist-member copy :arguments))
            (received-p (plist-member copy :received-arguments)))
       (when arguments-p
-        (setq copy
-              (plist-put copy :arguments
-                         (e-tool-invocation-details--portable-value
-                          (or (plist-get copy :arguments)
-                              (make-hash-table :test 'equal))))))
+        (let ((value (plist-get copy :arguments)))
+          (setq copy
+                (plist-put copy :arguments
+                           (if (null value)
+                               nil
+                             (e-tool-invocation-details--portable-value
+                              value))))))
       (when received-p
-        (setq copy
-              (plist-put copy :received-arguments
-                         (e-tool-invocation-details--portable-value
-                          (or (plist-get copy :received-arguments)
-                              (make-hash-table :test 'equal))))))
+        (let ((value (plist-get copy :received-arguments)))
+          (setq copy
+                (plist-put copy :received-arguments
+                           (if (null value)
+                               nil
+                             (e-tool-invocation-details--portable-value
+                              value))))))
       (setq copy
             (plist-put copy :result
                        (e-tool-invocation-details--result-document
