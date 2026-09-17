@@ -13,6 +13,7 @@
 ;;; Code:
 
 (require 'e-backend)
+(require 'e-json)
 (require 'e-compaction)
 (require 'e-context)
 (require 'e-events)
