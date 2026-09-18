@@ -87,7 +87,7 @@
    '(".e/layers/topic/capabilities/topic.el"
      ".e/layers/topic/commit.el"
      ".e/layers/topic/session.el"
-     ".e/layers/topic/grimoire-daily-publication.el"
+     ".e/layers/topic/daily-coordinator.el"
      ".e/layers/topic/daily-run.el"
      ".e/layers/topic/cron.el"
      ".e/layers/topic/shells/topic.el")))
