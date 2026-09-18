@@ -1,0 +1,26 @@
+#+title: Runtime-Store Worker Pre-Main Load Failure Hides Cron Registration Cause
+#+startup: overview
+
+* Report
+
+After restarting Emacs, startup reported that the =grimoire-daily-update= cron
+registration had failed because the runtime-store worker was unavailable.  The
+preserved cause was only:
+
+#+begin_example
+Runtime-store protocol empty-response before acknowledgement of cron-register
+#+end_example
+
+The diagnostic did not explain why the worker had failed before accepting the
+=cron-register= request.
+
+* Expected behavior
+
+The runtime-store process adapter must start its worker from a valid installed
+or source-backed package layout.  If the child process fails before its protocol
+main loop starts, the parent must report bounded startup evidence such as the
+child exit status and standard error.  Startup output must not be mistaken for
+an empty protocol response that hides the first actionable failure.
+
+Cron registration is a consumer of the runtime store.  It must not own worker
+startup, package resolution, or transport recovery.

@@ -1,0 +1,103 @@
+#+title: Runtime-Store Worker Pre-Main Load Failure Investigation
+#+startup: overview
+
+* Status
+
+Fixed in commit =1be2e680=.  Runtime-store launchers now include the
+symlink-resolved source directory after the selected generated or override
+directory.  They guard worker loading before the protocol main loop, retain at
+most 4,096 UTF-8 bytes of standard error, and distinguish the =opening= phase
+from an established =ready= protocol.  A pre-main child failure therefore
+reports its process status, exit status, and bounded diagnostic instead of a
+misleading =empty-response= error.
+
+This is a core runtime change.  The running Emacs was not reloaded or mutated;
+a full restart is required to use the correction.
+
+* Cause
+
+The failure had four steps:
+
+1. Feature 94 introduced =lisp/core/e-json.el= as a dependency of
+   =e-runtime-store-codec.el=.
+2. The existing Doom/straight generated build directory contained symlinks for
+   the older runtime-store modules but did not contain =e-json.el=.  Restarting
+   Emacs reused that incomplete generated tree; a restart alone did not add the
+   new file.
+3. =e-runtime-store--command= launched the private batch worker with only the
+   generated directory on its load path.  The child failed while loading
+   =e-runtime-store-codec=, before =e-runtime-store-worker-main= could read or
+   acknowledge the =open= request.
+4. Batch Emacs wrote a leading blank line to standard output before reporting
+   the missing library.  The parent treated that line as an established
+   protocol frame and raised =empty-response=, hiding the actionable load
+   failure on standard error.  Cron registration was merely the first queued
+   consumer whose request exposed the unavailable store.
+
+The offline worker launcher had the same generated-directory assumption and is
+corrected at the same concrete adapter boundary.
+
+* Live and persisted-state evidence
+
+The supported =scripts/e-live-probe ping= probe reported that the running Emacs
+was responsive.  OS process inspection found the GUI Emacs process but no live
+runtime-store worker; the store owner metadata named an earlier worker process
+that no longer existed.
+
+The canonical database was inspected read-only.  It reported schema version 7,
+valid migrations 4 through 7, valid process-report projection shapes, and
+=PRAGMA quick_check(1) = ok=.  Its approximately 6.4 GB file contained about
+3.34 GB of reusable freelist pages; that size was a scaling fact, not the
+startup cause.  A direct read-only worker open succeeded when the checkout's
+real =lisp/core= directory was added to the child load path.  No database
+repair, migration, or destructive recovery is required.
+
+An exact batch reproduction using only the generated build directory exited
+with status 255.  Its output named =e-json= as the missing library.  Repeating
+the launch with the symlink-resolved real core directory produced a valid
+schema-v7 open response.
+
+* Correction boundary
+
+The runtime-store process adapter owns child launch and protocol-establishment
+diagnostics.  The selected build or override directory remains first, so its
+worker implementation stays authoritative.  The adapter adds the selected
+library's real directory only as the sibling-dependency path.  Installed trees
+whose selected path is already real retain the same effective directory.
+
+The parent records explicit startup lifecycle state:
+
+- =opening= means the open control has been submitted but the worker protocol
+  is not established;
+- =ready= means the open response committed;
+- =failed= means startup terminated without establishment.
+
+Unexpected output or child exit during =opening= is a startup transport failure
+with bounded diagnostics.  A blank frame after =ready= remains
+=empty-response= protocol corruption and follows the existing recovery path.
+Cron continues to own only cron behavior; it gains no runtime-store lifecycle
+responsibility.
+
+* Verification
+
+- =eldev test -f test/e-runtime-store-test.el=: 78/78 passed.
+- =eldev test -f test/e-runtime-store-offline-test.el=: 29/29 passed.
+- The symlinked-build regressions omit =e-json.el= from the generated directory
+  and prove that both launchers resolve their real sibling dependencies.
+- The pre-main failure regressions prove bounded standard error and exit-status
+  preservation without =empty-response= substitution.
+- The established-protocol corruption regression still exercises a blank frame
+  after a successful open and passes through the existing recovery behavior.
+- =bash e2e/run-current-config-tests.sh=: 8/8 passed in a fresh private Emacs
+  daemon through the real current user configuration.
+- The full =eldev test= run produced 2,635 expected results out of 2,642.  Six
+  failures were localhost-listener fixtures denied by the sandbox; the owning
+  MCP/OpenAI files then passed 47/47 and 35/35 outside the sandbox.  The one
+  remaining failure reproduces independently in
+  =e-dev-test-reload-refreshes-defaults=: its pre-existing expected default
+  layer list omits the already configured =board= layer.  That stale assertion
+  is outside this runtime-store correction.
+- =git diff --check= and focused =check-parens=/compilation checks passed; the
+  compiler reported only pre-existing warnings.
+
+The user's running Emacs and canonical database were left unchanged.
