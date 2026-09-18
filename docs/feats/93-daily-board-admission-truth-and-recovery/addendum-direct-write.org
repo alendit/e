@@ -1,0 +1,136 @@
+#+title: Addendum 3: Direct Daily Writing
+#+startup: overview
+
+* Status
+
+In-progress.
+
+The operator superseded Addendum 2's model-facing reconciliation and
+publication protocol on 2026-09-18.
+The protocol made the model repeat a target already owned by the Daily
+controller and could reject a correct document because that repeated identity
+did not match.
+
+This addendum preserves Board fan-out, terminal fan-in, worker deadlines, and
+accepted artifact handling.
+It replaces the completion side with an ordinary model edit followed by the
+existing exact-path Grimoire commit operation.
+
+* Behavioral goal
+
+Goal =F93A3-G01=: after all selected workers become terminal, one bounded
+Daily-owned coordinator receives their accepted summaries, failures, artifact
+references, and the exact Daily URI.
+The coordinator reads and edits that Daily with the ordinary model-facing file
+tools.
+A successful coordinator turn commits the Daily and admitted durable artifacts
+through the normal Grimoire path; a failed or cancelled turn remains visibly
+failed.
+No model-facing Daily completion action, repeated target identity, section-map
+submission, or publication lifecycle mediates the edit.
+
+Direct scenario: the workers settle with any mixture of available results and
+visible failures.
+The coordinator reads the current Daily and accepted worker material, preserves
+the user-owned Today's TODO section, writes the complete Daily directly, and
+finishes normally.
+The ordinary turn-finished hook commits only the Daily and admitted durable
+artifacts.
+No reconciliation target mismatch can occur because the model never submits a
+target.
+
+* Contract matrix
+
+| Contract | Observable invariant | Semantic owner | Lifetime and recovery | Evidence | Status |
+|-
+| F93A3-C01 | Terminal Board fan-in starts one Daily coordinator with the bounded worker projection, accepted artifacts, and exact Daily URI. | Grimoire Daily controller over existing Board continuation delivery | One coordinator attempt per delivered continuation; existing Board identities and claims remain unchanged. | Coordinator prompt/context tests and restart composition | Pending |
+| F93A3-C02 | The coordinator uses ordinary =read=, =write=, or =edit= operations on the Daily; it supplies no run id, date, path, revision, section map, or completion action. | Coordinator model using e's existing file tools | The saved Org file is the result.  Existing file-tool errors fail the turn normally. | Direct-write unit and graphical scenarios | Pending |
+| F93A3-C03 | A successful coordinator turn commits exactly the Daily and admitted durable worker artifacts; unrelated working-tree changes remain untouched and commit failure fails the turn. | Grimoire turn-finished commit adapter | Ordinary visible file and Git state provide recovery; an already committed retry is a no-op. | Exact-path commit, unrelated-dirt, no-change, and failure tests | Pending |
+| F93A3-C04 | Daily completion follows the ordinary coordinator turn result.  No action-start marker, reconcile omission retry, target-coherence gate, or materialized/published phase participates. | Grimoire Daily controller | Success, failure, and cancellation settle the owning Work; restart may reopen the coordinator against visible file/Git state. | Terminal observer and restart tests | Pending |
+| F93A3-C05 | Reconciliation, publication, and offline publication-repair code, schemas, state, tests, and documentation with no remaining caller are removed. | Grimoire Daily extension | No compatibility path is retained without a real consumer. | Reference search, compilation, focused suites, configured cold start | Pending |
+
+* Ownership and flow
+
+1. The Daily controller continues to select workers, freeze the run deadline,
+   and dispatch them through Board orchestration.
+2. Board continues to own participant identity, durable task state, terminal
+   fan-in, continuation claim, and delivery observation.
+3. Grimoire creates or reopens one bounded coordinator and gives it the exact
+   Daily URI plus bounded accepted worker material.
+4. The model edits the Org file with ordinary file tools.
+5. The existing Grimoire exact-path commit helper commits the Daily and admitted
+   durable artifacts from the coordinator's turn-finished hook.
+6. The controller derives completion from the normal turn result.
+
+The commit hook is not a model-facing publication operation.
+It performs ordinary repository bookkeeping after the model's write and must
+propagate coordinator commit errors into the turn result.
+The existing generic exclusion for Board-owned Dailies remains applicable to
+unrelated topic sessions; the coordinator branch supplies its exact commit
+paths from controller-owned context.
+
+Worker execution status and source availability remain distinct facts.
+The coordinator may write a partial Daily from available material and represent
+missing sources plainly rather than suppressing the document write.
+Board retains every worker failure independently of the generated prose.
+
+* Compatibility and removals
+
+- Retain worker selection, deadlines, manifests, task attempts, accepted report
+  validation, durable raw artifacts, Board fan-in, and continuation delivery.
+- Retain the expected generated section structure and the user-owned Today's
+  TODO content as coordinator instructions, not a special section-map protocol.
+- Remove =daily-run/:reconcile= and its action schema, target echo, canonical
+  section-array handoff, action-start observation, omission retry, and related
+  coordinator state.
+- Remove publication-specific validation, materialization, completion metadata,
+  lifecycle phases, backup handling, recovery helpers, and offline repair when
+  no remaining caller requires them.
+- Remove =E_DAILY_RUN_COMPLETED= and =E_UPDATED= publication stamps unless a
+  current non-publication consumer proves they remain necessary.
+- Do not add a replacement =:publish= action, coordinator-specific write
+  protocol, compatibility shim, or content-based success gate.
+
+* Evidence plan
+
+- Retain or strengthen tests for worker selection, deadlines, manifest replay,
+  Board fan-in, accepted artifact validation, and ordinary file tools.
+- Replace reconcile-marker, section-map, materialization, publication-lifecycle,
+  and offline-repair tests with direct edit/save/commit, exact path scope,
+  unrelated-dirt preservation, commit failure, terminal settlement, and restart
+  scenarios.
+- Replace graphical reconciliation/finalization assertions with a visible saved
+  Daily edit and its resulting Git evidence.
+- Run the affected Grimoire ERT suites and graphical Daily wrapper.
+- Run =bash e2e/run-current-config-tests.sh= from =e= because configured
+  extension packaging and startup change.
+
+* Architecture self-check
+
+1. If this package stopped here, Daily creation would complete through the same
+   ordinary document-writing behavior used elsewhere and would no longer depend
+   on an identity-echo protocol.
+2. It moves toward a generic Board fan-in followed by application-owned work,
+   with no Daily semantics added to Board or e core.
+3. Worker orchestration and boundedness remain stable; prose synthesis stays
+   model-owned; ordinary Git recovery stays local and inspectable.
+4. Board owns orchestration, the coordinator owns the edit, and Grimoire's
+   commit adapter owns exact-path repository bookkeeping.
+5. Coupling decreases by deleting the Daily completion action and publication
+   state machine while reusing existing file and commit contracts.
+6. Dependencies continue from Grimoire policy toward generic Board, file-tool,
+   turn-hook, and Git helpers.
+7. File and Git side effects remain in their existing adapters.
+8. No new durable state is added; publication-only state is removed.
+9. Worker concurrency is unchanged and completion removes validation and state
+   transitions rather than adding work.
+10. The remaining interfaces are real existing operations used by other
+    workflows; no implementation must weaken or ignore their contracts.
+11. No compatibility requirement was identified for the removed model-facing
+    action or publication phases.
+12. Obsolete reconciliation, publication, repair, and mechanism-coupled tests
+    are removed in this package.
+13. File, provider, turn, and Git errors surface through their normal owners.
+14. Owner tests cover direct editing and exact-path commit independently; the
+    graphical and configured-startup gates cover the composed workflow.
+

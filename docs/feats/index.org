@@ -185,17 +185,16 @@ zero unexpected, Grimoire's affected suites pass 73/73, startup and bounded
 existing-Daily graphical selectors pass 1/1 each, and the public Org Canvas
 delay/release/failure/sibling selector passes 1/1 in 5.240772 seconds.
 
-Feature 93 is =Done=.  Addendum 2 replaces model-driven Daily
-=:apply=/=:finalize= completion with one coordinator-owned typed reconciliation
-and publication boundary, adds runtime-owned absolute child deadlines, and
-excludes Board-owned Dailies from generic turn commits.  Its accepted plan is
-[[file:93-daily-board-admission-truth-and-recovery/addendum-coordinator-publication.org][Coordinator-Owned Daily Completion and Publication]].
-DP1 is accepted at e commit =45fe89f60a69068cd5997307da458a00bf58a8a1=.
-DP2 is accepted at Grimoire commits =467034a1c4366cb6c9dc1ca68b06cc8f858bb22a=
-and =9a1b6bd3cd048bad57e158e945b3c8906894bea4=.  Parent acceptance reran
-daily-run 50/50, publication 25/25, topic-hook 12/12, and the required
-configured cold-start gate 8/8.  The live Emacs and canonical Board were not
-mutated.
+Feature 93 is =In-progress=.  Addendum 3 supersedes the model-facing Daily
+reconciliation/publication protocol with ordinary direct editing: the bounded
+coordinator receives worker material and the exact Daily URI, writes the Org
+file with existing file tools, and relies on the existing exact-path Grimoire
+commit helper after a successful turn.  It removes target echo, section-map
+submission, action-marker retries, publication lifecycle, and offline repair.
+The active plan is
+[[file:93-daily-board-admission-truth-and-recovery/addendum-direct-write.org][Direct Daily Writing]].
+Addendum 2 remains the historical explanation for runtime-owned child deadlines
+and the superseded coordinator publication design.
 
 Feature 94 is =Done=.  It replaces ambiguous JSON-shaped Elisp values with one
 canonical boundary representation and rebases the Daily coordinator recovery
@@ -388,5 +387,5 @@ continuations identified by durable metadata.
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
-| 93 | Done        | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Coordinator Publication Addendum |
+| 93 | In-progress | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Direct Daily Writing Addendum |
 | 94 | Done        | 94-canonical-json-values/                            | Canonical JSON Values Across Model and Persistence Boundaries |
