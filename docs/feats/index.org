@@ -185,12 +185,15 @@ zero unexpected, Grimoire's affected suites pass 73/73, startup and bounded
 existing-Daily graphical selectors pass 1/1 each, and the public Org Canvas
 delay/release/failure/sibling selector passes 1/1 in 5.240772 seconds.
 
-Feature 93 is =In-progress=.  Addendum 3 supersedes the model-facing Daily
+Feature 93 is =Done=.  Addendum 3 supersedes the model-facing Daily
 reconciliation/publication protocol with ordinary direct editing: the bounded
 coordinator receives worker material and the exact Daily URI, writes the Org
 file with existing file tools, and relies on the existing exact-path Grimoire
 commit helper after a successful turn.  It removes target echo, section-map
 submission, action-marker retries, publication lifecycle, and offline repair.
+The direct-write contracts are Accepted with focused Grimoire ERT 29/29,
+focused Board SQLite ERT 24/24, both graphical phases 1/1, and configured cold
+start 8/8.
 The active plan is
 [[file:93-daily-board-admission-truth-and-recovery/addendum-direct-write.org][Direct Daily Writing]].
 Addendum 2 remains the historical explanation for runtime-owned child deadlines
@@ -387,5 +390,5 @@ continuations identified by durable metadata.
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
-| 93 | In-progress | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Direct Daily Writing Addendum |
+| 93 | Done        | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Direct Daily Writing Addendum |
 | 94 | Done        | 94-canonical-json-values/                            | Canonical JSON Values Across Model and Persistence Boundaries |
