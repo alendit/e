@@ -14,6 +14,10 @@
 (require 'e-runtime-store-session-worker)
 (require 'e-session-query)
 
+(defconst e-runtime-store-offline-test--source-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing this focused offline-store test source.")
+
 (defun e-runtime-store-offline-test--payload (value)
   "Encode VALUE exactly as a legacy v5 session payload."
   (base64-encode-string (e-runtime-store-codec-encode value) t))
@@ -1418,6 +1422,66 @@ compatibility stage before the v6 session cutover."
             (should-not (file-exists-p backup)))
         (when (file-directory-p directory)
           (delete-directory directory t))))))
+
+(ert-deftest e-runtime-store-offline-worker-symlink-build-resolves-real-core-directory ()
+  "The offline launcher resolves sibling dependencies from the real checkout."
+  (let* ((fixture (e-runtime-store-offline-test--make-v7))
+         (directory (car fixture))
+         (core-directory
+          (expand-file-name "../lisp/core"
+                            e-runtime-store-offline-test--source-directory))
+         (build-directory (make-temp-file "e-runtime-store-offline-build-" t))
+         (worker-file
+          (expand-file-name "e-runtime-store-offline-worker.el"
+                            build-directory))
+         (backup (expand-file-name "unused.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (make-symbolic-link
+           (expand-file-name "e-runtime-store-offline-worker.el" core-directory)
+           worker-file)
+          (should-not (file-exists-p (expand-file-name "e-json.el"
+                                                        build-directory)))
+          (cl-letf (((symbol-function 'e-runtime-store-offline--worker-file)
+                     (lambda () worker-file)))
+            (let ((result (e-runtime-store-offline-upgrade directory backup)))
+              (should (plist-get result :noop)))))
+      (when (file-directory-p build-directory)
+        (delete-directory build-directory t))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-worker-pre-main-failure-is-bounded ()
+  "Offline startup failures retain status and bounded stderr diagnostics."
+  (let* ((fixture (e-runtime-store-offline-test--make-v7))
+         (directory (car fixture))
+         (worker-file (make-temp-file "e-runtime-store-offline-bad-" nil ".el"))
+         (marker "synthetic offline startup failure")
+         (payload (concat marker " "
+                         (make-string
+                          (+ e-runtime-store-offline-startup-diagnostic-byte-limit 512)
+                          ?x)))
+         (backup (expand-file-name "unused.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (write-region (format "(error %S)\n" payload)
+                        nil worker-file nil 'silent)
+          (cl-letf (((symbol-function 'e-runtime-store-offline--worker-file)
+                     (lambda () worker-file)))
+            (let* ((failure
+                    (should-error
+                     (e-runtime-store-offline-upgrade directory backup)
+                     :type 'e-runtime-store-offline-error))
+                   (data (cddr failure))
+                   (stderr (plist-get data :stderr)))
+              (should (= (plist-get data :exit-status) 1))
+              (should (string-match-p (regexp-quote marker) stderr))
+              (should (plist-get data :stderr-truncated))
+              (should (<= (string-bytes stderr)
+                          e-runtime-store-offline-startup-diagnostic-byte-limit)))))
+      (when (file-exists-p worker-file) (delete-file worker-file))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
 
 (ert-deftest e-runtime-store-offline-v7-stage-faults-preserve-source ()
   "Every injected precommit stage rolls back and postcommit restores backup."

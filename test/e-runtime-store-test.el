@@ -1989,6 +1989,93 @@
             (should-not (e-runtime-store--client-queue store))
             (should (= (hash-table-count (e-runtime-store--pending store)) 0))))))))
 
+(ert-deftest e-runtime-store-worker-symlink-build-resolves-real-core-directory ()
+  "A generated worker tree may omit a newer sibling dependency."
+  (let* ((core-directory
+          (expand-file-name "../lisp/core" e-runtime-store-test--source-directory))
+         (build-directory (make-temp-file "e-runtime-store-worker-build-" t))
+         (directory (make-temp-file "e-runtime-store-worker-db-" t))
+         (worker-file (expand-file-name "e-runtime-store-worker.el"
+                                       build-directory))
+         (codec-file (expand-file-name "e-runtime-store-codec.el"
+                                      build-directory))
+         (process-environment (copy-sequence process-environment))
+         store)
+    (unwind-protect
+        (progn
+          ;; This is the generated-package shape that exposed the regression:
+          ;; selected runtime modules are symlinks, but the newly added sibling
+          ;; is absent from the build directory.
+          (make-symbolic-link
+           (expand-file-name "e-runtime-store-worker.el" core-directory)
+           worker-file)
+          (make-symbolic-link
+           (expand-file-name "e-runtime-store-codec.el" core-directory)
+           codec-file)
+          (should-not (file-exists-p (expand-file-name "e-json.el"
+                                                        build-directory)))
+          (setenv "E_RUNTIME_STORE_TEST_WORKER_FILE" worker-file)
+          (let ((load-path (cons build-directory load-path)))
+            (should
+             (member (file-name-as-directory
+                      (file-truename core-directory))
+                     (e-runtime-store--command)))
+            (setq store (e-runtime-store-open directory))
+            (e-runtime-store-test--wait-ready store)
+            (should (eq (plist-get (e-runtime-store-status store) :startup)
+                        'ready))
+            (should (= (plist-get
+                        (e-runtime-store-call store 'read '(:op store-metrics))
+                        :schema-version)
+                       7))))
+      (when store (ignore-errors (e-runtime-store-close store)))
+      (when (file-directory-p build-directory)
+        (delete-directory build-directory t))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-worker-pre-main-failure-preserves-bounded-diagnostic ()
+  "A pre-main child failure reports exit status and bounded stderr."
+  (let* ((worker-file (make-temp-file "e-runtime-store-bad-worker-" nil ".el"))
+         (directory (make-temp-file "e-runtime-store-bad-worker-db-" t))
+         (marker "synthetic pre-main startup failure")
+         (payload (concat marker " "
+                         (make-string
+                          (+ e-runtime-store-startup-diagnostic-byte-limit 512)
+                          ?x)))
+         (process-environment (copy-sequence process-environment))
+         store request)
+    (unwind-protect
+        (progn
+          (write-region (format "(error %S)\n" payload)
+                        nil worker-file nil 'silent)
+          (setenv "E_RUNTIME_STORE_TEST_WORKER_FILE" worker-file)
+          (setq store (e-runtime-store-open directory)
+                request (e-runtime-store-submit store 'read '(:op store-metrics)))
+          (let* ((failure
+                  (should-error (e-runtime-store-await store request 5.0)
+                                :type 'e-runtime-store-unavailable))
+                 (cause (plist-get (cddr failure) :cause))
+                 (cause-data (cddr cause))
+                 (stderr (plist-get cause-data :stderr)))
+            (should-not (string-match-p "empty-response"
+                                        (error-message-string failure)))
+            (should (= (plist-get (cddr failure) :exit-status) 1))
+            (should (string-match-p
+                     (regexp-quote marker)
+                     (plist-get (cddr failure) :stderr)))
+            (should (eq (car cause) 'e-runtime-store-timeout))
+            (should (eq (plist-get cause-data :process-status) 'exit))
+            (should (= (plist-get cause-data :exit-status) 1))
+            (should (string-match-p (regexp-quote marker) stderr))
+            (should (plist-get cause-data :stderr-truncated))
+            (should (<= (string-bytes stderr)
+                        e-runtime-store-startup-diagnostic-byte-limit))))
+      (when store (ignore-errors (e-runtime-store-close store)))
+      (when (file-exists-p worker-file) (delete-file worker-file))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
 (ert-deftest e-runtime-store-s92-submission-restarts-the-timeout-interval ()
   "Real scheduler promotion gives a near-expiry request a fresh interval."
   (let* ((store (e-runtime-store--create

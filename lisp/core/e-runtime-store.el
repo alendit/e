@@ -65,6 +65,9 @@
 (defconst e-runtime-store-owner-diagnostic-byte-limit 1024
   "Maximum retained UTF-8 bytes in one owner-local failure diagnostic.")
 
+(defconst e-runtime-store-startup-diagnostic-byte-limit 4096
+  "Maximum retained UTF-8 bytes from one worker startup diagnostic.")
+
 (defconst e-runtime-store-owner-domains '(session board task)
   "Domains permitted to attach private optimistic-mutation owner keys.")
 
@@ -121,7 +124,8 @@ request/token budget so a full cold queue can still become ready.")
                (:conc-name e-runtime-store--))
   directory database-file runtime-id access-mode parent-store read-client
   borrowed-claim
-  process opened-process stderr-buffer input-fragment
+  process opened-process stderr-buffer stderr-process stderr-bytes
+  stderr-truncated input-fragment
   (sequence 0) pending client-queue active-request
   starting-request last-error unavailable-cause startup-status unavailable closed
   suspect-owners
@@ -179,12 +183,21 @@ the package itself loads; ordinary runtime callers leave it unset."
          ;; then expose the ordinary core directory for those dependencies.
          (core-directory
           (file-name-directory
-           (or (locate-library "e-runtime-store-codec") worker-file))))
+           (file-truename
+            (expand-file-name
+             (or (locate-library "e-runtime-store-codec") worker-file))))))
     (list (e-runtime-store--emacs-program) "--batch" "-Q"
           "-L" (file-name-directory worker-file)
           "-L" core-directory
           "--eval" "(setq load-prefer-newer t)"
-          "-l" worker-file
+          ;; Loading the worker through a guarded eval keeps command-line load
+          ;; failures on stderr and gives the parent a real exit boundary.  A
+          ;; raw `-l' failure can emit a leading blank stdout line before the
+          ;; error, which is indistinguishable from a corrupt protocol frame.
+          "--eval"
+          (format
+           "(condition-case err (progn (load %S) (unless (fboundp 'e-runtime-store-worker-main) (error \"Runtime-store worker main is unavailable\"))) (error (princ (format \"Runtime-store worker startup failed: %%s\\n\" (error-message-string err)) #'external-debugging-output) (kill-emacs 1)))"
+           worker-file)
           "--funcall" "e-runtime-store-worker-main")))
 
 (defun e-runtime-store--encode-frame (value &optional measured-bytes)
@@ -609,11 +622,30 @@ continues to own its own admission reservation."
 
 (defun e-runtime-store--startup-error (request cause)
   "Return the typed startup failure for scheduler-selected REQUEST and CAUSE."
-  (e-runtime-store--request-error
-   'e-runtime-store-unavailable
-   (format "Worker startup failed before submitting %s"
-           (or (e-runtime-store--request-operation request) "request"))
-   request :cause cause))
+  (let* ((data (and (consp cause) (cddr cause)))
+         (startup-status (plist-get data :startup-status))
+         (status (plist-get data :process-status))
+         (exit-status (plist-get data :exit-status))
+         (stderr (plist-get data :stderr))
+         (truncated (plist-get data :stderr-truncated))
+         (suffix
+          (when (or status exit-status (and stderr (not (string-empty-p stderr))))
+            (format " (process status %s, exit status %s%s%s)"
+                    (or status 'unknown)
+                    (or exit-status 'unknown)
+                    (if (and stderr (not (string-empty-p stderr)))
+                        (format ", stderr: %s" (string-trim stderr))
+                      "")
+                    (if truncated " [stderr truncated]" "")))))
+    (e-runtime-store--request-error
+     'e-runtime-store-unavailable
+     (format "Worker startup failed before submitting %s%s"
+             (or (e-runtime-store--request-operation request) "request")
+             (or suffix ""))
+     request :cause cause
+     :startup-status startup-status
+     :process-status status :exit-status exit-status :stderr stderr
+     :stderr-truncated truncated)))
 
 (defun e-runtime-store--protocol-error (store protocol-cause &rest properties)
   "Return one typed protocol failure for STORE and PROTOCOL-CAUSE."
@@ -628,6 +660,33 @@ continues to own its own admission reservation."
            :request-id (and request (e-runtime-store-request--id request))
            :protocol-cause protocol-cause)
      properties)))
+
+(defun e-runtime-store--startup-transport-error
+    (store cause &optional output &rest properties)
+  "Return bounded pre-acknowledgement failure CAUSE for STORE.
+
+OUTPUT is child stdout observed while the worker is still in its explicit
+`opening' lifecycle state.  Once the open response has committed, callers keep
+using `e-runtime-store--protocol-error' so established blank frames and other
+corruption retain their existing typed protocol cause."
+  (let* ((request (e-runtime-store--failure-request store))
+         (bounded-output
+          (and (stringp output)
+               (e-runtime-store--utf8-prefix
+                output e-runtime-store-startup-diagnostic-byte-limit)))
+         (diagnostic (e-runtime-store--worker-diagnostic store)))
+    (apply #'e-runtime-store--request-error
+           'e-runtime-store-timeout
+           (if (and bounded-output (not (string-empty-p bounded-output)))
+               (format "Worker startup emitted unexpected output before acknowledgement: %s"
+                       (string-trim bounded-output))
+             (format "Worker startup failed before acknowledgement (%s)" cause))
+           request
+           (append (list :cause cause
+                         :startup-status 'opening
+                         :startup-output bounded-output)
+                   properties
+                   diagnostic))))
 
 (defun e-runtime-store--response-valid-p (response)
   "Return non-nil when RESPONSE has the complete worker response shape."
@@ -742,7 +801,8 @@ continues to own its own admission reservation."
    ((eq (e-runtime-store-request--kind request) 'open)
     (when (eq (e-runtime-store-request--state request) 'committed)
       (setf (e-runtime-store--opened-process store)
-            (e-runtime-store--process store))
+            (e-runtime-store--process store)
+            (e-runtime-store--startup-status store) 'ready)
       ;; Prewarm the subordinate read transport after (and only after) the
       ;; writer has created and verified the schema.  This opens no domain
       ;; state, but keeps the first interactive query from paying process
@@ -762,6 +822,7 @@ continues to own its own admission reservation."
                  store (e-runtime-store--starting-request store)))
       (setf (e-runtime-store--starting-request store) nil))
     (when (not (eq (e-runtime-store-request--state request) 'committed))
+      (setf (e-runtime-store--startup-status store) 'failed)
       (let ((selected (e-runtime-store--startup-request store))
             (open-error (e-runtime-store-request--error request)))
         (if (eq (car-safe open-error) 'e-runtime-store-schema-too-old)
@@ -793,19 +854,35 @@ continues to own its own admission reservation."
   "Recover submitted work after an oversized response frame of WIRE-BYTES."
   (e-runtime-store--recover-or-fail
    store
-   (e-runtime-store--protocol-error
-    store 'response-frame-too-large
-    :wire-bytes wire-bytes
-    :wire-limit e-runtime-store-codec-protocol-wire-byte-limit)))
+   (if (eq (e-runtime-store--startup-status store) 'opening)
+       (e-runtime-store--startup-transport-error
+        store 'startup-output-too-large nil
+        :wire-bytes wire-bytes
+        :wire-limit e-runtime-store-codec-protocol-wire-byte-limit)
+     (e-runtime-store--protocol-error
+      store 'response-frame-too-large
+      :wire-bytes wire-bytes
+      :wire-limit e-runtime-store-codec-protocol-wire-byte-limit))))
 
 (defun e-runtime-store--consume-response-line (store line)
   "Decode and settle one complete protocol LINE for STORE."
-  ;; The private protocol has no keepalive frame.  A delimiter always closes
-  ;; one response, so a bare newline is corruption rather than ignorable idle
-  ;; output and must preserve the active request as its first failure cause.
+  ;; The private protocol has no keepalive frame.  Once opening has committed,
+  ;; a delimiter always closes one response, so a bare newline is corruption
+  ;; rather than ignorable idle output and preserves the active request as its
+  ;; first failure cause.  The pre-acknowledgement branch below reports startup
+  ;; transport evidence separately.
   (if (string-empty-p line)
-      (e-runtime-store--recover-or-fail
-       store (e-runtime-store--protocol-error store 'empty-response))
+      (if (eq (e-runtime-store--startup-status store) 'opening)
+          ;; A child that prints a blank line while its open control is still
+          ;; outstanding has not established the protocol yet.  Keep this
+          ;; distinct from a blank frame after the open acknowledgement; the
+          ;; latter remains the established-protocol corruption path below.
+          (e-runtime-store--recover-or-fail
+           store
+           (e-runtime-store--startup-transport-error
+            store 'startup-empty-response))
+        (e-runtime-store--recover-or-fail
+         store (e-runtime-store--protocol-error store 'empty-response)))
     (let ((wire-bytes (1+ (string-bytes line))))
       (if (> wire-bytes e-runtime-store-codec-protocol-wire-byte-limit)
           (e-runtime-store--freeze-oversized-response store wire-bytes)
@@ -814,8 +891,11 @@ continues to own its own admission reservation."
               (if (not (e-runtime-store--response-valid-p response))
                   (e-runtime-store--recover-or-fail
                    store
-                   (e-runtime-store--protocol-error
-                    store 'malformed-response))
+                   (if (eq (e-runtime-store--startup-status store) 'opening)
+                       (e-runtime-store--startup-transport-error
+                        store 'startup-malformed-response line)
+                     (e-runtime-store--protocol-error
+                      store 'malformed-response)))
                 (let* ((id (plist-get response :id))
                        (request
                         (gethash id (e-runtime-store--pending store))))
@@ -823,21 +903,30 @@ continues to own its own admission reservation."
                    ((not request)
                     (e-runtime-store--recover-or-fail
                      store
-                     (e-runtime-store--protocol-error
-                      store 'unknown-response-id :response-id id)))
+                     (if (eq (e-runtime-store--startup-status store) 'opening)
+                         (e-runtime-store--startup-transport-error
+                          store 'startup-unknown-response-id line)
+                       (e-runtime-store--protocol-error
+                        store 'unknown-response-id :response-id id))))
                    ((not (eq request (e-runtime-store--active-request store)))
                      (e-runtime-store--recover-or-fail
-                     store
-                     (e-runtime-store--protocol-error
-                      store 'uncorrelated-response :response-id id)))
+                      store
+                      (if (eq (e-runtime-store--startup-status store) 'opening)
+                          (e-runtime-store--startup-transport-error
+                           store 'startup-uncorrelated-response line)
+                        (e-runtime-store--protocol-error
+                         store 'uncorrelated-response :response-id id))))
                    (t (e-runtime-store--settle store request response))))))
           (e-runtime-store-codec-too-large
            (e-runtime-store--freeze-oversized-response store wire-bytes))
           (error
            (e-runtime-store--recover-or-fail
             store
-            (e-runtime-store--protocol-error
-             store 'decode-error :cause err))))))))
+            (if (eq (e-runtime-store--startup-status store) 'opening)
+                (e-runtime-store--startup-transport-error
+                 store 'startup-decode-error line)
+              (e-runtime-store--protocol-error
+               store 'decode-error :cause err)))))))))
 
 (defun e-runtime-store--consume-output (store text)
   "Consume bounded, newline-framed worker protocol TEXT for STORE."
@@ -916,6 +1005,62 @@ continues to own its own admission reservation."
               (setq low mid)
             (setq high (1- mid)))))
       (substring string 0 low))))
+
+(defun e-runtime-store--capture-stderr (store text)
+  "Append TEXT to STORE's bounded worker diagnostic buffer."
+  (let* ((bytes (or (e-runtime-store--stderr-bytes store) 0))
+         (remaining (- e-runtime-store-startup-diagnostic-byte-limit bytes))
+         (prefix (if (> remaining 0)
+                     (e-runtime-store--utf8-prefix text remaining)
+                   "")))
+    (when (and (stringp prefix) (> (string-bytes prefix) 0)
+               (buffer-live-p (e-runtime-store--stderr-buffer store)))
+      (with-current-buffer (e-runtime-store--stderr-buffer store)
+        (goto-char (point-max))
+        (insert prefix)))
+    (setf (e-runtime-store--stderr-bytes store)
+          (+ bytes (string-bytes prefix))
+          (e-runtime-store--stderr-truncated store)
+          (or (e-runtime-store--stderr-truncated store)
+              (< (string-bytes prefix) (string-bytes text))))))
+
+(defun e-runtime-store--worker-diagnostic (store)
+  "Return bounded process and stderr facts for STORE's current worker."
+  (let* ((process (e-runtime-store--process store))
+         (status (and (processp process) (process-status process)))
+         (exit-status
+          (and (processp process)
+               (memq status '(exit signal failed closed))
+               (condition-case nil
+                   (process-exit-status process)
+                 (error nil))))
+         (stderr
+          (if (buffer-live-p (e-runtime-store--stderr-buffer store))
+              (with-current-buffer (e-runtime-store--stderr-buffer store)
+                (buffer-string))
+            "")))
+    (list :process-status status :exit-status exit-status
+          :stderr stderr
+          :stderr-truncated (and (e-runtime-store--stderr-truncated store) t))))
+
+(defun e-runtime-store--stop-stderr-process (store)
+  "Detach STORE's bounded stderr pipe and release its process object."
+  (when-let* ((stderr-process (e-runtime-store--stderr-process store)))
+    (when (processp stderr-process)
+      (set-process-filter stderr-process #'ignore)
+      (set-process-sentinel stderr-process #'ignore)
+      (when (process-live-p stderr-process)
+        (delete-process stderr-process))))
+  (setf (e-runtime-store--stderr-process store) nil))
+
+(defun e-runtime-store--clear-stderr (store)
+  "Release STORE's bounded stderr process and buffer."
+  (e-runtime-store--stop-stderr-process store)
+  (when (buffer-live-p (e-runtime-store--stderr-buffer store))
+    (kill-buffer (e-runtime-store--stderr-buffer store)))
+  (setf (e-runtime-store--stderr-buffer store) nil
+        (e-runtime-store--stderr-bytes store) 0
+        (e-runtime-store--stderr-truncated store) nil))
 
 (defun e-runtime-store--bounded-diagnostic (cause)
   "Return CAUSE's first diagnostic bounded to 1,024 UTF-8 bytes."
@@ -1008,7 +1153,9 @@ the healthy worker and already-consumed input remainder stay authoritative."
           (e-runtime-store--last-error store) (or first-error cause))
     (unless preserve-worker-p
       (setf (e-runtime-store--opened-process store) nil
-            (e-runtime-store--input-fragment store) ""))
+            (e-runtime-store--input-fragment store) "")
+      (when open
+        (setf (e-runtime-store--startup-status store) 'failed)))
     (when open
       (e-runtime-store--release-open-control store open)
       (setf (e-runtime-store-request--state open) 'failed
@@ -1049,7 +1196,8 @@ the healthy worker and already-consumed input remainder stay authoritative."
       (set-process-filter (e-runtime-store--process store) #'ignore)
       (set-process-sentinel (e-runtime-store--process store) #'ignore)
       (when (process-live-p (e-runtime-store--process store))
-        (delete-process (e-runtime-store--process store))))))
+        (delete-process (e-runtime-store--process store))))
+    (e-runtime-store--clear-stderr store)))
 
 (defun e-runtime-store--fence-worker (store)
   "Detach STORE from its current worker before a bounded replacement.
@@ -1059,7 +1207,8 @@ Old filter and sentinel callbacks must not settle a replayed request."
       (set-process-filter process #'ignore)
       (set-process-sentinel process #'ignore)
       (when (process-live-p process)
-        (delete-process process)))))
+        (delete-process process))))
+  (e-runtime-store--stop-stderr-process store))
 
 (defun e-runtime-store--recovery-exhausted (store cause)
   "Partition one owner after recovery exhausts, preserving the first CAUSE."
@@ -1137,16 +1286,35 @@ whether the mutation already committed.  Reads are safe to retry directly."
   (unless (or (e-runtime-store--closed store)
               (e-runtime-store--unavailable store))
     (let* ((request (e-runtime-store--failure-request store))
-           (operation (e-runtime-store--request-operation request)))
+           (operation (e-runtime-store--request-operation request))
+           (diagnostic (e-runtime-store--worker-diagnostic store))
+           (startup-p (eq (e-runtime-store--startup-status store) 'opening))
+           (status (plist-get diagnostic :process-status))
+           (exit-status (plist-get diagnostic :exit-status))
+           (stderr (plist-get diagnostic :stderr))
+           (truncated (plist-get diagnostic :stderr-truncated))
+           (suffix
+            (format " (process status %s, exit status %s%s%s)"
+                    (or status 'unknown)
+                    (or exit-status 'unknown)
+                    (if (string-empty-p stderr)
+                        ""
+                      (format ", stderr: %s" (string-trim stderr)))
+                    (if truncated " [stderr truncated]" ""))))
       (e-runtime-store--recover-or-fail
        store
-       (e-runtime-store--request-error
-        'e-runtime-store-timeout
-        (if operation
-            (format "Worker exited before acknowledging %s; reload canonical state"
-                    operation)
-          "Worker exited before acknowledging the request")
-        request :cause 'worker-exited)))))
+       (apply #'e-runtime-store--request-error
+              'e-runtime-store-timeout
+              (if startup-p
+                  (format "Worker startup failed before acknowledging %s%s"
+                          (or operation "request") suffix)
+                (if operation
+                    (format "Worker exited before acknowledging %s; reload canonical state%s"
+                            operation suffix)
+                  (format "Worker exited before acknowledging the request%s" suffix)))
+              request :cause 'worker-exited
+              :startup-status (and startup-p 'opening)
+              diagnostic)))))
 
 (defun e-runtime-store--start-process (store)
   "Start STORE's worker process and return it."
@@ -1155,10 +1323,26 @@ whether the mutation already committed.  Reads are safe to retry directly."
   (when (e-runtime-store--unavailable store)
     (e-runtime-store--signal-unavailable store))
   (unless (e-runtime-store--live-p store)
-    (when (buffer-live-p (e-runtime-store--stderr-buffer store))
-      (kill-buffer (e-runtime-store--stderr-buffer store)))
-    (let ((stderr (generate-new-buffer " *e-runtime-store-stderr*")))
+    (e-runtime-store--clear-stderr store)
+    (let* ((stderr (generate-new-buffer " *e-runtime-store-stderr*"))
+           ;; `:stderr' accepts a pipe process with its own filter.  Keeping
+           ;; the cap in that filter prevents a noisy pre-main child from
+           ;; retaining an unbounded diagnostic buffer in the parent.
+           (stderr-process
+            (make-pipe-process
+             :name (format "e-runtime-store-stderr-%s"
+                           (substring (e-runtime-store--runtime-id store) 0
+                                      (min 8 (length
+                                              (e-runtime-store--runtime-id
+                                               store)))))
+             :buffer nil :coding 'utf-8-unix :noquery t
+             :filter (lambda (_process text)
+                       (e-runtime-store--capture-stderr store text))
+             :sentinel #'ignore)))
       (setf (e-runtime-store--stderr-buffer store) stderr
+            (e-runtime-store--stderr-process store) stderr-process
+            (e-runtime-store--stderr-bytes store) 0
+            (e-runtime-store--stderr-truncated store) nil
             (e-runtime-store--input-fragment store) ""
             (e-runtime-store--process store)
             (make-process
@@ -1167,7 +1351,7 @@ whether the mutation already committed.  Reads are safe to retry directly."
                                       (min 8 (length
                                               (e-runtime-store--runtime-id
                                                store)))))
-             :buffer nil :stderr stderr :command (e-runtime-store--command)
+             :buffer nil :stderr stderr-process :command (e-runtime-store--command)
              :connection-type 'pipe :coding 'utf-8-unix :noquery t
              :filter (lambda (_process text)
                        (e-runtime-store--consume-output store text))
@@ -1440,13 +1624,15 @@ Return non-nil when another immediate timer turn is needed."
       (e-runtime-store--fail-all store '(e-runtime-store-unavailable "Store is closed"))
       (when (processp process)
         (when (process-live-p process) (delete-process process)))
-      (when (buffer-live-p (e-runtime-store--stderr-buffer store))
-        (kill-buffer (e-runtime-store--stderr-buffer store)))
+      (e-runtime-store--clear-stderr store)
       ;; The close observer is the final client-visible event: resources are
       ;; gone and no scheduler/recovery/close reference can revive transport.
       (setf (e-runtime-store--process store) nil
             (e-runtime-store--opened-process store) nil
             (e-runtime-store--stderr-buffer store) nil
+            (e-runtime-store--stderr-process store) nil
+            (e-runtime-store--stderr-bytes store) 0
+            (e-runtime-store--stderr-truncated store) nil
             (e-runtime-store--input-fragment store) nil
             (e-runtime-store--active-request store) nil
             (e-runtime-store--starting-request store) nil
@@ -1981,14 +2167,16 @@ be constructed with the private constructor used by scheduler tests."
          (cancel-timer (e-runtime-store--notification-timer store)))
        (when (processp (e-runtime-store--process store))
          (delete-process (e-runtime-store--process store)))
-       (when (buffer-live-p (e-runtime-store--stderr-buffer store))
-         (kill-buffer (e-runtime-store--stderr-buffer store)))
+       (e-runtime-store--clear-stderr store)
        ;; Public-open setup is all-or-nothing.  A caller that catches this
        ;; error must not retain stale process/timer/control ownership which
        ;; could make a later same-directory open look live.
        (setf (e-runtime-store--process store) nil
              (e-runtime-store--opened-process store) nil
              (e-runtime-store--stderr-buffer store) nil
+             (e-runtime-store--stderr-process store) nil
+             (e-runtime-store--stderr-bytes store) 0
+             (e-runtime-store--stderr-truncated store) nil
              (e-runtime-store--input-fragment store) nil
              (e-runtime-store--active-request store) nil
              (e-runtime-store--starting-request store) nil

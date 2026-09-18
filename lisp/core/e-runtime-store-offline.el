@@ -16,6 +16,21 @@
 (define-error 'e-runtime-store-offline-error "Offline runtime-store operation failed")
 
 (defconst e-runtime-store-offline-cli-error-max-chars 2048)
+(defconst e-runtime-store-offline-startup-diagnostic-byte-limit 4096
+  "Maximum UTF-8 bytes retained from one offline worker failure.")
+
+(defun e-runtime-store-offline--utf8-prefix (string limit)
+  "Return the longest prefix of STRING occupying at most LIMIT UTF-8 bytes."
+  (if (<= (string-bytes string) limit)
+      string
+    (let ((low 0)
+          (high (length string)))
+      (while (< low high)
+        (let ((mid (/ (+ low high 1) 2)))
+          (if (<= (string-bytes (substring string 0 mid)) limit)
+              (setq low mid)
+            (setq high (1- mid)))))
+      (substring string 0 low))))
 
 (defun e-runtime-store-offline--worker-file ()
   "Return the installed offline worker path."
@@ -38,21 +53,46 @@
          (output (make-temp-file "e-runtime-store-offline-result-"))
          (stderr (make-temp-file "e-runtime-store-offline-stderr-"))
          (program (expand-file-name invocation-name invocation-directory))
-         result)
+         result
+         (core-directory
+          (file-name-directory
+           (file-truename (expand-file-name worker)))))
     (unwind-protect
         (let ((exit
                (process-file
                 program nil (list nil stderr) nil "--batch" "-Q"
                 "-L" (file-name-directory worker)
-                "--eval" "(setq load-prefer-newer t)" "-l" worker
+                "-L" core-directory
+                "--eval" "(setq load-prefer-newer t)"
+                "--eval"
+                (format
+                 "(condition-case err (progn (load %S) (unless (fboundp 'e-runtime-store-offline-worker-main) (error \"Offline runtime-store worker main is unavailable\"))) (error (princ (format \"Runtime-store offline worker startup failed: %%s\\n\" (error-message-string err)) #'external-debugging-output) (kill-emacs 1)))"
+                 worker)
                 "--funcall" "e-runtime-store-offline-worker-main"
                 operation (expand-file-name database) output
                 (expand-file-name argument))))
           (unless (zerop exit)
-            (signal 'e-runtime-store-offline-error
-                    (list (with-temp-buffer
-                            (insert-file-contents stderr)
-                            (buffer-string)))))
+            (let ((diagnostic
+                   (with-temp-buffer
+                     (let ((size (file-attribute-size
+                                  (file-attributes stderr))))
+                       (insert-file-contents-literally
+                        stderr nil 0
+                        (min size e-runtime-store-offline-startup-diagnostic-byte-limit)))
+                     (e-runtime-store-offline--utf8-prefix
+                      (buffer-string)
+                      e-runtime-store-offline-startup-diagnostic-byte-limit))))
+              (signal 'e-runtime-store-offline-error
+                      (list (format "Offline worker exited with status %s%s"
+                                    exit
+                                    (if (string-empty-p diagnostic)
+                                        ""
+                                      (format ": %s" (string-trim diagnostic))))
+                            :exit-status exit
+                            :stderr diagnostic
+                            :stderr-truncated
+                            (> (file-attribute-size (file-attributes stderr))
+                               e-runtime-store-offline-startup-diagnostic-byte-limit)))))
           (with-temp-buffer
             (insert-file-contents-literally output)
             (setq result
