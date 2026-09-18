@@ -341,8 +341,8 @@ When RESOURCES is non-nil, include action-description resources."
                                       (e-store-read-entry entry))))))
       (delete-directory project t))))
 
-(ert-deftest e-project-local-test-capability-skills-preserve-action-providers ()
-  "Adding skill resources keeps dynamic action-capability providers."
+(ert-deftest e-project-local-test-capability-skills-preserve-runtime-providers ()
+  "Adding skill resources keeps dynamic action and readiness providers."
   (let* ((project (make-temp-file "e-project-local-action-skills-" t))
          (directory (expand-file-name ".e/capabilities/topic/" project))
          (child
@@ -353,6 +353,7 @@ When RESOURCES is non-nil, include action-description resources."
                  (e-action-cheap-create
                   :runner (lambda (_arguments _context) "ok")))))
          (provider (lambda (&rest _context) (list child)))
+         (readiness (lambda (&rest _context) nil))
          (capability
           (e-capability-create
            :id 'topic
@@ -360,7 +361,8 @@ When RESOURCES is non-nil, include action-description resources."
            (list :run
                  (e-action-cheap-create
                   :runner (lambda (_arguments _context) "topic")))
-           :action-capability-providers (list provider))))
+           :action-capability-providers (list provider)
+           :readiness (list readiness))))
     (unwind-protect
         (progn
           (e-project-local-test--write-file
@@ -376,6 +378,8 @@ Steps.")
             (should (equal
                      (e-capability-action-capability-providers decorated)
                      (list provider)))
+            (should (equal (e-capability-readiness decorated)
+                           (list readiness)))
             (should (equal
                      (mapcar
                       #'e-capability-id

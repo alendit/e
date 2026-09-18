@@ -19,6 +19,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 (require 'e-harness)
 (require 'e-harness-instances)
@@ -233,12 +234,18 @@ an explicit child harness or session policy always wins."
 
 (defun e-subagent-direct-runner (child-harness child-session-id prompt
                                                seed-messages on-settle &optional on-progress)
-  "Seed and start one non-blocking child turn, settling through ON-SETTLE.
+  "Prepare capabilities, seed, and start one non-blocking child turn.
+Capability readiness is awaited through callbacks before the first provider
+request, so a fresh child sees any eagerly prepared resources on that turn.
+Settlement is reported through ON-SETTLE.
 Returns a handle plist carrying a `:cancel' function that aborts the child's
 active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
   (e-subagent--seed-child child-harness child-session-id seed-messages)
   (let ((settled nil)
         (last-assistant nil)
+        (turn-started nil)
+        readiness-works
+        cancel-readiness
         subscription)
     (cl-labels
         ((finish
@@ -253,7 +260,46 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                          ('cancelled 'turn-cancelled))))
             (when subscription
               (e-chat-service-unsubscribe subscription))
-            (apply on-settle status args))))
+            (apply on-settle status args)))
+         (submit
+          ()
+          (unless settled
+            (setq turn-started t)
+            (condition-case err
+                (let ((admission
+                       (e-chat-service-submit-session
+                        child-harness child-session-id prompt)))
+                  (e-work-on-settle
+                   admission
+                   (lambda (settled-admission)
+                     (let* ((status (e-work-status settled-admission))
+                            (state (plist-get status :state)))
+                       (pcase state
+                         ('failed
+                          (finish 'failed
+                                  :error (e-work-error-message
+                                          (plist-get status :error))))
+                         ('cancelled (finish 'cancelled)))))))
+              (error
+               (finish 'failed :error (e-work-error-message err))))))
+         (readiness-settled
+          (settled-set)
+          (setq cancel-readiness nil)
+          (unless settled
+            (let ((failed
+                   (seq-find
+                    (lambda (work)
+                      (memq (plist-get (e-work-status work) :state)
+                            '(failed cancelled)))
+                    (plist-get settled-set :done))))
+              (pcase (and failed
+                          (plist-get (e-work-status failed) :state))
+                ('failed
+                 (finish 'failed
+                         :error (e-work-error-message
+                                 (plist-get (e-work-status failed) :error))))
+                ('cancelled (finish 'cancelled))
+                (_ (submit)))))))
       (setq subscription
             (e-chat-service-subscribe
              child-harness child-session-id
@@ -280,27 +326,33 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                   (finish 'cancelled))))
              ))
       (condition-case err
-          (let ((admission
-                 (e-chat-service-submit-session
-                  child-harness child-session-id prompt)))
-            (e-work-on-settle
-             admission
-             (lambda (settled)
-               (let* ((status (e-work-status settled))
-                      (state (plist-get status :state)))
-                 (pcase state
-                   ('failed
-                    (finish 'failed
-                            :error (e-work-error-message
-                                    (plist-get status :error))))
-                   ('cancelled (finish 'cancelled)))))))
+          (setq readiness-works
+                (and child-harness
+                     (e-harness-capability-readiness-start
+                      child-harness child-session-id)))
         (error
          (finish 'failed :error (e-work-error-message err))))
+      (cond
+       (settled nil)
+       ((null readiness-works) (submit))
+       (t
+        (setq cancel-readiness
+              (e-work-await-set
+               readiness-works :mode 'all :on-settle #'readiness-settled))))
       (list :cancel
             (lambda ()
-              (ignore-errors
-                (e-chat-service-abort-session
-                 child-harness child-session-id)))))))
+              (when cancel-readiness
+                (funcall cancel-readiness)
+                (setq cancel-readiness nil))
+              (dolist (work readiness-works)
+                (unless (memq (plist-get (e-work-status work) :state)
+                              '(finished failed cancelled))
+                  (e-work-cancel work)))
+              (if turn-started
+                  (ignore-errors
+                    (e-chat-service-abort-session
+                     child-harness child-session-id))
+                (finish 'cancelled)))))))
 
 (defun e-subagent--progress-summary (event)
   "Return a bounded human-readable progress summary for child EVENT."

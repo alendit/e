@@ -1515,6 +1515,85 @@ report is child-side and must not be on the parent surface."
       (should (equal progress-events '(turn-failed)))
       (should unsubscribed))))
 
+(ert-deftest e-subagent-runner-test-direct-runner-awaits-capability-readiness ()
+  "The first child provider request starts only after capability readiness."
+  (let ((readiness (e-subagent-runner-test--deferred-work "child-readiness"))
+        (submit-calls 0)
+        subscriber)
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-harness-capability-readiness-start)
+               (lambda (_harness _session-id) (list readiness)))
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (_harness _session callback)
+                 (setq subscriber callback)
+                 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (&rest _arguments)
+                 (cl-incf submit-calls)
+                 (let ((work
+                        (e-subagent-runner-test--deferred-work
+                         "ready-child-admission")))
+                   (e-work-finish work '(:status posted))
+                   work)))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (e-subagent-direct-runner
+       'child-harness "child" "go" nil (lambda (&rest _) nil))
+      (should subscriber)
+      (should (= submit-calls 0))
+      (e-work-finish readiness '(:catalog-count 1))
+      (should (= submit-calls 1)))))
+
+(ert-deftest e-subagent-runner-test-readiness-failure-prevents-provider-request ()
+  "A failed capability prerequisite settles the child before provider use."
+  (let ((readiness (e-subagent-runner-test--deferred-work "failed-readiness"))
+        (submit-calls 0)
+        settlements)
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-harness-capability-readiness-start)
+               (lambda (_harness _session-id) (list readiness)))
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (&rest _arguments) 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (&rest _arguments) (cl-incf submit-calls)))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (e-subagent-direct-runner
+       'child-harness "child" "go" nil
+       (lambda (status &rest arguments)
+         (push (cons status arguments) settlements)))
+      (e-work-fail readiness '(e-mcp-backend-error "catalog unavailable"))
+      (should (= submit-calls 0))
+      (should (= (length settlements) 1))
+      (should (eq (caar settlements) 'failed))
+      (should (string-match-p
+               "catalog unavailable"
+               (plist-get (cdar settlements) :error))))))
+
+(ert-deftest e-subagent-runner-test-readiness-cancel-prevents-provider-request ()
+  "Cancelling during capability readiness never starts the child provider."
+  (let ((readiness (e-subagent-runner-test--deferred-work "cancel-readiness"))
+        (submit-calls 0)
+        settlements)
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-harness-capability-readiness-start)
+               (lambda (_harness _session-id) (list readiness)))
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (&rest _arguments) 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (&rest _arguments) (cl-incf submit-calls)))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (let ((runner
+             (e-subagent-direct-runner
+              'child-harness "child" "go" nil
+              (lambda (status &rest arguments)
+                (push (cons status arguments) settlements)))))
+        (funcall (plist-get runner :cancel)))
+      (should (= submit-calls 0))
+      (should (eq (plist-get (e-work-status readiness) :state) 'cancelled))
+      (should (equal (mapcar #'car settlements) '(cancelled))))))
+
 (ert-deftest e-subagent-runner-test-interventions-publish-provenance-and-stay-explicit ()
   "Steer, interrupt, and shutdown retain bounded audit facts without auto-cancel."
   (e-subagent-runner-test--with-instances

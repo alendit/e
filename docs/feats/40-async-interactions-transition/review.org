@@ -2932,3 +2932,56 @@ optional skip after excluding the pre-existing fixed-timeout async index-load
 test.  Focused byte compilation and =git diff --check= also passed.  The
 running Emacs was inspected only through bounded read-only probes and was not
 reloaded.
+
+* Eager Progressive MCP Catalog Readiness
+
+Status: implemented; focused review evidence recorded below.
+
+** Scope
+
+- Added a narrow capability readiness contribution whose providers return
+  asynchronous Work handles or nil when already ready.
+- Added a harness projection over effective capability readiness.
+- Progressive MCP capabilities now fill each missing per-server catalog cache
+  through asynchronous discovery work.
+- The direct subagent runner joins all readiness work before submitting the
+  child's first prompt.  Failure and cancellation settle through the existing
+  child lifecycle; no interactive wait or polling loop was added.
+- Project-local skill decoration preserves readiness providers when rebuilding
+  a capability.
+
+** Behavioral result
+
+A cold progressive Slack child reaches its first provider request only after
+=e://slack-mcp/mcp/slack/tools= and its per-tool schema resources can be built
+from cache.  Direct Slack tools remain opt-in through =mcp_activate=.
+
+** Verification
+
+#+begin_src sh
+eldev test -f test/e-capabilities-test.el -f test/e-mcp-test.el \
+  -f test/e-subagent-runner-test.el -f test/e-project-local-test.el
+#+end_src
+
+Result: passed 162/162 tests with zero unexpected results.  The four HTTP MCP
+fixtures were run with localhost socket access enabled.
+
+#+begin_src sh
+eldev compile lisp/core/e-capabilities.el \
+  lisp/core/e-harness-capabilities.el lisp/core/e-mcp-capability.el \
+  lisp/layers/agents/e-subagent-runner.el \
+  lisp/layers/project-local/e-project-local.el ...
+#+end_src
+
+Result: passed for the touched source and test modules.  Emacs 31 reported only
+pre-existing =when-let=/=if-let= deprecation warnings.
+
+#+begin_src sh
+bash e2e/run-current-config-tests.sh
+#+end_src
+
+Result: passed 8/8 tests with zero unexpected results in a private daemon.
+
+=git diff --check= passed.  The user's running Emacs was not reloaded or
+modified; this core capability record-shape change requires a full restart to
+take effect there.

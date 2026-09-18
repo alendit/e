@@ -1130,17 +1130,23 @@ echoed back on `tools/list' and `tools/call'."
       (should (string-match-p "ping" (plist-get card :content))))))
 
 (ert-deftest e-mcp-test-progressive-mode-registers-schema-resources ()
-  "Progressive mode exposes schema resources after async catalog fill."
+  "Progressive readiness fills schema resources before capability use."
   (e-mcp-test--with-progressive-harness harness
     (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
     (e-harness-create-session harness :id "s1")
-    (should-not (e-store-list (e-harness-store harness "s1")))
-    (e-mcp-test--wait-for-catalog (list (e-mcp-test--server)))
+    (let ((works
+           (e-request-with-blocking-primitive-guard
+             (e-request-with-hot-path 'mcp-capability-readiness
+               (e-harness-capability-readiness-start harness "s1")))))
+      (should (= (length works) 1))
+      (e-work-with-batch-await
+        (e-work-await-batch (car works) :timeout 5.0)))
     (let ((uris (mapcar #'e-store-entry-uri
                         (e-store-list (e-harness-store harness "s1")))))
       (should (member "e://fixture-mcp/mcp/fixture/tools" uris))
       (should (member "e://fixture-mcp/mcp/fixture/tools/echo" uris))
-      (should (member "e://fixture-mcp/mcp/fixture/tools/ping" uris)))))
+      (should (member "e://fixture-mcp/mcp/fixture/tools/ping" uris)))
+    (should-not (e-harness-capability-readiness-start harness "s1"))))
 
 (ert-deftest e-mcp-test-eager-mode-emits-no-card-or-resources ()
   "Eager mode leaves context and resources free of progressive scaffolding."

@@ -751,3 +751,22 @@ Constraints that still apply:
 12. What tests prove the core behavior independently of the full system?
     - Tool, harness, MCP, web, resource, context, session, and chat scheduler tests use fake backends, controllable helpers, synthetic data, fake clocks or injected schedulers, and generation-change fixtures.
       Live probes only validate the integrated user experience after reload.
+
+* Follow-up: Eager Progressive MCP Catalog Readiness
+
+A fresh subagent with a progressive MCP capability must finish asynchronous
+catalog discovery before its first provider request.  The readiness edge must
+remain non-blocking, populate the existing per-server catalog cache used by
+Tier-0 cards and Tier-1 =e://= resources, surface discovery failure through the
+child lifecycle, and leave direct MCP tools behind the existing activation
+policy.
+
+Acceptance is repository-proven when:
+
+- the capability contract can contribute asynchronous readiness Work handles;
+- the direct subagent runner awaits all readiness handles without polling or
+  blocking Emacs;
+- progressive MCP readiness makes the family index and per-tool schema
+  resources present before first capability use;
+- cached catalogs add no readiness work; and
+- cancellation/failure does not start the provider request.

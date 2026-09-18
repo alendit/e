@@ -405,6 +405,77 @@ against ALL-OPTIONS."
             store capability (e-mcp-client-catalogs-cached servers t))
          (e-mcp-capability--register-resources store capability servers))))))
 
+(defun e-mcp-capability--catalog-readiness-work (servers)
+  "Return asynchronous work that fills every missing catalog in SERVERS."
+  (let* ((cached (e-mcp-client-catalogs-cached servers nil))
+         (cached-ids (mapcar (lambda (pair)
+                               (e-mcp-server-id (car pair)))
+                             cached))
+         (missing (cl-remove-if
+                   (lambda (server)
+                     (member (e-mcp-server-id server) cached-ids))
+                   servers)))
+    (when missing
+      (e-work-start
+       (e-work-spec-create
+        :id "mcp-catalog-readiness"
+        :description "Populate MCP schema resources before capability use"
+        :execution 'cooperative
+        :interactive-policy 'async
+        :owner 'e-mcp
+        :runner
+        (lambda (handle _arguments _context)
+          (let ((pending (length missing))
+                child-requests
+                settled)
+            (cl-labels
+                ((cancel-children ()
+                   (dolist (request child-requests)
+                     (e-tools-cancel-request request)))
+                 (fail (condition)
+                   (unless settled
+                     (setq settled t)
+                     (cancel-children)
+                     (e-work-fail handle condition)))
+                 (finish-one (_catalog)
+                   (unless settled
+                     (setq pending (1- pending))
+                     (when (= pending 0)
+                       (setq settled t)
+                       (e-work-finish
+                        handle (list :catalog-count (length missing)))))))
+              (setf (e-work-handle-cancel-function handle)
+                    (lambda (_handle)
+                      (setq settled t)
+                      (cancel-children)
+                      t))
+              (dolist (server missing)
+                (unless settled
+                  (condition-case condition
+                      (push
+                       (e-mcp-list-tools-start
+                        (list server)
+                        :on-done #'finish-one
+                        :on-error #'fail
+                        :on-event
+                        (lambda (type payload)
+                          (e-mcp-capability--work-progress
+                           handle type payload)))
+                       child-requests)
+                    (error (fail condition)))))
+              :deferred))))
+       nil))))
+
+(defun e-mcp-capability--readiness-provider
+    (servers capability-id all-options)
+  "Return a provider that eagerly fills progressive catalogs for SERVERS."
+  (cl-function
+   (lambda (&key harness session-id &allow-other-keys)
+     (when (e-mcp-capability--progressive-p
+            capability-id all-options
+            :harness harness :session-id session-id)
+       (e-mcp-capability--catalog-readiness-work servers)))))
+
 ;;; Tier 0 — capability cards
 
 (defun e-mcp-capability--server-card-text (capability-id server catalog)
@@ -682,7 +753,10 @@ are registered as ordinary e tools under deterministic names."
          (mcp-resources (when mcp-servers
                           (e-mcp-capability--resource-provider mcp-servers id all-options)))
          (mcp-cards (when mcp-servers
-                      (e-mcp-capability--context-provider mcp-servers id all-options))))
+                      (e-mcp-capability--context-provider mcp-servers id all-options)))
+         (mcp-readiness (when mcp-servers
+                          (e-mcp-capability--readiness-provider
+                           mcp-servers id all-options))))
     (when mcp-servers
       (e-capability-config-register-options id all-options))
     (e-capability-create
@@ -697,7 +771,8 @@ are registered as ordinary e tools under deterministic names."
      :instruction-priority instruction-priority
      :actions actions
      :config-options all-options
-     :config config)))
+     :config config
+     :readiness (when mcp-readiness (list mcp-readiness)))))
 
 (provide 'e-mcp-capability)
 

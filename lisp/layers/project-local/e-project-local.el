@@ -557,7 +557,8 @@ e://<capability>/skills/project/<slug> resources.  Returns nil when none."
        :structured-blocks (e-capability-structured-blocks capability)
        :message-details (e-capability-message-details capability)
        :action-capability-providers
-       (e-capability-action-capability-providers capability))
+       (e-capability-action-capability-providers capability)
+       :readiness (e-capability-readiness capability))
     capability))
 
 (defun e-project-local--layer-skill-specs (layer-id directory)

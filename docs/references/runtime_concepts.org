@@ -25,7 +25,9 @@ reading feature plans or examples.
 - =capability= :: A named semantic behavior bundle. A capability can contribute
   instructions, context providers, model-facing tools, resource methods,
   read-only =e://= resources, lifecycle hooks, prompts, shell-facing actions,
-  and configuration options.
+  configuration options, and asynchronous readiness providers. Readiness
+  providers prepare rebuildable prerequisites without blocking Emacs; a caller
+  that requires those prerequisites awaits their Work handles before use.
 
 - =layer= :: A preset over capabilities and shell manifests. Layers package
   useful capability sets but do not own durable behavior.

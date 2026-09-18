@@ -202,6 +202,14 @@ REQUESTED-CAPABILITY-ID identifies a specific capability lookup when known."
   "Return HARNESS capabilities for callers without session context."
   (e-harness-effective-capabilities harness))
 
+(defun e-harness-capability-readiness-start (harness session-id &optional turn-id)
+  "Start capability prerequisites for HARNESS SESSION-ID and return their work.
+The returned handles are asynchronous readiness edges; callers decide whether
+their operation must wait for all of them before using the capabilities."
+  (e-capabilities-start-readiness
+   (e-harness-effective-capabilities harness session-id turn-id)
+   :harness harness :session-id session-id :turn-id turn-id))
+
 (defun e-harness-set-intrinsic-capabilities (harness capabilities)
   "Set HARNESS intrinsic CAPABILITIES."
   (setf (e-harness-intrinsic-capabilities harness)

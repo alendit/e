@@ -271,9 +271,12 @@ reports carry a bounded typed source outcome (=data=, =empty=, or
 instead of worker prose, and =daily-run/:apply= publishes the exact ten-section
 closed schema.  Both phases of the disposable graphical delayed-worker/restart
 scenario and all 165 non-graphical Grimoire layer tests pass.  The Slack
-participant additionally enables =slack-mcp= in progressive mode, so its first
-turn always has =mcp_activate= while an uncached MCP catalog loads; graphical
-and real-current-config gates verify the capability reaches the child harness.
+participant additionally enables =slack-mcp= in progressive mode.  Capability
+readiness now fills an uncached MCP catalog before that participant's first
+provider request, so its =e://slack-mcp/mcp/slack/tools= index and per-tool
+schemas are present on the first turn while direct tools remain progressively
+activated.  Graphical and real-current-config gates verify the capability
+reaches the child harness.
 
 Feature 82's original implementation remains historical =Done=, but its
 registry-backed subagent inventory and separate subagent/run shells conflict

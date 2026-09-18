@@ -34,6 +34,7 @@
           :config-options '(:option-specs)
           :config '(:option "value")
           :message-details (list #'ignore)
+          :readiness (list (lambda (&rest _context) nil))
           :prompts (list (e-prompt-spec-create
                           :name "explain"
                           :description "Explain."
@@ -50,7 +51,54 @@
     (should (equal (e-capability-config capability) '(:option "value")))
     (should (= (length (e-capability-prompts capability)) 1))
     (should (= (length (e-capability-message-details capability)) 1))
+    (should (= (length (e-capability-readiness capability)) 1))
     (should (plist-member (e-capability-actions capability) :read-buffer))))
+
+(ert-deftest e-capabilities-test-start-readiness-collects-work-handles ()
+  "Capability readiness starts asynchronously and ignores ready providers."
+  (let* ((work
+          (e-work-start
+           (e-work-spec-create
+            :id "capability-readiness-test"
+            :execution 'cooperative
+            :interactive-policy 'async
+            :owner 'test
+            :runner (lambda (_handle _arguments _context) :deferred))
+           nil))
+         (seen nil)
+         (capability
+          (e-capability-create
+           :id 'readiness
+           :readiness
+           (list (lambda (&rest context)
+                   (setq seen context)
+                   work)
+                 (lambda (&rest _context) nil)))))
+    (should (equal (e-capabilities-start-readiness
+                    (list capability) :session-id "s1")
+                   (list work)))
+    (should (equal seen '(:session-id "s1")))
+    (e-work-cancel work)))
+
+(ert-deftest e-capabilities-test-readiness-start-failure-cancels-earlier-work ()
+  "A bad readiness provider cannot strand work started before it."
+  (let* ((work
+          (e-work-start
+           (e-work-spec-create
+            :id "partial-readiness-test"
+            :execution 'cooperative
+            :interactive-policy 'async
+            :owner 'test
+            :runner (lambda (_handle _arguments _context) :deferred))
+           nil))
+         (capability
+          (e-capability-create
+           :id 'bad-readiness
+           :readiness (list (lambda (&rest _context) work)
+                            (lambda (&rest _context) 'not-work)))))
+    (should-error (e-capabilities-start-readiness (list capability))
+                  :type 'wrong-type-argument)
+    (should (eq (plist-get (e-work-status work) :state) 'cancelled))))
 
 (ert-deftest e-capabilities-test-register-tools ()
   "Capability tool providers register against the given registry."
@@ -147,7 +195,8 @@
                    e-capability-instruction-priority
                    e-capability-config-options
                    e-capability-config
-                   e-capability-prompts)))
+                   e-capability-prompts
+                   e-capability-readiness)))
     (dolist (symbol symbols)
       (put symbol 'compiler-macro 'stale)
       (put symbol 'side-effect-free 'stale)

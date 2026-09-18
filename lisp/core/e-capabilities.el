@@ -32,7 +32,7 @@
                                    context-providers actions hooks
                                    instruction-priority config-options config
                                    prompts structured-blocks message-details
-                                   action-capability-providers))
+                                   action-capability-providers readiness))
                (:conc-name e-capability--))
   id
   name
@@ -49,7 +49,8 @@
   prompts
   structured-blocks
   message-details
-  action-capability-providers)
+  action-capability-providers
+  readiness)
 
 (cl-defstruct (e-action
                (:constructor e-action--create
@@ -260,6 +261,37 @@ This accessor tolerates stale capability records compiled before the
       (e-capability--action-capability-providers capability)
     nil))
 
+(defun e-capability-readiness (capability)
+  "Return CAPABILITY asynchronous readiness providers.
+This accessor tolerates stale capability records compiled before the
+`readiness' slot existed."
+  (if (>= (length capability) 18)
+      (e-capability--readiness capability)
+    nil))
+
+(defun e-capabilities-start-readiness (capabilities &rest context)
+  "Start readiness providers from CAPABILITIES and return their work handles.
+CONTEXT is passed as keyword arguments to every provider.  Providers return
+nil when already ready or one non-blocking `e-work' handle otherwise."
+  (let (works)
+    (condition-case error
+        (progn
+          (dolist (capability capabilities)
+            (dolist (provider (e-capability-readiness capability))
+              (unless (functionp provider)
+                (signal 'wrong-type-argument (list 'functionp provider)))
+              (when-let* ((work (apply provider context)))
+                (unless (e-work-handle-p work)
+                  (signal 'wrong-type-argument (list 'e-work-handle-p work)))
+                (push work works))))
+          (nreverse works))
+      (error
+       (dolist (work works)
+         (unless (memq (plist-get (e-work-status work) :state)
+                       '(finished failed cancelled))
+           (e-work-cancel work)))
+       (signal (car error) (cdr error))))))
+
 (defun e-capabilities-provided-action-capabilities
     (capabilities &rest context)
   "Return action capabilities dynamically provided by CAPABILITIES.
@@ -330,7 +362,8 @@ before backend serialization."
                   e-capability-config
                   e-capability-prompts
                   e-capability-structured-blocks
-                  e-capability-message-details))
+                  e-capability-message-details
+                  e-capability-readiness))
   (put symbol 'compiler-macro nil)
   (put symbol 'side-effect-free nil)
   (put symbol 'gv-expander nil))
