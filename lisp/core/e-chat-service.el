@@ -818,7 +818,11 @@ coordination."
    (e-board-orchestration-continuation-view projection)))
 
 (defun e-chat-service--reconcile-sqlite-continuation (binding)
-  "Reconcile terminal continuations through coordination-only BINDING."
+  "Query terminal continuations through BINDING and route to their targets.
+
+BINDING owns the bounded Board query and its process-local admission fence;
+the manifest continuation's validated session id owns delivery of the
+resulting input."
   (let* ((runtime (e-chat-service--binding-runtime binding))
          (board-id (e-chat-service-binding-board-id binding))
          (reconciling
@@ -870,7 +874,7 @@ coordination."
                             binding (plist-get projection :run-id) key
                             (e-chat-service-queue-session
                              (e-chat-service-binding-harness binding)
-                             (e-chat-service-binding-session-id binding)
+                             (plist-get continuation :session-id)
                              (e-chat-service--continuation-input
                               (plist-get continuation :prompt)
                               projection)

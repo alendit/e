@@ -681,7 +681,7 @@
                         :tasks [(:task-key "report" :required t
                                  :accepted-attempt 0)]
                         :deadline (:kind none)
-                        :continuation (:session-id ,session-id
+                        :continuation (:session-id "coordinator-session"
                                        :prompt ,prompt
                                        :publication-key "continue:daily"))))
            (report
@@ -708,7 +708,7 @@
              :id "continuation-admission" :execution 'cheap
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) '(:admitted t))))
-           binding queued-input queued-metadata
+           binding queued-session-id queued-input queued-metadata
            (query-count 0) (publication-count 0))
       (unwind-protect
           (progn
@@ -721,8 +721,9 @@
                          (cl-incf query-count)
                          (e-work-start query-spec nil)))
                       ((symbol-function 'e-chat-service-queue-session)
-                       (lambda (_harness _session-id input &rest arguments)
-                         (setq queued-input input
+                       (lambda (_harness session-id input &rest arguments)
+                         (setq queued-session-id session-id
+                               queued-input input
                                queued-metadata
                                (plist-get arguments :metadata))
                          (e-work-start admission-spec nil)))
@@ -732,6 +733,7 @@
               (e-chat-service--reconcile-sqlite-continuation binding))
             (should (= query-count 1))
             (should (= publication-count 1))
+            (should (equal queued-session-id "coordinator-session"))
             (should (eq (plist-get queued-metadata :display) 'hidden))
             (should (equal (plist-get queued-metadata :board-run-id)
                            "daily-run"))
