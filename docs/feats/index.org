@@ -402,4 +402,4 @@ continuations identified by durable metadata.
 | 93 | Done        | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Direct Daily Writing Addendum |
 | 94 | Done        | 94-canonical-json-values/                            | Canonical JSON Values Across Model and Persistence Boundaries |
 | 95 | Done        | 95-normalized-sqlite-communication/                   | Normalized SQLite Communication State              |
-| 96 | Ready       | 96-reliable-tool-continuations-and-daily-completion/    | Reliable Tool Continuations and Daily Completion   |
+| 96 | Done        | 96-reliable-tool-continuations-and-daily-completion/    | Reliable Tool Continuations and Daily Completion   |

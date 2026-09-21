@@ -1,0 +1,205 @@
+#+title: Review: Reliable Tool Continuations and Daily Completion
+#+author: e implementation
+#+date: 2026-09-22
+#+startup: overview
+
+* Status
+
+Done.  Independent implementation review reached
+=implementation-fixed-point= for plan SHA-256
+=0299d3716300f4337eadd3b1cb606ca5b3acb75c02c3cfa74ea5704b2f43f1fd=,
+=e= commit =8a1e62b54618e369d011b3df0fee9e50e7381498=, and Grimoire
+commit =c873b73e7772a6159332dcc582a3eed935b8d020=.
+
+* Review summary
+
+All =F96-C01=--=F96-C06= and =F96-DP1=--=F96-DP4= are complete.
+Large tool results archive and continue, subagent terminal state converges only
+after durable Board acknowledgement, progress diagnostics cannot disrupt or
+grow with lifecycle observation, calendar workers receive an executable bounded
+CLI contract, and the ordinary successful coordinator turn saves and commits
+the exact Daily target.  No Daily-specific reconcile, publish, complete,
+content-gate, target-echo, or lifecycle-stamp protocol was added.
+
+* Scope reviewed
+
+- Plan and plan review for Feature 96, plus Features 55, 82, 93, and 94 as
+  prerequisite contracts.
+- =e= invocation-detail projection, generic Work terminal gating, subagent
+  direct runner/coordinator, public interrupt/shutdown, pending admission,
+  dispatch settlement, and their focused tests.
+- Grimoire Daily assignment, dispatch aggregation/recovery, exact topic commit,
+  and isolated graphical acceptance.
+- Implementation commits in =e=: =2b715203=, =ce5d6796=, =0a6e59ca=,
+  =c2eb997e=, =3497c36d=, and =8a1e62b5=.
+- Implementation commits in Grimoire: =925c463=, =2c51ba6=, =37cc255=, and
+  =c873b73=.
+
+* Review loop
+
+** Resolved P1: publication failure lost or over-retained terminal causes
+
+The first implementation omitted the original terminal arguments.  Later
+review also found that copying complete Work status retained unbounded error and
+metadata graphs, display-width truncation did not bound zero-width Unicode, an
+aggregate codec guard could reject and strand settlement, and an error-only
+fallback misclassified successful proposals.
+
+The final persistence-suspect conversion uses explicit UTF-8 byte budgets, a
+closed publication-state projection, the full existing 4 KiB terminal proposal
+allowance, and a deterministic status-neutral fallback which preserves the
+present =:summary=, =:result=, =:outputs=, and =:error= keys.  Child and dispatch
+Works receive the same bounded composite and live ownership retires.
+
+** Resolved P1: adversarial settlement ordering was under-specified in tests
+
+Initial tests did not compose the real dispatch Work, did not hold a provider
+failure beyond an actual deadline, and relabeled three before-acknowledgement
+admission settlements as six cases.  Final tests use six fresh real-dispatch
+cases for finished/failed/cancelled admission on both sides of terminal
+acknowledgement.  They assert zero provider starts, zero competing failure
+callbacks/reports, one cancelled report, terminal child and dispatch Works, and
+no remaining pending/live ownership.  A provider failure latched before a real
+deadline remains authoritative while cancellation runs once.
+
+** Resolved P2: progress projection could disable observation or grow forever
+
+Progress callbacks are isolated from terminal observation.  Their latest
+diagnostic replaces the previous entry, uses a closed event descriptor, and is
+bounded by UTF-8 bytes.  Throwing callbacks, diagnostic-sink failure, repeated
+events, multibyte text, and zero-width combining text leave terminal settlement
+unchanged.
+
+** Resolved P2: obsolete callback and Daily completion machinery
+
+The zero-production-consumer =e-tools-callback-work= constructor was removed;
+the configured live E2E uses a test-local Work fixture.  Structural search has
+no non-document references.  Grimoire retains generic Board fact publication,
+but has no model-facing Daily reconcile/publish/complete operation or completion
+stamp.
+
+** Resolved P2: calendar and exact-save acceptance gaps
+
+The calendar assignment names
+=gog calendar events primary --from <start> --to <until>= and specifies typed
+unavailability on authentication or nonzero exit.  A fake executable proves
+the exact argv plus success/auth/nonzero outcomes through production report
+validation.
+
+The coordinator's existing exact commit hook now saves only modified visiting
+buffers in the closed commit-file set before Git.  Save/coding and Git failures
+propagate.  The graphical fixture originally hung after successful assertions
+because cleanup prompted on its intentionally dirty unrelated buffer; private
+process-exit shutdown and noninteractive disposal of only test-created buffers
+fixed the harness without weakening the product scenario.
+
+** Resolved P3: convergence closures survived terminal commit
+
+Generic Work now releases its terminal gate and proposal at the authorized
+terminal commit.  Tests prove they remain present while publication is held and
+are absent after successful, cancelled, or persistence-suspect settlement.
+
+* Plan coverage
+
+| Contract | Final evidence | Result |
+|-
+| =F96-C01= | Large Bash output with two resource records archives as arrays and reaches provider continuation; malformed duplicate object keys still fail. | Pass |
+| =F96-C02= | Durable report acknowledgement precedes Work commit/live retirement; six pending-admission orderings, interrupt/shutdown, dispatch Work, and cancellation aggregation are composed. | Pass |
+| =F96-C03= | Throwing/repeated/Unicode progress projections remain bounded and cannot alter terminal observation. | Pass |
+| =F96-C04= | Failed publication yields one bounded composite retaining proposal and publication cause; recovery covers committed terminal, orphaned attempts 0/1, and pending selection. | Pass |
+| =F96-C05= | Exact fake =gog= argv and success/auth/nonzero typed outcomes pass with =fast-tool-user=. | Pass |
+| =F96-C06= | Exact live buffer save precedes exact Git commit; unrelated buffer/file state remains untouched; reopen shows durable content without replay. | Pass |
+
+* Verification
+
+- =eldev test --file test/e-tool-invocation-details-test.el -B= and affected
+  tool/invocation suites: 107/107 passed during DP1 acceptance.
+- =eldev test --file test/e-work-test.el -B=: 50/50 passed.
+- =eldev test --file test/e-subagent-runner-test.el -B=: 58/58 passed.
+- =eldev test --file test/e-subagent-live-test.el -B=: 18/18 passed.
+- =eldev compile=: passed; only existing obsolete-macro warnings remained.
+- Grimoire =daily-run-test.el=: 19/19 passed.
+- Grimoire =topic-commit-test.el=: 16/16 passed.
+- Full two-process isolated graphical Daily acceptance: phase one 1/1 and phase
+  two 1/1 passed.  The saved Daily reopened from durable state without starting
+  another provider turn; exact committed paths excluded unrelated dirt.
+- =bash e2e/run-current-config-tests.sh=: 8/8 passed in a fresh private Emacs
+  daemon against the final =e= head.
+- =git diff --check=: passed in both repositories.
+- Structural search found no non-document =e-tools-callback-work= reference and
+  only generic Board publication plus negative Daily completion assertions.
+
+* UX and performance playthrough
+
+The graphical scenario showed the Daily buffer, transcript, and composer in the
+expected layout while seven workers converged.  The coordinator edited and
+saved the visible exact Daily, preserved the user-owned TODO section and
+unrelated dirty buffer, committed only admitted paths, and reopened the saved
+Daily in a fresh process without replay.  No interactive cleanup prompt remains.
+
+Performance remains bounded: invocation projection is linear in the existing
+metadata collection; progress stores one latest diagnostic; the terminal gate
+holds one proposal only while publication is in flight; persistence composites
+are capped at 8 KiB; and exact save scans only the small admitted path set and
+live buffers.  No polling, catalog scan, or durable mirror was introduced.
+
+* Architecture review
+
+Archive mapping remains in the invocation adapter.  Generic Work owns proposal
+and commit ordering without importing Board policy.  The subagent coordinator,
+which owns Work, Board target, assignment, and live state, supplies the durable
+terminal gate.  Grimoire owns Daily task prompts, recovery policy, aggregation,
+and exact save/commit.  Side effects stay at adapter/application boundaries;
+core policy does not query session journals or inspect model prose.
+
+* Design self-check
+
+1. The package is independently useful: admitted tools continue, child causes
+   converge durably, and direct Daily edits become durable without another
+   workflow protocol.
+2. It moves toward a generic harness composed by thin project applications,
+   with one Work lifecycle and one durable Board authority.
+3. Stable contracts are modeled directly.  Provider/calendar variation stays
+   in prompts/adapters; process-local publication uncertainty stays in one
+   bounded gate/fallback and is not made durable speculatively.
+4. Invocation archival, Work, subagent convergence, Daily assignment, and
+   save/commit each have one cohesive owner and reason to change.
+5. Coupling is reduced: the optional terminal gate is narrow and consumer
+   shaped; Work has no Board dependency; obsolete callback and Daily protocol
+   surfaces are gone.
+6. Dependencies point from project orchestration toward stable Work/Board/tool
+   contracts, never from core policy toward Grimoire, UI, or provider code.
+7. SQLite publication, CLI execution, buffer saving, and Git remain outward
+   side effects at adapters/application hooks.
+8. New state is only one in-flight proposal/gate and one latest bounded progress
+   diagnostic.  Durable authority remains existing Board facts, manifests,
+   files, and Git.
+9. Added work is bounded and owner-local: linear metadata mapping, one
+   publication wait, constant-size diagnostics, an 8 KiB composite, and a scan
+   of exact paths/live buffers.  No unjustified regression is introduced.
+10. The Work gate is a real optional settlement contract; ungated Work remains
+    substitutable.  No implementation ignores required capabilities or throws
+    unsupported-operation errors.
+11. Existing Work, Board, Feature 94 wire, and Grimoire recovery compatibility
+    is preserved.  No schema migration or legacy Daily protocol is retained.
+12. Removed legacy code includes =e-tools-callback-work=, its production-only
+    decoration, direct settle/retire bypasses, and obsolete Daily completion
+    machinery/test assumptions.
+13. Expected publication failure becomes a typed bounded persistence-suspect
+    failure; calendar auth/nonzero becomes typed unavailability; save/Git errors
+    fail the turn.  Unexpected errors otherwise surface rather than being
+    swallowed.
+14. Core behavior is proved independently by archival, Work, runner/live,
+    recovery, CLI, and exact-commit unit suites; only graphical layout/reopen and
+    configured cold start use full-system gates.
+
+* Live reload
+
+Repository-side validation passed.  The user's running Emacs was left
+unchanged.  Because Feature 96 changes core Work/subagent record behavior, a
+full Emacs restart is required to use it; =e-dev-reload= is intentionally not
+sufficient.  Grimoire's configured extension changes load with that restart.
+
+* Unresolved
+
+None.
