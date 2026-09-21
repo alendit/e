@@ -1099,49 +1099,89 @@ helper."
 (defun e-runtime-store-offline-worker--copy-v7-associations (database)
   "Build constrained session Board associations from v7 state rows."
   (dolist (row (sqlite-select database
-                              "SELECT session_id,board_id,principal,association_role,routing_policy FROM session_query_state_v7 WHERE board_id IS NOT NULL"))
+                              "SELECT session_id,board_id,principal,association_role,routing_policy,name,root_p FROM session_query_state_v7 WHERE board_id IS NOT NULL"))
     (let* ((session-id (e-runtime-store-offline-worker--column row 0))
            (board-id (e-runtime-store-offline-worker--column row 1))
-           (principal-sql (e-runtime-store-offline-worker--column row 2))
-           (principal
-            (e-runtime-store-offline-worker--v7-value
-             principal-sql "association principal"
-             :session-id session-id :board-id board-id))
+           ;; Session query scalars were stored as plain TEXT in v7.  Only
+           ;; structured values such as routing policy used the store codec.
+           (principal (e-runtime-store-offline-worker--column row 2))
            (association-role (e-runtime-store-offline-worker--column row 3))
            (policy (e-runtime-store-offline-worker--v7-decode
                     (e-runtime-store-offline-worker--column row 4)
                     "association" :session-id session-id :board-id board-id))
-           (participant-id (plist-get policy :participant-id))
-           (generation-row
+           (session-name (e-runtime-store-offline-worker--column row 5))
+           (root-p (= 1 (e-runtime-store-offline-worker--column row 6)))
+           (policy-participant-id (plist-get policy :participant-id))
+           (participant-id
+            (or policy-participant-id
+                (concat
+                 "ptc_"
+                 (substring
+                  (secure-hash 'sha256
+                               (format "v7-session-association:%s" session-id))
+                  0 32))))
+           (board-row
             (car (sqlite-select database
-                                "SELECT generation FROM boards WHERE board_id=?"
+                                "SELECT generation,trusted_principal FROM boards WHERE board_id=?"
                                 (vector board-id))))
-           (generation (and generation-row
+           (generation (and board-row
                             (e-runtime-store-offline-worker--column
-                             generation-row 0)))
+                             board-row 0)))
+           (board-principal
+            (and board-row
+                 (e-runtime-store-offline-worker--v7-value
+                  (e-runtime-store-offline-worker--column board-row 1)
+                  "Board trusted principal"
+                  :session-id session-id :board-id board-id)))
            (participant-row
             (and generation participant-id
                  (car (sqlite-select
                        database
                        "SELECT principal,role FROM board_participants WHERE board_id=? AND generation=? AND participant_id=?"
                        (vector board-id generation participant-id))))))
-      (unless participant-row
+      (unless (and (stringp principal) (not (string-empty-p principal)))
         (e-runtime-store-offline-worker--error
-         "v7 association does not resolve participant"
+         "Malformed v7 association principal value"
+         :session-id session-id :board-id board-id
+         :principal principal))
+      (unless (and (stringp participant-id)
+                   (not (string-empty-p participant-id)))
+        (e-runtime-store-offline-worker--error
+         "Malformed v7 association participant identity"
          :session-id session-id :board-id board-id
          :participant-id participant-id))
       (e-runtime-store-offline-worker--v7-assert-equal
-       "v7 association principal disagrees"
-       principal (e-runtime-store-offline-worker--column participant-row 0)
+       "v7 association and Board principal disagree"
+       principal board-principal
        :session-id session-id :board-id board-id
        :participant-id participant-id)
-      (e-runtime-store-offline-worker--v7-assert-equal
-       "v7 association role disagrees"
-       association-role
-       (e-runtime-store-offline-worker--v7-name
-        (e-runtime-store-offline-worker--column participant-row 1))
-       :session-id session-id :board-id board-id
-       :participant-id participant-id)
+      (if participant-row
+          (progn
+            (e-runtime-store-offline-worker--v7-assert-equal
+             "v7 association principal disagrees"
+             principal (e-runtime-store-offline-worker--column participant-row 0)
+             :session-id session-id :board-id board-id
+             :participant-id participant-id)
+            (when association-role
+              (e-runtime-store-offline-worker--v7-assert-equal
+               "v7 association role disagrees"
+               association-role
+               (e-runtime-store-offline-worker--v7-name
+                (e-runtime-store-offline-worker--column participant-row 1))
+               :session-id session-id :board-id board-id
+               :participant-id participant-id)))
+        ;; Early v7 sessions could carry a durable Board association before
+        ;; participant projections were introduced.  Materialize the missing
+        ;; normalized identity entirely from those session and Board facts.
+        (let* ((role (or association-role (if root-p "owner" "participant")))
+               (name (or (plist-get policy :participant-name)
+                         session-name
+                         (and (equal role "owner") "Main"))))
+          (sqlite-execute
+           database
+           "INSERT INTO board_participants(board_id,generation,participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,payload,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)"
+           (vector board-id generation participant-id principal nil principal
+                   role "active" name nil 0 nil))))
       (sqlite-execute
        database
        "INSERT INTO board_session_associations(session_id,board_id,generation,participant_id,routing_policy,revision) VALUES(?,?,?,?,?,1)"

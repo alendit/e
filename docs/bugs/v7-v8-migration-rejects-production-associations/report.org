@@ -1,0 +1,14 @@
+#+title: V7 to V8 Migration Rejects Production Associations
+#+startup: overview
+
+* Report
+
+The explicit offline upgrade of the stopped canonical runtime store from schema
+7 to schema 8 failed before installation with:
+
+#+begin_src text
+Malformed v7 association principal value
+#+end_src
+
+The failure prevented cron registration because ordinary startup correctly
+refused to open the still-v7 store.

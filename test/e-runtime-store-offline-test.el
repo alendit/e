@@ -516,7 +516,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
            database
            "UPDATE session_query_state SET board_id=?,principal=?,association_role=?,routing_policy=? WHERE session_id=?"
            (vector board-id
-                   (e-runtime-store-offline-test--payload "principal-offline")
+                   "principal-offline"
                    "owner"
                    (e-runtime-store-offline-test--payload
                     (list :participant-id participant-id :route 'chat))
@@ -1719,6 +1719,93 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
               (e-runtime-store-close runtime)))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-offline-v7-to-v8-materializes-early-associations ()
+  "V7 associations predating participant rows remain usable after upgrade."
+  (dolist (case '(policy-participant roleless-root))
+    (let* ((session-id (format "early-association-%s" case))
+           (board-id (format "board-%s" case))
+           (fixture
+            (e-runtime-store-offline-test--make-v7
+             (list (e-runtime-store-offline-test--root session-id))))
+           (directory (car fixture))
+           (database-file (cadr fixture))
+           (backup (expand-file-name
+                    (format "operator/%s.sqlite3" case) directory))
+           (expected-participant-id
+            (if (eq case 'policy-participant)
+                "participant-from-policy"
+              (concat
+               "ptc_"
+               (substring
+                (secure-hash
+                 'sha256 (format "v7-session-association:%s" session-id))
+                0 32))))
+           (expected-role
+            (if (eq case 'policy-participant) "participant" "owner")))
+      (unwind-protect
+          (progn
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (progn
+                    (sqlite-execute
+                     database
+                     "INSERT INTO boards(board_id,trusted_principal,generation,revision,next_position,root_payload) VALUES(?,?,?,?,?,?)"
+                     (vector board-id
+                             (e-runtime-store-offline-test--payload
+                              "principal-early")
+                             1 1 1 nil))
+                    (sqlite-execute
+                     database
+                     "UPDATE session_query_state SET board_id=?,principal=?,association_role=?,routing_policy=? WHERE session_id=?"
+                     (vector
+                      board-id "principal-early"
+                      (and (eq case 'policy-participant) "participant")
+                      (and (eq case 'policy-participant)
+                           (e-runtime-store-offline-test--payload
+                            '(:participant-id "participant-from-policy"
+                              :route chat)))
+                      session-id)))
+                (sqlite-close database)))
+            (e-runtime-store-offline-upgrade directory backup)
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (let ((row
+                         (car
+                          (sqlite-select
+                           database
+                           (concat
+                            "SELECT a.participant_id,p.principal,p.controller,"
+                            "p.role,p.state,p.name "
+                            "FROM board_session_associations a "
+                            "JOIN board_participants p "
+                            "ON p.board_id=a.board_id "
+                            "AND p.generation=a.generation "
+                            "AND p.participant_id=a.participant_id "
+                            "WHERE a.session_id=?")
+                           (vector session-id)))))
+                    (should row)
+                    (should (equal
+                             (e-runtime-store-offline-test--column row 0)
+                             expected-participant-id))
+                    (should (equal
+                             (e-runtime-store-offline-test--column row 1)
+                             "principal-early"))
+                    (should (equal
+                             (e-runtime-store-offline-test--column row 2)
+                             "principal-early"))
+                    (should (equal
+                             (e-runtime-store-offline-test--column row 3)
+                             expected-role))
+                    (should (equal
+                             (e-runtime-store-offline-test--column row 4)
+                             "active"))
+                    (should (equal
+                             (e-runtime-store-offline-test--column row 5)
+                             (format "Name %s" session-id))))
+                (sqlite-close database))))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
 
 (ert-deftest e-runtime-store-offline-v8-is-verified-read-only-noop ()
   "A verified v8 store creates no backup and changes no migration rows."

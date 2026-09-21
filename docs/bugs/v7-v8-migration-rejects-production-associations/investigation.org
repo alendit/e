@@ -1,0 +1,49 @@
+#+title: V7 to V8 Migration Rejects Production Associations Investigation
+#+startup: overview
+
+* Evidence
+
+- The stopped canonical store remained at schema 7 after the failed upgrade;
+  preflight failed before backup or source mutation.
+- Read-only inspection found 508 session rows with Board associations.  Their
+  =principal= columns were plain scalar TEXT, matching the v7 session writer.
+  The migration incorrectly passed those values through the base64 payload
+  codec.
+- 341 associated sessions had no participant row in any Board generation.
+  This is valid early-v7 history: 331 also had no routing policy, Board
+  records, pickups, or routing rows.  Ten later rows had a routing policy with
+  a participant id but still predated its participant projection.
+- The migration fixture encoded =session_query_state.principal= as a payload,
+  so it represented neither the production writer nor the canonical store and
+  masked the decoder error.
+- No Emacs process or runtime-store owner marker was present during live store
+  inspection.
+
+* Conclusion
+
+The v8 schema is not the cause.  The v7-to-v8 adapter assumed that all v7
+association scalars used the payload codec and that every association already
+resolved a participant row.  Both assumptions contradict durable production
+v7 history.
+
+* Fix
+
+- Read the v7 association principal as the plain scalar written by v7 and
+  require it to agree with the decoded Board trusted principal.
+- Preserve existing participant rows and continue rejecting conflicting
+  principal or explicit-role facts.
+- For an association that predates its participant row, materialize the v8
+  participant from durable session and Board facts.  Preserve a policy-carried
+  participant id when present; otherwise derive a deterministic =ptc_= id from
+  the globally unique session id.  Derive a missing role from =root_p= and keep
+  the session name as the display name.
+- Correct the production-shaped fixture and cover both policy-bearing and
+  roleless early associations.
+
+* Validation
+
+#+begin_src sh
+eldev test -f test/e-runtime-store-offline-test.el
+#+end_src
+
+All 33 offline-upgrade tests pass, including the two early-association cases.

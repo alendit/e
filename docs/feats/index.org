@@ -214,6 +214,9 @@ Feature 95 is =Done=.  It replaces duplicated participant association, Board
 record, routing/pickup, and task state with one normalized schema-v8 authority
 and one explicit stopped-store v7-to-v8 upgrade.  The accepted plan is
 [[file:95-normalized-sqlite-communication/plan.org][Normalized SQLite Communication State]].
+The canonical-store correction aligns that adapter with plain v7 session
+principals and preserves early associations that predate participant rows; its
+offline-upgrade suite passes 33/33.
 
 The previously accepted Board-first slice remains complete.  Atomic child admission now makes =running= mean a live
 started runner, restart recovery treats nonterminal attempts without live
