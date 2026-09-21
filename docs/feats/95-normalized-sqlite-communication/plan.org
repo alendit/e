@@ -1,0 +1,287 @@
+#+title: Normalized SQLite Communication State
+#+startup: overview
+
+* Status
+
+=In-progress=.  The operator requested implementation on 2026-09-21.  This
+plan is the contract and delivery authority for the schema-v8 normalization
+package.
+
+* Behavioral goal
+
+** Goal record
+
+- Goal ID :: =F95-NORMALIZED-COMMUNICATION=
+- Behavioral goal :: A reopened SQLite-backed chat, Board, pickup queue, and
+  task queue expose one coherent participant identity and one coherent mutable
+  state without depending on duplicated values inside opaque payloads.
+- Direct scenario :: Create an owner and participant, route input, transition
+  its pickup, publish participant output and context curation, settle a task,
+  close the store, and reopen it.  Board/session association, participant
+  labels, record selectors, pickup state, and task state agree through the
+  ordinary bounded public reads after reopen.
+- Product authority :: The =e= runtime-store, Board, session, chat, and task
+  owners under the repository architecture guidance.
+- Owning contract :: The matrix in this file.
+- Behavioral status :: Unavailable until schema v8, its explicit offline
+  upgrade, and the direct reopen scenario pass.
+
+The implementation must preserve SQLite as the only durable authority.  It may
+materialize bounded query indexes when one source row owns their derivation and
+they can be rebuilt; it must not retain two independently readable copies of a
+semantic identity or mutable state.
+
+* Scope and non-goals
+
+In scope:
+
+- normalize the Board/session/participant association;
+- resolve participant display attribution from the participant relation;
+- remove duplicate Board record aliases and separate record content from its
+  relational envelope and selector values;
+- make relational pickup and routing rows authoritative for identity and
+  mutable state;
+- remove the unused Board session-admission ledger;
+- make relational task and attempt rows authoritative for their mutable state;
+- add one explicit stopped-store v7-to-v8 upgrade with verified backup,
+  rollback, integrity, provenance, and parity checks;
+- update affected callers, fixtures, documentation, and focused tests; and
+- remove obsolete compatibility branches, fields, schema objects, and tests.
+
+Out of scope:
+
+- changing the journal-derived session current-state projection, the process
+  report index, or runtime idempotency receipts merely because they are
+  materialized projections;
+- changing voice, cron, Goodnite, raw-result, or temporary-resource behavior;
+- automatic startup migration, dual writes, read-time legacy fallbacks, or a
+  second durable store;
+- preserving historical participant display-name snapshots.  Display names
+  are current participant facts; immutable authorship remains represented by
+  participant identity; and
+- reloading or mutating the user's running Emacs during implementation.
+
+* Normalized ownership design
+
+** Board association and participants
+
+One explicit Board association relation links exactly one session to one
+participant in one Board generation.  Its participant identity is a relational
+column, not a member of the encoded routing policy.  The relation references
+the session query row and Board participant row.  The Board supplies the
+trusted principal, the participant row supplies role and current display name,
+and the association supplies only association-owned routing policy.
+
+=session_query_state= keeps session-derived state only.  It no longer stores
+=board_id=, =principal=, =association_role=, or =routing_policy=.  Consumer
+reads preserve their current detached association DTO by joining and
+reconstructing it inside one bounded SQLite read snapshot.
+
+Participant fields with independent query or mutation meaning are relational
+columns.  The stored participant representation does not repeat its key,
+Board principal, role, state, publication flag, subscription identity, or
+display name inside an opaque payload.
+
+** Board records and selectors
+
+The relational Board record envelope owns Board/generation/position, record
+identity, record kind, source identity, creation time, author, subject
+participant, and other stable selector identity.  Tag and attribute child rows
+remain the normalized selector authority.  The encoded payload contains only
+kind-specific content which has no relational query responsibility.
+
+One reconstructed record DTO is returned to callers.  It uses
+=:record-kind=, =:seq=, =:tags=, and =:attributes= as its canonical names.
+=:kind=, =:durable-position=, =:selector-tags=, and
+=:selector-attributes= are removed rather than retained as aliases.
+
+Bounded record queries fetch envelopes, tags, and attributes as bounded sets;
+they must not introduce a query per record or an unbounded aggregate.
+
+** Routing, pickups, and admission
+
+The routing row's relational state is authoritative.  Its encoded payload
+contains only state-specific result detail which is not already represented by
+the routing and pickup relations.  Pickup membership is derived from pickup
+rows rather than retained as a second list of pickup identities.
+
+Pickup relational columns own delivery identity, FIFO position, state,
+revision, and attempt.  The encoded pickup body contains only immutable
+delivery content and transition detail.  Every pickup read reconstructs the
+same DTO from those sources; no read returns a stale embedded state.
+
+=board_session_admissions= is removed.  Pickup acceptance and its session/lane
+detail are already represented by the pickup state and immutable pickup event;
+no consumer reads the additional ledger.
+
+** Tasks and attempts
+
+Task relational columns own task identity, queue position, queue-lifecycle
+status, revision, enqueue time, requested harness selector, retry policy/count,
+and a nullable latest-attempt reference.  Encoded values remain only for
+genuinely opaque task content such as prompts and caller metadata.
+
+An attempt row exclusively owns execution facts: attempt number and state,
+actual harness instance and session, start/settlement timestamps, outputs, and
+error.  Those facts do not also live on the task row.  Task status and attempt
+state are distinct: the former decides queue eligibility and terminal task
+state, while the latter records one execution's history; retry may return a
+task to queued while retaining a settled prior attempt.  The current task DTO
+derives latest execution detail through the latest-attempt reference, and
+attempt history is reconstructed directly from attempt rows.
+
+Dispatch and snapshot reads reconstruct the same task DTO.  Enqueue, claim,
+transition, import, and reopen cannot select state from different copies.
+
+* Contract and evidence matrix
+
+| Contract | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Scenario | Evidence | Status |
+|-
+| =F95-C01= | A session has at most one constrained Board participant association; participant, role, principal, and routing identity cannot disagree. | runtime-store Board/session admission and Board query worker | Durable through restart; one association row; explicit offline migration | =F95-S1=, =F95-S4= | deterministic owner/composition | Pending |
+| =F95-C02= | Output and activity attribution resolve the same current participant name from participant identity; durable events do not carry a competing name. | Board participant query plus chat presentation projection | Current participant lifetime; bounded set/join read | =F95-S1= | deterministic public composition | Pending |
+| =F95-C03= | Every Board record has one envelope and one selector representation; canonical reads contain no legacy aliases and selector results match returned tags/attributes. | Board SQLite worker | Durable immutable record; bounded page/set reads; indexes rebuildable | =F95-S1=, =F95-S4= | deterministic owner/adversarial selector | Pending |
+| =F95-C04= | Routing and pickup identity/state have one relational authority, all pickup read paths reconstruct identical DTOs, and no write-only admission ledger remains. | Board routing/pickup worker | Durable FIFO and transitions; atomic mutation/event append; restart recovery | =F95-S2=, =F95-S4= | deterministic transition/reopen | Pending |
+| =F95-C05= | Dispatch and snapshots observe one relational task/attempt state before and after restart. | task SQLite worker | Durable queue; atomic claim/settlement; bounded snapshot | =F95-S3=, =F95-S4= | deterministic queue/reopen | Pending |
+| =F95-C06= | Existing v7 stores upgrade only through one explicit stopped-store operation with verified backup, rollback, lineage, integrity, and semantic parity; ordinary startup rejects v7. | offline migration and runtime schema verifier | One operator transaction; no runtime fallback or dual path | =F95-S4= | deterministic migration fault/parity fixtures | Pending |
+| =F95-C07= | Normalization adds no N+1 query path, process-wide durable mirror, or unbounded page; existing public Board and task bounds remain effective. | SQLite workers and service adapters | Per bounded read snapshot; derived indexes rebuildable | =F95-S1=--=F95-S4= | query-count/boundary tests and graphical gate where presentation changes | Pending |
+| =F95-C08= | Obsolete schema columns/tables, durable aliases, runtime branches, and compatibility paths are absent after the schema-v8 clean cut. | schema and affected domain owners | Permanent clean cut at schema v8 | all | structural search and exact-source suite | Pending |
+
+All required evidence is deterministic repository evidence.  External
+compatibility evidence is not applicable because no provider or credentialed
+endpoint participates in these contracts.  Migration size, query counts beyond
+the no-N+1 invariant, storage size, and latency are observational telemetry
+unless a future contract adds a measured baseline and regression threshold.
+
+* Scenario portfolio
+
+** F95-S1: participant attribution and Board reopen
+
+Create an owner plus named child participant, publish child output and
+context-curation activity, and observe both through the immediate public chat
+projection.  Close and reopen, then consume the ordinary chat and Board
+projections again.  Both entries resolve the same child name from the
+participant row in live and reopened paths; association identity and selectors
+remain exact; no event payload contains =:participant-name=.  The stale-name
+migration partition in =F95-S4= separately proves participant-row precedence.
+
+** F95-S2: pickup transition agreement
+
+Route two messages to one participant, exercise pending/ready/claimed/accepted/
+terminal promotion and retry paths, and compare canonical append, pickup-page,
+event, and reopen results.  Identity, revision, attempt, and state agree across
+every public result.
+
+** F95-S3: task transition agreement
+
+Enqueue, claim, retry or settle, inspect the bounded snapshot, close, reopen,
+and claim the next task.  A new v8 retry leaves the task queued while preserving
+the failed attempt and its execution facts as the latest attempt.  Dispatch
+choice and returned task/attempt DTOs agree at every boundary, including
+failed/interrupted legacy import.
+
+** F95-S4: explicit v7-to-v8 upgrade
+
+Upgrade a copied v7 store containing owner/child associations, mixed Board
+records, routing and pickup history, admissions, and tasks.  Its output record
+contains a stale embedded participant name that disagrees with the current
+participant row, and its task fixtures include v7 queued-after-retry and
+queued-after-resume rows whose last attempt was destructively rewritten to
+=queued=, plus retry followed by a later claim and settlement, leaving an older
+historical attempt persisted as =queued=.  Verify the v8 live/reopen projection
+uses the participant-row name and retains no event copy.  Map every recognized
+v7 attempt row persisted as =queued= to the explicit historical state
+=legacy-requeued=, whether it is latest or historical; attempt rows were created
+only by claim, so that state is the destructive-requeue witness.  Preserve its
+available execution facts without inventing a settlement time or cause.  A
+still-queued task retains the mapped row as latest, while a later claimed or
+settled attempt remains latest and the mapped older row remains history.  Verify
+those semantics together with backup, lineage, foreign keys, semantic parity,
+obsolete-object removal, idempotent v8 no-op, and exact restoration after
+faults before and after commit.
+
+* Migration and corruption policy
+
+Schema v8 is a clean cut.  The stopped-store upgrader reconstructs normalized
+relations in one transaction and changes the schema-version/provenance rows
+only after parity succeeds.  Fresh stores create only the v8 shape.
+
+Where a v7 row contains duplicate values, migration validates their agreement
+before dropping a copy:
+
+- association participant, role, principal, and Board generation must join;
+- record key/kind/position/tags/attributes must agree with envelope/index rows;
+- routing state and pickup membership must agree with routing/pickup rows;
+- pickup identity/state/revision/attempt must agree with relational columns;
+- task/attempt identities and attempt numbers must agree with relational rows;
+  active and terminal v7 task/attempt combinations must match their recognized
+  topology; and every v7 attempt persisted as =queued= maps deterministically
+  to =legacy-requeued= with no invented settlement timestamp or
+  retry-versus-resume cause, including historical attempts superseded by a
+  later claim.  Other contradictory or non-derivable combinations fail with
+  the task and attempt keys.
+
+Migration fails with the smallest identifying key when duplicates conflict; it
+does not guess, silently prefer one copy, or preserve a permanent compatibility
+branch.  Successful migration discards event-carried participant names and the
+unread Board session-admission ledger under the accepted current-name and
+single-ledger contracts above.
+
+* Delivery package
+
+** F95-DP1: schema-v8 normalized communication state
+
+- Useful outcome :: Fresh and explicitly upgraded stores provide the complete
+  direct scenario with one relational authority for associations, Board
+  records, routing/pickups, and tasks.
+- Establishes :: =F95-C01=--=F95-C08=.
+- Owners and physical boundary :: runtime common/offline schema workers,
+  session query worker, Board worker/service, chat projection/presentation,
+  task worker/queue, directly supporting tests, and this feature ledger.
+- Prerequisites :: Accepted Feature 87 explicit-offline-migration contract and
+  Feature 92 SQLite-authoritative bounded-query architecture.
+- State and recovery :: one atomic v8 schema/install transaction after verified
+  backup; fresh v8 schema; no startup mutation or compatibility reader.
+- Public surface :: existing Board, chat, task, and migration entrypoints;
+  canonical Board record DTO drops the four obsolete aliases.
+- Focused evidence :: =F95-S1=--=F95-S4=, affected Board/session/task/migration
+  suites, structural obsolete-symbol checks, byte compilation, graphical chat
+  test for mixed participant attribution, and the complete exact-source suite.
+- Safe deferred work :: none of the seven reported denormalization findings;
+  unrelated materialized projections and auxiliary SQLite owners remain
+  unchanged under the explicit non-goals.
+- Split/combine decision :: The persisted relations and migration stay in one
+  package because a partially normalized current schema would either require
+  multiple artificial schema versions or leave the direct reopen scenario with
+  competing authorities.  Internal edits and focused checks may be staged, but
+  only the complete v8 boundary is independently acceptable.
+
+* Test disposition
+
+- Retain public Board routing, pickup FIFO, chat reopen, task scheduling, and
+  stopped-store upgrade scenarios.
+- Strengthen association/adversarial mismatch, mixed output/activity
+  attribution, pickup multi-reader agreement, task snapshot/dispatch agreement,
+  migration rollback, query-count, and exact-bound cases.
+- Replace schema/payload assertions that freeze v7 duplicate representations
+  with v8 authority and reconstruction assertions.
+- Delete tests whose only purpose is to preserve legacy aliases,
+  =board_session_admissions=, embedded mutable pickup/task state, or runtime
+  acceptance of an old schema.
+
+* Acceptance and repository policy
+
+Repository-side focused validation and the complete gate run outside the
+user's Emacs.  Because core runtime, session record shape, and schema change,
+using the behavior in the running Emacs requires a full restart; =e-dev-reload=
+is intentionally insufficient and will not be run.
+
+Implementation and review follow =AGENTS.md= and
+=docs/references/dev_work.org=; this feature artifact does not redefine their
+review, commit, evidence, or status-transition workflow.
+
+* Architecture self-check target
+
+The final handoff must answer all fourteen design-sensitive questions from
+=AGENTS.md=, including semantic owner, dependency direction, state lifetime,
+performance, compatibility cleanup, unexpected-error visibility, and
+owner-local proof.

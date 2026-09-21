@@ -210,6 +210,11 @@ migration contract, compatibility decision, deletion evidence, and full test
 record are in
 [[file:94-canonical-json-values/plan.org][Canonical JSON Values Across Model and Persistence Boundaries]].
 
+Feature 95 is =In-progress=.  It replaces duplicated participant association,
+Board record, routing/pickup, and task state with one normalized schema-v8
+authority and one explicit stopped-store v7-to-v8 upgrade.  The active plan is
+[[file:95-normalized-sqlite-communication/plan.org][Normalized SQLite Communication State]].
+
 The previously accepted Board-first slice remains complete.  Atomic child admission now makes =running= mean a live
 started runner, restart recovery treats nonterminal attempts without live
 assignments as orphans, and all Daily continuation uses the one canonical
@@ -392,3 +397,4 @@ continuations identified by durable metadata.
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |
 | 93 | Done        | 93-daily-board-admission-truth-and-recovery/       | Daily Board Admission Truth and Recovery — Direct Daily Writing Addendum |
 | 94 | Done        | 94-canonical-json-values/                            | Canonical JSON Values Across Model and Persistence Boundaries |
+| 95 | In-progress | 95-normalized-sqlite-communication/                   | Normalized SQLite Communication State              |

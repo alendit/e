@@ -1,0 +1,87 @@
+#+title: Plan Review 01: Normalized SQLite Communication State
+#+date: 2026-09-21
+#+startup: overview
+
+* Result
+
+=implementation-plan-fixed-point= at plan SHA-256
+=05e7e53f7e762403bb4c8623db3db90c14b59f576838e024c4d8273fb8190d27=,
+reviewed against source base =eeac5061ca72d3280c0ec65bb3ef294048e14876=.
+
+All =F95-C01=--=F95-C08= cells and =F95-DP1= are implementation-ready.
+The behavioral goal remains unavailable until implementation and deterministic
+evidence pass; plan mechanism coverage is complete.
+
+* Review scope
+
+The independent read-only review covered the contract matrix, single-package
+delivery relation, normalized ownership design, migration and corruption
+policy, public/reopen scenarios, bounded-query requirements, test disposition,
+Feature 87's explicit stopped-store migration authority, Feature 92's
+SQLite-authoritative query direction, and the repository architecture guidance.
+
+External compatibility evidence is not applicable.  Storage size and latency
+remain observational telemetry.  No tests, edits, Git writes, or live-Emacs
+interaction formed part of this plan review.
+
+* Review loop
+
+** Resolved P1: task and attempt fields retained two owners
+
+The first plan assigned timestamps, outputs, and error to both task and attempt
+rows.  The corrected plan gives the task queue-lifecycle status, enqueue and
+retry policy, requested harness selector, and latest-attempt reference.  The
+attempt exclusively owns actual execution harness/session, timestamps,
+outputs, error, and attempt history.  A bounded join reconstructs the task DTO.
+
+** Resolved P2: attribution evidence did not discriminate current lookup
+
+The original scenario proved only reopen.  The corrected portfolio proves the
+immediate and reopened public projections, and the v7 migration fixture carries
+a stale event name which must lose to the current participant row with no name
+copy retained in the event.
+
+** Resolved P3: evidence and workflow boundaries
+
+The plan now records deterministic repository evidence, external evidence as
+not applicable, and telemetry as observational.  =F95-C08= covers obsolete
+schema/API/runtime compatibility paths; test disposition remains in its own
+section.  Repository review/status mechanics are referenced rather than copied
+into the feature contract.
+
+** Resolved P2: unsupported participant rename
+
+An intermediate scenario introduced a rename operation absent from the current
+or planned public surface.  It was removed.  The stale-name v7 migration
+partition supplies the required participant-row-precedence evidence without
+expanding product behavior.
+
+** Resolved P1: valid v7 retry/resume history was not migratable
+
+Current v7 retry/resume destructively rewrites claimed attempt rows to
+=queued=, including historical attempts later superseded by another claim.  The
+final plan maps every recognized v7 attempt persisted as =queued= to
+=legacy-requeued=, whether latest or historical.  Attempt creation-by-claim is
+the witness.  Migration preserves available facts, invents neither settlement
+time nor retry/resume cause, and rejects other non-derivable contradictions by
+task and attempt key.  The scenario includes retry followed by later claim and
+settlement so both history and latest reference are proved.
+
+* Final contract disposition
+
+| Contract | Disposition |
+|-
+| =F95-C01= | Cleared: constrained Board/session/participant association. |
+| =F95-C02= | Cleared: participant-row attribution in immediate, reopen, and stale-v7 paths. |
+| =F95-C03= | Cleared: one Board record envelope and normalized selectors. |
+| =F95-C04= | Cleared: relational routing/pickup authority and obsolete admission-ledger removal. |
+| =F95-C05= | Cleared: distinct task lifecycle and attempt execution ownership. |
+| =F95-C06= | Cleared: explicit v7-to-v8 migration including every recognized legacy retry topology. |
+| =F95-C07= | Cleared: bounded set reads, no N+1 query or durable process mirror. |
+| =F95-C08= | Cleared: schema-v8 clean cut without aliases, fallback, or compatibility shim. |
+| =F95-DP1= | Cleared: one useful atomic schema-v8 delivery package establishes all contracts. |
+
+* Required unknowns
+
+None.
+
