@@ -1,0 +1,123 @@
+#+title: Plan Review 01: Reliable Tool Continuations and Daily Completion
+#+date: 2026-09-21
+#+startup: overview
+
+* Result
+
+=implementation-plan-fixed-point= at plan SHA-256
+=0299d3716300f4337eadd3b1cb606ca5b3acb75c02c3cfa74ea5704b2f43f1fd=,
+reviewed against =e= source base
+=46c5750e0934e798bd16ebec5ccb6ae4253f500e= and Grimoire source base
+=425e19d021160cb24c2275be827a3d2509e05b57=.
+
+All =F96-C01=--=F96-C06= and =F96-DP1=--=F96-DP4= are
+implementation-ready.  The review was independent and read-only; it changed no
+source, tests, configuration, runtime state, or user Emacs state.
+
+* Review scope
+
+The review checked the plan against current invocation-detail projection,
+generic Work settlement/deadline behavior, direct subagent observation,
+Board-terminal publication, interrupt/shutdown and pending-admission paths,
+Grimoire attempt recovery and dispatch aggregation, Daily worker profiles and
+assignments, exact-path topic commit behavior, and Features 55, 82, 93, and 94.
+
+External credentials are not acceptance evidence.  The contracts are
+deterministically provable with fake providers, held/failed Work, SQLite
+fixtures, isolated CLI fixtures, temporary Git repositories, isolated graphical
+Emacs, and current-config cold start.
+
+* Review loop
+
+** Resolved P1: speculative callback diagnosis did not match production
+
+The first draft blamed duplicate callback request adoption, but production Bash
+does not use =e-tools-callback-work=.  A current-source reproduction established
+the actual owner: invocation-detail portability mapping mistakes a list of
+resource plists for one alist object and creates duplicate =:uri= keys.  The
+plan now repairs that exact projection and deletes the zero-production-consumer
+callback constructor instead of redesigning it.
+
+** Resolved P1: progress failure could disable the only terminal observer
+
+The direct runner invoked consumer progress in the same subscription callback
+which observed terminal events.  A throwing callback could fault the
+subscription before settlement.  =F96-C03= now isolates progress as bounded
+best-effort projection and tests both nonterminal and terminal callback errors.
+
+** Resolved P1: terminal ordering ignored asynchronous Board publication
+
+The first draft settled Work before starting/ignoring Board publication.  The
+review restored Feature 82's required ordering: a coordinator-supplied,
+pre-start Work terminal gate latches one proposal, awaits its idempotent Board
+terminal publication, and only then commits Work terminal state and retires
+live ownership.
+
+** Resolved P1: the low-level runner could not control Work deadlines
+
+The direct runner does not own child Work, deadline timers, Board target, or
+live state.  The final plan assigns progress safety to the direct runner and
+terminal convergence to the surrounding subagent coordinator through a narrow
+generic Work gate.  Work continues to own the exact deadline and prompt provider
+cancellation; only terminal commit waits for publication acknowledgement.
+
+** Resolved P2: unsupported retry/reopen promise
+
+No existing runner retry API or durable generic terminal intent can reconstruct
+a lost process-local proposal.  The plan no longer invents either.  Publication
+failure becomes a typed persistence-suspect Work failure containing both causes.
+Reopen follows current Grimoire policy exactly: an ambiguously committed
+terminal fact wins; orphaned running attempt 0 advances to durable attempt 1;
+orphaned running attempt 1 terminalizes; an already-pending selected attempt is
+the only unchanged redispatch.
+
+** Resolved P2: interrupt and shutdown bypassed convergence
+
+Public interrupt/shutdown directly cancelled, settled, published, and removed
+live state.  The final physical boundary includes those paths.  They cancel the
+provider promptly once, propose =cancelled= through the same gate, and retain
+post-admission Work/live ownership until acknowledgement or composite
+publication failure.
+
+** Resolved P1: pending cancellation could resurrect or double-settle
+
+Keeping a startable pending reservation during publication would allow late SQL
+admission to start a cancelled provider.  Late admission failure could also call
+=on-failure=, publish a competing failed terminal, and independently settle the
+dispatch Work.  The final plan fences by removing the startable reservation
+before publication.  Every later admission result—finished, failed, or
+cancelled—is inert beyond request-local cleanup.  A detached gate closure alone
+owns prepared child Work, the cancelled proposal, and dispatch settlement.
+Tests cover all outcome orderings before and after acknowledgement.
+
+** Resolved P2: cancelled dispatches disappeared from Daily aggregation
+
+Grimoire counted only admitted and failed dispositions.  The final contract
+requires an explicit =:cancelled= total and =attention= state when failed or
+cancelled dispositions are present, preserving Feature 93's distinct bounded
+cancellation outcome.
+
+** Resolved P2: contracts and Daily packages were over-combined
+
+Canonical Feature 94 behavior and eager capability readiness are prerequisites,
+not reimplementation contracts.  Calendar already uses =fast-tool-user=; only
+its executable =gog= guidance changes.  Calendar and exact saving now have
+separate owner-local packages.  Exact saving is noninteractive, limited to the
+closed commit-file set, and failure-propagating.
+
+* Final contract disposition
+
+| Contract | Disposition |
+|-
+| =F96-C01= | Cleared: exact list-of-plists archival repair plus obsolete callback cleanup. |
+| =F96-C02= | Cleared: one gated terminal proposal, durable acknowledgement before Work/live retirement, and fenced pending cancellation. |
+| =F96-C03= | Cleared: progress projection cannot disable terminal observation. |
+| =F96-C04= | Cleared: composite persistence failure and exact existing reopen partitions without invented retry state. |
+| =F96-C05= | Cleared: calendar retains =fast-tool-user= and receives concrete bounded =gog= guidance. |
+| =F96-C06= | Cleared: noninteractive exact-path save precedes existing exact-path commit with no replacement Daily protocol. |
+
+* Required unknowns
+
+None.  Implementation may change a physical edit location when source demands
+it, but any contract, owner, state lifetime, recovery policy, or package-boundary
+change requires renewed independent plan review.

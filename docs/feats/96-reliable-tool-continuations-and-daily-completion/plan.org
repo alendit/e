@@ -1,0 +1,521 @@
+#+title: Reliable Tool Continuations and Daily Completion
+#+startup: overview
+
+* Status
+
+=Ready=.  Independent review reached =implementation-plan-fixed-point= for this
+exact plan identity.  Production edits begin only after the fixed-point plan and
+its review record are committed.
+
+* Behavioral goal
+
+** Goal record
+
+- Goal ID :: =F96-RELIABLE-COMPOSED-TURNS=
+- Behavioral goal :: A Board-run worker can execute an admitted tool, continue
+  its provider turn, and converge through one durable terminal transition.  A
+  Daily coordinator can then edit the exact target with ordinary tools and have
+  the successful turn save and commit that edit without a Daily-specific
+  publish, reconcile, or completion protocol.
+- Direct scenario :: Start a Daily run containing a large-output Bash worker,
+  an eager-MCP Slack worker, a Bash-backed calendar worker, and the final
+  direct-write coordinator.  Tool results survive invocation-detail archival
+  and provider continuation.  An intentionally failed child publishes its
+  original failure durably before its Work is retired, even when progress
+  projection fails and a deadline later fires.  The coordinator writes the
+  exact =file://= Daily; the ordinary successful turn saves and commits only
+  that file and admitted artifacts.
+- Product authority :: Generic =e= tool archival and subagent lifecycle
+  contracts, composed by the project-local Grimoire Daily extension.
+- Owning contracts :: =F96-C01=--=F96-C06= below.
+- Behavioral status :: Not yet available.  The 2026-09-21 run exposed a
+  reproducible large Bash archival failure, child failures which appeared only
+  as later deadlines, a calendar assignment without executable CLI guidance,
+  and an unsaved =buffer://= coordinator edit.
+
+This feature repairs each behavior at its semantic owner.  It does not create a
+Daily lifecycle or make the Daily controller inspect session journals.
+
+* Authority and prerequisites
+
+- Feature 55 remains authoritative for the generic Work lifecycle.
+- Feature 82 remains authoritative for Board-native supervision and requires a
+  durable terminal report before local Work settlement and live retirement.
+- Feature 93 Addendum 3 remains authoritative for direct Daily writing.  This
+  plan strengthens ordinary save/commit composition; it does not restore
+  reconciliation, model acknowledgement, target echo, section submission, or
+  a Daily publication tool.
+- Feature 94 remains authoritative for canonical JSON: adapters decode once,
+  core carries typed values, and wire adapters serialize once.  Its canonical
+  argument/replay tests are prerequisites and regressions, not work to
+  reimplement here.
+
+No legacy behavior identified below is a compatibility requirement.
+
+* Current-source evidence and diagnosis
+
+** Reproduced tool failure
+
+The GitHub worker session =20260921T074701-2c45bac26c76= persisted a typed,
+canonical Bash call at position 39 with =:command=, =:timeout=, and
+=:resource_usage=.  It emitted =tool-started= and then =turn-failed= with
+=JSON objects cannot contain duplicate keys= instead of a tool result.
+
+A private batch reproduction against current source starts the production Bash
+tool with output large enough to use =e-tools-file-content= and two resource
+usage entries.  It fails deterministically while
+=e-tool-invocation-details-write= archives the semantic result.  The invalid
+value shows the exact corruption:
+
+- =e-tools-resource-usage-metadata= correctly owns a list of resource records;
+- =e-tool-invocation-details--portable-value= tests "list whose elements are
+  conses" before ordinary list/array projection;
+- it therefore mistakes a list of plist records for one alist object, uses each
+  record's first key as an object key, and produces duplicate =:uri= keys for
+  multiple resources; and
+- canonical validation correctly rejects that archive document.
+
+The failure is not caused by duplicate callback request adoption.  The only
+consumer of =e-tools-callback-work= is test support; production Bash uses its
+own Work spec.  The unused compatibility constructor and its production-only
+request decoration are obsolete machinery, not the owner of this incident.
+
+** Child terminal split
+
+=e-subagent-direct-runner= observes progress and terminal session events in one
+subscription callback.  It invokes the consumer progress callback before
+terminal cleanup/settlement.  If progress projection throws, the chat service
+faults that subscription, so the only terminal observer can disappear.  The
+current settlement path also starts asynchronous Board terminal publication
+without awaiting its Work and can retire local state first.  A later deadline
+then becomes the visible failure even though the session already recorded the
+original cause.
+
+The repair spans the actual two owners.  The direct runner isolates progress
+projection and delivers one terminal proposal.  The surrounding subagent
+coordinator owns child Work, Board target, assignment, and live state, so it
+installs one narrow asynchronous Work terminal gate before the handle starts.
+The gate latches the first proposal, publishes its idempotent durable terminal
+report, awaits that publication Work, and only then commits the proposed Work
+terminal state and retires live state.  The existing Work deadline still owns
+expiry and provider cancellation; expiry proposes =e-work-deadline-exceeded=
+through the same gate instead of bypassing it.
+
+If publication itself fails, the gate commits a typed persistence-suspect Work
+failure containing both the original child proposal and publication error, then
+retires process-local state.  No automatic retry or promise to reconstruct the
+original session cause after a crash is added.  On reopen, a terminal fact which
+did commit wins idempotently.  Otherwise existing Grimoire recovery remains
+authoritative: an orphaned running attempt 0 advances through a durable
+=attempt-selection= to attempt 1; an orphaned running attempt 1 becomes a
+terminal orphan failure; and only a pending selected attempt is redispatched
+without changing its attempt identity.
+
+** Daily composition gaps
+
+Calendar already selects =fast-tool-user=, which admits Bash.  The defect is
+only its vague assignment: unlike the working CLI-backed sources, it does not
+name the bounded =gog calendar events primary --from <start> --to <until>=
+operation or require a typed unavailable result on authentication/nonzero exit.
+No worker-profile or Gmail change is justified.
+
+The direct-write coordinator already owns an exact closed =:daily-commit-files=
+set.  The normal turn-finished commit hook stages disk bytes, but a model may
+legitimately edit a visiting buffer whose generic write reports =saved=false=.
+The application hook must noninteractively save modified buffers visiting only
+those exact paths before exact-path Git bookkeeping.  Coding-system/write
+errors fail the coordinator turn; unrelated buffer semantics and repository
+dirt remain untouched.
+
+* Smallest faithful design
+
+The selected design is four independent owner-local packages:
+
+1. correct invocation-detail metadata projection and delete the zero-production-
+   consumer callback compatibility constructor;
+2. add an asynchronous terminal gate at the generic Work settlement seam,
+   supplied by the subagent coordinator that owns Board convergence, while the
+   direct runner isolates progress observers;
+3. make the existing calendar assignment executable through its already
+   admitted Bash/CLI capability; and
+4. make exact Daily save an explicit precondition of the existing exact-path
+   commit hook.
+
+These packages compose only in the final Daily scenario.  They do not depend on
+each other's implementation.
+
+Rejected alternatives:
+
+- relaxing duplicate-key rejection or deduplicating arbitrary plists at the
+  serializer would hide owner corruption;
+- reworking accepted typed provider continuation without a failing counterexample
+  would duplicate Feature 94 and broaden this feature speculatively;
+- polling session journals from the Daily controller would create a second
+  terminal projection;
+- settling local Work before the durable report acknowledges would violate
+  Feature 82; a second outer Work would also leave cancellation with the wrong
+  semantics, so the existing enrolled Work receives a narrow terminal gate;
+- swallowing Board publication, save, coding, or Git errors would replace the
+  causal failure;
+- changing generic =buffer://= writes to save files would violate their live
+  resource contract; and
+- another Daily =publish=, =complete=, or =reconcile= action would recreate the
+  obsolete protocol already removed by Feature 93.
+
+* Contract and evidence matrix
+
+| Contract | Observable invariant | Semantic owner | Lifetime, recovery, and bounds | Scenario | Evidence | Status |
+|-
+| =F96-C01= | Invocation-detail archival preserves metadata collections as arrays of independent canonical objects; a large Bash result with two resource records archives and returns normally, while genuinely duplicated object keys remain rejected. | invocation-details archival adapter | One session-tmp document per call; bounded streaming is unchanged; no new durable state | =F96-S1= | failing current-source reproduction converted to deterministic ERT; archive decode and provider follow-up | Planned |
+| =F96-C02= | The first child terminal proposal is latched once; its idempotent Board terminal report is durably acknowledged before the enrolled child Work commits that terminal state and before live retirement.  Deadline and late callbacks cannot reclassify it.  Run-bound pending cancellation first fences the startable reservation, then acknowledgement settles both prepared child Work and dispatch Work.  Every later admission outcome is inert, and the Daily dispatch aggregate reports a distinct cancelled count. | generic Work terminal gate supplied by the subagent convergence coordinator; Grimoire consumes bounded dispatch dispositions | One attempt; proposal is process-local only while publication is in flight; acknowledged SQLite Board report is durable authority; a fenced pending proposal is detached from the startable reservation | =F96-S2= | publication held past actual deadline; interrupt/shutdown; pending cancellation with admission finish/fail/cancel before/after acknowledgement; Work and aggregate ordering | Planned |
+| =F96-C03= | Consumer progress callbacks, including callbacks which throw on nonterminal or terminal events, cannot disable terminal observation or alter =F96-C02=. | subagent direct runner at its projection boundary | Ephemeral projection only; callback errors are bounded diagnostics, never lifecycle state | =F96-S2= | adversarial progress callback and subscription-fault tests | Planned |
+| =F96-C04= | If terminal publication fails, the enrolled Work commits one typed persistence-suspect failure containing the original terminal proposal and publication error; no false Board terminal fact is claimed.  Process-local state retires.  Reopen accepts an idempotently committed terminal fact, advances orphaned running attempt 0 to selected attempt 1, terminalizes orphaned running attempt 1, and redispatches only an already-pending selected attempt unchanged. | subagent convergence coordinator through the Work terminal gate plus existing Grimoire recovery application service | Bounded composite error; no new durable intent or retry API; manifest, attempt-selection, and terminal facts remain recovery authority | =F96-S2= | failed publication Work, outcome-ambiguous commit, duplicate callback, reopen partitions for attempt 0/1/pending | Planned |
+| =F96-C05= | Calendar keeps =fast-tool-user= and receives the concrete bounded =gog= command its Bash capability can execute; authentication/nonzero exit yields typed source unavailability. | Grimoire Daily assignment builder | One worker prompt and fixed date window; no capability/schema state | =F96-S3= | prompt/profile test and isolated CLI outcome fixture | Planned |
+| =F96-C06= | Before exact-path Daily commit, the normal successful coordinator hook noninteractively saves modified live buffers visiting exactly the closed commit-file set.  Save/coding or commit failure fails the turn; no Daily completion protocol participates. | Grimoire topic commit application service | Exact admitted paths for one turn; buffer/file/Git state is recovery authority | =F96-S4= | live-buffer save, failure, exact Git isolation, graphical/current-config gates | Planned |
+
+The contracts intentionally do not share a generic error-fidelity umbrella:
+each owning package proves its own errors.  Feature 94 canonical typed arguments
+and eager capability readiness remain prerequisite regression coverage rather
+than new contracts.
+
+* Owner profiles
+
+** Invocation details
+
+The archival adapter maps domain metadata to canonical JSON.  It must classify
+containers by their declared/domain shape: a resource-usage collection is an
+array of records, each record is an object, and each resources field is an
+array.  It must not infer "alist object" merely because every list element is a
+cons.  The mapping remains detached and streaming; provider, session, and tool
+owners are unchanged.
+
+Because =e-tools-callback-work= has no production consumer, remove it rather
+than preserving or repairing its second request-adoption protocol.  Test
+fixtures needing callbacks use a test-local Work spec.  Production exposes one
+Work contract, not a compatibility constructor used only by tests.
+
+** Child terminal convergence
+
+The existing enrolled child Work remains the one caller-visible lifecycle.
+=e-work= gains one narrow optional terminal-gate seam installed before start,
+parallel to its existing enrollment observers.  Ordinary Work without a gate is
+unchanged.  For a gated Work, =finish=, =fail=, and =cancel= first propose an
+immutable terminal state; the gate asynchronously authorizes the internal
+terminal commit after its owner-side durability operation.  First proposal
+wins.  The core does not import Board types or publication policy.
+
+The subagent convergence coordinator, not the low-level direct runner, owns the
+gate state machine because it holds the enrolled Work, Board target, assignment,
+and live entry:
+
+1. =running=: observe session lifecycle; project progress in an isolated
+   best-effort boundary;
+2. =publishing=: atomically latch the first terminal cause and start one
+   idempotent Board terminal report;
+3. =publication-failed=: commit one typed persistence-suspect Work failure
+   carrying the proposed cause and publication error, then retire live state;
+   or
+4. =settled=: after publication Work succeeds, commit child Work from the
+   latched cause, unsubscribe, cancel deadline, and retire the live entry.
+
+All post-admission terminal inputs use the same transition: session
+completion/failure, cancellation, synchronous runner failure, and deadline.
+Reentrant/late inputs are no-ops after latching.  The Work deadline
+continues to fire at the exact runtime-owned instant and cancels the provider,
+but its terminal commit waits for the Board report acknowledgement.  A failed
+publication is not retried inside the process and is never turned into deadline,
+cancellation, or success.  On process reopen there is deliberately no attempt
+to recover a lost process-local proposal from the session journal: Grimoire's
+existing recovery first observes any idempotently committed terminal fact,
+otherwise advances an orphaned initial running attempt to its one durable
+successor, terminalizes an orphaned successor, or dispatches an already-pending
+selected attempt unchanged.
+
+Public =interrupt= and =shutdown= enter this same coordinator transition.  They
+invoke provider cancellation promptly and once, propose =cancelled= through the
+enrolled Work gate, and do not directly settle Work or remove live state.  A
+held terminal publication therefore retains Work/live ownership until
+acknowledgement; publication failure yields the composite persistence-suspect
+failure instead of a cancelled Work.  For a run-bound cancellation while Board
+participant admission is still pending, the coordinator first removes the
+startable reservation as an immediate fence.  The admission Work is best-effort
+only—its SQLite child may finish later, but every completion branch observes the
+absent reservation and cannot install live state or invoke the runner.  A
+detached gate closure, not a second startable reservation, retains the prepared
+child Work, terminal proposal, assignment, and dispatch-settlement callback
+while it publishes the idempotent =cancelled= terminal report.  Acknowledgement
+commits the child Work cancellation and finishes the separate run-bound
+dispatch Work with a bounded cancelled result; publication failure commits and
+propagates the same composite persistence-suspect failure to both Works.  An
+ad-hoc pending admission has no durable run task: it fences the reservation
+immediately and retains local cancellation/retirement semantics.
+
+The reservation check encloses the entire asynchronous admission settlement,
+not only success.  Once fenced, late =finished=, =failed=, or =cancelled=
+admission may perform request-local cleanup only: it cannot touch the prepared
+child Work, call =on-failure=, publish a competing terminal report, settle the
+dispatch Work, install live state, or invoke a provider.  The gate is the sole
+remaining settlement owner.  Grimoire's dispatch fan-in consumes its bounded
+=:status cancelled= result explicitly: it increments =:cancelled= and sets the
+overall start/recovery state to =attention= when either failed or cancelled
+dispositions are present, instead of silently omitting cancellation from all
+totals.
+
+The direct runner separately owns progress safety.  It never invokes a terminal
+progress projection before delivering the terminal proposal, and wraps all
+consumer progress callbacks so their errors become bounded diagnostics rather
+than subscription faults.
+
+** Calendar assignment
+
+Grimoire owns task-to-prompt mapping.  Calendar remains a =fast-tool-user= and
+uses its admitted Bash tool to invoke =gog=.  The assignment supplies exact
+start/end timestamps already owned by the run manifest, commands the primary
+calendar query, and defines the typed unavailable outcome.  It does not change
+Gmail, Slack, worker profiles, or capability readiness.
+
+** Exact Daily save and commit
+
+The topic commit application service already owns exact-path bookkeeping.  It
+normalizes and validates the closed file set, finds only live buffers whose
+visited files are members, and saves modified ones with an explicit
+noninteractive coding policy before staging.  It never saves unrelated buffers
+or interprets model prose.  Any save or coding failure aborts before Git; any
+Git failure remains the turn failure.  File-tool writes need no buffer save.
+
+* Scenario portfolio
+
+** F96-S1: large Bash metadata archives and continues
+
+A production Bash call emits more than the inline threshold and supplies two
+=resource_usage.resources= entries.  Invocation details stream the full output,
+archive =tool-usage= as an array containing one record whose resources are an
+array of two objects, return the bounded tool result, persist the transcript,
+and build the next OpenAI request.  Encoding/decoding the archive is exact.
+An explicitly malformed duplicate-key canonical object still fails.  Accepted
+Feature 94 nested typed arguments, immediate continuation, and full replay
+regressions also pass.
+
+** F96-S2: terminal report precedes retirement under adversarial callbacks
+
+A child with a future deadline emits nonterminal progress and then
+=turn-failed=.  The supplied progress callback throws for both classes of event.
+Terminal observation still proposes the original cause.  With Board publication
+held beyond the child Work's actual deadline, the deadline cancels execution
+but cannot commit a competing Work failure: the first proposal remains latched,
+Board report Work remains active, and child Work/live ownership remain.  After
+publication succeeds, the report is queryable before child Work commits and the
+live entry disappears.  Duplicate/late callbacks change nothing.
+
+In the failure branch, publication Work fails.  The child Work then fails once
+with a typed persistence-suspect condition containing both the original child
+proposal and the publication error, without a false terminal Board fact.  A
+real process reopen covers three existing recovery partitions: a terminal fact
+which committed despite an ambiguous acknowledgement wins; otherwise orphaned
+running attempt 0 publishes =attempt-selection= for attempt 1 and dispatches
+that successor, while orphaned running attempt 1 publishes one terminal orphan
+failure.  A separately pending selected attempt is the only branch redispatched
+without changing identity.  No new retry command or session-journal
+reconstruction is introduced.
+
+The cancellation partition invokes public =interrupt= and =shutdown= while
+terminal publication is held.  Provider cancellation happens promptly and
+once; the cancelled proposal wins; Work and live ownership remain until
+acknowledgement, then Work commits =cancelled= and ownership retires.  When the
+publication Work fails, Work instead commits the composite persistence-suspect
+failure.  A run-bound pending-admission cancellation similarly acknowledges one
+cancelled terminal report, but removes its startable reservation before
+publication begins.  While publication is held, force participant admission to
+finish, fail, and cancel both before and after terminal acknowledgement.  Every
+ordering is inert with respect to child Work, =on-failure=, terminal facts, and
+dispatch Work; none may install live state or start a provider.  Terminal
+acknowledgement alone settles the separate dispatch Work as cancelled and
+produces one cancelled terminal fact; terminal publication failure alone fails
+it with the composite condition.  Daily fan-in reports =:cancelled 1= and
+=:state attention= for the bounded cancelled disposition.  An ad-hoc pending
+cancellation remains local because no durable assignment exists.
+
+** F96-S3: executable calendar assignment
+
+A fresh calendar worker keeps =fast-tool-user=.  Its assignment includes
+=gog calendar events primary --from <start> --to <until>= for the manifest's
+frozen window and instructs the worker to classify missing auth or nonzero exit
+as typed source unavailability.  A fixture proves the exact command and both
+success/unavailable result shapes.  Gmail and Slack assignments are unchanged.
+
+** F96-S4: direct Daily save and exact commit
+
+The coordinator receives bounded fan-in and an exact =file://= target.  A test
+model edits a visiting Daily buffer and ends the turn while it is modified.
+The turn-finished application hook saves that exact buffer noninteractively,
+then commits only it and admitted artifacts.  The on-disk bytes and commit match
+the buffer; unrelated dirty/staged files and buffers remain untouched.  Invalid
+coding/write and Git failures each fail the coordinator turn without hanging.
+A file-tool write still succeeds.  Structural checks find no Daily reconcile,
+publish, complete, content-gate, target-echo, or lifecycle-stamp operation.
+
+* Delivery packages
+
+** F96-DP1: invocation-detail collection projection and callback cleanup
+
+- Useful outcome :: Real large-output tools with multiple resource records
+  archive and continue; test-only compatibility machinery is gone.
+- Establishes :: =F96-C01=.
+- Physical boundary :: =e-tool-invocation-details=, focused archival/base-tool
+  tests, =e-tools= removal of =e-tools-callback-work=, and test-local callback
+  fixture replacement.
+- Prerequisites :: Feature 55 and Feature 94 accepted contracts.
+- State/performance :: No new state; linear projection of the same bounded
+  metadata collection; streaming output remains bounded.
+- Public surface :: Removes a zero-production-consumer constructor; the public
+  tool lifecycle remains Work-only.
+- Evidence :: =F96-S1=; affected tool, archive, harness, OpenAI, session, and
+  Work tests; clean byte compilation; zero production symbol references.
+- Split/combine decision :: Projection repair and obsolete callback deletion
+  share the tool boundary and together leave one truthful production contract.
+
+** F96-DP2: gated durable child terminal convergence
+
+- Useful outcome :: Child failures become durably and promptly observable with
+  their original cause and cannot be overwritten by progress or deadline races.
+- Establishes :: =F96-C02=--=F96-C04=.
+- Physical boundary :: generic =e-work= terminal proposal/commit seam;
+  surrounding subagent coordinator and its Board publication adapter; direct
+  runner progress isolation; public interrupt/shutdown and pending-admission
+  cancellation fence; admission-completion late-settlement suppression; separate
+  run-bound dispatch Work settlement; live cleanup; Grimoire dispatch-result
+  aggregation and
+  attempt-0/attempt-1 recovery tests.  Participant-admission SQL cancellation
+  remains explicitly best effort, so =e-chat-service= does not gain a false
+  cancellation contract.  The existing deadline-only publication observer and
+  direct cancel-and-retire settlement bypass become obsolete and are removed.
+- Prerequisites :: Feature 55's one Work lifecycle, Feature 82's
+  durable-report-before-retirement direction, and Feature 93's runtime-owned
+  deadline/cancellation plus manifest redispatch rule; no dependency on DP1.
+- State/recovery :: Gate closure holds one proposal only while the process is
+  alive.  A successful report uses the existing durable Board identity.  A
+  fenced pending cancellation removes the only startable reservation
+  immediately and retains just the detached gate closure until its child and
+  dispatch Works settle.  A publication failure becomes a typed Work failure.
+  Reopen first accepts an
+  idempotently committed terminal fact; without one, existing Grimoire recovery
+  advances running attempt 0 to attempt 1, terminalizes running attempt 1, or
+  dispatches an already-pending selection unchanged.  No schema, durable
+  intent, retry API, or session-journal projection is added.
+- Public surface :: One optional pre-start Work terminal gate plus existing
+  dispatch Work and Board report/query surfaces.  Ordinary ungated Work is
+  behaviorally identical.
+- Evidence :: =F96-S2=; Work-gate unit tests for finish/fail/cancel and ungated
+  compatibility; held/failed publication Work; throwing progress; publication
+  held past actual deadline; duplicate callback; composed interrupt/shutdown and
+  pending-admission cancellation with admission finish/fail/cancel on both sides
+  of the terminal acknowledgement, no competing =on-failure=/failed report,
+  explicit dispatch-Work settlement, and cancelled aggregate totals; and real
+  reopen tests for ambiguous committed
+  terminal, running attempt 0, running attempt 1, and pending selection;
+  affected Board, subagent, and Grimoire recovery suites.
+- Split/combine decision :: The Work gate and subagent coordinator compose one
+  indivisible report-before-terminal invariant; direct-runner progress safety is
+  included because it protects delivery of the proposal into that invariant.
+
+** F96-DP3: concrete calendar CLI assignment
+
+- Useful outcome :: Calendar collection can execute without improvising tool
+  discovery and reports unavailable sources truthfully.
+- Establishes :: =F96-C05=.
+- Physical boundary :: Grimoire Daily assignment text and focused tests; skill
+  prose/manifest only if the configured source hash actually changes.
+- Prerequisites :: Existing =fast-tool-user= Bash admission.
+- State/performance :: No new state; one bounded CLI invocation over the frozen
+  manifest window.
+- Public surface :: Existing Bash tool and =gog= CLI.
+- Evidence :: =F96-S3= and configured cold-start capability/profile checks.
+- Split/combine decision :: Separate from saving because its owner and failure
+  modes are independent.
+
+** F96-DP4: exact coordinator save before commit
+
+- Useful outcome :: A normal direct-write coordinator success is durable on
+  disk and in exact-path Git state.
+- Establishes :: =F96-C06=.
+- Physical boundary :: Grimoire topic commit application service and its
+  unit/graphical tests; no generic buffer-resource change.
+- Prerequisites :: Existing closed =:daily-commit-files= metadata.
+- State/performance :: Scans only the small exact commit-file set and live
+  buffers; adds no durable state or polling.
+- Public surface :: Existing turn-finished hook and Git helper.
+- Evidence :: =F96-S4=; noninteractive save/coding failure, exact commit
+  isolation, graphical Daily test, and current-config cold start.
+- Split/combine decision :: Saving and committing are one application-level
+  durability transaction; calendar remains separate.
+
+Packages may be implemented in this order for review convenience but have no
+cross-package implementation dependency.  Each package passes its owner-local
+evidence and is committed as a semantic slice.  A contract or package-boundary
+change returns this document to independent plan review.
+
+* Test disposition and cleanup
+
+- Convert the private large-output/two-resource reproduction into an ERT which
+  reaches archive serialization and provider follow-up, not just tool return.
+- Retain Feature 94 canonical typed-argument and replay tests as regressions.
+- Delete =e-tools-callback-work= and replace its sole test-support consumer with
+  a test-local canonical Work fixture; prove no production reference remains.
+- Add Work-gate unit tests plus a composed session-event -> Board publication
+  Work -> child Work/live test with observable ordering, throwing progress
+  callbacks, publication held beyond the real deadline, failed publication,
+  and duplicate delivery.  Exercise public interrupt/shutdown and run-bound
+  pending-admission cancellation with publication held and failed; force the
+  participant admission to finish, fail, and cancel before and after terminal
+  acknowledgement, prove all six orderings are inert and start no provider,
+  assert one cancelled terminal fact with no competing failed fact, and assert
+  the separate dispatch Work's cancelled/composite settlement plus Grimoire's
+  =:cancelled= count and =attention= state.  Add
+  Grimoire reopen partitions for an ambiguously committed terminal fact,
+  orphaned running attempts 0 and 1, and an already-pending selection.
+- Tighten calendar prompt tests to the exact bounded =gog= interface and typed
+  unavailable classification; do not change worker roles without new evidence.
+- Extend topic commit and graphical Daily tests with a modified visiting buffer,
+  noninteractive save guard, coding/write error, exact disk/Git assertions, and
+  unrelated-state preservation.
+- Audit and remove any remaining Daily-specific reconcile/publish/complete
+  completion machinery; retain Board fact publication, which is the generic
+  durable lifecycle and is not a Daily completion tool.
+
+* Compatibility, state, and performance
+
+No SQLite migration is required.  Existing session, Board, and Grimoire file
+state remain authoritative.  The archival correction changes only malformed
+metadata projection.  Terminal convergence preserves Work-owned deadline and
+cancellation while delaying only the terminal commit for Board-enrolled Work;
+it uses the existing stable report identity and adds process-local state only
+while publication is in flight.  Publication failure and crash recovery reuse
+the existing persistence-suspect and bounded attempt-advance/orphan-terminal
+policy.  Calendar adds no capability.  Daily saving inspects only a
+closed file set.  No unbounded scan, polling loop, wire-text duplicate, or
+durable mirror is introduced.
+
+* Acceptance
+
+Acceptance requires:
+
+- =F96-S1=--=F96-S4= and every contract row passing;
+- owner-local ERT suites and clean byte compilation in private batch Emacs;
+- the isolated graphical Daily scenario passing;
+- =bash e2e/run-current-config-tests.sh= passing because configured extension
+  behavior changes;
+- structural proof that the test-only callback constructor and any obsolete
+  Daily completion protocol are absent while generic Board publication remains;
+- semantic commits for the fixed-point plan and implementation packages;
+- parent acceptance followed by independent implementation review to fixed
+  point, recorded durably in =review.org=; and
+- the user's running Emacs left unchanged.  Core/runtime changes require a full
+  Emacs restart; configured Grimoire changes load with that restart.
+
+* Architecture self-check target
+
+The final handoff answers all fourteen design-sensitive questions from
+=AGENTS.md=.  It must identify archive, terminal, assignment, and save/commit
+ownership; prove durable-report-before-retirement ordering; explain why no
+provider or Daily protocol was added; report bounded performance; and enumerate
+obsolete machinery removed.
