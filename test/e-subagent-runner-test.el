@@ -431,6 +431,103 @@
           (should (eq (e-subagent-runner-test--live-status live participant-id)
                       'running)))))))
 
+(ert-deftest e-subagent-runner-test-run-bound-pending-cancel-fences-late-outcomes ()
+  "A cancelled run-bound reservation ignores every late admission outcome."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (runner-calls 0)
+          (failure-calls 0))
+      (e-harness-test-create-session parent :id "parent-1")
+      (dolist (late-state '(finished failed cancelled))
+        (let ((admission (e-subagent-runner-test--deferred-work
+                          (format "held-admission-%s" late-state)))
+              lifecycle report terminal-statuses)
+          (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
+                     (lambda (&rest _arguments) admission))
+                    ((symbol-function
+                      'e-board-sqlite-publication-target-valid-p)
+                     (lambda (_target) t))
+                    ((symbol-function 'e-subagent--publish-board-fact)
+                     (lambda (_target &rest arguments)
+                       (if (equal (plist-get arguments :tags)
+                                  '(intervention interrupt))
+                           (let ((audit
+                                  (e-subagent-runner-test--deferred-work
+                                   "interrupt-audit")))
+                             (e-work-finish audit t)
+                             audit)
+                         (setq lifecycle
+                               (e-subagent-runner-test--deferred-work
+                                "cancelled-lifecycle"))
+                         lifecycle)))
+                    ((symbol-function
+                      'e-board-orchestration-actions-publish-terminal)
+                     (lambda (_target _assignment status &rest _arguments)
+                       (push status terminal-statuses)
+                       (setq report
+                             (e-subagent-runner-test--deferred-work
+                              "cancelled-report"))
+                       report)))
+            (let* ((pending
+                    (e-subagent-runner-test--spawn-pending
+                     (e-subagent-runner-live-owner) parent "parent-1"
+                     :type :reviewer :prompt "go"
+                     :run-id "run-1" :task-key "review"
+                     :attempt (pcase late-state
+                                ('finished 0)
+                                ('failed 1)
+                                ('cancelled 2))
+                     :on-failure (lambda (&rest _arguments)
+                                   (cl-incf failure-calls))
+                     :runner (lambda (&rest _arguments)
+                               (cl-incf runner-calls)
+                               (list :cancel #'ignore))))
+                   (live (e-subagent-runner-live-owner))
+                   (participant-id (plist-get pending :participant-id))
+                   (board-id (e-subagent-runner-test--board-id
+                              live participant-id))
+                   (target (e-subagent-runner-test--publication-target
+                            parent "parent-1"))
+                   (work (e-subagent-runner-test--live-work-handle
+                          live participant-id)))
+              (e-subagent-interrupt
+               live board-id target participant-id "cancel before admission")
+              (should-not (e-subagent-runner-test--live-pending
+                           live participant-id))
+              ;; Admission cancellation happens before Work starts; the
+              ;; detached gate keeps the prepared child open while terminal
+              ;; publications are acknowledged.
+              (should (eq (plist-get (e-work-status work) :state) 'created))
+              (should (eq (plist-get
+                           (e-work-handle-terminal-proposal work) :state)
+                          'cancelled))
+              (pcase late-state
+                ('finished (e-work-finish admission '(:id "late")))
+                ('failed (e-work-fail admission
+                                       '(e-session-storage-error "late")))
+                ('cancelled (e-work-cancel admission)))
+              (should (= runner-calls 0))
+              (should (= failure-calls 0))
+              (should (eq (plist-get (e-work-status work) :state) 'created))
+              (e-work-finish lifecycle t)
+              (e-work-finish report t)
+              (should (eq (plist-get (e-work-status work) :state)
+                          'cancelled))
+              (should-not (e-subagent-live-get live board-id participant-id))
+              (should-not (e-work-handle-terminal-gate work))
+              (should-not (e-work-handle-terminal-proposal work))
+              ;; The same late outcome after terminal acknowledgement stays
+              ;; inert, just as it was before the acknowledgement.
+              (pcase late-state
+                ('finished (e-work-finish admission '(:id "later")))
+                ('failed (e-work-fail admission
+                                       '(e-session-storage-error "later")))
+                ('cancelled (e-work-cancel admission)))
+              (should (= runner-calls 0))
+              (should (= failure-calls 0))
+              (should (equal terminal-statuses '(cancelled))))))))))
+
 (ert-deftest e-subagent-runner-test-runner-start-failure-settles-once ()
   "A post-commit runner-start error publishes one running then one failure."
   (e-subagent-runner-test--with-instances
@@ -600,16 +697,26 @@
           (should (equal (plist-get metadata :project-root)
                          "/tmp/example-project/"))
           (should (equal (plist-get metadata :subagent-label) "review plan.org")))
-        ;; The explicit seed landed in the child's own store before the task.
-        (should (equal (mapcar
-                        (lambda (message) (plist-get message :content))
-                        (plist-get
-                         (e-board-producer-test-await
-                          (e-session-async-visible-message-page
-                           (e-harness-sessions child-harness)
-                           child-session-id 8))
-                         :messages))
-                       '("context note")))
+        ;; Seed appends use the asynchronous SQLite worker.  Wait for that
+        ;; durable acknowledgement before asserting the child's visible
+        ;; message page; the content assertion itself remains exact.
+        (let (messages)
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (setq messages
+                    (plist-get
+                     (e-board-producer-test-await
+                      (e-session-async-visible-message-page
+                       (e-harness-sessions child-harness)
+                       child-session-id 8))
+                     :messages))
+              messages)
+            5.0))
+          (should (equal (mapcar (lambda (message)
+                                   (plist-get message :content))
+                                 messages)
+                         '("context note"))))
         (let* ((binding (e-chat-service-binding parent "parent-1"))
                (child-binding
                 (e-chat-service-binding child-harness child-session-id))
@@ -1496,6 +1603,62 @@ report is child-side and must not be on the parent surface."
       (should (equal (nreverse progress-events)
                      '(tool-started tool-finished turn-finished))))))
 
+(ert-deftest e-subagent-runner-test-progress-projection-errors-do-not-block-settlement ()
+  "Throwing progress projections leave both nonterminal and terminal events safe."
+  (let (subscriber settlements warnings)
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (_harness _session callback)
+                 (setq subscriber callback)
+                 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+              ((symbol-function 'display-warning)
+               (lambda (_category message &optional _level)
+                 (push message warnings)))
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (_harness _session _prompt)
+                 (funcall subscriber '(:type tool-started :payload nil))
+                 (funcall subscriber '(:type turn-finished :payload nil))
+                 (let ((work
+                        (e-subagent-runner-test--deferred-work
+                         "progress-projection-admission")))
+                   (e-work-finish work '(:status posted))
+                   work)))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (e-subagent-direct-runner
+       nil "child" "go" nil
+       (lambda (status &rest args)
+         (push (cons status args) settlements))
+       (lambda (_event)
+         (error "progress projection exploded")))
+      (should (equal (mapcar #'car settlements) '(done)))
+      (should (= (length warnings) 2))
+      (should (cl-every (lambda (message)
+                          (string-match-p "progress projection exploded"
+                                          message))
+                        warnings)))))
+
+(ert-deftest e-subagent-runner-test-progress-diagnostic-sink-failure-has-visible-fallback ()
+  "A failing progress diagnostic sink leaves a bounded visible breadcrumb."
+  (let (messages)
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (&rest _arguments)
+                 (error "warning display unavailable")))
+              ((symbol-function 'message)
+               (lambda (format-string &rest arguments)
+                 (push (apply #'format format-string arguments) messages)))
+              ((symbol-function 'e-subagent--progress-error-text)
+               (lambda (_error) "projection error")))
+      (e-subagent--safe-progress
+       (lambda (_event) (error "progress projection exploded"))
+       'tool-started
+       (lambda (_event _error) (error "diagnostic sink exploded")))
+      (should (= (length messages) 1))
+      (should (string-match-p "Progress diagnostic sink failed" (car messages)))
+      (should (string-match-p "projection error" (car messages)))
+      (should (<= (length (car messages))
+                  (+ e-subagent--progress-diagnostic-character-limit 128))))))
+
 (ert-deftest e-subagent-runner-test-direct-runner-surfaces-admission-settlement ()
   "A rejected child input settles once even though no harness turn started."
   (let (admission settlements progress-events unsubscribed)
@@ -2031,6 +2194,50 @@ report is child-side and must not be on the parent surface."
             (should (string-match-p
                      "terminal publication rejected"
                      (e-work-error-message (plist-get status :error))))))))))
+
+(ert-deftest e-subagent-runner-test-board-dispatch-terminal-domain-settlement ()
+  "Dispatch keeps cancellation as a finished result and failures typed."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let ((target (e-subagent-runner-test--publication-target
+                     parent "parent-1")))
+        (dolist (case '((cancelled nil nil)
+                        (failed (:error (e-work-deadline-exceeded
+                                         "provider deadline"))
+                                (e-subagent-persistence-suspect
+                                 "terminal publication failed"))))
+          (cl-letf (((symbol-function 'e-subagent-spawn)
+                     (lambda (&rest arguments)
+                       (let* ((options (nthcdr 3 arguments))
+                              (on-terminal (plist-get options :on-terminal)))
+                         (funcall on-terminal (car case) (cadr case)
+                                  (caddr case))
+                         (list :participant-id "child" :session-id "child")))))
+            (let ((work
+                   (e-subagent-runner-dispatch-start
+                    target parent "parent-1"
+                    :source-turn-id "parent-turn" :type :reviewer
+                    :prompt "Review the Board task."
+                    :run-id "run-1" :task-key "review"
+                    :attempt (if (eq (car case) 'cancelled) 0 1))))
+              (should
+               (e-chat-test--wait-until
+                (lambda ()
+                  (memq (plist-get (e-work-status work) :state)
+                        '(finished failed cancelled)))
+                5.0))
+              (let ((status (e-work-status work)))
+                (if (eq (car case) 'cancelled)
+                    (progn
+                      (should (eq (plist-get status :state) 'finished))
+                      (should
+                       (eq (plist-get (plist-get status :result) :status)
+                           'cancelled)))
+                  (should (eq (plist-get status :state) 'failed))
+                  (should (eq (car (plist-get status :error))
+                              'e-subagent-persistence-suspect)))))))))))
 
 (ert-deftest e-subagent-runner-test-board-dispatch-failure-is-durable-domain-result ()
   "Admission failure publishes a terminal report before dispatch finishes."

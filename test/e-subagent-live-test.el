@@ -179,11 +179,111 @@
       (should (equal "bounded summary" (plist-get attributes :result-summary)))
       (should (equal '(:answer "ok") (plist-get attributes :result)))
       (should (<= (length
-                   (e-runtime-store-codec-encode
+                  (e-runtime-store-codec-encode
                     (list :summary (plist-get attributes :result-summary)
                           :result (plist-get attributes :result)
                           :outputs (plist-get attributes :outputs))))
                   e-subagent--terminal-payload-byte-limit)))))
+
+(ert-deftest e-subagent-live-test-sync-publication-failure-retains-terminal-cause ()
+  "A synchronous publication failure keeps the provider terminal proposal typed."
+  (let* ((owner (e-subagent-live-create))
+         (assignment '(:run-id "run" :task-key "task" :attempt 0))
+         (record (e-subagent-live-test--record "board" "session" assignment))
+         (report-state (list :report-admission nil :report nil
+                             :terminal-status nil :terminal-args nil))
+         (work (e-work-prepare (e-subagent--work-spec) nil))
+         (provider-error
+          '(e-work-deadline-exceeded "provider deadline"
+            (:deadline 123.0))))
+    (e-subagent-live-reserve-admission owner "board" "session"
+                                       :work-handle work)
+    (e-subagent-live-install owner "board" "session" :work-handle work)
+    (e-work-install-terminal-gate
+     work
+     (e-subagent--terminal-gate owner "board" "session" record 'target
+                                 report-state nil))
+    (e-work-start-prepared work)
+    (cl-letf (((symbol-function 'e-board-sqlite-publication-target-valid-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-subagent--publish-board-fact)
+               (lambda (&rest _arguments)
+                 (signal 'e-board-sqlite-error (list "sync rejected")))))
+      (e-subagent--settle-runner
+       record report-state work 'failed (list :error provider-error)))
+    (let* ((status (e-work-status work))
+           (composite (plist-get status :error))
+           (proposal (plist-get composite :terminal-proposal)))
+      (should (eq (plist-get status :state) 'failed))
+      (should-not (e-subagent-live-get owner "board" "session"))
+      (should (eq (car composite) 'e-subagent-persistence-suspect))
+      (should (eq (plist-get proposal :status) 'failed))
+      (should (equal (plist-get (plist-get proposal :args) :error)
+                     provider-error))
+      (should (string-match-p "sync rejected"
+                              (e-work-error-message
+                               (plist-get composite :publication-error))))
+      (should (eq (plist-get (plist-get composite :publication-state) :state)
+                  'start-failed))
+      (should-not (e-work-handle-terminal-gate work))
+      (should-not (e-work-handle-terminal-proposal work)))))
+
+(ert-deftest e-subagent-live-test-async-publication-failure-retains-terminal-cause ()
+  "An asynchronous publication failure waits for all Works then preserves causes."
+  (let* ((owner (e-subagent-live-create))
+         (assignment '(:run-id "run" :task-key "task" :attempt 0))
+         (record (e-subagent-live-test--record "board" "session" assignment))
+         (report-state (list :report-admission nil :report nil
+                             :terminal-status nil :terminal-args nil))
+         (work (e-work-prepare (e-subagent--work-spec) nil))
+         (lifecycle-work nil)
+         (report-work nil)
+         (provider-error '(e-work-cancelled "provider cancelled")))
+    (e-subagent-live-reserve-admission owner "board" "session"
+                                       :work-handle work)
+    (e-subagent-live-install owner "board" "session" :work-handle work)
+    (e-work-install-terminal-gate
+     work
+     (e-subagent--terminal-gate owner "board" "session" record 'target
+                                 report-state nil))
+    (e-work-start-prepared work)
+    (cl-letf (((symbol-function 'e-board-sqlite-publication-target-valid-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-subagent--publish-board-fact)
+               (lambda (&rest _arguments)
+                 (setq lifecycle-work
+                       (e-subagent-live-test--started-work "lifecycle"))))
+              ((symbol-function 'e-board-orchestration-actions-publish-terminal)
+               (lambda (&rest _arguments)
+                 (setq report-work
+                       (e-subagent-live-test--started-work "report")))))
+      (e-subagent--settle-runner
+       record report-state work 'cancelled (list :error provider-error))
+      (should lifecycle-work)
+      (should report-work)
+      (should (eq (plist-get (e-work-status work) :state) 'started))
+      (should (e-subagent-live-get owner "board" "session"))
+      (should (functionp (e-work-handle-terminal-gate work)))
+      (should (e-work-handle-terminal-proposal work))
+      (e-work-fail report-work '(e-board-sqlite-error "async rejected"))
+      (should (eq (plist-get (e-work-status work) :state) 'started))
+      (e-work-finish lifecycle-work t))
+    (let* ((status (e-work-status work))
+           (composite (plist-get status :error))
+           (proposal (plist-get composite :terminal-proposal)))
+      (should (eq (plist-get status :state) 'failed))
+      (should-not (e-subagent-live-get owner "board" "session"))
+      (should (eq (car composite) 'e-subagent-persistence-suspect))
+      (should (eq (plist-get proposal :status) 'cancelled))
+      (should (equal (plist-get (plist-get proposal :args) :error)
+                     provider-error))
+      (should (string-match-p "async rejected"
+                              (e-work-error-message
+                               (plist-get composite :publication-error))))
+      (should (eq (plist-get (plist-get composite :publication-state) :state)
+                  'failed))
+      (should-not (e-work-handle-terminal-gate work))
+      (should-not (e-work-handle-terminal-proposal work)))))
 
 (ert-deftest e-subagent-live-test-run-bound-report-remains-canonical ()
   "Run-bound settlement publishes the orchestration report as canonical."
@@ -303,6 +403,72 @@
     (should (eq (plist-get (e-work-status work) :state) 'cancelled))
     (should-not (e-subagent-live-get owner "board" "session"))
     (should facts)))
+
+(ert-deftest e-subagent-live-test-public-cancel-waits-for-terminal-publication ()
+  "Interrupt and shutdown keep live state until cancellation is durable."
+  (dolist (action '(interrupt shutdown))
+    (dolist (publication '(held failed))
+      (let* ((owner (e-subagent-live-create))
+             (record (e-subagent-live-test--record "board" "session"))
+             (work (e-work-prepare (e-subagent--work-spec) nil))
+             (publication-work nil)
+             (cancelled nil))
+        (e-subagent-live-reserve-admission owner "board" "session"
+                                           :work-handle work)
+        (e-subagent-live-install owner "board" "session"
+                                 :work-handle work)
+        (e-work-install-terminal-gate
+         work
+         (e-subagent--terminal-gate
+          owner "board" "session" record 'target
+          (list :report-admission nil :report nil
+                :terminal-status nil :terminal-args nil)
+          nil))
+        (e-work-start-prepared work)
+        (setf (e-work-handle-cancel-function work)
+              (lambda (_handle) (setq cancelled t)))
+        (cl-letf (((symbol-function
+                    'e-board-sqlite-publication-target-valid-p)
+                   (lambda (_target) t))
+                  ((symbol-function 'e-subagent--live-record)
+                   (lambda (_live _board _participant) record))
+                  ((symbol-function 'e-subagent--publish-board-fact)
+                   (lambda (_target &rest arguments)
+                     (if (eq (car (plist-get arguments :tags)) 'intervention)
+                         (e-subagent-live-test--finished-publication-work)
+                       (setq publication-work
+                             (e-subagent-live-test--started-work
+                              (format "cancel-%s-%s" action publication)))
+                       (when (eq publication 'failed)
+                         (e-work-fail
+                          publication-work
+                          '(e-board-sqlite-error "terminal rejected")))
+                       publication-work))))
+          (let ((snapshot
+                 (funcall (if (eq action 'interrupt)
+                              #'e-subagent-interrupt
+                            #'e-subagent-shutdown)
+                          owner "board" 'target "session" "because")))
+            (should (eq (plist-get snapshot :status) 'cancelled))
+            (should cancelled)
+            (should publication-work)
+            (when (eq publication 'held)
+              (should (eq (plist-get (e-work-status work) :state) 'started))
+              (should (e-subagent-live-get owner "board" "session"))
+              (e-work-finish publication-work t))
+            (should
+             (e-chat-test--wait-until
+              (lambda ()
+                (memq (plist-get (e-work-status work) :state)
+                      '(cancelled failed)))
+              5.0))
+            (should-not (e-subagent-live-get owner "board" "session"))
+            (should-not (e-work-handle-terminal-gate work))
+            (should-not (e-work-handle-terminal-proposal work))
+            (if (eq publication 'failed)
+                (should (eq (plist-get (e-work-status work) :state) 'failed))
+              (should (eq (plist-get (e-work-status work) :state)
+                          'cancelled)))))))))
 
 (ert-deftest e-subagent-runner-test-live-spawn-admission-installs-durable-identity ()
   "A settled admission installs only the admitted child session identity."

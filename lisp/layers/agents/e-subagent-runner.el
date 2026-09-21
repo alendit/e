@@ -235,14 +235,72 @@ an explicit child harness or session policy always wins."
       (e-harness-set-session-options
        child-harness child-session-id child-options))))
 
-(defun e-subagent--safe-progress (on-progress event)
+(defconst e-subagent--progress-diagnostic-character-limit 512
+  "Maximum characters retained for one progress projection diagnostic.")
+
+(defun e-subagent--progress-error-text (error)
+  "Return bounded text for progress diagnostic ERROR."
+  (truncate-string-to-width
+   (e-work-error-message error)
+   e-subagent--progress-diagnostic-character-limit
+   nil nil "..."))
+
+(defun e-subagent--progress-diagnostic (event error)
+  "Return one bounded diagnostic for a failed progress projection.
+The diagnostic is process-local metadata, not a durable lifecycle result."
+  (list :event event
+        :error
+        (e-subagent--progress-error-text error)))
+
+(defun e-subagent--display-progress-diagnostic (event error &optional prefix)
+  "Display bounded progress ERROR without entering child lifecycle code.
+PREFIX describes a diagnostic sink failure when supplied.  The final `message'
+fallback keeps an owner-visible breadcrumb even when warning display itself is
+temporarily unavailable."
+  (let ((message-text
+         (format "%s for %s: %s"
+                 (or prefix "Progress projection failed")
+                 event
+                 (e-subagent--progress-error-text error))))
+    (condition-case display-error
+        (display-warning 'e-subagent message-text :warning)
+      (error
+       (message "e-subagent: %s (warning display failed: %s)"
+                message-text
+                (e-subagent--progress-error-text display-error))))))
+
+(defun e-subagent--remember-progress-error (work-handle event error)
+  "Record one bounded progress projection ERROR on WORK-HANDLE metadata.
+This is deliberately best effort and cannot alter Work's terminal lifecycle."
+  (when (e-work-handle-p work-handle)
+    (setf (e-work-handle-metadata work-handle)
+          (append (e-work-handle-metadata work-handle)
+                  (list :progress-error
+                        (e-subagent--progress-diagnostic event error))))))
+
+(defun e-subagent--safe-progress (on-progress event &optional on-error)
   "Deliver child EVENT to ON-PROGRESS without affecting terminal settlement.
 Progress is observational only: a presentation callback that signals must not
-prevent the provider's terminal callback from reaching the Work gate."
+prevent the provider's terminal callback from reaching the Work gate.  ON-ERROR
+receives EVENT and the original condition for a bounded owner diagnostic."
   (when on-progress
-    (condition-case nil
+    (condition-case error
         (funcall on-progress event)
-      (error nil))))
+      (error
+       (if on-error
+           (condition-case diagnostic-error
+               (funcall on-error event error)
+             (error
+              ;; A diagnostic sink is itself observational.  If it fails,
+              ;; retain an owner-visible bounded breadcrumb rather than
+              ;; silently discarding both projection errors.
+              (e-subagent--display-progress-diagnostic
+               event diagnostic-error
+               "Progress diagnostic sink failed")))
+         ;; Direct-runner callers which do not own a Work handle still get a
+         ;; bounded diagnostic; the projection error cannot fault the
+         ;; subscription callback or alter terminal settlement.
+         (e-subagent--display-progress-diagnostic event error))))))
 
 (defun e-subagent-direct-runner (child-harness child-session-id prompt
                                                seed-messages on-settle &optional on-progress)
@@ -571,6 +629,34 @@ result.  The returned list is intentionally the only value the gate awaits."
               (e-subagent--publish-terminal-report target terminal status))
       (list (e-subagent--publish-lifecycle target terminal t)))))
 
+(defun e-subagent--bounded-publication-error (error)
+  "Return a bounded detached representation of publication ERROR.
+Keep a condition's symbol so the composite remains classifiable, but never
+retain its potentially arbitrary condition data in process-local state."
+  (let ((text
+         (truncate-string-to-width
+          (e-work-error-message error) 1024 nil nil "...")))
+    (if (and (consp error) (symbolp (car error)))
+        (list (car error) text)
+      text)))
+
+(defun e-subagent--persistence-suspect
+    (participant-id terminal-status terminal-args publication-error
+                    publication-state)
+  "Return one bounded composite for a failed terminal publication.
+TERMINAL-ARGS is the detached original provider/deadline/cancellation cause;
+PUBLICATION-ERROR and PUBLICATION-STATE describe the failed durable write."
+  (list 'e-subagent-persistence-suspect
+        "Subagent terminal publication failed"
+        :participant-id participant-id
+        :terminal-status terminal-status
+        :terminal-proposal
+        (list :status terminal-status
+              :args (e-subagent--bounded-terminal-args terminal-args))
+        :publication-error (e-subagent--bounded-publication-error
+                            publication-error)
+        :publication-state (copy-tree publication-state t)))
+
 (defun e-subagent--terminal-gate
     (live board-id participant-id record target report-state authorize-callback)
   "Return a pre-start Work terminal gate for one spawned child.
@@ -583,11 +669,13 @@ provider result for a durable Board result."
     (let* ((stored-status (plist-get report-state :terminal-status))
            (stored-args (plist-get report-state :terminal-args))
            (terminal-status (or stored-status state))
-           (terminal-args (or stored-args
-                              (pcase state
-                                ('finished (list :result payload))
-                                ('failed (list :error payload))
-                                (_ nil))))
+           (terminal-args
+            (e-subagent--bounded-terminal-args
+             (or stored-args
+                 (pcase state
+                   ('finished (list :result payload))
+                   ('failed (list :error payload))
+                   (_ nil)))))
            (live-entry (e-subagent-live-get live board-id participant-id))
            (assignment (e-subagent--durable-assignment record))
            (target-valid (and target
@@ -629,14 +717,13 @@ provider result for a durable Board result."
                    ;; live retirement and Work settlement are both safe.
                    (e-subagent-live-remove live board-id participant-id)
                    (if failed
-                       (let ((composite
-                              (list
-                               'e-subagent-persistence-suspect
-                               "Subagent terminal publication failed"
-                               :participant-id participant-id
-                               :terminal-status terminal-status
-                               :publication-state
-                               (e-work-status failed))))
+                       (let* ((publication-state (e-work-status failed))
+                              (publication-error
+                               (plist-get publication-state :error))
+                              (composite
+                               (e-subagent--persistence-suspect
+                                participant-id terminal-status terminal-args
+                                publication-error publication-state)))
                          (funcall authorize 'failed composite)
                          (when authorize-callback
                            (funcall authorize-callback
@@ -655,11 +742,11 @@ provider result for a durable Board result."
           (error
            (e-subagent-live-remove live board-id participant-id)
            (let ((composite
-                  (list 'e-subagent-persistence-suspect
-                        "Subagent terminal publication could not start"
-                        :participant-id participant-id
-                        :terminal-status terminal-status
-                        :publication-error error)))
+                  (e-subagent--persistence-suspect
+                   participant-id terminal-status terminal-args error
+                   (list :state 'start-failed
+                         :error (e-subagent--bounded-publication-error
+                                 error)))))
              (funcall authorize 'failed composite)
              (when authorize-callback
                (funcall authorize-callback
@@ -777,7 +864,15 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
                               :turn-id source-turn-id
                               :work-kind 'subagent
                               :domain-ref (e-subagent-live-reference
-                                           board-id participant-id))))))
+                                           board-id participant-id)))))
+         (record-progress
+          (lambda (event)
+            (condition-case error
+                (e-subagent--record-progress
+                 live board-id participant-id work-handle event)
+              (error
+               (e-subagent--remember-progress-error
+                work-handle event error))))))
     (when-let ((enroll (e-harness-work-enrollment-function parent-harness)))
       (funcall enroll work-handle nil))
     (e-work-start-prepared work-handle)
@@ -792,8 +887,7 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
         (e-subagent--publish-lifecycle publication-target running)))
     (when on-running
       (funcall on-running (copy-tree record)))
-    (e-subagent--record-progress live board-id participant-id
-                                 work-handle 'turn-started)
+    (funcall record-progress 'turn-started)
     (condition-case error
         (let ((handle
                (if (eq runner #'e-subagent-direct-runner)
@@ -802,15 +896,13 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
                             (lambda (status &rest args)
                               (e-subagent--settle-runner
                                record report-state work-handle status args))
-                            (lambda (event)
-                              (e-subagent--record-progress
-                               live board-id participant-id work-handle event)))
+                            record-progress)
                  (funcall runner
                           child-harness session-id prompt seed-messages
                           (lambda (status &rest args)
                             (when (e-subagent-live-get live board-id participant-id)
-                              (e-subagent--record-progress
-                               live board-id participant-id work-handle
+                              (funcall
+                               record-progress
                                (pcase status
                                  ('done 'turn-finished)
                                  ('failed 'turn-failed)

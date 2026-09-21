@@ -3883,6 +3883,45 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
           (plist-get arguments "text")
           "")))))
 
+(defun e-live-e2e--callback-work (id start)
+  "Return a test-local cooperative Work fixture for callback START.
+START is an e2e-only producer seam; production tools register canonical
+`e-work-spec' values directly."
+  (e-work-spec-create
+   :id id
+   :description (format "Run callback-backed e2e tool %s." id)
+   :execution 'cooperative
+   :interactive-policy 'async
+   :owner 'e2e
+   :runner
+   (lambda (handle arguments _context)
+     (cl-labels
+         ((adopt-request
+           (request)
+           (when request
+             (setf (e-work-handle-metadata handle)
+                   (append (e-work-handle-metadata handle)
+                           (list :request request)))
+             (when (e-tools-request-p request)
+               (setf (e-tools-request-metadata request)
+                     (append (e-tools-request-metadata request)
+                             (list :work-id (e-work-handle-id handle)
+                                   :work-handle handle))))
+             (setf (e-work-handle-cancel-function handle)
+                   (lambda (_handle)
+                     (e-tools-cancel-request request)
+                     t)))))
+       (let ((request
+              (e-tools--apply-start-with-optional-event
+               start
+               (list :arguments arguments
+                     :on-done (lambda (value) (e-work-finish handle value))
+                     :on-error (lambda (err) (e-work-fail handle err))
+                     :on-request-start #'adopt-request)
+               (lambda (_type payload) (e-work-progress handle payload)))))
+         (adopt-request request)
+         :deferred)))))
+
 (defun e-live-e2e--slow-tool-register (registry &rest _context)
   "Register a cancellable slow tool in REGISTRY."
   (e-tools-register
@@ -3891,7 +3930,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
    :description "Wait briefly before returning. Use only for e live e2e cancellation validation."
    :parameters '(:type "object" :properties nil)
    :work
-   (e-tools-callback-work
+   (e-live-e2e--callback-work
     "e2e.live.slow"
     (lambda (&key _arguments on-done _on-error on-request-start)
       (let ((cancelled nil)

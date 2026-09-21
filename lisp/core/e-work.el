@@ -621,18 +621,32 @@ while COMMIT only settles the caller-visible lifecycle and runs cleanup."
   (when (and (e-work-handle-p handle)
              (not (e-work-handle-terminal-commit-p handle))
              (not (e-request-terminal-p (e-work-handle-lifecycle handle))))
-    (setf (e-work-handle-terminal-commit-p handle) t)
-    (when (e-request--settle (e-work-handle-lifecycle handle) state payload)
-      (e-work--retire-unsettled handle)
-      (pcase state
-        ('finished (setf (e-work-handle-result handle) payload))
-        ((or 'failed 'cancelled)
-         (setf (e-work-handle-error handle) payload)))
-      (e-work--terminal-event handle state payload)
-      (pcase state
-        ('finished (e-work--callback handle :on-done payload))
-        ('failed (e-work--callback handle :on-error payload)))
-      handle)))
+    ;; Capture the authorized proposal before dropping the gate closures.  A
+    ;; gate may retain a Board target, Work wait, or runner callback while its
+    ;; publication is in flight; none of that process-local state should stay
+    ;; reachable after the terminal commit has begun.
+    (let ((commit-state state)
+          (commit-payload payload)
+          (terminal-gate (e-work-handle-terminal-gate handle))
+          (terminal-proposal (e-work-handle-terminal-proposal handle)))
+      (setf (e-work-handle-terminal-commit-p handle) t
+            (e-work-handle-terminal-gate handle) nil
+            (e-work-handle-terminal-proposal handle) nil)
+      ;; Keep the captures live through the lifecycle transition itself.  This
+      ;; makes the ordering explicit without exposing them on the handle.
+      (ignore terminal-gate terminal-proposal)
+      (when (e-request--settle (e-work-handle-lifecycle handle)
+                               commit-state commit-payload)
+        (e-work--retire-unsettled handle)
+        (pcase commit-state
+          ('finished (setf (e-work-handle-result handle) commit-payload))
+          ((or 'failed 'cancelled)
+           (setf (e-work-handle-error handle) commit-payload)))
+        (e-work--terminal-event handle commit-state commit-payload)
+        (pcase commit-state
+          ('finished (e-work--callback handle :on-done commit-payload))
+          ('failed (e-work--callback handle :on-error commit-payload)))
+        handle))))
 
 (defun e-work--propose-terminal (handle state payload)
   "Propose terminal STATE/PAYLOAD for HANDLE, honoring its optional gate.
