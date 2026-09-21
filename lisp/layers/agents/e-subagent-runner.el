@@ -244,8 +244,9 @@ an explicit child harness or session policy always wins."
 (defconst e-subagent--persistence-suspect-byte-limit (* 8 1024)
   "Maximum canonical bytes retained by one persistence-suspect composite.")
 
-(defconst e-subagent--persistence-suspect-terminal-args-byte-limit 2048
-  "Maximum UTF-8/canonical bytes retained for terminal proposal arguments.")
+(defconst e-subagent--persistence-suspect-terminal-args-byte-limit (* 4 1024)
+  "Maximum UTF-8/canonical bytes retained for terminal proposal arguments.
+This is the existing 4 KiB terminal payload allowance.")
 
 (defconst e-subagent--persistence-suspect-publication-error-byte-limit 1024
   "Maximum UTF-8 bytes retained for one publication error projection.")
@@ -253,15 +254,27 @@ an explicit child harness or session policy always wins."
 (defconst e-subagent--persistence-suspect-cause-byte-limit 1024
   "Maximum UTF-8 bytes retained for a fallback terminal cause text.")
 
+(defconst e-subagent--persistence-suspect-fallback-field-byte-limit 512
+  "Maximum canonical bytes attempted for one fallback result field.")
+
 (defconst e-subagent--persistence-suspect-static-byte-budget 512
   "Reserved bytes for persistence-suspect labels and plist structure.")
+
+(defconst e-subagent--persistence-suspect-identity-byte-budget
+  (* 7 e-subagent--publication-identity-byte-limit)
+  "Seven bounded identity scalars, each using the 128-byte identity budget.
+These cover participant/status/proposal status, publication error identity, and
+the three publication-state identities.")
 
 (defconst e-subagent--persistence-suspect-projection-byte-budget
   (+ e-subagent--persistence-suspect-static-byte-budget
      e-subagent--persistence-suspect-terminal-args-byte-limit
      e-subagent--persistence-suspect-publication-error-byte-limit
-     (* 5 e-subagent--publication-identity-byte-limit))
-  "Worst-case projected composite budget before the final codec ceiling.")
+     e-subagent--persistence-suspect-identity-byte-budget)
+  "Explicit worst-case projection budget: 6.5 KiB before codec overhead.
+This is 512 bytes of fixed structure, 4 KiB of terminal args, 1 KiB of
+publication-error text, and seven 128-byte identity scalars; it remains below
+the final 8 KiB persistence-suspect ceiling.")
 
 (defun e-subagent--utf8-byte-prefix (value byte-limit)
   "Return property-free UTF-8 text VALUE bounded by BYTE-LIMIT bytes.
@@ -726,18 +739,19 @@ result.  The returned list is intentionally the only value the gate awaits."
 Keep a condition's symbol so the composite remains classifiable, but never
 retain its potentially arbitrary condition data in process-local state."
   (when error
-    (let ((text
-           (e-subagent--utf8-byte-prefix
-            (e-work-error-message error)
-            (or byte-limit
-                e-subagent--persistence-suspect-publication-error-byte-limit))))
+    (let ((text-limit
+           (or byte-limit
+               e-subagent--persistence-suspect-publication-error-byte-limit)))
       (if (and (consp error) (symbolp (car error)))
           (list (e-subagent--bounded-scalar
                  (car error)
-                 (or byte-limit
-                     e-subagent--persistence-suspect-publication-error-byte-limit))
-                text)
-        text))))
+                 e-subagent--publication-identity-byte-limit)
+                (e-subagent--utf8-byte-prefix
+                 (format "%s: %s" (car error)
+                         (e-work-error-message error))
+                 text-limit))
+        (e-subagent--utf8-byte-prefix
+         (e-work-error-message error) text-limit)))))
 
 (defun e-subagent--bounded-publication-scalar
     (value &optional byte-limit)
@@ -760,20 +774,59 @@ status in a persistence-suspect composite."
         :spec-id (e-subagent--bounded-publication-scalar
                   (plist-get state :spec-id))))
 
-(defun e-subagent--persistence-suspect-cause-text (terminal-args)
-  "Return bounded scalar cause text from TERMINAL-ARGS for fallback use."
+(defun e-subagent--persistence-suspect-fallback-text (value)
+  "Return bounded property-free text for fallback SUMMARY VALUE."
+  (when value
+    (condition-case nil
+        (e-subagent--utf8-byte-prefix
+         (if (stringp value)
+             value
+           (e-format-safe "%s" value))
+         e-subagent--persistence-suspect-cause-byte-limit)
+      (error "Unprintable terminal summary"))))
+
+(defun e-subagent--persistence-suspect-fallback-descriptor (value)
+  "Return a closed descriptor for an unrepresentable fallback VALUE."
+  (list :type
+        (e-subagent--bounded-publication-scalar
+         (type-of value)
+         e-subagent--publication-identity-byte-limit)))
+
+(defun e-subagent--persistence-suspect-fallback-value (value)
+  "Return a detached bounded VALUE, or a closed type descriptor."
   (condition-case nil
-      (let ((cause (and (listp terminal-args)
-                        (plist-get terminal-args :error))))
-        (if cause
-            (e-subagent--utf8-byte-prefix
-             (if (and (consp cause) (symbolp (car cause)))
-                 (format "%s: %s" (car cause)
-                         (e-work-error-message cause))
-               (e-work-error-message cause))
-             e-subagent--persistence-suspect-cause-byte-limit)
-          "Terminal cause unavailable"))
-    (error "Terminal cause unavailable")))
+      (e-runtime-store-codec-decode
+       (e-runtime-store-codec-encode-bounded
+        value e-subagent--persistence-suspect-fallback-field-byte-limit))
+    (error (e-subagent--persistence-suspect-fallback-descriptor value))))
+
+(defun e-subagent--persistence-suspect-fallback-arg (key value)
+  "Return the bounded fallback projection for allowed terminal ARGS KEY."
+  (pcase key
+    (:summary (e-subagent--persistence-suspect-fallback-text value))
+    (:error
+     (e-subagent--bounded-publication-error
+      value e-subagent--persistence-suspect-cause-byte-limit))
+    ((or :result :outputs)
+     (e-subagent--persistence-suspect-fallback-value value))))
+
+(defun e-subagent--persistence-suspect-fallback-args (terminal-args)
+  "Return status-neutral bounded fallback ARGS preserving present keys.
+Only the existing terminal keys are projected.  In particular, a finished or
+cancelled proposal with no error never receives a fabricated `:error'."
+  (when terminal-args
+    (let (fallback)
+      (dolist (key '(:summary :result :outputs :error))
+        (when (condition-case nil
+                  (and (listp terminal-args)
+                       (plist-member terminal-args key))
+                (error nil))
+          (setq fallback
+                (plist-put
+                 fallback key
+                 (e-subagent--persistence-suspect-fallback-arg
+                  key (plist-get terminal-args key))))))
+      fallback)))
 
 (defun e-subagent--persistence-suspect-fallback
     (participant-id terminal-status terminal-args publication-error
@@ -788,10 +841,9 @@ already-proposed lifecycle."
            (error nil)))
         (status
          (condition-case nil
-             (or (e-subagent--bounded-publication-scalar terminal-status)
-                 'unknown)
-           (error 'unknown)))
-        (cause (e-subagent--persistence-suspect-cause-text terminal-args))
+             (e-subagent--bounded-publication-scalar terminal-status)
+           (error nil)))
+        (args (e-subagent--persistence-suspect-fallback-args terminal-args))
         (publication
          (condition-case nil
              (or (e-subagent--bounded-publication-error
@@ -820,7 +872,7 @@ already-proposed lifecycle."
           :participant-id participant
           :terminal-status status
           :terminal-proposal
-          (list :status status :args (list :error cause))
+          (list :status status :args args)
           :publication-error publication
           :publication-state (list :state state :id id :spec-id spec-id))))
 
@@ -831,9 +883,10 @@ already-proposed lifecycle."
 TERMINAL-ARGS is the detached original provider/deadline/cancellation cause;
 PUBLICATION-ERROR and PUBLICATION-STATE describe the failed durable write."
   ;; The projected field budgets total
-  ;; `e-subagent--persistence-suspect-projection-byte-budget' (4.2 KiB):
-  ;; 2 KiB terminal args, 1 KiB publication error, five 128-byte scalars, and
-  ;; fixed plist overhead.  That is safely below the final 8 KiB ceiling.
+  ;; `e-subagent--persistence-suspect-projection-byte-budget' (6.5 KiB):
+  ;; 4 KiB terminal args, 1 KiB publication-error text, seven 128-byte
+  ;; identity scalars, and fixed plist overhead.  That is safely below the
+  ;; final 8 KiB ceiling.
   (condition-case _error
       (let ((composite
              (list 'e-subagent-persistence-suspect

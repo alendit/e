@@ -362,8 +362,9 @@ composite, even when the failed status contains a live object."
               (plist-get (plist-get fallback-proposal :args) :error)))
         (should (eq (car fallback) 'e-subagent-persistence-suspect))
         (should (eq (plist-get fallback :terminal-status) 'failed))
+        (should (eq (car fallback-error) 'e-work-deadline-exceeded))
         (should (string-match-p "e-work-deadline-exceeded"
-                                fallback-error))
+                                (cadr fallback-error)))
         (should (eq (car (plist-get fallback :publication-error))
                     'e-board-sqlite-error))
         (should-not
@@ -371,6 +372,84 @@ composite, even when the failed status contains a live object."
         (should
          (<= (string-bytes (e-runtime-store-codec-encode fallback))
              e-subagent--persistence-suspect-byte-limit))))))
+
+(ert-deftest e-subagent-live-test-persistence-suspect-fallback-preserves-status-and-keys ()
+  "Fallback terminal proposals retain each disposition and present key."
+  (let ((near-limit (make-string 3900 ?x))
+        (publication-error '(e-board-sqlite-error "write rejected"))
+        (publication-state '(:state failed :id "publication" :spec-id "spec"))
+        (cases
+         '((finished (:summary :result :outputs)
+                     (:summary "finished" :result (:answer "done") :outputs []))
+           (failed (:summary :outputs :error)
+                   (:summary "failed" :error (e-work-deadline-exceeded "late")
+                            :outputs []))
+           (cancelled (:result :outputs)
+                      (:result (:answer "cancelled") :outputs [])))))
+    (dolist (case cases)
+      (let ((status (car case))
+            (expected-keys (cadr case))
+            (args (caddr case)))
+        (cl-letf (((symbol-function 'e-runtime-store-codec-encode-bounded)
+                   (lambda (&rest _arguments)
+                     (error "forced persistence fallback"))))
+          (let* ((near-args
+                  (pcase status
+                    ('finished (list :summary near-limit :result near-limit
+                                     :outputs (list near-limit)))
+                    ('failed (list :summary near-limit
+                                   :error (plist-get args :error)
+                                   :outputs (list near-limit)))
+                    ('cancelled (list :result near-limit
+                                      :outputs (list near-limit)))))
+                 (composite
+                  (e-subagent--persistence-suspect
+                   "participant" status near-args publication-error
+                   publication-state))
+                 (proposal (plist-get composite :terminal-proposal))
+                 (fallback-args (plist-get proposal :args)))
+            (should (eq (plist-get composite :terminal-status) status))
+            (should (eq (plist-get proposal :status) status))
+            (should (equal
+                     (cl-loop for (key _value) on fallback-args by #'cddr
+                              collect key)
+                     expected-keys))
+            (should
+             (<= (string-bytes (e-runtime-store-codec-encode composite))
+                 e-subagent--persistence-suspect-byte-limit))
+            (when (plist-member fallback-args :summary)
+              (should (stringp (plist-get fallback-args :summary))))
+            (dolist (key '(:result :outputs))
+              (when (plist-member fallback-args key)
+                (let ((value (plist-get fallback-args key)))
+                  (should (or (null value)
+                              (and (listp value)
+                                   (eq (car value) :type)
+                                   (symbolp (plist-get value :type))))))))
+            (should (eq (car (plist-get composite :publication-error))
+                        'e-board-sqlite-error))
+            (if (eq status 'failed)
+                (let ((fallback-error (plist-get fallback-args :error)))
+              (should (eq (car fallback-error)
+                          'e-work-deadline-exceeded))
+                  (should (stringp (cadr fallback-error))))
+              (should-not (plist-member fallback-args :error)))))))))
+
+(ert-deftest e-subagent-live-test-persistence-suspect-fallback-keeps-nil-args ()
+  "A nil terminal proposal remains nil through fallback conversion."
+  (cl-letf (((symbol-function 'e-runtime-store-codec-encode-bounded)
+             (lambda (&rest _arguments)
+               (error "forced persistence fallback"))))
+    (let* ((composite
+            (e-subagent--persistence-suspect
+             "participant" 'cancelled nil
+             '(e-board-sqlite-error "write rejected")
+             '(:state failed :id "publication" :spec-id "spec")))
+           (proposal (plist-get composite :terminal-proposal)))
+      (should (eq (plist-get composite :terminal-status) 'cancelled))
+      (should (eq (plist-get proposal :status) 'cancelled))
+      (should-not (plist-get proposal :args))
+      (should-not (plist-member (plist-get proposal :args) :error)))))
 
 (ert-deftest e-subagent-live-test-run-bound-report-remains-canonical ()
   "Run-bound settlement publishes the orchestration report as canonical."

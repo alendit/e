@@ -740,7 +740,7 @@ terminal Board publications are held and after their acknowledgement."
                     reports)))))))))))
 
 (ert-deftest e-subagent-runner-test-dispatch-publication-failure-shares-bounded-composite ()
-  "A real dispatch propagates one bounded publication failure to both Works."
+  "A real dispatch propagates one bounded fallback composite to both Works."
   (e-subagent-runner-test--with-instances
     (let ((parent (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
@@ -758,6 +758,8 @@ terminal Board publications are held and after their acknowledgement."
              (publication-error-text (apply #'concat (make-list 300 "é́")))
              (original-lifecycle
               (symbol-function 'e-subagent--publish-lifecycle))
+             (original-codec
+              (symbol-function 'e-runtime-store-codec-encode-bounded))
              work participant-id child-work)
         (cl-letf (((symbol-function 'e-subagent-direct-runner)
                    (lambda (_child-harness _child-session-id _prompt _seed
@@ -778,7 +780,14 @@ terminal Board publications are held and after their acknowledgement."
                      (setq held-report
                            (e-subagent-runner-test--deferred-work
                             "held-failing-terminal-report"))
-                     held-report)))
+                     held-report))
+                  ((symbol-function 'e-runtime-store-codec-encode-bounded)
+                   (lambda (value limit)
+                     (if (and (consp value)
+                              (eq (car value)
+                                  'e-subagent-persistence-suspect))
+                         (error "forced persistence fallback")
+                       (funcall original-codec value limit)))))
           (setq work
                 (e-subagent-runner-dispatch-start
                  target parent "parent-1"
@@ -826,8 +835,14 @@ terminal Board publications are held and after their acknowledgement."
                (state (plist-get child-error :publication-state)))
           (should (equal child-error dispatch-error))
           (should (eq (car child-error) 'e-subagent-persistence-suspect))
-          (should (equal (plist-get (plist-get proposal :args) :error)
-                         provider-error))
+          (let ((fallback-error (plist-get (plist-get proposal :args) :error)))
+            (should (eq (car fallback-error) 'e-work-deadline-exceeded))
+            (should (string-match-p "e-work-deadline-exceeded"
+                                    (cadr fallback-error))))
+          (should (equal
+                   (cl-loop for (key _value) on (plist-get proposal :args)
+                            by #'cddr collect key)
+                   '(:error)))
           (should (eq (plist-get proposal :status) 'failed))
           (should (eq (car (plist-get child-error :publication-error))
                       'e-board-sqlite-error))
