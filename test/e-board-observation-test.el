@@ -42,7 +42,9 @@
     (e-board-observation-test--await
      (e-board-sqlite-service-admit-participant-start
       service session-id board-id records (plist-get session :query-delta)
-      (list :id participant-id :name session-id :author "observation-test"
+      (list :id participant-id
+            :name (or (plist-get metadata :participant-name) session-id)
+            :author "observation-test"
             :principal principal :controller principal :role 'participant
             :state 'active :subscription-id (concat "sub-" participant-id)
             :publication-pending nil)))))
@@ -99,10 +101,9 @@
          (record
           (append
            (list :id record-id :board-id board-id :seq position
-                 :record-kind 'fact :kind 'fact
+                 :record-kind 'fact
                  :tags (plist-get fields :tags)
-                 :attributes (plist-get fields :attributes)
-                 :durable-position position)
+                 :attributes (plist-get fields :attributes))
            (cl-loop for (key value) on fields by #'cddr
                     unless (memq key '(:source-key :tags :attributes))
                     append (list key value))))
@@ -202,6 +203,32 @@
       (should (eq (plist-get (plist-get worker :outcome) :status) 'done))
       (should (equal (plist-get (plist-get worker :outcome) :summary)
                      "accepted report")))))
+
+(ert-deftest e-board-observation-test-participant-columns-author-activity-page ()
+  "Activity identity comes from normalized participant columns after reopen."
+  (e-board-observation-test--with-fixture
+      (directory runtime service target board-id)
+    (e-board-observation-test--admit
+     service board-id "session-name" "participant-id"
+     '(:participant-name "Relational Name"))
+    (dolist (reopen '(nil t))
+      (when reopen
+        (e-runtime-store-close runtime)
+        (setq runtime (e-runtime-store-open directory)
+              service (e-board-sqlite-service-create runtime)
+              target (e-board-sqlite-publication-target-create
+                      service board-id :author "observation-test")))
+      (let* ((page (e-board-observation-test--await
+                    (e-board-observation-activity-page-start target :limit 4)))
+             (row (car (plist-get page :participants)))
+             (participant (plist-get row :participant)))
+        (should (equal (plist-get row :name) "Relational Name"))
+        (should (equal (plist-get row :principal) "chat:session-name"))
+        (should (eq (plist-get row :role) 'participant))
+        (should (eq (plist-get row :state) 'active))
+        (should (equal (plist-get participant :name) "Relational Name"))
+        (should (equal (plist-get participant :principal)
+                       "chat:session-name"))))))
 
 (ert-deftest e-board-observation-test-lifecycle-needs-runner-source-identity ()
   "An unrelated same-session status fact cannot replace lifecycle state."
@@ -322,12 +349,11 @@
                      (record
                       (list :id (format "unrelated-%d" index)
                             :board-id board-id :seq position
-                            :record-kind 'fact :kind 'fact
+                            :record-kind 'fact
                             :tags '(unrelated-history)
                             :attributes
                             (list :session-id "01-child" :status 'failed
-                                  :summary "unrelated status")
-                            :durable-position position))
+                                  :summary "unrelated status")))
                      (source-key (list 'unrelated-history index)))
                 (sqlite-execute
                  database

@@ -954,6 +954,11 @@ helper."
                 (e-runtime-store-offline-worker--column row 6))
                (plist-get source :key)
                :board-id board-id :position position))))
+        (unless (plist-get record :created-at)
+          (e-runtime-store-offline-worker--v7-conflict
+           "v7 record has no creation time"
+           :board-id board-id :generation generation :position position
+           :record-id record-id))
         (sqlite-execute
          database
          "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,created_at,author,subject_participant_id,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
@@ -963,7 +968,7 @@ helper."
                  (e-runtime-store-offline-worker--column row 5)
                  (e-runtime-store-offline-worker--column row 6)
                  (e-runtime-store-offline-worker--column row 7)
-                 (or (plist-get record :created-at) (float-time))
+                 (plist-get record :created-at)
                  (e-board-sqlite-worker--sql-value
                   (plist-get record :author))
                  (plist-get record :subject-participant-id)
@@ -1291,6 +1296,10 @@ helper."
            (e-runtime-store-offline-worker--v7-conflict
             "v7 task latest attempt disagrees" :queue-id queue-id
             :task-id task-id :expected latest-id :actual task-attempt-id))
+         (when (and (equal task-status "running") (null latest-row))
+           (e-runtime-store-offline-worker--v7-conflict
+            "v7 running task has no attempt"
+            :queue-id queue-id :task-id task-id))
          (when (and latest-state
                     (not (or (and (member task-status '("queued" "paused"))
                                   (equal latest-state "queued"))

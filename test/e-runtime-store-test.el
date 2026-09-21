@@ -3357,6 +3357,106 @@ tests can present a raw frame that production would refuse to create."
       (sqlite-close database)
       (delete-file database-file))))
 
+(ert-deftest e-runtime-store-task-resume-preserves-paused-attempt-history ()
+  "Paused-to-queued leaves the prior attempt paused before and after reopen."
+  (e-runtime-store-test--with-store (store directory)
+    (e-runtime-store-call
+     store 'write
+     '(:op task-enqueue :queue-id "resume-history"
+       :record (:task-id "task" :status queued :prompt "work")))
+    (let* ((claim
+            (e-runtime-store-call
+             store 'write
+             '(:op task-runnable-claim :queue-id "resume-history"
+               :started-at "2026-09-21T00:00:00Z"
+               :harness-instance-id "worker")))
+           (running (plist-get claim :record))
+           (paused (plist-put (copy-tree running t) :status 'paused)))
+      (setq paused (plist-put paused :finished-at "2026-09-21T00:01:00Z"))
+      (setq paused
+            (plist-get
+             (e-runtime-store-call
+              store 'write
+              (list :op 'task-transition :queue-id "resume-history"
+                    :task-id "task" :expected-status 'running
+                    :record paused))
+             :record))
+      (let ((queued (plist-put (copy-tree paused t) :status 'queued)))
+        (setq queued (plist-put queued :finished-at nil))
+        (e-runtime-store-call
+         store 'write
+         (list :op 'task-transition :queue-id "resume-history"
+               :task-id "task" :expected-status 'paused :record queued)))
+      (dolist (reopen '(nil t))
+        (when reopen
+          (e-runtime-store-close store)
+          (setq store (e-runtime-store-open directory))
+          (e-runtime-store-test--wait-ready store))
+        (let* ((snapshot
+                (e-runtime-store-call
+                 store 'read
+                 '(:op task-snapshot :queue-id "resume-history" :limit 8)))
+               (task (car (plist-get snapshot :records)))
+               (attempt (car (plist-get snapshot :attempts))))
+          (should (eq (plist-get task :status) 'queued))
+          (should (eq (plist-get attempt :state) 'paused))
+          (should (equal (plist-get attempt :finished-at)
+                         "2026-09-21T00:01:00Z"))
+          (should-not (plist-get attempt :error)))))))
+
+(ert-deftest e-runtime-store-task-retry-settles-prior-attempt-before-reclaim ()
+  "Auto-retry records a failed attempt before a fresh claim, including reopen."
+  (e-runtime-store-test--with-store (store directory)
+    (let* ((storage (e-task-storage-sqlite-create store))
+           (settlers nil)
+           (calls 0)
+           (queue
+            (e-task-queue-create
+             :id "retry-history" :storage storage :max-retries 1
+             :default-harness-instance-id "test"
+             :runner
+             (lambda (_task _harness on-settle)
+               (cl-incf calls)
+               (setq settlers (append settlers (list on-settle)))
+               (list :session-id (format "session-%d" calls)
+                     :cancel #'ignore))))
+           task-id)
+      (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
+                 (lambda (_instance-id) :test-harness)))
+        (setq task-id
+              (plist-get (e-task-queue-enqueue queue :prompt "retry me")
+                         :task-id))
+        (e-runtime-store-test--wait-until (lambda () (= calls 1)))
+        (funcall (nth 0 settlers) :status 'failed :error "first failed")
+        (e-runtime-store-test--wait-until (lambda () (= calls 2)))
+        (let* ((snapshot
+                (e-runtime-store-call
+                 store 'read
+                 '(:op task-snapshot :queue-id "retry-history" :limit 8)))
+               (attempts (plist-get snapshot :attempts)))
+          (should (equal (mapcar (lambda (attempt)
+                                   (plist-get attempt :state))
+                                 attempts)
+                         '(failed claimed)))
+          (should (plist-get (car attempts) :finished-at))
+          (should (equal (plist-get (car attempts) :error) "first failed")))
+        (funcall (nth 1 settlers) :status 'done :outputs '("done"))
+        (e-runtime-store-test--wait-until
+         (lambda ()
+           (null (gethash task-id (e-task-queue-records queue)))))
+        (e-runtime-store-close store)
+        (setq store (e-runtime-store-open directory))
+        (e-runtime-store-test--wait-ready store)
+        (let* ((snapshot
+                (e-runtime-store-call
+                 store 'read
+                 '(:op task-snapshot :queue-id "retry-history" :limit 8)))
+               (attempts (plist-get snapshot :attempts)))
+          (should (equal (mapcar (lambda (attempt)
+                                   (plist-get attempt :state))
+                                 attempts)
+                         '(failed done))))))))
+
 (ert-deftest e-runtime-store-task-legacy-import-returns-whole-result ()
   "Legacy import completes after all records and stores content only once."
   (let* ((database-file (make-temp-file "e-task-import-"))

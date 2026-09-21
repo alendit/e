@@ -1914,6 +1914,68 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
         (when (file-directory-p directory)
           (delete-directory directory t))))))
 
+(ert-deftest e-runtime-store-offline-v7-rejects-underived-normalized-facts ()
+  "Missing attempt topology or record time rejects and restores the v7 source."
+  (dolist (case '(running-without-attempt record-without-created-at))
+    (let* ((session-id (format "invalid-%s" case))
+           (fixture
+            (e-runtime-store-offline-test--make-v7
+             (list (e-runtime-store-offline-test--root session-id))))
+           (directory (car fixture))
+           (database-file (cadr fixture))
+           (backup (expand-file-name "operator/source.sqlite3" directory)))
+      (unwind-protect
+          (progn
+            (e-runtime-store-offline-test--seed-v7-communication
+             database-file session-id)
+            (let ((database (sqlite-open database-file)))
+              (unwind-protect
+                  (pcase case
+                    ('running-without-attempt
+                     (sqlite-execute
+                      database
+                      "UPDATE task_queues SET sequence=3 WHERE queue_id='queue-offline'")
+                     (sqlite-execute
+                      database
+                      "INSERT INTO task_records(queue_id,task_id,position,status,revision,payload) VALUES(?,?,?,?,?,?)"
+                      (vector
+                       "queue-offline" "task-running-without-attempt" 3
+                       "running" 1
+                       (e-runtime-store-offline-test--payload
+                        '(:task-id "task-running-without-attempt"
+                          :status running
+                          :enqueued-at "2026-09-06T00:00:00Z")))))
+                    ('record-without-created-at
+                     (let* ((row
+                             (car
+                              (sqlite-select
+                               database
+                               "SELECT payload FROM board_records WHERE board_id='board-offline' AND record_id='record-1'")))
+                            (record
+                             (e-runtime-store-codec-decode
+                              (base64-decode-string
+                               (e-runtime-store-offline-test--column row 0)))))
+                       (cl-remf record :created-at)
+                       (sqlite-execute
+                        database
+                        "UPDATE board_records SET payload=? WHERE board_id='board-offline' AND record_id='record-1'"
+                        (vector
+                         (e-runtime-store-offline-test--payload record))))))
+                (sqlite-close database)))
+            (let ((error
+                   (should-error
+                    (e-runtime-store-offline-upgrade directory backup))))
+              (should
+               (string-match-p
+                (if (eq case 'running-without-attempt)
+                    "task-running-without-attempt"
+                  "record-1")
+                (error-message-string error))))
+            (should (= (e-runtime-store-offline-test--version database-file) 7))
+            (should (= (e-runtime-store-offline-test--version backup) 7)))
+        (when (file-directory-p directory)
+          (delete-directory directory t))))))
+
 (ert-deftest e-runtime-store-offline-ordinary-startup-rejects-v7 ()
   "Ordinary startup rejects v7 without installing normalized relations."
   (let* ((session-id "reject-v6")

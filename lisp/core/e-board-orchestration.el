@@ -324,9 +324,7 @@ safe to store in a board envelope and contains no runtime state."
 (defun e-board-orchestration-fact-from-record (record)
   "Return normalized orchestration fact from detached Board RECORD, or nil."
   (when (and (listp record)
-             (eq (or (plist-get record :kind)
-                     (plist-get record :record-kind))
-                 'fact)
+             (eq (plist-get record :record-kind) 'fact)
              (memq 'orchestration (plist-get record :tags)))
     (let* ((attributes (plist-get record :attributes))
            (wire-version (plist-get attributes :orchestration-wire-version))

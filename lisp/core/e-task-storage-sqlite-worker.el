@@ -329,21 +329,30 @@ selection, state transition, and attempt creation have one commit boundary."
              (e-task-storage-sqlite-worker--pack
               (e-task-storage-sqlite-worker--task-content record))
              queue-id task-id))
-    (when-let* ((attempt-id (plist-get record :attempt-id)))
-      (sqlite-execute
-       e-task-storage-sqlite-worker--database
-       "UPDATE task_attempts SET state=?,harness_instance_id=?,session_id=?,settled_at=?,outputs=?,error=? WHERE queue_id=? AND attempt_id=?"
-       (vector (symbol-name (if (eq next-status 'queued) 'failed next-status))
-               (plist-get record :harness-instance-id)
-               (plist-get record :session-id)
-               (plist-get record :finished-at)
-               (and (plist-get record :outputs)
-                    (e-task-storage-sqlite-worker--pack
-                     (plist-get record :outputs)))
-               (and (plist-get record :error)
-                    (e-task-storage-sqlite-worker--pack
-                     (plist-get record :error)))
-               queue-id attempt-id)))
+    ;; Re-queueing normally preserves the completed or paused attempt as
+    ;; history.  Auto-retry supplies an explicit prior-attempt transition;
+    ;; ordinary resume supplies none and must not fabricate a failure.
+    (let* ((attempt-id (plist-get record :attempt-id))
+           (attempt-transition (plist-get body :attempt-transition))
+           (attempt-state
+            (or (plist-get attempt-transition :state)
+                (and (not (eq next-status 'queued)) next-status))))
+      (when (and attempt-id attempt-state)
+        (sqlite-execute
+         e-task-storage-sqlite-worker--database
+         "UPDATE task_attempts SET state=?,harness_instance_id=?,session_id=?,settled_at=?,outputs=?,error=? WHERE queue_id=? AND attempt_id=?"
+         (vector (symbol-name attempt-state)
+                 (plist-get record :harness-instance-id)
+                 (plist-get record :session-id)
+                 (or (plist-get attempt-transition :settled-at)
+                     (plist-get record :finished-at))
+                 (and (plist-get record :outputs)
+                      (e-task-storage-sqlite-worker--pack
+                       (plist-get record :outputs)))
+                 (and (plist-get record :error)
+                      (e-task-storage-sqlite-worker--pack
+                       (plist-get record :error)))
+                 queue-id attempt-id))))
     (e-task-storage-sqlite-worker--set-root
      queue-id revision (e-task-storage-sqlite-worker--column queue-row 1)
      (= (e-task-storage-sqlite-worker--column queue-row 2) 1))

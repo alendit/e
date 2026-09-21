@@ -314,10 +314,12 @@ truncated prompt prefix in `:prompt-summary'."
   target)
 
 (defun e-task-queue--commit-record
-    (queue current expected-status staged)
+    (queue current expected-status staged &optional attempt-transition)
   "Publish STAGED into CURRENT and enqueue its durable transition.
 Persistent callers never wait for SQLite.  CURRENT is retained only while the
-mutation is in flight or the task is executing."
+mutation is in flight or the task is executing.  ATTEMPT-TRANSITION, when
+non-nil, describes the separate attempt-history update committed atomically
+with the task transition."
   (if (not (e-task-queue-storage-backed-p queue))
       (e-task-queue--publish-durable-record current staged)
     (let* ((task-id (plist-get current :task-id))
@@ -328,7 +330,8 @@ mutation is in flight or the task is executing."
       (plist-put current :persistence-pending t)
       (e-task-storage-submit
        (e-task-queue-storage queue) 'write 'transition
-       (list (e-task-queue-id queue) task-id expected-status durable)
+       (list (e-task-queue-id queue) task-id expected-status durable
+             attempt-transition)
        (lambda (result error)
          (plist-put current :persistence-pending nil)
          (if error
@@ -344,7 +347,12 @@ mutation is in flight or the task is executing."
              (remhash task-id (e-task-queue-records queue))
              (setf (e-task-queue-order queue)
                    (delete task-id (e-task-queue-order queue)))))
-         (e-task-queue--notify queue)))
+         (e-task-queue--notify queue)
+         ;; Scheduling from the pre-commit live projection races the durable
+         ;; status change, most visibly when auto-retry requeues this same
+         ;; task.  The successful commit is the dispatch boundary.
+         (unless error
+           (e-task-queue--dispatch queue))))
       current)))
 
 ;; --- public reads -----------------------------------------------------------
@@ -522,6 +530,7 @@ retry.  Re-dispatches QUEUE after a real transition."
               args (list :error "Task result exceeds retention budget")))
       (let ((staged (copy-tree record))
             (expected-status (plist-get record :status))
+            attempt-transition
             terminal-status)
         (when (plist-member args :outputs)
           (plist-put staged :outputs (plist-get args :outputs)))
@@ -545,12 +554,18 @@ retry.  Re-dispatches QUEUE after a real transition."
           (plist-put staged :status 'paused)
           (plist-put staged :started-at nil))
          ((and (eq status 'failed)
-               (e-task-queue--maybe-retry queue staged)) nil)
+               (e-task-queue--maybe-retry queue staged))
+          ;; The task returns to queued, while its just-failed execution is a
+          ;; separate historical fact settled in the same transaction.
+          (setq attempt-transition
+                (list :state 'failed
+                      :settled-at (e-task-queue--timestamp))))
          (t
           (plist-put staged :status status)
           (plist-put staged :finished-at (e-task-queue--timestamp))
           (setq terminal-status status)))
-        (e-task-queue--commit-record queue record expected-status staged)
+        (e-task-queue--commit-record
+         queue record expected-status staged attempt-transition)
         (plist-put record :handle nil)
         (when terminal-status
           (e-task-queue--settle-work-handle record terminal-status)

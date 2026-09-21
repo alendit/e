@@ -589,6 +589,30 @@
         (when (e-chat-service-binding parent-harness session-id)
           (e-chat-service--retire-binding parent-binding))))))
 
+(ert-deftest e-board-sqlite-service-clear-advances-session-association ()
+  "Clearing a Board keeps its session association routable in the new generation."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id session-id participant-id)
+    (let ((runtime (e-session-storage-runtime-store store)))
+      (let ((cleared
+             (e-runtime-store-call
+              runtime 'write (list :op 'board-clear :board-id board-id))))
+        (should (= (plist-get cleared :generation) 2)))
+      (let ((association
+             (e-runtime-store-call
+              runtime 'read
+              (list :op 'session-board-association :session-id session-id))))
+        (should (equal (plist-get association :board-id) board-id))
+        (should (equal (plist-get association :participant-id) participant-id)))
+      (let ((result
+             (e-board-sqlite-service-test--await
+              (e-board-sqlite-service-append-route-start
+               service nil :session-id session-id :author "e-chat"
+               :tags '(main) :content "after clear"
+               :source-input-key '(:session "after-clear")))))
+        (should (= (plist-get result :generation) 2))
+        (should (plist-get result :message))))))
+
 (ert-deftest e-chat-open-board-sqlite-existing-session-is-public-and-asynchronous ()
   "Public Board open returns a buffer without synchronous session/Board reads."
   (e-board-sqlite-service-test--with-fixture
@@ -699,7 +723,7 @@
                         :outputs ((:kind daily :content "one")))))
            (record
             (lambda (fact)
-              (append (list :kind 'fact)
+              (append (list :record-kind 'fact)
                       (e-board-orchestration-fact-record-fields fact))))
            (page
             (list :records
@@ -785,7 +809,7 @@
                         :status published)))
            (record
             (lambda (fact)
-              (append (list :kind 'fact)
+              (append (list :record-kind 'fact)
                       (e-board-orchestration-fact-record-fields fact))))
            (published-p nil)
            (page

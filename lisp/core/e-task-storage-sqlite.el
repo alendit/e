@@ -26,9 +26,11 @@
        (list :op 'task-runnable-claim :queue-id queue-id
              :started-at started-at :harness-instance-id instance-id)))
     ('transition
-     (pcase-let ((`(,queue-id ,task-id ,expected-status ,record) arguments))
+     (pcase-let ((`(,queue-id ,task-id ,expected-status ,record . ,rest)
+                  arguments))
        (list :op 'task-transition :queue-id queue-id :task-id task-id
-             :expected-status expected-status :record record)))
+             :expected-status expected-status :record record
+             :attempt-transition (car rest))))
     ('set-paused
      (pcase-let ((`(,queue-id ,paused-p) arguments))
        (list :op 'task-queue-pause :queue-id queue-id :paused-p paused-p)))
@@ -81,13 +83,13 @@
               :harness-instance-id instance-id))))
     ('transition
      (pcase-let
-         ((`(,queue-id ,task-id ,expected-status ,record)
+         ((`(,queue-id ,task-id ,expected-status ,record . ,rest)
            arguments))
        (e-runtime-store-call
         runtime 'write
         (list :op 'task-transition :queue-id queue-id
               :task-id task-id :expected-status expected-status
-              :record record))))
+              :record record :attempt-transition (car rest)))))
     ('set-paused
      (pcase-let ((`(,queue-id ,paused-p) arguments))
        (e-runtime-store-call

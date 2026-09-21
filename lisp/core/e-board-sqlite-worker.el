@@ -321,6 +321,13 @@ it only avoids a query per returned record while reconstructing that page."
      e-board-sqlite-worker--database
      "INSERT INTO board_participants(board_id,generation,participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,payload,revision) SELECT board_id,?,participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,payload,1 FROM board_participants WHERE board_id=? AND generation=?"
      (vector generation board-id previous-generation))
+    ;; Associations are current cross-domain links, not historical Board
+    ;; events.  Advance them with the participant projection so session-based
+    ;; routing cannot be stranded on the retired generation.
+    (sqlite-execute
+     e-board-sqlite-worker--database
+     "UPDATE board_session_associations SET generation=?,revision=revision+1 WHERE board_id=? AND generation=?"
+     (vector generation board-id previous-generation))
     (list :board-id board-id :generation generation :revision revision)))
 
 (defun e-board-sqlite-worker--board-record-put (body)
@@ -1670,7 +1677,7 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
             (sqlite-select
              e-board-sqlite-worker--database
              (concat
-              "SELECT participant_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id>?"
+              "SELECT participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,revision,board_id,payload FROM board_participants WHERE board_id=? AND generation=? AND participant_id>?"
               participant-filter
               " ORDER BY participant_id LIMIT ?")
              (vconcat (list board-id generation after)
@@ -1683,8 +1690,7 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                (list :participant-id
                      (e-board-sqlite-worker--column row 0)
                      :participant
-                     (e-board-sqlite-worker--value
-                      (e-board-sqlite-worker--column row 1))))
+                     (e-board-sqlite-worker--participant-dto row)))
              selected-rows))
            (contexts
             (e-board-sqlite-worker--activity-session-context
