@@ -3,9 +3,9 @@
 
 * Status
 
-=In-progress=.  The operator requested implementation on 2026-09-21.  This
-plan is the contract and delivery authority for the schema-v8 normalization
-package.
+=Done=.  Implementation and independent review reached fixed point on
+2026-09-21.  This plan remains the contract and delivery authority for the
+schema-v8 normalization package; =review.org= records findings and evidence.
 
 * Behavioral goal
 
@@ -23,8 +23,8 @@ package.
 - Product authority :: The =e= runtime-store, Board, session, chat, and task
   owners under the repository architecture guidance.
 - Owning contract :: The matrix in this file.
-- Behavioral status :: Unavailable until schema v8, its explicit offline
-  upgrade, and the direct reopen scenario pass.
+- Behavioral status :: Available.  Schema v8, its explicit offline upgrade,
+  and the direct reopen scenarios passed repository-side validation.
 
 The implementation must preserve SQLite as the only durable authority.  It may
 materialize bounded query indexes when one source row owns their derivation and
@@ -137,14 +137,14 @@ transition, import, and reopen cannot select state from different copies.
 
 | Contract | Observable invariant | Semantic owner | Lifetime, bound, and recovery | Scenario | Evidence | Status |
 |-
-| =F95-C01= | A session has at most one constrained Board participant association; participant, role, principal, and routing identity cannot disagree. | runtime-store Board/session admission and Board query worker | Durable through restart; one association row; explicit offline migration | =F95-S1=, =F95-S4= | deterministic owner/composition | Pending |
-| =F95-C02= | Output and activity attribution resolve the same current participant name from participant identity; durable events do not carry a competing name. | Board participant query plus chat presentation projection | Current participant lifetime; bounded set/join read | =F95-S1= | deterministic public composition | Pending |
-| =F95-C03= | Every Board record has one envelope and one selector representation; canonical reads contain no legacy aliases and selector results match returned tags/attributes. | Board SQLite worker | Durable immutable record; bounded page/set reads; indexes rebuildable | =F95-S1=, =F95-S4= | deterministic owner/adversarial selector | Pending |
-| =F95-C04= | Routing and pickup identity/state have one relational authority, all pickup read paths reconstruct identical DTOs, and no write-only admission ledger remains. | Board routing/pickup worker | Durable FIFO and transitions; atomic mutation/event append; restart recovery | =F95-S2=, =F95-S4= | deterministic transition/reopen | Pending |
-| =F95-C05= | Dispatch and snapshots observe one relational task/attempt state before and after restart. | task SQLite worker | Durable queue; atomic claim/settlement; bounded snapshot | =F95-S3=, =F95-S4= | deterministic queue/reopen | Pending |
-| =F95-C06= | Existing v7 stores upgrade only through one explicit stopped-store operation with verified backup, rollback, lineage, integrity, and semantic parity; ordinary startup rejects v7. | offline migration and runtime schema verifier | One operator transaction; no runtime fallback or dual path | =F95-S4= | deterministic migration fault/parity fixtures | Pending |
-| =F95-C07= | Normalization adds no N+1 query path, process-wide durable mirror, or unbounded page; existing public Board and task bounds remain effective. | SQLite workers and service adapters | Per bounded read snapshot; derived indexes rebuildable | =F95-S1=--=F95-S4= | query-count/boundary tests and graphical gate where presentation changes | Pending |
-| =F95-C08= | Obsolete schema columns/tables, durable aliases, runtime branches, and compatibility paths are absent after the schema-v8 clean cut. | schema and affected domain owners | Permanent clean cut at schema v8 | all | structural search and exact-source suite | Pending |
+| =F95-C01= | A session has at most one constrained Board participant association; participant, role, principal, and routing identity cannot disagree. | runtime-store Board/session admission and Board query worker | Durable through restart; one association row; explicit offline migration | =F95-S1=, =F95-S4= | deterministic owner/composition | Passed |
+| =F95-C02= | Output and activity attribution resolve the same current participant name from participant identity; durable events do not carry a competing name. | Board participant query plus chat presentation projection | Current participant lifetime; bounded set/join read | =F95-S1= | deterministic public composition | Passed |
+| =F95-C03= | Every Board record has one envelope and one selector representation; canonical reads contain no legacy aliases and selector results match returned tags/attributes. | Board SQLite worker | Durable immutable record; bounded page/set reads; indexes rebuildable | =F95-S1=, =F95-S4= | deterministic owner/adversarial selector | Passed |
+| =F95-C04= | Routing and pickup identity/state have one relational authority, all pickup read paths reconstruct identical DTOs, and no write-only admission ledger remains. | Board routing/pickup worker | Durable FIFO and transitions; atomic mutation/event append; restart recovery | =F95-S2=, =F95-S4= | deterministic transition/reopen | Passed |
+| =F95-C05= | Dispatch and snapshots observe one relational task/attempt state before and after restart. | task SQLite worker | Durable queue; atomic claim/settlement; bounded snapshot | =F95-S3=, =F95-S4= | deterministic queue/reopen | Passed |
+| =F95-C06= | Existing v7 stores upgrade only through one explicit stopped-store operation with verified backup, rollback, lineage, integrity, and semantic parity; ordinary startup rejects v7. | offline migration and runtime schema verifier | One operator transaction; no runtime fallback or dual path | =F95-S4= | deterministic migration fault/parity fixtures | Passed |
+| =F95-C07= | Normalization adds no N+1 query path, process-wide durable mirror, or unbounded page; existing public Board and task bounds remain effective. | SQLite workers and service adapters | Per bounded read snapshot; derived indexes rebuildable | =F95-S1=--=F95-S4= | query-count/boundary tests and graphical gate where presentation changes | Passed |
+| =F95-C08= | Obsolete schema columns/tables, durable aliases, runtime branches, and compatibility paths are absent after the schema-v8 clean cut. | schema and affected domain owners | Permanent clean cut at schema v8 | all | structural search and exact-source suite | Passed |
 
 All required evidence is deterministic repository evidence.  External
 compatibility evidence is not applicable because no provider or credentialed

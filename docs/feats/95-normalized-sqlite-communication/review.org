@@ -1,0 +1,234 @@
+#+title: Review: Normalized SQLite Communication State
+#+author: e implementation
+#+date: 2026-09-21
+#+startup: overview
+
+* Status
+
+Done.  Independent Tick review reached =implementation-fixed-point= at
+=1b640a498306adcbd4a3d0293098ef1daf71f080= with no remaining P0--P3
+findings.  The reviewed plan SHA-256 was
+=05e7e53f7e762403bb4c8623db3db90c14b59f576838e024c4d8273fb8190d27=.
+
+* Scope reviewed
+
+The review covered =F95-C01=--=F95-C08= and =F95-S1=--=F95-S4=: fresh v8
+schema creation, stopped-store v7-to-v8 migration, Board/session association,
+participant attribution, Board record selectors, routing and pickups, task and
+attempt history, bounded reads, and obsolete-path removal.  The implementation
+commits were:
+
+- =149f0ad1= :: normalized SQLite communication storage;
+- =f3f3a292= :: repaired the first implementation-review findings; and
+- =1b640a49= :: rejected attemptless active task migrations.
+
+* Review loop
+
+** DONE High: Board clear stranded session associations
+
+*** Problem
+
+=board-clear= copied participants into the new generation but left the current
+session association referencing the retired generation.  Session-addressed
+routing could therefore stop working after clear.
+
+*** Change
+
+The same Board transaction now advances matching association generations and
+their revisions after copying participants.
+
+*** Evidence
+
+=e-board-sqlite-service-clear-advances-session-association= proves association
+lookup and session-addressed append in generation 2.
+
+** DONE High: Activity reads discarded normalized participant identity
+
+*** Problem
+
+The activity query selected only participant id and opaque payload, so current
+name, principal, role, and state could disappear even though their authority
+had moved to relational columns.
+
+*** Change
+
+The bounded set query selects the normalized participant columns and
+reconstructs the canonical participant DTO through the shared worker helper.
+
+*** Evidence
+
+=e-board-observation-test-participant-columns-author-activity-page= verifies
+the immediate and reopened page.  The isolated graphical participant-prefix
+test also passes.
+
+** DONE High: Resume and retry conflated task state with attempt history
+
+*** Problem
+
+Every transition to =queued= rewrote the prior attempt to =failed=.  Resume
+therefore corrupted a paused attempt, while retry could race a reclaim before
+the =running=-to-=queued= transition committed.
+
+*** Change
+
+Ordinary resume leaves attempt history unchanged.  Retry supplies a separate
+=:attempt-transition= value which settles the failed attempt atomically with
+the task transition.  SQLite success is now the redispatch boundary, so a new
+claim cannot observe the pre-transition task state.
+
+*** Evidence
+
+=e-runtime-store-task-resume-preserves-paused-attempt-history= and
+=e-runtime-store-task-retry-settles-prior-attempt-before-reclaim= pass before
+and after reopen.  The final reviewer also audited task-owner FIFO and the
+=claim-pending-p= duplicate guard.
+
+** DONE Medium: Migration invented or accepted non-derivable facts
+
+*** Problem
+
+Migration supplied the current clock when a v7 Board record lacked
+=:created-at= and accepted active =running= or =pausing= tasks with no attempt.
+Those choices created durable facts that could not be derived from the source.
+
+*** Change
+
+Migration now rejects missing record creation time and attemptless active task
+topologies with Board or queue/task/status keys.  It does not repair them.
+
+*** Evidence
+
+=e-runtime-store-offline-v7-rejects-underived-normalized-facts= covers missing
+time plus attemptless =running= and =pausing=.  The final migration suite passed
+32/32.
+
+** DONE Medium: Retired Board record aliases remained accepted
+
+*** Problem
+
+The orchestration reader still preferred legacy =:kind=, and fixtures retained
+=:kind= and =:durable-position=.  That preserved a second representation after
+the v8 clean cut.
+
+*** Change
+
+Orchestration consumes only canonical =:record-kind=; current-schema fixtures
+no longer emit the aliases.  Legacy shapes remain only inside historical
+migration fixtures.
+
+*** Evidence
+
+The orchestration suite passed 17/17, and the implementation review found no
+stale =F95-DP1= cells.
+
+* Plan coverage
+
+| Contract | Result | Principal evidence |
+|-
+| =F95-C01= | Passed | constrained association relation, clear/routing regression |
+| =F95-C02= | Passed | normalized participant DTO in immediate/reopen activity reads |
+| =F95-C03= | Passed | canonical envelope/selectors and bounded set reconstruction |
+| =F95-C04= | Passed | relational routing/pickup authority; admission ledger removed |
+| =F95-C05= | Passed | atomic claim/attempt settlement, retry and resume history |
+| =F95-C06= | Passed | explicit v7-to-v8 upgrade, rollback and corruption rejection |
+| =F95-C07= | Passed | fixed query counts and existing count/byte bounds |
+| =F95-C08= | Passed | aliases, duplicate fields, obsolete table and branches removed |
+
+* Verification
+
+#+begin_src sh
+eldev test test/e-board-sqlite-service-test.el \
+  test/e-board-observation-test.el test/e-runtime-store-test.el \
+  test/e-runtime-store-offline-test.el test/e-task-queue-test.el \
+  test/e-board-orchestration-test.el test/e-runtime-store-ownership-test.el \
+  test/e-runtime-store-session-worker-test.el test/e-runtime-sqlite-p4-test.el
+#+end_src
+
+The feature package ran 250 tests.  All Feature 95 tests passed.  Three
+unrelated runtime lifecycle tests were transient in that combined run and
+passed 3/3 immediately under their focused selectors.  The independent final
+review additionally recorded 148/148 Board/runtime-store, 31/31 task-queue,
+17/17 orchestration, and 32/32 final migration tests passing.
+
+#+begin_src sh
+eldev compile lisp/core/e-board-orchestration.el \
+  lisp/core/e-board-sqlite-worker.el \
+  lisp/core/e-runtime-store-offline-worker.el lisp/core/e-task-queue.el \
+  lisp/core/e-task-storage-sqlite-worker.el \
+  lisp/core/e-task-storage-sqlite.el
+git diff --check
+#+end_src
+
+Compilation passed with only the repository's existing Emacs 31 =when-let=
+deprecation warnings.  Whitespace validation passed.
+
+#+begin_src sh
+E_GRAPHICAL_E2E_SELECTOR=participant-output-prefix \
+  bash e2e/run-graphical-tests.sh
+#+end_src
+
+The isolated graphical test passed 1/1.
+
+The complete =eldev test= run executed 2,656 tests: 2,653 were expected and
+three were unexpected.  Both order-sensitive Org Canvas failures passed under
+their focused selectors.  The remaining reproducible failure,
+=e-dev-test-reload-refreshes-defaults=, is unrelated: its expected default
+layer list omits the already configured =board= layer.
+
+* UX and performance playthrough
+
+The isolated graphical scenario rendered non-selected Board output with its
+participant name.  Immediate and reopened SQL activity scenarios resolved the
+same current relational name.  No user Emacs state was used or mutated.
+
+No profiling was warranted: the package changes no presentation hot path, and
+the bounded participant, record, and task tests retain fixed query counts and
+count/byte limits.
+
+* Architecture self-check
+
+1. The package is independently useful: current and upgraded stores now have
+   one coherent communication authority and reject corrupt source facts.
+2. It moves toward SQLite-authoritative, bounded domain storage with detached
+   consumer DTOs.
+3. Stable v8 semantics are modeled directly.  The only uncertain boundary,
+   historical v7 interpretation, is isolated in the stopped-store upgrader and
+   fails closed when facts are not derivable.
+4. Board, session-query, task, and migration workers each own their relational
+   facts; queue policy owns scheduling.  No presentation component owns SQL
+   policy.
+5. Coupling is reduced by removing duplicated payload fields and aliases.
+   Adapters expose narrow typed operations and detached DTOs.
+6. Domain policy does not depend on presentation.  Runtime owners depend on
+   their storage ports; SQLite details remain in adapters/workers.
+7. SQLite mutation, migration, and process effects remain at worker and
+   adapter boundaries; reconstruction and policy helpers remain pure where
+   practical.
+8. Only durable identity, immutable event facts, and mutable domain state are
+   stored.  Display/progress caches remain process-local; rebuildable selector
+   indexes remain relational projections.
+9. Bounded reads use set queries rather than N+1 reconstruction.  No accepted
+   performance regression was introduced.
+10. The task storage port, Board operations, and DTO helpers represent real
+    substitutable contracts; no implementation ignores required operations.
+11. Schema v8 is an explicit clean cut.  Compatibility exists only in the
+    offline v7 upgrader; ordinary startup rejects v7.
+12. Duplicate payload authority, four Board record aliases, the unread
+    session-admission table, and obsolete runtime branches were removed.
+13. Expected source conflicts fail in migration with bounded identifying keys;
+    unexpected SQLite and worker errors surface through existing top-level
+    request settlement.
+14. Owner-local ERT proves joins, transitions, bounds, rollback, and reopen;
+    the graphical test narrowly proves the visible attribution behavior.
+
+* Live reload
+
+No reload or live probe was performed, and the user's running Emacs was left
+unchanged.  These schema, core runtime, session, and record-shape changes
+require a full Emacs restart; =e-dev-reload= is intentionally insufficient.
+
+* Final review
+
+Independent review found no remaining P0--P3 findings and declared
+=implementation-fixed-point=.  There are no unresolved Feature 95 notes or
+deferred normalization findings.
