@@ -48,6 +48,16 @@
        (cl-loop for (key _item) on value by #'cddr
                 always (keywordp key))))
 
+(defun e-tool-invocation-details--plist-list-p (value)
+  "Return non-nil when VALUE is a nonempty list of keyword plists.
+
+Lists of records are domain-owned collections and must remain JSON arrays.
+Check this shape before the legacy alist projection below: every plist record
+is a cons, but its first element is a keyword plist key rather than an alist
+entry key."
+  (and (consp value)
+       (cl-every #'e-tool-invocation-details--plist-p value)))
+
 (defun e-tool-invocation-details--object-entry (key value)
   "Return a canonical JSON object entry for KEY and VALUE."
   (unless (or (stringp key) (symbolp key) (numberp key))
@@ -150,6 +160,18 @@ cycles and prevents a malformed handler value from recursing indefinitely."
        ((and metadata source-nonempty)
         e-tool-invocation-details--omit)
        (t nil))))
+   ;; A collection of plist records is an array of independent objects, not
+   ;; one alist object.  This must precede the generic alist compatibility
+   ;; projection because each plist record is itself a cons.
+   ((e-tool-invocation-details--plist-list-p value)
+    (let (items)
+      (dolist (item value)
+        (let ((normalized
+               (e-tool-invocation-details--portable-value
+                item metadata (cons value stack))))
+          (unless (eq normalized e-tool-invocation-details--omit)
+            (push normalized items))))
+      (vconcat (nreverse items))))
    ((and (listp value) (cl-every #'consp value))
     (let ((source-nonempty (not (null value))) entries)
       (dolist (entry value)

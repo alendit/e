@@ -182,61 +182,6 @@ other live runtime objects held by `e-tools-current-context'."
                            :work-handle handle)
                      (e-work-handle-metadata handle))))
 
-(cl-defun e-tools-callback-work (id start &key description (owner 'tools))
-  "Return canonical callback-backed cooperative work ID using START.
-START receives ordinary tool callback keyword arguments.  Registrations use
-this constructor explicitly instead of installing another dispatch protocol
-beside `e-work'."
-  (e-work-spec-create
-   :id id
-   :description (or description (format "Run callback-backed tool %s." id))
-   :execution 'cooperative
-   :interactive-policy 'async
-   :owner owner
-   :runner
-   (lambda (handle arguments _context)
-     (cl-labels
-         ((adopt-request
-           (request)
-           (when request
-             (setf (e-work-handle-metadata handle)
-                   (append (e-work-handle-metadata handle)
-                           (list :request request)))
-             (when (e-tools-request-p request)
-               (setf (e-tools-request-metadata request)
-                     (append (e-tools-request-metadata request)
-                             (list :work-id (e-work-handle-id handle)
-                                   :work-handle handle))))
-             (setf (e-work-handle-cancel-function handle)
-                   (lambda (_handle)
-                     (e-tools-cancel-request request)
-                     t)))))
-       (let ((request
-              (e-tools--apply-start-with-optional-event
-               start
-               (list :arguments arguments
-                     :on-done (lambda (value) (e-work-finish handle value))
-                     :on-error (lambda (err) (e-work-fail handle err))
-                     :on-request-start #'adopt-request)
-               (lambda (_type payload) (e-work-progress handle payload)))))
-         (adopt-request request)
-         (when-let ((active-request request))
-          (when (e-tools-request-p active-request)
-            (setf (e-tools-request-metadata active-request)
-                  (append (e-tools-request-metadata active-request)
-                          (list :work-id (e-work-handle-id handle)
-                                :work-handle handle))))
-          (setf (e-work-handle-cancel-function handle)
-               (lambda (_handle)
-                 (e-tools-cancel-request active-request)
-                 t))
-           (setf (e-work-handle-metadata handle)
-                 (append (e-work-handle-metadata handle)
-                         (list :underlying-request-metadata
-                               (and (e-tools-request-p active-request)
-                                    (e-tools-request-metadata active-request))))))
-         :deferred)))))
-
 (cl-defun e-tools-cheap-work (id runner &key description (owner 'tools))
   "Return canonical cheap work ID that invokes RUNNER with tool arguments."
   (e-work-spec-create

@@ -16,6 +16,7 @@
 (require 'e-json)
 (require 'e)
 (require 'e-backend)
+(require 'e-base)
 (require 'e-harness)
 (require 'e-harness-base)
 (require 'e-loop)
@@ -563,6 +564,97 @@ ordinary tool implementation used by the test capability."
                            "validation"))
             (should (eq (plist-get archived-metadata :portable) t))))
       (e-session-tmp-cleanup-harness harness))))
+
+(ert-deftest e-tool-invocation-details-test-large-bash-resource-usage-survives-provider-continuation ()
+  "A large production Bash result keeps two resource records across continuation.
+
+The first provider response invokes the real base Bash tool with a file-backed
+large result and two resource-usage entries.  The second response is the
+provider continuation after that tool result has been archived; decoding the
+archive must preserve both entries without treating them as duplicate object
+keys."
+  (let* ((output-bytes (* 1024 1024))
+         (expected (concat (make-string output-bytes ?x) "\nEND"))
+         (directory (make-temp-file "e-invocation-bash-continuation-" t))
+         (request-count 0)
+         (backend
+          (e-backend-create
+           :name "invocation-details-test-bash-continuation"
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (cl-incf request-count)
+              (if (= request-count 1)
+                  (progn
+                    (funcall
+                     on-item
+                     (list
+                      :type 'tool-call
+                      :id "large-bash-call"
+                      :name "bash"
+                      :arguments
+                      (list
+                       :command
+                       (format
+                        "head -c %d /dev/zero | tr '\\0' x; printf '\\nEND'"
+                        output-bytes)
+                       :resource_usage
+                       (list
+                        :resources
+                        (vector
+                         (list :uri "file://notes.org" :operation "read")
+                         (list :uri "file://build.log" :operation "write"))
+                        :summary "preserve both Bash resources"))))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (progn
+                  (funcall on-item
+                           '(:type assistant-message :content "continued"))
+                  (funcall on-item '(:type done :reason stop))))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :intrinsic-capabilities
+           (append
+            (e-layer-capabilities (e-harness-base-layer-create))
+            (e-layer-capabilities (e-base-layer-create directory))))))
+    (unwind-protect
+        (progn
+          (e-harness-create-session harness :id "session-1")
+          (let ((result (e-harness-test-prompt-batch
+                         harness "session-1" "run the large Bash check")))
+            (should (= request-count 2))
+            (should (equal (plist-get result :assistant-content)
+                           "continued")))
+          (let* ((tool-result
+                  (e-tool-invocation-details-test--tool-result
+                   harness "session-1"))
+                 (metadata (plist-get tool-result :metadata))
+                 (uri (plist-get metadata :invocation-details-uri))
+                 (archive
+                  (e-tool-invocation-details-decode
+                   (e-tool-invocation-details-test--read-uri
+                    harness "session-1" uri)))
+                 (archived-result (plist-get archive :result))
+                 (usage (plist-get (plist-get archived-result :metadata)
+                                   :tool-usage)))
+            (should (eq (plist-get tool-result :status) 'ok))
+            (should (stringp uri))
+            (setq usage (append usage nil))
+            (should (= (length usage) 1))
+            (let ((resources (append
+                              (plist-get (car usage) :resources)
+                              nil)))
+              (should (= (length resources) 2))
+              (should (equal (plist-get (nth 0 resources) :uri)
+                             "file://notes.org"))
+              (should (equal (plist-get (nth 1 resources) :uri)
+                             "file://build.log")))
+            (let ((content (plist-get archived-result :content)))
+              (should (= (string-bytes content) (string-bytes expected)))
+              (should (equal (secure-hash 'sha256 content)
+                             (secure-hash 'sha256 expected))))))
+      (e-session-tmp-cleanup-harness harness)
+      (delete-directory directory t))))
 
 (ert-deftest e-tool-invocation-details-test-lifecycle-deadline-archives-timeout-result ()
   "A deadline timeout archives executed arguments and its final error result."
