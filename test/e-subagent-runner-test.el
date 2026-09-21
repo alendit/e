@@ -528,6 +528,438 @@
               (should (= failure-calls 0))
               (should (equal terminal-statuses '(cancelled))))))))))
 
+(ert-deftest e-subagent-runner-test-dispatch-pending-cancel-six-late-outcomes ()
+  "Real dispatch admission stays inert for every late terminal outcome.
+
+Each finished/failed/cancelled admission is exercised both while the two
+terminal Board publications are held and after their acknowledgement."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil))))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (live (e-subagent-runner-live-owner))
+             (original-spawn (symbol-function 'e-subagent-spawn))
+             (original-lifecycle (symbol-function 'e-subagent--publish-lifecycle))
+             (original-report
+              (symbol-function 'e-board-orchestration-actions-publish-terminal)))
+        (dolist (late-state '(finished failed cancelled))
+          (dolist (ack-phase '(before after))
+            (let* ((run-id (format "run-%s-%s" late-state ack-phase))
+                   (task-key "review")
+                   (attempt 0)
+                   (admission nil)
+                   (held-publications nil)
+                   (actual-publications nil)
+                   (provider-starts 0)
+                   (failure-calls 0)
+                   (work nil)
+                   (participant-id nil)
+                   (child-work nil))
+              (cl-letf (((symbol-function 'e-chat-service-create-participant-start)
+                         (lambda (&rest _arguments)
+                           (setq admission
+                                 (e-subagent-runner-test--deferred-work
+                                  (format "dispatch-admission-%s-%s"
+                                          late-state ack-phase)))))
+                        ((symbol-function 'e-subagent-direct-runner)
+                         (lambda (&rest _arguments)
+                           (cl-incf provider-starts)
+                           (list :cancel #'ignore)))
+                        ((symbol-function 'e-subagent-spawn)
+                         (lambda (&rest arguments)
+                           ;; Dispatch uses the real spawn below; install a
+                           ;; test-only failure observer so a fenced late
+                           ;; admission can prove that branch is inert.
+                           (let ((options (copy-sequence (nthcdr 3 arguments))))
+                             (setq options
+                                   (plist-put
+                                    options :on-failure
+                                    (lambda (&rest _arguments)
+                                      (cl-incf failure-calls))))
+                             (apply original-spawn
+                                    (append (cl-subseq arguments 0 3)
+                                            options)))))
+                        ((symbol-function 'e-subagent--publish-lifecycle)
+                         (lambda (publication-target record &optional include-result)
+                           (if (eq (plist-get record :status) 'cancelled)
+                               (let ((actual
+                                      (funcall original-lifecycle
+                                               publication-target record
+                                               include-result))
+                                     (held
+                                      (e-subagent-runner-test--deferred-work
+                                       "held-cancelled-lifecycle")))
+                                 (ignore actual)
+                                 (push actual actual-publications)
+                                 (push held held-publications)
+                                 held)
+                             (funcall original-lifecycle publication-target
+                                      record include-result))))
+                        ((symbol-function
+                          'e-board-orchestration-actions-publish-terminal)
+                         (lambda (&rest arguments)
+                           (let ((actual (apply original-report arguments))
+                                 (held
+                                  (e-subagent-runner-test--deferred-work
+                                   "held-cancelled-report")))
+                             (ignore actual)
+                             (push actual actual-publications)
+                             (push held held-publications)
+                             held))))
+                (setq work
+                      (e-subagent-runner-dispatch-start
+                       target parent "parent-1"
+                       :source-turn-id "parent-turn" :type :reviewer
+                       :prompt "Review the Board task."
+                       :run-id run-id :task-key task-key :attempt attempt))
+                (should
+                 (e-chat-test--wait-until
+                  (lambda () (and admission
+                                   (e-subagent-runner-assignment-state
+                                    board-id run-id task-key attempt)))
+                  5.0))
+                (setq participant-id
+                      (plist-get
+                       (e-subagent-runner-assignment-state
+                        board-id run-id task-key attempt)
+                       :participant-id))
+                (setq child-work
+                      (e-subagent-runner-test--live-work-handle
+                       live participant-id))
+                (should (e-work-handle-p child-work))
+                (e-subagent-interrupt
+                 live board-id target participant-id "cancel pending dispatch")
+                (should-not
+                 (e-subagent-runner-assignment-state
+                  board-id run-id task-key attempt))
+                (should
+                 (e-chat-test--wait-until
+                  (lambda () (= (length held-publications) 2))
+                  5.0))
+                (should (eq (plist-get (e-work-status child-work) :state)
+                            'created))
+                (should (eq (plist-get
+                             (e-work-handle-terminal-proposal child-work)
+                             :state)
+                            'cancelled))
+                (if (eq ack-phase 'before)
+                    (progn
+                      ;; The before cases deliver a fresh late admission while
+                      ;; terminal Board publications are still held.
+                      (pcase late-state
+                        ('finished (e-work-finish admission '(:late t)))
+                        ('failed (e-work-fail admission
+                                               '(e-session-storage-error
+                                                 "late")))
+                        ('cancelled (e-work-cancel admission)))
+                      (should (eq (plist-get (e-work-status child-work) :state)
+                                  'created))
+                      (should (eq (plist-get (e-work-status work) :state)
+                                  'started))
+                      (dolist (publication held-publications)
+                        (e-work-finish publication t))
+                      (should
+                       (e-chat-test--wait-until
+                        (lambda ()
+                          (and (eq (plist-get (e-work-status child-work) :state)
+                                   'cancelled)
+                               (eq (plist-get (e-work-status work) :state)
+                                   'finished)))
+                        5.0)))
+                  (progn
+                    (dolist (publication held-publications)
+                      (e-work-finish publication t))
+                    (should
+                     (e-chat-test--wait-until
+                      (lambda ()
+                        (and (eq (plist-get (e-work-status child-work) :state)
+                                 'cancelled)
+                             (eq (plist-get (e-work-status work) :state)
+                                 'finished)))
+                      5.0))
+                    ;; The after cases settle their still-pending admission
+                    ;; only after both Work handles have crossed the ack.
+                    (pcase late-state
+                      ('finished (e-work-finish admission '(:late t)))
+                      ('failed (e-work-fail admission
+                                             '(e-session-storage-error
+                                               "late")))
+                      ('cancelled (e-work-cancel admission)))
+                    ))
+                (should (= provider-starts 0))
+                (should (= failure-calls 0))
+                (should (eq (plist-get (e-work-status child-work) :state)
+                            'cancelled))
+                (should (eq (plist-get (e-work-status work) :state)
+                            'finished))
+                (should (memq (plist-get (e-work-status admission) :state)
+                              '(finished failed cancelled)))
+                (should-not
+                 (e-subagent-runner-assignment-state
+                  board-id run-id task-key attempt))
+                (should-not (e-subagent-live-get live board-id participant-id))
+                (should-not
+                 (e-subagent-live-pending-admission
+                  live board-id participant-id))
+                ;; The test gate represents the Board acknowledgement boundary;
+                ;; also drain the real SQL publication Works before inspecting
+                ;; facts, since their writes may complete after the gate ack.
+                (should
+                 (e-chat-test--wait-until
+                  (lambda ()
+                    (cl-every
+                     (lambda (publication)
+                       (memq (plist-get (e-work-status publication) :state)
+                             '(finished failed cancelled)))
+                     actual-publications))
+                  5.0))
+                (let* ((facts (e-subagent-runner-test--orchestration-facts
+                               parent "parent-1"))
+                       (reports
+                        (seq-filter
+                         (lambda (fact)
+                           (and (eq (plist-get fact :type) 'terminal-report)
+                                (equal (plist-get (plist-get fact :payload)
+                                                 :run-id)
+                                       run-id)))
+                         facts)))
+                  (should (= (length reports) 1))
+                  (should
+                   (eq (plist-get (plist-get (car reports) :payload) :status)
+                       'cancelled))
+                  (should-not
+                   (seq-find
+                    (lambda (fact)
+                      (and (eq (plist-get fact :type) 'terminal-report)
+                           (eq (plist-get (plist-get fact :payload) :status)
+                               'failed)))
+                    reports)))))))))))
+
+(ert-deftest e-subagent-runner-test-dispatch-publication-failure-shares-bounded-composite ()
+  "A real dispatch propagates one bounded publication failure to both Works."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (held-report nil)
+          (held-lifecycle nil)
+          (settle-provider nil))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (provider-error '(e-work-deadline-exceeded "provider failure"))
+             (original-lifecycle
+              (symbol-function 'e-subagent--publish-lifecycle))
+             work participant-id child-work)
+        (cl-letf (((symbol-function 'e-subagent-direct-runner)
+                   (lambda (_child-harness _child-session-id _prompt _seed
+                            on-settle _on-progress)
+                     (setq settle-provider on-settle)
+                     (list :cancel #'ignore)))
+                  ((symbol-function 'e-subagent--publish-lifecycle)
+                   (lambda (publication-target record &optional include-result)
+                     (if (eq (plist-get record :status) 'failed)
+                         (setq held-lifecycle
+                               (e-subagent-runner-test--deferred-work
+                                "held-failing-terminal-lifecycle"))
+                       (funcall original-lifecycle publication-target record
+                                include-result))))
+                  ((symbol-function
+                    'e-board-orchestration-actions-publish-terminal)
+                   (lambda (&rest _arguments)
+                     (setq held-report
+                           (e-subagent-runner-test--deferred-work
+                            "held-failing-terminal-report"))
+                     held-report)))
+          (setq work
+                (e-subagent-runner-dispatch-start
+                 target parent "parent-1"
+                 :source-turn-id "parent-turn" :type :reviewer
+                 :prompt "Review the Board task."
+                 :run-id "run-publication-failure" :task-key "review"
+                 :attempt 0))
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (let ((state
+                     (e-subagent-runner-assignment-state
+                      board-id "run-publication-failure" "review" 0)))
+                (and state (eq (plist-get state :state) 'live))))
+            5.0))
+          (setq participant-id
+                (plist-get
+                 (e-subagent-runner-assignment-state
+                  board-id "run-publication-failure" "review" 0)
+                 :participant-id))
+          (setq child-work
+                (e-subagent-runner-test--live-work-handle
+                 (e-subagent-runner-live-owner) participant-id))
+          (should (e-work-handle-p child-work))
+          (funcall settle-provider 'failed :error provider-error)
+          (should held-report)
+          (should (memq (plist-get (e-work-status child-work) :state)
+                        '(started progress)))
+          (should (eq (plist-get (e-work-status work) :state) 'started))
+          (should held-lifecycle)
+          (e-work-finish held-lifecycle t)
+          (e-work-fail
+           held-report
+           '(e-board-sqlite-error
+             "terminal publication failed"
+             :metadata (:arbitrary-object ignored)))
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (and (eq (plist-get (e-work-status child-work) :state) 'failed)
+                   (eq (plist-get (e-work-status work) :state) 'failed)))
+            5.0)))
+        (let* ((child-error (plist-get (e-work-status child-work) :error))
+               (dispatch-error (plist-get (e-work-status work) :error))
+               (proposal (plist-get child-error :terminal-proposal))
+               (state (plist-get child-error :publication-state)))
+          (should (equal child-error dispatch-error))
+          (should (eq (car child-error) 'e-subagent-persistence-suspect))
+          (should (equal (plist-get (plist-get proposal :args) :error)
+                         provider-error))
+          (should (eq (plist-get proposal :status) 'failed))
+          (should (eq (car (plist-get child-error :publication-error))
+                      'e-board-sqlite-error))
+          (should (eq (plist-get state :state) 'failed))
+          (should-not (plist-member state :result))
+          (should-not (plist-member state :metadata)))))))
+
+(ert-deftest e-subagent-runner-test-provider-failure-wins-over-late-deadline ()
+  "A provider failure latched first is not reclassified by its deadline."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (settle-provider nil)
+          (cancel-count 0)
+          (held-publications nil)
+          (actual-publications nil)
+          (latched-proposal nil))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (deadline (+ (float-time) 0.35))
+             (provider-error '(e-work-error "provider failed first"))
+             (original-lifecycle
+              (symbol-function 'e-subagent--publish-lifecycle))
+             (original-report
+              (symbol-function 'e-board-orchestration-actions-publish-terminal))
+             work child-work participant-id)
+        (cl-letf (((symbol-function 'e-subagent-direct-runner)
+                   (lambda (_child-harness _child-session-id _prompt _seed
+                            on-settle _on-progress)
+                     (setq settle-provider on-settle)
+                     (list :cancel
+                           (lambda ()
+                             (cl-incf cancel-count)
+                             ;; The provider may report its cancellation
+                             ;; synchronously; the latched failed proposal
+                             ;; keeps that callback inert.
+                             (funcall on-settle 'cancelled)))))
+                  ((symbol-function 'e-subagent--publish-lifecycle)
+                   (lambda (publication-target record &optional include-result)
+                     (if (eq (plist-get record :status) 'failed)
+                         (let* ((actual
+                                 (funcall original-lifecycle publication-target
+                                          record include-result))
+                                (held
+                                 (e-subagent-runner-test--deferred-work
+                                  "deadline-held-lifecycle")))
+                           (push actual actual-publications)
+                           (push held held-publications)
+                           held)
+                       (funcall original-lifecycle publication-target record
+                                include-result))))
+                  ((symbol-function
+                    'e-board-orchestration-actions-publish-terminal)
+                   (lambda (&rest arguments)
+                     (let ((actual (apply original-report arguments))
+                           (held
+                            (e-subagent-runner-test--deferred-work
+                             "deadline-held-report")))
+                       (push actual actual-publications)
+                       (push held held-publications)
+                       held))))
+          (setq work
+                (e-subagent-runner-dispatch-start
+                 target parent "parent-1"
+                 :source-turn-id "parent-turn" :type :reviewer
+                 :prompt "Review the Board task."
+                 :run-id "run-provider-first" :task-key "review" :attempt 0
+                 :deadline deadline))
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (let ((state
+                     (e-subagent-runner-assignment-state
+                      board-id "run-provider-first" "review" 0)))
+                (and state (eq (plist-get state :state) 'live))))
+            5.0))
+          (setq participant-id
+                (plist-get
+                 (e-subagent-runner-assignment-state
+                  board-id "run-provider-first" "review" 0)
+                 :participant-id))
+          (setq child-work
+                (e-subagent-runner-test--live-work-handle
+                 (e-subagent-runner-live-owner) participant-id))
+          (funcall settle-provider 'failed :error provider-error)
+          (should
+           (e-chat-test--wait-until
+            (lambda () (= (length held-publications) 2))
+            5.0))
+          (should
+           (e-chat-test--wait-until
+            (lambda () (> (float-time) deadline))
+            2.0))
+          (should
+           (e-chat-test--wait-until (lambda () (= cancel-count 1)) 2.0))
+          (setq latched-proposal
+                (copy-tree (e-work-handle-terminal-proposal child-work)))
+          (should (eq (plist-get latched-proposal :state) 'failed))
+          (should (equal (plist-get latched-proposal :payload)
+                         (list 'e-subagent-error provider-error)))
+          (should (memq (plist-get (e-work-status child-work) :state)
+                        '(started progress)))
+          (dolist (publication held-publications)
+            (e-work-finish publication t))
+          (should
+           (e-chat-test--wait-until
+            (lambda () (eq (plist-get (e-work-status child-work) :state)
+                           'failed))
+            5.0))
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (cl-every
+               (lambda (publication)
+                 (memq (plist-get (e-work-status publication) :state)
+                       '(finished failed cancelled)))
+               actual-publications))
+            5.0)))
+        (let* ((status (e-work-status child-work))
+               (failure (plist-get status :error)))
+          (should (eq (plist-get status :state) 'failed))
+          (should (eq (car failure) 'e-subagent-error))
+          (should (string-match-p "provider failed first"
+                                  (e-work-error-message failure)))
+          (should (eq (plist-get latched-proposal :state) 'failed))
+          (should (equal (plist-get latched-proposal :payload)
+                         (list 'e-subagent-error provider-error)))
+          (should-not
+           (e-subagent-live-get
+            (e-subagent-runner-live-owner) board-id participant-id)))))))
+
 (ert-deftest e-subagent-runner-test-runner-start-failure-settles-once ()
   "A post-commit runner-start error publishes one running then one failure."
   (e-subagent-runner-test--with-instances
@@ -1575,6 +2007,64 @@ report is child-side and must not be on the parent surface."
           (should (eq (plist-get finished :status) 'done))
           (e-subagent-runner-test--await-work-state work-handle 'finished)
           (e-subagent-runner-test--await-retired live participant-id))))))
+
+(ert-deftest e-subagent-runner-test-progress-diagnostics-replace-latest-only ()
+  "Repeated production progress projection failures stay constant-size.
+
+The real spawn/direct-runner path is used here: every provider event reaches
+the guarded progress recorder, while the terminal event still settles the
+child Work normally."
+  (e-subagent-runner-test--with-instances
+    (let* ((live (e-subagent-live-create))
+           (parent (e-harness-create :backend (e-backend-fake-create :items nil)))
+           (subscriber nil)
+           (projection-calls 0))
+      (e-harness-test-create-session parent :id "parent-1")
+      (cl-letf (((symbol-function 'e-chat-service-subscribe)
+                 (lambda (_harness _session callback)
+                   (setq subscriber callback)
+                   'progress-subscription))
+                ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+                ((symbol-function 'e-chat-service-submit-session)
+                 (lambda (&rest _arguments)
+                   (let ((admission
+                          (e-subagent-runner-test--deferred-work
+                           "progress-admission")))
+                     (e-work-finish admission t)
+                     admission)))
+                ((symbol-function 'e-chat-service-abort-session) #'ignore)
+                ((symbol-function 'e-subagent--record-progress)
+                 (lambda (&rest _arguments)
+                   (cl-incf projection-calls)
+                   (error "progress projection failure %d"
+                          projection-calls))))
+        (let* ((record (e-subagent-runner-test--spawn
+                        live parent "parent-1"
+                        :type :reviewer :prompt "go"))
+               (participant-id (plist-get record :participant-id))
+               (board-id (e-subagent-runner-test--board-id
+                          live participant-id))
+               (work (e-subagent-runner-test--live-work-handle
+                      live participant-id)))
+          (dotimes (_ 1000)
+            (funcall subscriber '(:type tool-finished :payload nil)))
+          (let* ((metadata (e-work-handle-metadata work))
+                 (diagnostics
+                  (cl-loop for (key value) on metadata by #'cddr
+                           when (eq key :progress-error)
+                           collect value))
+                 (diagnostic (car diagnostics)))
+            (should (= (length diagnostics) 1))
+            (should (= 1 (cl-count :progress-error metadata)))
+            (should (string-match-p "progress projection failure"
+                                    (plist-get diagnostic :error)))
+            (should (string-match-p "1001"
+                                    (plist-get diagnostic :error)))
+            (should (<= (length (prin1-to-string metadata)) 2048)))
+          (funcall subscriber '(:type turn-finished :payload nil))
+          (e-subagent-runner-test--await-work-state work 'finished)
+          (should (= projection-calls 1002))
+          (should-not (e-subagent-live-get live board-id participant-id)))))))
 
 (ert-deftest e-subagent-runner-test-direct-runner-ignores-reasoning-deltas ()
   "The direct runner maps meaningful lifecycle events but not reasoning deltas."

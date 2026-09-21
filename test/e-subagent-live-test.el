@@ -285,6 +285,46 @@
       (should-not (e-work-handle-terminal-gate work))
       (should-not (e-work-handle-terminal-proposal work)))))
 
+(ert-deftest e-subagent-live-test-persistence-suspect-state-is-closed-and-bounded ()
+  "A failed publication retains only bounded scalar Work state.
+
+Large error data and arbitrary Work metadata must not cross into the detached
+composite, even when the failed status contains a live object."
+  (let* ((marker (generate-new-buffer " *publication-marker*"))
+         (huge (make-string 30000 ?x))
+         (state (list :id huge :spec-id huge :state 'failed
+                      :progress (list :event marker)
+                      :result (list :marker marker)
+                      :error (list 'e-board-sqlite-error huge marker)
+                      :metadata (list :marker marker huge marker)))
+         (composite
+          (unwind-protect
+              (e-subagent--persistence-suspect
+               huge 'failed
+               (list :error '(e-work-deadline-exceeded "provider deadline"))
+               (list 'e-board-sqlite-error huge marker)
+               state)
+            (kill-buffer marker)))
+         (publication-state (plist-get composite :publication-state)))
+    (should
+     (<= (length (e-runtime-store-codec-encode composite))
+         e-subagent--persistence-suspect-byte-limit))
+    (should (equal (cl-loop for (key _value) on publication-state by #'cddr
+                            collect key)
+                    '(:state :id :spec-id :error)))
+    (should (eq (plist-get publication-state :state) 'failed))
+    (should (eq (car (plist-get publication-state :error))
+                'e-board-sqlite-error))
+    (cl-labels ((contains-marker-p (value)
+                  (cond ((eq value marker) t)
+                        ((consp value)
+                         (or (contains-marker-p (car value))
+                             (contains-marker-p (cdr value))))
+                        ((vectorp value)
+                         (seq-some #'contains-marker-p (append value nil)))
+                        (t nil))))
+      (should-not (contains-marker-p composite)))))
+
 (ert-deftest e-subagent-live-test-run-bound-report-remains-canonical ()
   "Run-bound settlement publishes the orchestration report as canonical."
   (let* ((owner (e-subagent-live-create))

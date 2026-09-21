@@ -238,6 +238,12 @@ an explicit child harness or session policy always wins."
 (defconst e-subagent--progress-diagnostic-character-limit 512
   "Maximum characters retained for one progress projection diagnostic.")
 
+(defconst e-subagent--publication-identity-character-limit 128
+  "Maximum characters retained for one publication identity scalar.")
+
+(defconst e-subagent--persistence-suspect-byte-limit (* 8 1024)
+  "Maximum canonical bytes retained by one persistence-suspect composite.")
+
 (defun e-subagent--progress-error-text (error)
   "Return bounded text for progress diagnostic ERROR."
   (truncate-string-to-width
@@ -248,7 +254,17 @@ an explicit child harness or session policy always wins."
 (defun e-subagent--progress-diagnostic (event error)
   "Return one bounded diagnostic for a failed progress projection.
 The diagnostic is process-local metadata, not a durable lifecycle result."
-  (list :event event
+  (list :event
+        (cond ((symbolp event) event)
+              ((stringp event)
+               (truncate-string-to-width
+                event e-subagent--progress-diagnostic-character-limit
+                nil nil "..."))
+              ((numberp event) event)
+              (t (truncate-string-to-width
+                  (e-prin1-safe event)
+                  e-subagent--progress-diagnostic-character-limit
+                  nil nil "...")))
         :error
         (e-subagent--progress-error-text error)))
 
@@ -273,10 +289,19 @@ temporarily unavailable."
   "Record one bounded progress projection ERROR on WORK-HANDLE metadata.
 This is deliberately best effort and cannot alter Work's terminal lifecycle."
   (when (e-work-handle-p work-handle)
-    (setf (e-work-handle-metadata work-handle)
-          (append (e-work-handle-metadata work-handle)
-                  (list :progress-error
-                        (e-subagent--progress-diagnostic event error))))))
+    (let ((metadata (e-work-handle-metadata work-handle))
+          (diagnostic (e-subagent--progress-diagnostic event error))
+          filtered)
+      ;; Keep this diagnostic latest-visible and constant-size.  Metadata is a
+      ;; plist, so replacing the first key while dropping any duplicate stale
+      ;; keys is both cheaper and less ambiguous than appending another pair.
+      (while metadata
+        (let ((key (pop metadata))
+              (value (pop metadata)))
+          (unless (eq key :progress-error)
+            (setq filtered (append filtered (list key value))))))
+      (setf (e-work-handle-metadata work-handle)
+            (append filtered (list :progress-error diagnostic))))))
 
 (defun e-subagent--safe-progress (on-progress event &optional on-error)
   "Deliver child EVENT to ON-PROGRESS without affecting terminal settlement.
@@ -633,12 +658,36 @@ result.  The returned list is intentionally the only value the gate awaits."
   "Return a bounded detached representation of publication ERROR.
 Keep a condition's symbol so the composite remains classifiable, but never
 retain its potentially arbitrary condition data in process-local state."
-  (let ((text
+  (when error
+    (let ((text
+           (truncate-string-to-width
+            (e-work-error-message error) 1024 nil nil "...")))
+      (if (and (consp error) (symbolp (car error)))
+          (list (car error) text)
+        text))))
+
+(defun e-subagent--bounded-publication-scalar (value)
+  "Return one closed, bounded scalar from publication STATE VALUE."
+  (cond ((symbolp value) value)
+        ((numberp value) value)
+        ((stringp value)
          (truncate-string-to-width
-          (e-work-error-message error) 1024 nil nil "...")))
-    (if (and (consp error) (symbolp (car error)))
-        (list (car error) text)
-      text)))
+          value e-subagent--publication-identity-character-limit
+          nil nil "..."))
+        (t nil)))
+
+(defun e-subagent--bounded-publication-state (state)
+  "Return the closed detached projection of failed publication STATE.
+Never retain result, metadata, progress, or arbitrary objects from a Work
+status in a persistence-suspect composite."
+  (list :state (e-subagent--bounded-publication-scalar
+                (plist-get state :state))
+        :id (e-subagent--bounded-publication-scalar
+             (plist-get state :id))
+        :spec-id (e-subagent--bounded-publication-scalar
+                  (plist-get state :spec-id))
+        :error (e-subagent--bounded-publication-error
+                (plist-get state :error))))
 
 (defun e-subagent--persistence-suspect
     (participant-id terminal-status terminal-args publication-error
@@ -646,16 +695,26 @@ retain its potentially arbitrary condition data in process-local state."
   "Return one bounded composite for a failed terminal publication.
 TERMINAL-ARGS is the detached original provider/deadline/cancellation cause;
 PUBLICATION-ERROR and PUBLICATION-STATE describe the failed durable write."
-  (list 'e-subagent-persistence-suspect
-        "Subagent terminal publication failed"
-        :participant-id participant-id
-        :terminal-status terminal-status
-        :terminal-proposal
-        (list :status terminal-status
-              :args (e-subagent--bounded-terminal-args terminal-args))
-        :publication-error (e-subagent--bounded-publication-error
-                            publication-error)
-        :publication-state (copy-tree publication-state t)))
+  ;; Every field is projected before this final bound is applied.  Decoding the
+  ;; bounded canonical value also detaches strings/lists from the failed Work,
+  ;; so the composite cannot retain an arbitrary Work result or metadata graph.
+  (e-runtime-store-codec-decode
+   (e-runtime-store-codec-encode-bounded
+    (list 'e-subagent-persistence-suspect
+          "Subagent terminal publication failed"
+          :participant-id (e-subagent--bounded-publication-scalar
+                           participant-id)
+          :terminal-status (e-subagent--bounded-publication-scalar
+                            terminal-status)
+          :terminal-proposal
+          (list :status (e-subagent--bounded-publication-scalar
+                         terminal-status)
+                :args (e-subagent--bounded-terminal-args terminal-args))
+          :publication-error (e-subagent--bounded-publication-error
+                              publication-error)
+          :publication-state (e-subagent--bounded-publication-state
+                              publication-state))
+    e-subagent--persistence-suspect-byte-limit)))
 
 (defun e-subagent--terminal-gate
     (live board-id participant-id record target report-state authorize-callback)
