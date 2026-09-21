@@ -240,9 +240,11 @@ predated participant projections, plus a fixture error that encoded a plain
 session principal as a payload.  The stopped-store adapter now reads the
 principal according to the actual v7 writer and materializes only the missing
 normalized participant identity from durable session and Board facts.  It
-still fails closed on Board-principal, participant-principal, or explicit-role
-conflicts.  See
+still fails closed on Board-principal or participant-principal conflicts.  If
+an existing participant's current role disagrees with the retired session
+copy, the participant row wins; the canonical store contained ten such stale
+copies, exactly the duplicate authority v8 removes.  See
 [[file:../../bugs/v7-v8-migration-rejects-production-associations/investigation.org][the production migration investigation]].
 
-The corrected offline-upgrade suite passes 33/33.  This core schema migration
+The corrected offline-upgrade suite passes 34/34.  This core schema migration
 correction requires a full Emacs restart; no live reload was performed.

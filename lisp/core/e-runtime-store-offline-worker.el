@@ -1156,20 +1156,11 @@ helper."
        :session-id session-id :board-id board-id
        :participant-id participant-id)
       (if participant-row
-          (progn
-            (e-runtime-store-offline-worker--v7-assert-equal
-             "v7 association principal disagrees"
-             principal (e-runtime-store-offline-worker--column participant-row 0)
-             :session-id session-id :board-id board-id
-             :participant-id participant-id)
-            (when association-role
-              (e-runtime-store-offline-worker--v7-assert-equal
-               "v7 association role disagrees"
-               association-role
-               (e-runtime-store-offline-worker--v7-name
-                (e-runtime-store-offline-worker--column participant-row 1))
-               :session-id session-id :board-id board-id
-               :participant-id participant-id)))
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 association principal disagrees"
+           principal (e-runtime-store-offline-worker--column participant-row 0)
+           :session-id session-id :board-id board-id
+           :participant-id participant-id)
         ;; Early v7 sessions could carry a durable Board association before
         ;; participant projections were introduced.  Materialize the missing
         ;; normalized identity entirely from those session and Board facts.

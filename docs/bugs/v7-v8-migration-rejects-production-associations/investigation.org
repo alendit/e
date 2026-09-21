@@ -18,6 +18,12 @@
   masked the decoder error.
 - No Emacs process or runtime-store owner marker was present during live store
   inspection.
+- After correcting those assumptions, full-store preflight exposed ten stale
+  =participant= session-role copies whose current participant rows were
+  =owner=.  The other 154 resolved associations agreed.  The v8 design already
+  identifies the participant row as the sole current-role authority; retaining
+  or enforcing the session copy would preserve the denormalization being
+  removed.
 
 * Conclusion
 
@@ -31,7 +37,8 @@ v7 history.
 - Read the v7 association principal as the plain scalar written by v7 and
   require it to agree with the decoded Board trusted principal.
 - Preserve existing participant rows and continue rejecting conflicting
-  principal or explicit-role facts.
+  principal facts.  Their current role is authoritative; discard the retired
+  session-role copy even when that historical duplicate is stale.
 - For an association that predates its participant row, materialize the v8
   participant from durable session and Board facts.  Preserve a policy-carried
   participant id when present; otherwise derive a deterministic =ptc_= id from
@@ -46,4 +53,5 @@ v7 history.
 eldev test -f test/e-runtime-store-offline-test.el
 #+end_src
 
-All 33 offline-upgrade tests pass, including the two early-association cases.
+All 34 offline-upgrade tests pass, including the two early-association cases
+and current-participant precedence over a stale session-role copy.

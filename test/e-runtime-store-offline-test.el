@@ -1807,6 +1807,42 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
         (when (file-directory-p directory)
           (delete-directory directory t))))))
 
+(ert-deftest e-runtime-store-offline-v7-to-v8-prefers-current-participant-role ()
+  "A current participant role replaces its stale v7 session duplicate."
+  (let* ((session-id "stale-association-role")
+         (fixture
+          (e-runtime-store-offline-test--make-v7
+           (list (e-runtime-store-offline-test--root session-id))))
+         (directory (car fixture))
+         (database-file (cadr fixture))
+         (backup (expand-file-name "operator/stale-role.sqlite3" directory)))
+    (unwind-protect
+        (progn
+          (e-runtime-store-offline-test--seed-v7-communication
+           database-file session-id)
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (sqlite-execute
+                 database
+                 "UPDATE session_query_state SET association_role='participant' WHERE session_id=?"
+                 (vector session-id))
+              (sqlite-close database)))
+          (e-runtime-store-offline-upgrade directory backup)
+          (let ((runtime (e-runtime-store-open directory)))
+            (unwind-protect
+                (should
+                 (equal
+                  (plist-get
+                   (e-runtime-store-call
+                    runtime 'read
+                    (list :op 'session-board-association
+                          :session-id session-id))
+                   :association-role)
+                  "owner"))
+              (e-runtime-store-close runtime))))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
 (ert-deftest e-runtime-store-offline-v8-is-verified-read-only-noop ()
   "A verified v8 store creates no backup and changes no migration rows."
   (let* ((directory (make-temp-file "e-runtime-offline-v7-" t))
