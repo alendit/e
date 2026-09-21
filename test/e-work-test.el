@@ -174,6 +174,66 @@
                    '((publication finished :done) cleanup
                      (event finished) done)))))
 
+(ert-deftest e-work-test-terminal-gate-defers-first-proposal-until-commit ()
+  "A terminal gate holds Work open until its owner authorizes settlement."
+  (let (commit done events)
+    (let* ((handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "terminal-gate"
+              :execution 'cooperative
+              :interactive-policy 'async
+              :runner (lambda (_handle _arguments _context) :deferred))
+             nil
+             :terminal-gate
+             (lambda (_handle state payload authorize)
+               (setq commit (list state payload authorize)))
+             :on-done (lambda (payload) (setq done payload))
+             :on-event (lambda (state payload)
+                         (push (list state payload) events)))))
+      (e-work-start-prepared handle)
+      (e-work-finish handle :result)
+      (should (equal (plist-get (e-work-status handle) :state) 'started))
+      (should (equal (e-work-handle-terminal-proposal handle)
+                     '(:state finished :payload :result)))
+      (should-not done)
+      (should-not events)
+      (should (functionp (nth 2 commit)))
+      (funcall (nth 2 commit))
+      (should (equal done :result))
+      (should (equal (plist-get (e-work-status handle) :state) 'finished))
+      (should (equal events '((finished :result)))))))
+
+(ert-deftest e-work-test-terminal-gate-first-proposal-wins-and-cancel-cancels-carrier ()
+  "A gated handle ignores late proposals and still cancels its carrier once."
+  (let (authorize (cancel-calls 0))
+    (let* ((handle
+            (e-work-prepare
+             (e-work-spec-create
+              :id "terminal-gate-race"
+              :execution 'cooperative
+              :interactive-policy 'async
+              :runner (lambda (_handle _arguments _context) :deferred))
+             nil
+             :terminal-gate
+             (lambda (_handle _state _payload commit)
+               (setq authorize commit)))))
+      (e-work-start-prepared handle)
+      (setf (e-work-handle-cancel-function
+             handle)
+            (lambda (_handle) (cl-incf cancel-calls)))
+      (e-work-finish handle :done)
+      (e-work-fail handle '(error "late"))
+      (should-not (e-work-handle-terminal-commit-p handle))
+      (e-work-cancel handle)
+      (should (= cancel-calls 1))
+      (should (equal (plist-get (e-work-status handle) :state) 'started))
+      (should (eq (plist-get (e-work-handle-terminal-proposal handle) :state)
+                  'finished))
+      (funcall authorize)
+      (should (equal (plist-get (e-work-status handle) :state) 'finished))
+      (should-not (e-work-fail handle '(error "later"))))))
+
 (ert-deftest e-work-test-activity-observer-precedes-deferred-progress-hook ()
   "A board-facing progress mailbox capture stays before general hook work."
   (let (events scheduled)

@@ -67,6 +67,21 @@
              :subscription-id (concat "sub-" participant-id)
              :publication-pending nil)))))
 
+(defun e-subagent-live-test--started-work (id)
+  "Return a started deferred Work handle for one live-owner test."
+  (e-work-start
+   (e-work-spec-create
+    :id id :execution 'cooperative :interactive-policy 'async
+    :owner 'e-subagent-live-test
+    :runner (lambda (_handle _arguments _context) :deferred))
+   nil))
+
+(defun e-subagent-live-test--finished-publication-work ()
+  "Return one already-finished Work handle for a publication stub."
+  (let ((work (e-subagent-live-test--started-work "publication")))
+    (e-work-finish work t)
+    work))
+
 (ert-deftest e-subagent-live-test-board-participant-key-and-capability-shape ()
   "Equal participant identities on two Boards remain independent capabilities."
   (let ((owner (e-subagent-live-create))
@@ -132,16 +147,33 @@
   "Ad-hoc terminal payload is published once, then live state is retired."
   (let* ((owner (e-subagent-live-create))
          (record (e-subagent-live-test--record "board" "session"))
-         (published nil))
-    (e-subagent-live-reserve-admission owner "board" "session")
-    (e-subagent-live-install owner "board" "session")
-    (cl-letf (((symbol-function 'e-subagent--publish-board-fact)
-               (lambda (_target &rest args) (push args published))))
-      (e-subagent--settle owner "board" "session" record 'target nil 'done
-                          :summary "bounded summary"
-                          :result '(:answer "ok")
-                          :outputs '((:kind artifact :uri "tmp://x"))) )
+         (published nil)
+         (report-state (list :report-admission nil :report nil
+                             :terminal-status nil :terminal-args nil))
+         (work (e-work-prepare (e-subagent--work-spec) nil)))
+    (e-subagent-live-reserve-admission owner "board" "session"
+                                       :work-handle work)
+    (e-subagent-live-install owner "board" "session"
+                             :work-handle work)
+    (e-work-install-terminal-gate
+     work
+     (e-subagent--terminal-gate owner "board" "session" record 'target
+                                 report-state nil))
+    (e-work-start-prepared work)
+    (cl-letf (((symbol-function 'e-board-sqlite-publication-target-valid-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-subagent--publish-board-fact)
+               (lambda (_target &rest args)
+                 (should (e-subagent-live-get owner "board" "session"))
+                 (push args published)
+                 (e-subagent-live-test--finished-publication-work))))
+      (e-subagent--settle-runner
+       record report-state work 'done
+       (list :summary "bounded summary"
+             :result '(:answer "ok")
+             :outputs '((:kind artifact :uri "tmp://x")))))
     (should-not (e-subagent-live-get owner "board" "session"))
+    (should (eq (plist-get (e-work-status work) :state) 'finished))
     (should (= 1 (length published)))
     (let ((attributes (plist-get (car published) :attributes)))
       (should (equal "bounded summary" (plist-get attributes :result-summary)))
@@ -159,19 +191,35 @@
          (assignment '(:run-id "run" :task-key "task" :attempt 0))
          (record (e-subagent-live-test--record "board" "session" assignment))
          (facts nil)
-         (reports nil))
-    (e-subagent-live-reserve-admission owner "board" "session")
-    (e-subagent-live-install owner "board" "session")
-    (cl-letf (((symbol-function 'e-subagent--publish-board-fact)
-               (lambda (_target &rest args) (push args facts)))
+         (reports nil)
+         (report-state (list :report-admission nil :report nil
+                             :terminal-status nil :terminal-args nil))
+         (work (e-work-prepare (e-subagent--work-spec) nil)))
+    (e-subagent-live-reserve-admission owner "board" "session"
+                                       :work-handle work)
+    (e-subagent-live-install owner "board" "session"
+                             :work-handle work)
+    (e-work-install-terminal-gate
+     work
+     (e-subagent--terminal-gate owner "board" "session" record 'target
+                                 report-state nil))
+    (e-work-start-prepared work)
+    (cl-letf (((symbol-function 'e-board-sqlite-publication-target-valid-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-subagent--publish-board-fact)
+               (lambda (_target &rest args)
+                 (should (e-subagent-live-get owner "board" "session"))
+                 (push args facts)
+                 (e-subagent-live-test--finished-publication-work)))
               ((symbol-function 'e-board-orchestration-actions-publish-terminal)
                (lambda (_target seen-assignment status &rest args)
-                 (setq reports (list seen-assignment status args))))
-              ((symbol-function 'e-subagent--effective-settlement)
-               (lambda (_state status args) (cons status args))))
-      (e-subagent--settle owner "board" "session" record 'target nil 'done
-                          :summary "canonical" :result '(:answer "ok")))
+                 (setq reports (list seen-assignment status args))
+                 (e-subagent-live-test--finished-publication-work))))
+      (e-subagent--settle-runner
+       record report-state work 'done
+       (list :summary "canonical" :result '(:answer "ok"))))
     (should-not (e-subagent-live-get owner "board" "session"))
+    (should (eq (plist-get (e-work-status work) :state) 'finished))
     (should (= 1 (length facts)))
     (should (equal '((:run-id "run" :task-key "task" :attempt 0)
                      done
@@ -225,17 +273,34 @@
   (let* ((owner (e-subagent-live-create))
          (record (e-subagent-live-test--record "board" "session"))
          (cancelled nil)
-         (facts nil))
-    (e-subagent-live-reserve-admission owner "board" "session")
+         (facts nil)
+         (work (e-work-prepare (e-subagent--work-spec) nil)))
+    (e-subagent-live-reserve-admission owner "board" "session"
+                                       :work-handle work)
     (e-subagent-live-install owner "board" "session"
-                             :cancel (lambda () (setq cancelled t)))
-    (cl-letf (((symbol-function 'e-subagent--publish-board-fact)
-               (lambda (_target &rest args) (push args facts)))
+                             :work-handle work)
+    (e-work-install-terminal-gate
+     work
+     (e-subagent--terminal-gate owner "board" "session" record 'target
+                                 (list :report-admission nil :report nil
+                                       :terminal-status nil :terminal-args nil)
+                                 nil))
+    (e-work-start-prepared work)
+    (setf (e-work-handle-cancel-function work)
+          (lambda (_handle) (setq cancelled t)))
+    (cl-letf (((symbol-function 'e-board-sqlite-publication-target-valid-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-subagent--publish-board-fact)
+               (lambda (_target &rest args)
+                 (should (e-subagent-live-get owner "board" "session"))
+                 (push args facts)
+                 (e-subagent-live-test--finished-publication-work)))
               ((symbol-function 'e-subagent--live-record)
                (lambda (_live _board _participant) record)))
       (e-subagent--cancel-and-retire owner "board" 'target "session"
                                      'interrupt "because"))
     (should cancelled)
+    (should (eq (plist-get (e-work-status work) :state) 'cancelled))
     (should-not (e-subagent-live-get owner "board" "session"))
     (should facts)))
 

@@ -33,6 +33,9 @@
 (define-error 'e-subagent-error "e subagent error")
 (define-error 'e-subagent-unknown-type
   "No spawnable subagent type is registered for id" 'e-subagent-error)
+(define-error 'e-subagent-persistence-suspect
+  "Subagent terminal publication did not become durable"
+  'e-subagent-error)
 
 (defvar e-subagent-runner--live-owner (e-subagent-live-create)
   "Private live execution owner shared by runner consumers and actions.
@@ -232,6 +235,15 @@ an explicit child harness or session policy always wins."
       (e-harness-set-session-options
        child-harness child-session-id child-options))))
 
+(defun e-subagent--safe-progress (on-progress event)
+  "Deliver child EVENT to ON-PROGRESS without affecting terminal settlement.
+Progress is observational only: a presentation callback that signals must not
+prevent the provider's terminal callback from reaching the Work gate."
+  (when on-progress
+    (condition-case nil
+        (funcall on-progress event)
+      (error nil))))
+
 (defun e-subagent-direct-runner (child-harness child-session-id prompt
                                                seed-messages on-settle &optional on-progress)
   "Prepare capabilities, seed, and start one non-blocking child turn.
@@ -252,15 +264,15 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
           (status &rest args)
           (unless settled
             (setq settled t)
-            (when on-progress
-              (funcall on-progress
-                       (pcase status
-                         ('done 'turn-finished)
-                         ('failed 'turn-failed)
-                         ('cancelled 'turn-cancelled))))
             (when subscription
               (e-chat-service-unsubscribe subscription))
-            (apply on-settle status args)))
+            (apply on-settle status args)
+            (e-subagent--safe-progress
+             on-progress
+             (pcase status
+               ('done 'turn-finished)
+               ('failed 'turn-failed)
+               ('cancelled 'turn-cancelled)))))
          (submit
           ()
           (unless settled
@@ -312,8 +324,8 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
                  ((or 'provider-request-started 'provider-request-finished
                       'tool-started 'tool-finished 'action-started
                       'action-finished 'action-failed 'turn-steered)
-                  (when on-progress
-                    (funcall on-progress (plist-get event :type))))
+                 (e-subagent--safe-progress
+                   on-progress (plist-get event :type)))
                  ('turn-finished
                   (finish 'done
                           :summary last-assistant))
@@ -494,6 +506,165 @@ finished result carries the compact summary and outputs."
 (defconst e-subagent--terminal-payload-byte-limit 4096
   "Maximum canonical bytes retained or published for one terminal payload.")
 
+(defun e-subagent--terminal-error-text (error)
+  "Return ERROR as bounded public terminal text.
+Internal Work failures remain typed conditions for `await' and diagnostics;
+detached runner records, Board reports, and dispatch results expose text so a
+consumer never has to print a condition list as if it were a string."
+  (cond
+   ((null error) nil)
+   ((stringp error) error)
+   ((and (consp error) (symbolp (car error)))
+    ;; Keep the condition identity in the bounded public string.  Durable
+    ;; Board consumers need to distinguish deadline, provider, and persistence
+    ;; failures even though the public result cannot carry a live condition.
+    (format "%s: %s" (car error) (e-work-error-message error)))
+   (t (condition-case nil
+          (e-work-error-message error)
+        (error (e-prin1-safe error))))))
+
+(defun e-subagent--public-terminal-args (args)
+  "Return ARGS with its optional error field projected to public text."
+  (if (plist-member args :error)
+      (plist-put (copy-tree args)
+                 :error (e-subagent--terminal-error-text
+                         (plist-get args :error)))
+    (copy-tree args)))
+
+(defun e-subagent--terminal-record (record report-state status args)
+  "Return detached terminal RECORD for STATUS and bounded ARGS.
+No Board or live-owner side effect occurs here.  The caller decides whether
+the record is published, retained for a gate, or immediately retired."
+  (pcase-let* ((`(,status . ,args)
+                (e-subagent--effective-settlement
+                 report-state status args)))
+    (setq args (e-subagent--bounded-terminal-args args))
+    (let* ((finished-at (float-time))
+           (terminal (copy-tree record)))
+      (setq terminal (plist-put terminal :status status))
+      (setq terminal (plist-put terminal :finished-at finished-at))
+      (setq terminal (plist-put terminal :last-turn-at finished-at))
+      (when (plist-member args :summary)
+        (setq terminal (plist-put terminal :result-summary
+                                  (plist-get args :summary))))
+      (when (plist-member args :outputs)
+        (setq terminal (plist-put terminal :outputs
+                                  (copy-tree (plist-get args :outputs)))))
+      (when (plist-member args :result)
+        (setq terminal (plist-put terminal :result
+                                  (copy-tree (plist-get args :result)))))
+      (when (plist-member args :error)
+        (setq terminal
+              (plist-put terminal :error
+                         (e-subagent--terminal-error-text
+                          (plist-get args :error)))))
+      terminal)))
+
+(defun e-subagent--terminal-publication-works (target terminal status)
+  "Start durable terminal publications for TERMINAL and return their Works.
+Run-bound children publish both the lifecycle fact and orchestration report;
+ad-hoc children publish one bounded lifecycle fact carrying the terminal
+result.  The returned list is intentionally the only value the gate awaits."
+  (let ((assignment (e-subagent--durable-assignment terminal)))
+    (if assignment
+        (list (e-subagent--publish-lifecycle target terminal nil)
+              (e-subagent--publish-terminal-report target terminal status))
+      (list (e-subagent--publish-lifecycle target terminal t)))))
+
+(defun e-subagent--terminal-gate
+    (live board-id participant-id record target report-state authorize-callback)
+  "Return a pre-start Work terminal gate for one spawned child.
+The first Work terminal proposal starts all required durable terminal
+publications.  Work settlement and private live retirement happen only after
+every publication has settled successfully.  A publication failure is
+converted into one typed composite failure so callers cannot mistake a
+provider result for a durable Board result."
+  (lambda (_handle state payload authorize)
+    (let* ((stored-status (plist-get report-state :terminal-status))
+           (stored-args (plist-get report-state :terminal-args))
+           (terminal-status (or stored-status state))
+           (terminal-args (or stored-args
+                              (pcase state
+                                ('finished (list :result payload))
+                                ('failed (list :error payload))
+                                (_ nil))))
+           (live-entry (e-subagent-live-get live board-id participant-id))
+           (assignment (e-subagent--durable-assignment record))
+           (target-valid (and target
+                              (e-board-sqlite-publication-target-valid-p
+                               target))))
+      (if (and (null assignment)
+               (or (null live-entry) (not target-valid)))
+          ;; An ad-hoc admission can settle before a live child exists.  It
+          ;; has no durable assignment.  If its optional audit target has also
+          ;; disappeared, local cancellation remains correct and must not be
+          ;; replaced by a publication-shape error.  In either case the Work
+          ;; gate remains the sole local owner.
+          (progn
+            (e-subagent-live-remove live board-id participant-id)
+            (funcall authorize)
+            (when authorize-callback
+              (funcall authorize-callback terminal-status
+                       (e-subagent--public-terminal-args terminal-args)
+                       nil)))
+        (condition-case error
+            (let* ((terminal
+                    (e-subagent--terminal-record
+                     record report-state terminal-status terminal-args))
+                   (publications
+                    (e-subagent--terminal-publication-works
+                     target terminal terminal-status)))
+              (e-work-await-set
+               publications
+               :mode 'all
+               :on-settle
+               (lambda (settled)
+                 (let ((failed
+                        (seq-find
+                         (lambda (work)
+                           (memq (plist-get (e-work-status work) :state)
+                                 '(failed cancelled)))
+                         (plist-get settled :done))))
+                   ;; Publication acknowledgement is the boundary after which
+                   ;; live retirement and Work settlement are both safe.
+                   (e-subagent-live-remove live board-id participant-id)
+                   (if failed
+                       (let ((composite
+                              (list
+                               'e-subagent-persistence-suspect
+                               "Subagent terminal publication failed"
+                               :participant-id participant-id
+                               :terminal-status terminal-status
+                               :publication-state
+                               (e-work-status failed))))
+                         (funcall authorize 'failed composite)
+                         (when authorize-callback
+                           (funcall authorize-callback
+                                    'failed
+                                    (list :error
+                                          (e-subagent--terminal-error-text
+                                           composite))
+                                    composite)))
+                     (funcall authorize)
+                     (when authorize-callback
+                       (funcall authorize-callback
+                                terminal-status
+                                (e-subagent--public-terminal-args
+                                 terminal-args)
+                                nil)))))))
+          (error
+           (e-subagent-live-remove live board-id participant-id)
+           (let ((composite
+                  (list 'e-subagent-persistence-suspect
+                        "Subagent terminal publication could not start"
+                        :participant-id participant-id
+                        :terminal-status terminal-status
+                        :publication-error error)))
+             (funcall authorize 'failed composite)
+             (when authorize-callback
+               (funcall authorize-callback
+                        'failed (list :error composite) composite)))))))))
+
 (defun e-subagent--bounded-terminal-args (args)
   "Return a bounded detached copy of terminal ARGS.
 
@@ -541,30 +712,28 @@ durable or public live-table projection."
      (t (cons status args)))))
 
 (defun e-subagent--settle-runner
-    (live board-id participant-id record target report-state work-handle
-         status args)
+    (record report-state work-handle status args)
   "Settle runner STATUS and ARGS through the report-admission boundary."
-  (pcase-let* ((`(,status . ,args)
+  (pcase-let* ((`(,effective-status . ,effective-args)
                 (e-subagent--effective-settlement
                  report-state status args)))
-    (setq args (e-subagent--bounded-terminal-args args))
-    (e-subagent--settle-work-handle work-handle status args)
-    (apply #'e-subagent--settle
-           live board-id participant-id record target report-state status args)))
-
-(defun e-subagent--deadline-publication-observer
-    (live board-id participant-id record target report-state work-handle)
-  "Return the runner-owned observer for WORK-HANDLE's deadline failure.
-Only the typed `e-work-deadline-exceeded' condition crosses this boundary.
-The Work timer remains responsible for failing and cancelling the carrier; this
-observer makes that one terminal settlement visible on the durable Board."
-  (lambda (_handle state payload)
-    (when (and (eq state 'failed)
-               (consp payload)
-               (eq (car payload) 'e-work-deadline-exceeded))
-      (e-subagent--settle-runner
-       live board-id participant-id record target report-state work-handle
-       'failed (list :error payload)))))
+    ;; The first runner callback owns the terminal proposal.  Keep its
+    ;; bounded arguments in the gate's closure so late provider callbacks
+    ;; cannot replace the payload while Board publication is in flight.  A
+    ;; late callback returns nil just as the pre-gate settlement path did.
+    (if (plist-get report-state :terminal-status)
+        nil
+      (setf (plist-get report-state :terminal-status) effective-status)
+      (setf (plist-get report-state :terminal-args)
+            (e-subagent--bounded-terminal-args effective-args))
+      (e-subagent--settle-work-handle
+       work-handle effective-status
+       (e-subagent--bounded-terminal-args effective-args))
+      ;; Preserve the runner callback's detached terminal record shape for
+      ;; existing consumers.  This is an observation value only; the Work gate
+      ;; still owns publication acknowledgement and private live retirement.
+      (e-subagent--terminal-record
+       record report-state effective-status effective-args))))
 
 (defun e-subagent--durable-assignment (record)
   "Return RECORD's persisted orchestration assignment, or nil."
@@ -586,55 +755,12 @@ retained in the private live owner."
      :error (plist-get record :error)
      :author (list :session-id (plist-get record :session-id)))))
 
-(defun e-subagent--settle
-    (live board-id participant-id record target report-state status &rest args)
-  "Publish one detached terminal settlement and remove live capabilities.
-A child-reported structured result is authoritative for this settlement, while
-the Board remains the durable authority.  Ad-hoc children publish their
-bounded terminal result in one lifecycle fact; run-bound children publish the
-existing orchestration terminal report.  A competing late callback is a
-no-op because live state has already been removed."
-  (pcase-let* ((`(,status . ,args)
-                (e-subagent--effective-settlement
-                 report-state status args)))
-    (setq args (e-subagent--bounded-terminal-args args))
-    (when (e-subagent-live-get live board-id participant-id)
-      (let* ((finished-at (float-time))
-             (terminal (copy-tree record))
-             (assignment (e-subagent--durable-assignment terminal)))
-        (setq terminal (plist-put terminal :status status))
-        (setq terminal (plist-put terminal :finished-at finished-at))
-        (setq terminal (plist-put terminal :last-turn-at finished-at))
-        (when (plist-member args :summary)
-          (setq terminal (plist-put terminal :result-summary
-                                    (plist-get args :summary))))
-        (when (plist-member args :outputs)
-          (setq terminal (plist-put terminal :outputs
-                                    (copy-tree (plist-get args :outputs)))))
-        (when (plist-member args :result)
-          (setq terminal (plist-put terminal :result
-                                    (copy-tree (plist-get args :result)))))
-        (when (plist-member args :error)
-          (setq terminal (plist-put terminal :error (plist-get args :error))))
-        (unwind-protect
-            (progn
-              ;; Run-bound terminal reports remain canonical.  The lifecycle
-              ;; observation still records terminal state but does not copy
-              ;; report payload into that path.
-              (unless assignment
-                (e-subagent--publish-lifecycle target terminal t))
-              (when assignment
-                (e-subagent--publish-lifecycle target terminal nil)
-                (e-subagent--publish-terminal-report target terminal status))
-              terminal)
-          (e-subagent-live-remove live board-id participant-id))))))
-
 (defun e-subagent--drive-turn
     (live board-id publication-target participant-id record
           parent-harness parent-session-id source-turn-id
           child-harness session-id prompt seed-messages runner report-state
           &optional work-handle on-running on-runner-started
-          on-runner-failure)
+          on-terminal)
   "Start one child turn and wire its settle + work handle.
 PUBLICATION-TARGET is the execution-owned durable Board destination.  RECORD
 is detached runner context; LIVE retains only the capabilities needed by this
@@ -675,9 +801,7 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
                             child-harness session-id prompt seed-messages
                             (lambda (status &rest args)
                               (e-subagent--settle-runner
-                               live board-id participant-id record
-                               publication-target report-state
-                               work-handle status args))
+                               record report-state work-handle status args))
                             (lambda (event)
                               (e-subagent--record-progress
                                live board-id participant-id work-handle event)))
@@ -692,19 +816,19 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
                                  ('failed 'turn-failed)
                                  ('cancelled 'turn-cancelled))))
                             (e-subagent--settle-runner
-                             live board-id participant-id record
-                             publication-target report-state
-                             work-handle status args))))))
+                             record report-state work-handle status args))))))
           (when (and (listp handle) (functionp (plist-get handle :cancel)))
             (let ((cancel (plist-get handle :cancel)))
               (e-subagent-live-update live board-id participant-id
                                       :cancel cancel)
-              ;; Deadline-aware child Work owns provider cancellation when its
-              ;; runtime timer expires.  Keep the no-deadline generic path's
-              ;; historical Work carrier behavior unchanged.
-              (when (plist-get (e-work-handle-context work-handle) :deadline)
-                (setf (e-work-handle-cancel-function work-handle)
-                      (lambda (_handle) (funcall cancel))))))
+              ;; Work owns provider cancellation for both deadline and
+              ;; explicit interrupt/shutdown paths.  The gate may have
+              ;; latched cancellation before the provider returned its handle;
+              ;; honor that request exactly once at installation time.
+              (setf (e-work-handle-cancel-function work-handle)
+                    (lambda (_handle) (funcall cancel)))
+              (when (e-work-handle-cancel-requested-p work-handle)
+                (ignore-errors (funcall cancel)))))
           ;; A dispatch consumer settles only after this provider invocation
           ;; returned successfully.  Publish its lifecycle running fact at
           ;; the same boundary; generic spawn callers retain their historical
@@ -716,18 +840,13 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
             (funcall on-runner-started (copy-tree record)))
           handle)
       (error
-       (e-subagent--settle-work-handle work-handle 'failed
-                                       (list :error (e-work-error-message error)))
-       (let ((terminal-record
-              (e-subagent--settle live board-id participant-id record
-                                  publication-target report-state 'failed
-                                  :error (e-work-error-message error))))
-         ;; The terminal report is queued by `e-subagent--settle' before this
-         ;; callback runs.  Pass its detached record so the dispatch-level
-         ;; retry uses the identical durable payload/idempotency hash rather
-         ;; than conflicting with the runner-owned publication.
-         (when on-runner-failure
-           (funcall on-runner-failure error terminal-record)))
+       (e-subagent--settle-runner
+        record report-state work-handle 'failed
+        (list :error (e-work-error-message error)))
+       ;; `on-terminal' is invoked by the Work gate after any required Board
+       ;; terminal publications have acknowledged; it must not become a second
+       ;; settlement owner here.
+       (ignore on-terminal)
        (list :runner-failure error)))))
 
 (cl-defun e-subagent-spawn
@@ -735,7 +854,7 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
           &key source-turn-id type prompt seed-messages label schedule runner
           run-id task-key attempt deadline project-root report-admission
           on-admitted on-running on-failure on-runner-started
-          on-runner-failure)
+          on-terminal)
   "Spawn a subagent and return its bounded admission result.
 LIVE owns only private process-local execution capabilities.  The child
 participant identity is its admitted session id, and is the only identity
@@ -795,7 +914,14 @@ the dispatch caller owns the policy that produced it."
                        :attempt attempt
                        :report-admission report-admission
                        :status 'queued))
-         (report-state (list :report-admission report-admission :report nil))
+         ;; Keep terminal slots present so `setf' can mutate the shared plist
+         ;; cell captured by the gate and report callbacks.  A missing plist
+         ;; key cannot be updated through `setf (plist-get ...)', while nil is
+         ;; the explicit pre-terminal sentinel.
+         (report-state (list :report-admission report-admission
+                             :report nil
+                             :terminal-status nil
+                             :terminal-args nil))
          (callbacks
           (list :record
                 (lambda () (copy-tree record))
@@ -808,12 +934,11 @@ the dispatch caller owns the policy that produced it."
          (pending
           (e-subagent--pending-result board-id participant-id work-handle))
          admission-work admitted-result)
-    (when (and deadline assignment)
-      (e-work-install-publication-observer
-       work-handle
-       (e-subagent--deadline-publication-observer
-        live board-id participant-id record producer-target report-state
-        work-handle)))
+    (e-work-install-terminal-gate
+     work-handle
+     (e-subagent--terminal-gate
+      live board-id participant-id record producer-target report-state
+      on-terminal))
     (e-subagent-live-reserve-admission
      live board-id participant-id
      :work-handle work-handle :assignment assignment :callbacks callbacks
@@ -839,65 +964,65 @@ the dispatch caller owns the policy that produced it."
       (e-work-on-settle
        admission-work
        (lambda (settled-admission)
-         (let ((status (e-work-status settled-admission)))
-           (pcase (plist-get status :state)
-             ('finished
-              (if (null (e-subagent-live-pending-admission
-                         live board-id participant-id))
-                  ;; A caller may cancel while admission is still pending.
-                  ;; The request-owned work handle has already been retired;
-                  ;; do not resurrect a live child when SQL later settles.
-                  nil
+         ;; Admission is a fenced transaction.  Once cancellation or another
+         ;; terminal path removes the reservation, every later SQL outcome is
+         ;; inert: it must not touch the child Work, on-failure, publication,
+         ;; or dispatch Work.  Keep this guard outside the state pcase so the
+         ;; failed and cancelled races are covered just like a late success.
+         (when (e-subagent-live-pending-admission
+                live board-id participant-id)
+           (let ((status (e-work-status settled-admission)))
+             (pcase (plist-get status :state)
+               ('finished
                 (condition-case error
                     (progn
-                    (e-subagent-live-install
-                     live board-id participant-id
-                     :harness child-harness :work-handle work-handle
-                     :callbacks callbacks :report-admission report-admission
-                     :assignment assignment)
-                    (e-subagent--publish-lifecycle producer-target record)
-                    (e-subagent--inherit-prompt-cache-policy
-                     parent-harness parent-session-id
-                     child-harness participant-id)
-                    (when on-admitted
-                      (funcall on-admitted (copy-tree record)))
-                    (let ((drive-result
-                           (e-subagent--drive-turn
-                            live board-id producer-target participant-id record
-                            parent-harness parent-session-id source-turn-id
-                            child-harness participant-id prompt seed-messages
-                            runner report-state work-handle on-running
-                            on-runner-started on-runner-failure)))
-                      ;; A synchronous provider-start error already settles
-                      ;; the child locally and durably.  Do not return an
-                      ;; admitted result for that path; the dispatch caller's
-                      ;; runner-failure callback owns its outer disposition.
-                      (unless (plist-member drive-result :runner-failure)
-                        (setq admitted-result (copy-tree record)))))
+                      (e-subagent-live-install
+                       live board-id participant-id
+                       :harness child-harness :work-handle work-handle
+                       :callbacks callbacks :report-admission report-admission
+                       :assignment assignment)
+                      (e-subagent--publish-lifecycle producer-target record)
+                      (e-subagent--inherit-prompt-cache-policy
+                       parent-harness parent-session-id
+                       child-harness participant-id)
+                      (when on-admitted
+                        (funcall on-admitted (copy-tree record)))
+                      (let ((drive-result
+                             (e-subagent--drive-turn
+                              live board-id producer-target participant-id record
+                              parent-harness parent-session-id source-turn-id
+                              child-harness participant-id prompt seed-messages
+                              runner report-state work-handle on-running
+                              on-runner-started)))
+                        ;; A synchronous provider-start error already settles
+                        ;; the child locally and durably.  Do not return an
+                        ;; admitted result for that path; the dispatch caller's
+                        ;; runner-failure callback owns its outer disposition.
+                        (unless (plist-member drive-result :runner-failure)
+                          (setq admitted-result (copy-tree record)))))
                   (error
                    (if (e-subagent-live-get live board-id participant-id)
                        (progn
-                         (e-subagent--settle-work-handle
-                          work-handle 'failed
-                          (list :error (e-work-error-message error)))
-                         (e-subagent--settle
-                          live board-id participant-id record producer-target
-                          report-state 'failed
-                          :error (e-work-error-message error)))
+                         (e-subagent--settle-runner
+                          record report-state work-handle 'failed
+                          (list :error (e-work-error-message error))))
                      (e-subagent-live-forget-admission
                       live board-id participant-id)
                      (e-work-fail work-handle error)
                      (when on-failure
-                       (funcall on-failure error pending)))))))
-             ('failed
-              (e-subagent-live-forget-admission live board-id participant-id)
-              (let ((admission-error (plist-get status :error)))
-                (e-work-fail work-handle admission-error)
-                (when on-failure
-                  (funcall on-failure admission-error pending))))
-             ('cancelled
-              (e-subagent-live-forget-admission live board-id participant-id)
-              (e-work-cancel work-handle)))))))
+                       (funcall on-failure error pending))))))
+               ('failed
+                (e-subagent-live-forget-admission live board-id participant-id)
+                (let ((admission-error (plist-get status :error)))
+                  (e-work-fail work-handle admission-error)
+                  (when on-failure
+                    (funcall on-failure admission-error pending))))
+               ('cancelled
+                ;; Fence the pending reservation before settling Work.  Any
+                ;; late successful acknowledgement observes no reservation and
+                ;; therefore cannot install a child or invoke a dispatch path.
+                (e-subagent-live-forget-admission live board-id participant-id)
+                (e-work-cancel work-handle))))))))
     (or admitted-result
         (let ((work-status (e-work-status work-handle)))
           (if (eq (plist-get work-status :state) 'failed)
@@ -1188,16 +1313,48 @@ passed as one positive absolute timestamp to the admitted child Work."
                               (e-subagent-runner--dispatch-publish-running
                                outer target board-id assignment run-id task-key
                                attempt record))
-                            :on-runner-failure
-                            (lambda (failure terminal-record)
-                              (e-subagent-runner--dispatch-publish-failure
-                               outer target board-id assignment run-id task-key
-                               attempt failure terminal-record))
-                            :on-failure
-                            (lambda (failure _pending)
-                              (e-subagent-runner--dispatch-publish-failure
-                               outer target board-id assignment run-id task-key
-                               attempt failure)))
+                            :on-terminal
+                            (lambda (status args persistence-error)
+                              (when (e-subagent-runner--dispatch-work-active-p
+                                     outer)
+                                (pcase status
+                                  ;; Cancellation is a durable domain outcome,
+                                  ;; not cancellation of the dispatch Work
+                                  ;; itself.  Keep the outer Work FINISHED so
+                                  ;; callers can aggregate a bounded
+                                  ;; :status cancelled result with the other
+                                  ;; terminal reports.
+                                  ('cancelled
+                                   (e-work-finish
+                                    outer
+                                    (list :status 'cancelled
+                                          :board-id board-id
+                                          :run-id run-id
+                                          :task-key task-key
+                                          :attempt attempt)))
+                                  ('failed
+                                   (if persistence-error
+                                       (e-work-fail outer persistence-error)
+                                     (let ((failure (plist-get args :error)))
+                                       (e-work-finish
+                                        outer
+                                        (list :status 'failed
+                                              :board-id board-id
+                                              :run-id run-id
+                                              :task-key task-key
+                                              :attempt attempt
+                                              :error
+                                              (cond
+                                               ((stringp failure) failure)
+                                               (failure
+                                                (e-work-error-message failure))
+                                               (t "Subagent dispatch failed")))))))
+                                  (_ (e-work-finish outer
+                                                    (list :status status
+                                                          :board-id board-id
+                                                          :run-id run-id
+                                                          :task-key task-key
+                                                          :attempt attempt)))))))
                          (error
                           (e-subagent-runner--dispatch-publish-failure
                            outer target board-id assignment run-id task-key
@@ -1249,7 +1406,6 @@ fails."
                        (e-subagent-live-pending-admission
                         live board-id participant-id)))
          (record (e-subagent--live-record live board-id participant-id))
-         (cancel (and entry (plist-get entry :cancel)))
          (work-handle (and (or entry pending)
                            (plist-get (or entry pending) :work-handle)))
          snapshot)
@@ -1259,20 +1415,14 @@ fails."
         (setq snapshot
               (e-subagent--record-intervention
                publication-target participant-id record action reason))
-      (when (functionp cancel)
-        (funcall cancel))
-      (when (e-subagent-live-get live board-id participant-id)
-        (e-subagent--settle-work-handle work-handle 'cancelled nil)
-        (setq snapshot
-              (e-subagent--settle
-               live board-id participant-id record publication-target nil
-               'cancelled)))
+      ;; Work is the only settlement owner.  Fence pending admission before
+      ;; cancellation, then let its terminal gate publish/retire the live
+      ;; child after Board acknowledgement.
       (when pending
+        (e-subagent-live-forget-admission live board-id participant-id))
+      (when work-handle
         (e-work-cancel work-handle)
-        (e-subagent-live-forget-admission live board-id participant-id)
-        (setq snapshot (plist-put (copy-tree record) :status 'cancelled)))
-      (unless (e-subagent-live-get live board-id participant-id)
-        (e-subagent-live-remove live board-id participant-id)))
+        (setq snapshot (plist-put (copy-tree record) :status 'cancelled))))
     snapshot))
 
 (defun e-subagent-interrupt

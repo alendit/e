@@ -104,6 +104,10 @@
    callbacks
    publication-observer
    activity-observer
+   cancel-requested-p
+   terminal-gate
+   terminal-proposal
+   terminal-commit-p
    hook-dispatcher
    hook-policies
    hook-sequence
@@ -458,6 +462,38 @@ ordering after ownership has been established."
   (setf (e-work-handle-publication-observer handle) observer)
   handle)
 
+(defun e-work-install-terminal-gate (handle gate)
+  "Install the optional pre-start terminal GATE for HANDLE.
+
+GATE is called once as
+
+  (GATE HANDLE STATE PAYLOAD COMMIT)
+
+when the first terminal proposal arrives.  It owns any asynchronous
+authorization or durability operation and must call COMMIT exactly once when
+that operation is acknowledged.  Until then HANDLE remains nonterminal and
+its normal deadline/cancellation owner may continue to request underlying
+carrier cancellation.  A gate is deliberately consumer-shaped: the work
+substrate does not know what the owner is authorizing or persisting."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (unless (functionp gate)
+    (signal 'wrong-type-argument (list 'functionp gate)))
+  (when (or (e-work-handle-started-p handle)
+            (e-work-handle-terminal-gate handle))
+    (signal 'e-work-prepared-start-invalid (list handle)))
+  (setf (e-work-handle-terminal-gate handle) gate)
+  handle)
+
+(defun e-work-remove-terminal-gate (handle gate)
+  "Remove HANDLE's exact pre-start terminal GATE.
+Return non-nil only when GATE was the currently installed owner gate."
+  (unless (e-work-handle-p handle)
+    (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
+  (when (eq (e-work-handle-terminal-gate handle) gate)
+    (setf (e-work-handle-terminal-gate handle) nil)
+    t))
+
 (defun e-work-remove-publication-observer (handle observer)
   "Remove HANDLE's publication OBSERVER when it is still the exact observer.
 Return non-nil only when this call removed its own observer.  The identity
@@ -576,31 +612,75 @@ carrier result or suppresses ordinary cleanup/callbacks."
     (e-work--callback handle :on-event 'progress payload)
     handle))
 
+(defun e-work--commit-terminal (handle state payload)
+  "Commit the already-authorized terminal STATE/PAYLOAD for HANDLE.
+This is the only function which may perform terminal lifecycle mutation for a
+gated handle.  It intentionally bypasses the underlying carrier cancellation
+path; `e-work-cancel' requests that side effect before or alongside the gate,
+while COMMIT only settles the caller-visible lifecycle and runs cleanup."
+  (when (and (e-work-handle-p handle)
+             (not (e-work-handle-terminal-commit-p handle))
+             (not (e-request-terminal-p (e-work-handle-lifecycle handle))))
+    (setf (e-work-handle-terminal-commit-p handle) t)
+    (when (e-request--settle (e-work-handle-lifecycle handle) state payload)
+      (e-work--retire-unsettled handle)
+      (pcase state
+        ('finished (setf (e-work-handle-result handle) payload))
+        ((or 'failed 'cancelled)
+         (setf (e-work-handle-error handle) payload)))
+      (e-work--terminal-event handle state payload)
+      (pcase state
+        ('finished (e-work--callback handle :on-done payload))
+        ('failed (e-work--callback handle :on-error payload)))
+      handle)))
+
+(defun e-work--propose-terminal (handle state payload)
+  "Propose terminal STATE/PAYLOAD for HANDLE, honoring its optional gate.
+The first proposal wins while a gate is active.  Return HANDLE only when this
+call accepted the first proposal or committed an ungated terminal state."
+  (cond
+   ((not (e-work-handle-p handle)) nil)
+   ((or (e-request-terminal-p (e-work-handle-lifecycle handle))
+        (e-work-handle-terminal-commit-p handle)) nil)
+   ((e-work-handle-terminal-proposal handle) nil)
+   ((e-work-handle-terminal-gate handle)
+    (setf (e-work-handle-terminal-proposal handle)
+          (list :state state :payload payload))
+    (let ((commit
+           (lambda (&optional authorized-state authorized-payload)
+             (e-work--commit-terminal
+              handle
+              (or authorized-state state)
+              (if authorized-state authorized-payload payload)))))
+      (funcall (e-work-handle-terminal-gate handle)
+               handle state payload commit))
+    handle)
+   (t
+    (e-work--commit-terminal handle state payload))))
+
 (defun e-work-finish (handle payload)
   "Finish HANDLE with PAYLOAD, ignoring stale late callbacks."
-  (when (and (e-work-handle-p handle)
-             (e-request-finish (e-work-handle-lifecycle handle) payload))
-    (e-work--retire-unsettled handle)
-    (setf (e-work-handle-result handle) payload)
-    (e-work--terminal-event handle 'finished payload)
-    (e-work--callback handle :on-done payload)
-    handle))
+  (e-work--propose-terminal handle 'finished payload))
 
 (defun e-work-fail (handle condition)
   "Fail HANDLE with CONDITION, ignoring stale late callbacks."
-  (when (and (e-work-handle-p handle)
-             (e-request-fail (e-work-handle-lifecycle handle) condition))
-    (e-work--retire-unsettled handle)
-    (setf (e-work-handle-error handle) condition)
-    (e-work--terminal-event handle 'failed condition)
-    (e-work--callback handle :on-error condition)
-    handle))
+  (e-work--propose-terminal handle 'failed condition))
 
 (defun e-work-cancel (handle)
   "Cancel HANDLE and its underlying carrier, if any."
   (unless (e-work-handle-p handle)
     (signal 'wrong-type-argument (list 'e-work-handle-p handle)))
-  (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
+  (if (e-work-handle-terminal-gate handle)
+      (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
+        ;; Latch cancellation before invoking the provider.  A provider may
+        ;; synchronously report its own late terminal callback from this call;
+        ;; the gate's first-proposal rule must keep that callback inert.
+        (unless (e-work-handle-terminal-proposal handle)
+          (e-work--propose-terminal handle 'cancelled '(:status cancelled)))
+        (unless (e-work-handle-cancel-requested-p handle)
+          (setf (e-work-handle-cancel-requested-p handle) t)
+          (e-work--cancel-underlying handle)))
+    (unless (e-request-terminal-p (e-work-handle-lifecycle handle))
     (let* ((classified (e-work-handle-hook-dispatcher handle))
            (cancel-error (unless classified (e-work--cancel-underlying handle)))
            (payload (if cancel-error
@@ -611,7 +691,7 @@ carrier result or suppresses ordinary cleanup/callbacks."
         (setf (e-work-handle-error handle) payload)
         (e-work--terminal-event handle 'cancelled payload)
         (when classified
-          (e-work--cancel-underlying handle)))))
+          (e-work--cancel-underlying handle))))))
   handle)
 
 (defun e-work-status (handle)
@@ -1401,7 +1481,8 @@ detach branch, and the child stays ignorant of detachment entirely."
 
 (cl-defun e-work-prepare
     (spec arguments &key context on-done on-error on-progress on-event
-          publication-observer activity-observer hook-dispatcher hook-policies)
+          publication-observer activity-observer terminal-gate
+          hook-dispatcher hook-policies)
   "Prepare SPEC with ARGUMENTS and return its unstarted `e-work-handle'.
 Preparation allocates the canonical work identity and installs terminal
 observers without invoking a carrier.  Use `e-work-start-prepared' exactly once
@@ -1441,6 +1522,7 @@ after any owner enrollment has committed."
                              :on-event on-event)
             :publication-observer publication-observer
             :activity-observer activity-observer
+            :terminal-gate terminal-gate
             :hook-sequence 0
             :hard-hook-count 0)))
     (when hook-dispatcher
@@ -1485,7 +1567,8 @@ after a prior start, no carrier runner is invoked."
 
 (cl-defun e-work-start
     (spec arguments &key context on-done on-error on-progress on-event
-          publication-observer activity-observer hook-dispatcher hook-policies)
+          publication-observer activity-observer terminal-gate
+          hook-dispatcher hook-policies)
   "Prepare then start SPEC with ARGUMENTS and return its `e-work-handle'.
 This compatibility convenience preserves the one-call API.  Owners that must
 enroll work before its runner can settle use `e-work-prepare' followed by
@@ -1499,6 +1582,7 @@ enroll work before its runner can settle use `e-work-prepare' followed by
                    :on-event on-event
                    :publication-observer publication-observer
                    :activity-observer activity-observer
+                   :terminal-gate terminal-gate
                    :hook-dispatcher hook-dispatcher
                    :hook-policies hook-policies)
    :arguments arguments

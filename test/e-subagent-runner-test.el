@@ -222,6 +222,24 @@
   (when-let ((identity (e-subagent-live-find-identity live participant-id)))
     (e-subagent-live-work-handle live (car identity) participant-id)))
 
+(defun e-subagent-runner-test--await-work-state (handle state)
+  "Wait boundedly for HANDLE to reach STATE and return HANDLE."
+  (should
+   (e-chat-test--wait-until
+    (lambda ()
+      (eq (plist-get (e-work-status handle) :state) state))
+    5.0))
+  handle)
+
+(defun e-subagent-runner-test--await-retired (live participant-id)
+  "Wait boundedly until PARTICIPANT-ID has no private live entry."
+  (should
+   (e-chat-test--wait-until
+    (lambda ()
+      (null (gethash participant-id
+                     (e-subagent-runner-test--live-entries live))))
+    5.0)))
+
 (defun e-subagent-runner-test--live-child-harness (live participant-id)
   "Return PARTICIPANT-ID's child harness."
   (let ((board-id (e-subagent-runner-test--board-id live participant-id)))
@@ -312,15 +330,6 @@
   (e-subagent-send
    live (e-subagent-runner-test--board-id live participant-id)
    participant-id prompt))
-
-(defun e-subagent-runner-test--settle
-    (live publication-target participant-id status &rest arguments)
-  "Settle PARTICIPANT-ID through its detached runner context in tests."
-  (when-let* ((entry (e-subagent-runner-test--entry live participant-id))
-              (record (e-subagent-runner-test--record-from-entry entry 'running)))
-    (e-subagent--settle
-     live (plist-get entry :board-id) participant-id record
-     publication-target nil status arguments)))
 
 (ert-deftest e-subagent-runner-test-lifecycle-key-uses-durable-session-id ()
   "Restarted process-local child ids cannot collide in durable Board facts."
@@ -461,9 +470,8 @@
         (e-work-finish admission '(:id "child"))
         (should (= running-calls 1))
         (should (= early-failure-calls 0))
-        (should (eq (plist-get (e-work-status handle) :state) 'failed))
-        (should-not (gethash participant-id
-                             (e-subagent-runner-test--live-entries live)))
+        (e-subagent-runner-test--await-work-state handle 'failed)
+        (e-subagent-runner-test--await-retired live participant-id)
         ;; Admission and all terminal history are durable even though live
         ;; execution coordination is gone.
         (let (records running terminal)
@@ -499,10 +507,6 @@
               (should
                (string-match-p "runner start exploded"
                                (plist-get payload :error))))
-            (e-subagent-runner-test--settle
-             live (e-subagent-runner-test--publication-target
-                       parent "parent-1")
-             participant-id 'failed :error "late")
             (should
              (= (cl-count-if
                  (lambda (record)
@@ -686,8 +690,7 @@
         (let ((final (funcall settle 'done :summary "3 issues found")))
           (should (eq (plist-get final :status) 'done))
           (should (equal (plist-get final :result-summary) "3 issues found"))
-          (should-not (gethash participant-id
-                               (e-subagent-runner-test--live-entries live))))))))
+          (e-subagent-runner-test--await-retired live participant-id))))))
 
 (ert-deftest e-subagent-runner-test-report-overrides-final-message ()
   "A child-reported result is authoritative over a later final message."
@@ -851,9 +854,14 @@
            terminal-calls)
       (e-harness-test-create-session parent :id "parent-1")
       (cl-letf (((symbol-function
-                  'e-board-orchestration-actions-publish-terminal)
+                 'e-board-orchestration-actions-publish-terminal)
                  (lambda (_target assignment status &rest arguments)
-                   (push (list assignment status arguments) terminal-calls))))
+                   (push (list assignment status arguments) terminal-calls)
+                   (let ((work
+                          (e-subagent-runner-test--deferred-work
+                           "held-terminal-report")))
+                     (e-work-finish work t)
+                     work))))
         (let* ((record
                 (e-subagent-runner-test--spawn
                  live parent "parent-1"
@@ -868,11 +876,10 @@
           (should (eq (plist-get terminal :status) 'failed))
           (should (string-match-p "accepted report"
                                   (plist-get terminal :error)))
-          (should (eq (plist-get (e-work-status handle) :state) 'failed))
+          (e-subagent-runner-test--await-work-state handle 'failed)
           (should (= (length terminal-calls) 1))
           (should (eq (cadar terminal-calls) 'failed))
-          (should-not (gethash participant-id
-                               (e-subagent-runner-test--live-entries live)))
+          (e-subagent-runner-test--await-retired live participant-id)
           ;; A competing terminal callback cannot publish or settle twice.
           (should-not (funcall settle 'done :summary "late"))
           (should (= (length terminal-calls) 1)))))))
@@ -950,15 +957,13 @@
           (should (eq (plist-get failure :status) 'failed))
           (should (equal (plist-get failure :error) "provider failed"))
           (should (eq (plist-get cancellation :status) 'cancelled))
-          (should (eq (plist-get (e-work-status failed-handle) :state) 'failed))
-          (should (eq (plist-get (e-work-status cancelled-handle) :state)
-                      'cancelled))
-          (should-not
-           (gethash (plist-get failed :participant-id)
-                    (e-subagent-runner-test--live-entries live)))
-          (should-not
-           (gethash (plist-get cancelled :participant-id)
-                    (e-subagent-runner-test--live-entries live))))))))
+          (e-subagent-runner-test--await-work-state failed-handle 'failed)
+          (e-subagent-runner-test--await-work-state
+           cancelled-handle 'cancelled)
+          (e-subagent-runner-test--await-retired
+           live (plist-get failed :participant-id))
+          (e-subagent-runner-test--await-retired
+           live (plist-get cancelled :participant-id)))))))
 
 (ert-deftest e-subagent-runner-test-interrupt-and-shutdown ()
   "Interrupt calls the cancel function and marks the record cancelled."
@@ -979,10 +984,12 @@
                 live
                 (e-subagent-runner-test--publication-target parent "parent-1")
                 participant-id)))
-          (should (eq (plist-get terminal :status) 'cancelled)))
+        (should (eq (plist-get terminal :status) 'cancelled)))
         (should cancelled)
-        (should-not (gethash participant-id
-                             (e-subagent-runner-test--live-entries live)))))))
+        (e-subagent-runner-test--await-work-state
+         (e-subagent-runner-test--live-work-handle live participant-id)
+         'cancelled)
+        (e-subagent-runner-test--await-retired live participant-id)))))
 
 (ert-deftest e-subagent-runner-test-interrupt-cleans-up-when-audit-target-fails ()
   "Explicit cancellation is not conditional on Board audit availability."
@@ -1005,9 +1012,8 @@
          (e-subagent-runner-test--interrupt live nil participant-id "audit unavailable")
          :type 'wrong-type-argument)
         (should cancelled)
-        (should (eq (plist-get (e-work-status work) :state) 'cancelled))
-        (should-not (gethash participant-id
-                             (e-subagent-runner-test--live-entries live)))
+        (e-subagent-runner-test--await-work-state work 'cancelled)
+        (e-subagent-runner-test--await-retired live participant-id)
         (should-not (e-subagent-runner-test--live-list live "parent-1"))))))
 
 (ert-deftest e-subagent-runner-test-action-interrupt-cleans-up-without-binding ()
@@ -1035,9 +1041,8 @@
           (list :participant-id participant-id :reason "parent view closed"))
          :type 'e-subagent-error)
         (should cancelled)
-        (should (eq (plist-get (e-work-status work) :state) 'cancelled))
-        (should-not (gethash participant-id
-                             (e-subagent-runner-test--live-entries live)))))))
+        (e-subagent-runner-test--await-work-state work 'cancelled)
+        (e-subagent-runner-test--await-retired live participant-id)))))
 
 (ert-deftest e-subagent-runner-test-action-interrupt-rejects-ambiguous-binding-loss ()
   "A missing Board binding never selects an arbitrary same-id child."
@@ -1149,8 +1154,7 @@
                (participant-id (plist-get record :participant-id)))
           (funcall (plist-get (car captured) :on-settle)
                    'failed :error "boom")
-          (should-not (gethash participant-id
-                               (e-subagent-runner-test--live-entries live)))
+          (e-subagent-runner-test--await-retired live participant-id)
           (should-error (e-subagent-runner-test--send live participant-id "follow up")
                         :type 'e-subagent-live-error)
           (should-not queued))
@@ -1161,6 +1165,7 @@
                         :runner (e-subagent-runner-test--capturing-runner captured)))
                (participant-id (plist-get record :participant-id)))
           (funcall (plist-get (car captured) :on-settle) 'done :summary "ok")
+          (e-subagent-runner-test--await-retired live participant-id)
           (should-not (gethash participant-id
                                (e-subagent-runner-test--live-entries live)))
           (should-error (e-subagent-runner-test--send live participant-id "follow up")
@@ -1386,7 +1391,7 @@ report is child-side and must not be on the parent surface."
         (should-not (e-request-terminal-p (e-work-handle-lifecycle handle)))
         (funcall (plist-get (car captured) :on-settle)
                  'done :summary "done" :outputs [:x])
-        (should (eq (plist-get (e-work-status handle) :state) 'finished))
+        (e-subagent-runner-test--await-work-state handle 'finished)
         (should (equal (plist-get (plist-get (e-work-status handle) :result)
                                   :summary)
                        "done"))))))
@@ -1406,7 +1411,7 @@ report is child-side and must not be on the parent surface."
              (handle (e-subagent-runner-test--live-work-handle
                       live (plist-get record :participant-id))))
         (funcall (plist-get (car captured) :on-settle) 'failed :error "boom")
-        (should (eq (plist-get (e-work-status handle) :state) 'failed))))))
+        (e-subagent-runner-test--await-work-state handle 'failed)))))
 
 (ert-deftest e-subagent-runner-test-waitable-resolver-returns-handle ()
   "The registered `subagent' scheme resolves an id to its work handle."
@@ -1458,15 +1463,11 @@ report is child-side and must not be on the parent surface."
           (should (equal (plist-get progress :summary) "Finished tool"))
           (should (<= (length (prin1-to-string progress)) 4096)))
         (let ((finished
-               (cl-letf (((symbol-function 'float-time)
-                          (lambda (&optional _) 300.0)))
-                 (e-subagent-runner-test--settle
-                  live
-                  (e-subagent-runner-test--publication-target parent "parent-1")
-                  participant-id 'done :summary "done"))))
+               (funcall (plist-get (car captured) :on-settle)
+                        'done :summary "done")))
           (should (eq (plist-get finished :status) 'done))
-          (should-not (gethash participant-id
-                               (e-subagent-runner-test--live-entries live))))))))
+          (e-subagent-runner-test--await-work-state work-handle 'finished)
+          (e-subagent-runner-test--await-retired live participant-id))))))
 
 (ert-deftest e-subagent-runner-test-direct-runner-ignores-reasoning-deltas ()
   "The direct runner maps meaningful lifecycle events but not reasoning deltas."
@@ -1659,8 +1660,10 @@ report is child-side and must not be on the parent surface."
                 (e-subagent-runner-test--publication-target parent "parent-1")
                 participant-id "No progress after steer.")))
           (should (eq (plist-get terminal :status) 'cancelled)))
-        (should-not (gethash participant-id
-                             (e-subagent-runner-test--live-entries live)))))))
+        (e-subagent-runner-test--await-work-state
+         (e-subagent-runner-test--live-work-handle live participant-id)
+         'cancelled)
+        (e-subagent-runner-test--await-retired live participant-id)))))
 
 (ert-deftest e-subagent-runner-test-durable-report-precedes-local-settlement ()
   "A structured durable report is published once before the live settles."
@@ -1675,6 +1678,7 @@ report is child-side and must not be on the parent surface."
                       :runner (e-subagent-runner-test--capturing-runner captured)))
              (child-session-id (plist-get record :session-id))
              (participant-id (plist-get record :participant-id))
+             (handle (e-subagent-runner-test--live-work-handle live participant-id))
              (settle (plist-get (car captured) :on-settle))
              (live-entry (gethash participant-id
                                   (e-subagent-runner-test--live-entries live))))
@@ -1688,14 +1692,13 @@ report is child-side and must not be on the parent surface."
                                :status)
                     'running))
         (funcall settle 'done :summary "later final")
-        (should-not (gethash (plist-get record :participant-id)
-                             (e-subagent-runner-test--live-entries live)))
-        (should (zerop (hash-table-count
-                        (e-subagent-runner-test--live-pending-entries live))))
-        (should-not (e-subagent-runner-test--live-order live))
-        (should-not (e-subagent-runner-test--live-list live))
-        (should-not (e-subagent-runner-test--live-work-handle
-                     live (plist-get record :participant-id)))
+        ;; Terminal publication is the acknowledgement barrier: while Board
+        ;; storage is in flight, the Work and private live entry remain
+        ;; nonterminal/live.
+        (should (e-request-lifecycle-progress
+                 (e-work-handle-lifecycle handle)))
+        (should (gethash (plist-get record :participant-id)
+                         (e-subagent-runner-test--live-entries live)))
         (let (reports)
           (should
            (e-chat-test--wait-until
@@ -1709,7 +1712,16 @@ report is child-side and must not be on the parent surface."
             5.0))
           (should (= (length reports) 1))
           (should (equal (plist-get (plist-get (car reports) :payload) :summary)
-                         "reported")))))))
+                         "reported")))
+        (e-subagent-runner-test--await-work-state handle 'finished)
+        (e-subagent-runner-test--await-retired
+         live (plist-get record :participant-id))
+        (should (zerop (hash-table-count
+                        (e-subagent-runner-test--live-pending-entries live))))
+        (should-not (e-subagent-runner-test--live-order live))
+        (should-not (e-subagent-runner-test--live-list live))
+        (should-not (e-subagent-runner-test--live-work-handle
+                     live (plist-get record :participant-id)))))))
 
 (ert-deftest e-subagent-runner-test-board-dispatch-publishes-running-after-admission ()
   "Board dispatch settles only after queued and running facts are durable."

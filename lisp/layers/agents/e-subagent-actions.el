@@ -77,8 +77,16 @@ inventory or terminal projection.")
 
 (defun e-subagent-actions--publication-target (context)
   "Return CONTEXT's explicit parent-session SQL publication target."
-  (e-subagent-publication-target
-   (plist-get context :harness) (plist-get context :session-id)))
+  (condition-case error
+      (e-subagent-publication-target
+       (plist-get context :harness) (plist-get context :session-id))
+    (error
+     ;; Keep the action's public domain error stable when the parent Board
+     ;; closes between lookup and audit publication.  The cancellation wrapper
+     ;; still requests child cancellation with a nil audit target before this
+     ;; error is returned to the caller.
+     (signal 'e-subagent-error
+             (list "Parent Board publication target is unavailable" error)))))
 
 (defun e-subagent-actions--board-id (context)
   "Return CONTEXT's durable Board id."
@@ -115,11 +123,15 @@ record live."
       (condition-case cancellation-error
           (funcall operation live board-id nil participant-id reason)
         (error
-         ;; A nil audit target is expected to reject publication after the
-         ;; runner has cancelled and removed the live record.  Preserve any
-         ;; other defect that prevented that required cleanup.
-         (when (e-subagent-live-get live board-id participant-id)
-           (signal (car cancellation-error) (cdr cancellation-error)))))
+        ;; A nil audit target is expected to reject the intervention
+        ;; publication.  The runner has still requested cancellation before
+        ;; that audit attempt; preserve the original public target error
+        ;; rather than leaking the audit target's low-level type error.
+        (unless (and (eq (car cancellation-error) 'wrong-type-argument)
+                     (memq (cadr cancellation-error)
+                           '(e-board-sqlite-publication-target
+                             e-board-sqlite-publication-target-p)))
+          (signal (car cancellation-error) (cdr cancellation-error)))))
       (signal (car target-error) (cdr target-error)))))
 
 (defun e-subagent-actions--spawn (live context arguments)
