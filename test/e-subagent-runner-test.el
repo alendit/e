@@ -752,7 +752,10 @@ terminal Board publications are held and after their acknowledgement."
              (board-id (e-chat-service-binding-board-id binding))
              (target (e-subagent-runner-test--publication-target
                       parent "parent-1"))
-             (provider-error '(e-work-deadline-exceeded "provider failure"))
+             (provider-error
+              (list 'e-work-deadline-exceeded
+                    (apply #'concat (make-list 250 "🙂́"))))
+             (publication-error-text (apply #'concat (make-list 300 "é́")))
              (original-lifecycle
               (symbol-function 'e-subagent--publish-lifecycle))
              work participant-id child-work)
@@ -809,9 +812,8 @@ terminal Board publications are held and after their acknowledgement."
           (e-work-finish held-lifecycle t)
           (e-work-fail
            held-report
-           '(e-board-sqlite-error
-             "terminal publication failed"
-             :metadata (:arbitrary-object ignored)))
+           (list 'e-board-sqlite-error publication-error-text
+                 :metadata (list :arbitrary-object publication-error-text)))
           (should
            (e-chat-test--wait-until
             (lambda ()
@@ -831,7 +833,14 @@ terminal Board publications are held and after their acknowledgement."
                       'e-board-sqlite-error))
           (should (eq (plist-get state :state) 'failed))
           (should-not (plist-member state :result))
-          (should-not (plist-member state :metadata)))))))
+          (should-not (plist-member state :metadata))
+          (should-not (plist-member state :error))
+          (should-not
+           (e-subagent-live-get
+            (e-subagent-runner-live-owner) board-id participant-id))
+          (should
+           (<= (string-bytes (e-runtime-store-codec-encode child-error))
+               e-subagent--persistence-suspect-byte-limit)))))))
 
 (ert-deftest e-subagent-runner-test-provider-failure-wins-over-late-deadline ()
   "A provider failure latched first is not reclassified by its deadline."
@@ -2066,6 +2075,37 @@ child Work normally."
           (should (= projection-calls 1002))
           (should-not (e-subagent-live-get live board-id participant-id)))))))
 
+(ert-deftest e-subagent-runner-test-progress-diagnostic-uses-utf8-closed-descriptor ()
+  "Progress diagnostics bound UTF-8 bytes without retaining event payloads."
+  (let* ((work (e-work-prepare (e-subagent--work-spec) nil))
+         (event-type (propertize
+                      (apply #'concat (make-list 400 "🙂́"))
+                      'face 'bold))
+         (error-text (propertize
+                      (apply #'concat (make-list 400 "é́"))
+                      'face 'italic))
+         (event (list :type event-type :payload (current-buffer)))
+         (diagnostic (e-subagent--progress-diagnostic
+                      event (list 'e-work-error error-text))))
+    (e-work-start-prepared work)
+    (should (equal (plist-get diagnostic :event)
+                   (e-subagent--utf8-byte-prefix
+                    event-type e-subagent--progress-diagnostic-byte-limit)))
+    (should-not (eq (plist-get diagnostic :event) (current-buffer)))
+    (should (<= (string-bytes (plist-get diagnostic :event))
+                e-subagent--progress-diagnostic-byte-limit))
+    (should (<= (string-bytes (plist-get diagnostic :error))
+                e-subagent--progress-diagnostic-byte-limit))
+    (should (equal (plist-get diagnostic :event)
+                   (substring-no-properties (plist-get diagnostic :event))))
+    (should (equal (plist-get diagnostic :error)
+                   (substring-no-properties (plist-get diagnostic :error))))
+    (e-subagent--remember-progress-error
+     work event (list 'e-work-error error-text))
+    (should (= 1 (cl-count :progress-error (e-work-handle-metadata work))))
+    (e-work-finish work 'finished)
+    (should (eq (plist-get (e-work-status work) :state) 'finished))))
+
 (ert-deftest e-subagent-runner-test-direct-runner-ignores-reasoning-deltas ()
   "The direct runner maps meaningful lifecycle events but not reasoning deltas."
   (let (subscriber progress-events)
@@ -2146,8 +2186,9 @@ child Work normally."
       (should (= (length messages) 1))
       (should (string-match-p "Progress diagnostic sink failed" (car messages)))
       (should (string-match-p "projection error" (car messages)))
-      (should (<= (length (car messages))
-                  (+ e-subagent--progress-diagnostic-character-limit 128))))))
+      (should (<= (string-bytes (car messages))
+                  (+ (* 3 e-subagent--progress-diagnostic-byte-limit)
+                     128))))))
 
 (ert-deftest e-subagent-runner-test-direct-runner-surfaces-admission-settlement ()
   "A rejected child input settles once even though no harness turn started."

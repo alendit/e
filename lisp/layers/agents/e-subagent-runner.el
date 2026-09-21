@@ -235,36 +235,96 @@ an explicit child harness or session policy always wins."
       (e-harness-set-session-options
        child-harness child-session-id child-options))))
 
-(defconst e-subagent--progress-diagnostic-character-limit 512
-  "Maximum characters retained for one progress projection diagnostic.")
+(defconst e-subagent--progress-diagnostic-byte-limit 512
+  "Maximum UTF-8 bytes retained for one progress projection diagnostic.")
 
-(defconst e-subagent--publication-identity-character-limit 128
-  "Maximum characters retained for one publication identity scalar.")
+(defconst e-subagent--publication-identity-byte-limit 128
+  "Maximum UTF-8 bytes retained for one publication identity scalar.")
 
 (defconst e-subagent--persistence-suspect-byte-limit (* 8 1024)
   "Maximum canonical bytes retained by one persistence-suspect composite.")
 
+(defconst e-subagent--persistence-suspect-terminal-args-byte-limit 2048
+  "Maximum UTF-8/canonical bytes retained for terminal proposal arguments.")
+
+(defconst e-subagent--persistence-suspect-publication-error-byte-limit 1024
+  "Maximum UTF-8 bytes retained for one publication error projection.")
+
+(defconst e-subagent--persistence-suspect-cause-byte-limit 1024
+  "Maximum UTF-8 bytes retained for a fallback terminal cause text.")
+
+(defconst e-subagent--persistence-suspect-static-byte-budget 512
+  "Reserved bytes for persistence-suspect labels and plist structure.")
+
+(defconst e-subagent--persistence-suspect-projection-byte-budget
+  (+ e-subagent--persistence-suspect-static-byte-budget
+     e-subagent--persistence-suspect-terminal-args-byte-limit
+     e-subagent--persistence-suspect-publication-error-byte-limit
+     (* 5 e-subagent--publication-identity-byte-limit))
+  "Worst-case projected composite budget before the final codec ceiling.")
+
+(defun e-subagent--utf8-byte-prefix (value byte-limit)
+  "Return property-free UTF-8 text VALUE bounded by BYTE-LIMIT bytes.
+The prefix ends only at character boundaries, so it is always valid text even
+when VALUE contains multibyte characters or zero-width combining marks."
+  (let* ((text (if (stringp value) value (format "%s" value)))
+         (limit (max 0 (or byte-limit 0)))
+         (position 0)
+         (bytes 0)
+         (length (length text))
+         (end length))
+    (while (< position length)
+      (let ((character-bytes
+             (string-bytes (substring text position (1+ position)))))
+        (if (> (+ bytes character-bytes) limit)
+            (setq end position
+                  position length)
+          (setq bytes (+ bytes character-bytes)
+                position (1+ position)))))
+    (substring-no-properties text 0 end)))
+
+(defun e-subagent--bounded-scalar (value byte-limit)
+  "Return VALUE as a closed scalar bounded by BYTE-LIMIT bytes."
+  (cond
+   ((symbolp value)
+    (let ((name (symbol-name value)))
+      (if (<= (string-bytes name) byte-limit)
+          value
+        (e-subagent--utf8-byte-prefix name byte-limit))))
+   ((stringp value)
+    (e-subagent--utf8-byte-prefix value byte-limit))
+   ((numberp value)
+    (let ((text (format "%s" value)))
+      (if (<= (string-bytes text) byte-limit)
+          value
+        (e-subagent--utf8-byte-prefix text byte-limit))))
+   (t (type-of value))))
+
+(defun e-subagent--progress-event-descriptor (event)
+  "Return a closed descriptor for progress EVENT.
+Never retain or print an arbitrary event payload.  A structured event exposes
+only its bounded `:type' scalar; all other opaque values collapse to a type
+category."
+  (cond
+   ((symbolp event) event)
+   ((stringp event)
+    (e-subagent--utf8-byte-prefix
+     event e-subagent--progress-diagnostic-byte-limit))
+   ((and (listp event) (plist-member event :type))
+    (e-subagent--bounded-scalar
+     (plist-get event :type) e-subagent--progress-diagnostic-byte-limit))
+   (t (type-of event))))
+
 (defun e-subagent--progress-error-text (error)
   "Return bounded text for progress diagnostic ERROR."
-  (truncate-string-to-width
+  (e-subagent--utf8-byte-prefix
    (e-work-error-message error)
-   e-subagent--progress-diagnostic-character-limit
-   nil nil "..."))
+   e-subagent--progress-diagnostic-byte-limit))
 
 (defun e-subagent--progress-diagnostic (event error)
   "Return one bounded diagnostic for a failed progress projection.
 The diagnostic is process-local metadata, not a durable lifecycle result."
-  (list :event
-        (cond ((symbolp event) event)
-              ((stringp event)
-               (truncate-string-to-width
-                event e-subagent--progress-diagnostic-character-limit
-                nil nil "..."))
-              ((numberp event) event)
-              (t (truncate-string-to-width
-                  (e-prin1-safe event)
-                  e-subagent--progress-diagnostic-character-limit
-                  nil nil "...")))
+  (list :event (e-subagent--progress-event-descriptor event)
         :error
         (e-subagent--progress-error-text error)))
 
@@ -274,16 +334,21 @@ PREFIX describes a diagnostic sink failure when supplied.  The final `message'
 fallback keeps an owner-visible breadcrumb even when warning display itself is
 temporarily unavailable."
   (let ((message-text
-         (format "%s for %s: %s"
-                 (or prefix "Progress projection failed")
-                 event
-                 (e-subagent--progress-error-text error))))
+         (e-subagent--utf8-byte-prefix
+          (format "%s for %s: %s"
+                  (or prefix "Progress projection failed")
+                  (e-subagent--progress-event-descriptor event)
+                  (e-subagent--progress-error-text error))
+          (* 2 e-subagent--progress-diagnostic-byte-limit))))
     (condition-case display-error
         (display-warning 'e-subagent message-text :warning)
       (error
-       (message "e-subagent: %s (warning display failed: %s)"
-                message-text
-                (e-subagent--progress-error-text display-error))))))
+       (message "%s"
+                (e-subagent--utf8-byte-prefix
+                 (format "e-subagent: %s (warning display failed: %s)"
+                         message-text
+                         (e-subagent--progress-error-text display-error))
+                 (* 3 e-subagent--progress-diagnostic-byte-limit)))))))
 
 (defun e-subagent--remember-progress-error (work-handle event error)
   "Record one bounded progress projection ERROR on WORK-HANDLE metadata.
@@ -463,7 +528,9 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
     ('turn-finished "Finished child turn")
     ('turn-failed "Child turn failed")
     ('turn-cancelled "Child turn cancelled")
-    (_ (format "%s" event))))
+    (_ (e-subagent--utf8-byte-prefix
+        (format "%s" (e-subagent--progress-event-descriptor event))
+        e-subagent--progress-diagnostic-byte-limit))))
 
 (defun e-subagent--record-progress (live board-id participant-id work-handle event)
   "Publish bounded child EVENT progress through WORK-HANDLE and LIVE."
@@ -654,27 +721,33 @@ result.  The returned list is intentionally the only value the gate awaits."
               (e-subagent--publish-terminal-report target terminal status))
       (list (e-subagent--publish-lifecycle target terminal t)))))
 
-(defun e-subagent--bounded-publication-error (error)
+(defun e-subagent--bounded-publication-error (error &optional byte-limit)
   "Return a bounded detached representation of publication ERROR.
 Keep a condition's symbol so the composite remains classifiable, but never
 retain its potentially arbitrary condition data in process-local state."
   (when error
     (let ((text
-           (truncate-string-to-width
-            (e-work-error-message error) 1024 nil nil "...")))
+           (e-subagent--utf8-byte-prefix
+            (e-work-error-message error)
+            (or byte-limit
+                e-subagent--persistence-suspect-publication-error-byte-limit))))
       (if (and (consp error) (symbolp (car error)))
-          (list (car error) text)
+          (list (e-subagent--bounded-scalar
+                 (car error)
+                 (or byte-limit
+                     e-subagent--persistence-suspect-publication-error-byte-limit))
+                text)
         text))))
 
-(defun e-subagent--bounded-publication-scalar (value)
+(defun e-subagent--bounded-publication-scalar
+    (value &optional byte-limit)
   "Return one closed, bounded scalar from publication STATE VALUE."
-  (cond ((symbolp value) value)
-        ((numberp value) value)
-        ((stringp value)
-         (truncate-string-to-width
-          value e-subagent--publication-identity-character-limit
-          nil nil "..."))
-        (t nil)))
+  (let ((bounded (e-subagent--bounded-scalar
+                  value
+                  (or byte-limit e-subagent--publication-identity-byte-limit))))
+    (if (memq bounded '(cons vector hash-table buffer marker))
+        nil
+      bounded)))
 
 (defun e-subagent--bounded-publication-state (state)
   "Return the closed detached projection of failed publication STATE.
@@ -685,9 +758,71 @@ status in a persistence-suspect composite."
         :id (e-subagent--bounded-publication-scalar
              (plist-get state :id))
         :spec-id (e-subagent--bounded-publication-scalar
-                  (plist-get state :spec-id))
-        :error (e-subagent--bounded-publication-error
-                (plist-get state :error))))
+                  (plist-get state :spec-id))))
+
+(defun e-subagent--persistence-suspect-cause-text (terminal-args)
+  "Return bounded scalar cause text from TERMINAL-ARGS for fallback use."
+  (condition-case nil
+      (let ((cause (and (listp terminal-args)
+                        (plist-get terminal-args :error))))
+        (if cause
+            (e-subagent--utf8-byte-prefix
+             (if (and (consp cause) (symbolp (car cause)))
+                 (format "%s: %s" (car cause)
+                         (e-work-error-message cause))
+               (e-work-error-message cause))
+             e-subagent--persistence-suspect-cause-byte-limit)
+          "Terminal cause unavailable"))
+    (error "Terminal cause unavailable")))
+
+(defun e-subagent--persistence-suspect-fallback
+    (participant-id terminal-status terminal-args publication-error
+                    publication-state)
+  "Return the scalar-only fallback for a failed composite conversion.
+This conversion is deliberately defensive only at the persistence-suspect
+boundary: even a malformed Work status or codec failure must not strand the
+already-proposed lifecycle."
+  (let ((participant
+         (condition-case nil
+             (e-subagent--bounded-publication-scalar participant-id)
+           (error nil)))
+        (status
+         (condition-case nil
+             (or (e-subagent--bounded-publication-scalar terminal-status)
+                 'unknown)
+           (error 'unknown)))
+        (cause (e-subagent--persistence-suspect-cause-text terminal-args))
+        (publication
+         (condition-case nil
+             (or (e-subagent--bounded-publication-error
+                  publication-error
+                  e-subagent--persistence-suspect-publication-error-byte-limit)
+                 "Publication error unavailable")
+           (error "Publication error unavailable")))
+        (state
+         (condition-case nil
+             (or (e-subagent--bounded-publication-scalar
+                  (plist-get publication-state :state))
+                 'unknown)
+           (error 'unknown)))
+        (id
+         (condition-case nil
+             (e-subagent--bounded-publication-scalar
+              (plist-get publication-state :id))
+           (error nil)))
+        (spec-id
+         (condition-case nil
+             (e-subagent--bounded-publication-scalar
+              (plist-get publication-state :spec-id))
+           (error nil))))
+    (list 'e-subagent-persistence-suspect
+          "Subagent terminal publication failed"
+          :participant-id participant
+          :terminal-status status
+          :terminal-proposal
+          (list :status status :args (list :error cause))
+          :publication-error publication
+          :publication-state (list :state state :id id :spec-id spec-id))))
 
 (defun e-subagent--persistence-suspect
     (participant-id terminal-status terminal-args publication-error
@@ -695,26 +830,39 @@ status in a persistence-suspect composite."
   "Return one bounded composite for a failed terminal publication.
 TERMINAL-ARGS is the detached original provider/deadline/cancellation cause;
 PUBLICATION-ERROR and PUBLICATION-STATE describe the failed durable write."
-  ;; Every field is projected before this final bound is applied.  Decoding the
-  ;; bounded canonical value also detaches strings/lists from the failed Work,
-  ;; so the composite cannot retain an arbitrary Work result or metadata graph.
-  (e-runtime-store-codec-decode
-   (e-runtime-store-codec-encode-bounded
-    (list 'e-subagent-persistence-suspect
-          "Subagent terminal publication failed"
-          :participant-id (e-subagent--bounded-publication-scalar
-                           participant-id)
-          :terminal-status (e-subagent--bounded-publication-scalar
-                            terminal-status)
-          :terminal-proposal
-          (list :status (e-subagent--bounded-publication-scalar
-                         terminal-status)
-                :args (e-subagent--bounded-terminal-args terminal-args))
-          :publication-error (e-subagent--bounded-publication-error
-                              publication-error)
-          :publication-state (e-subagent--bounded-publication-state
-                              publication-state))
-    e-subagent--persistence-suspect-byte-limit)))
+  ;; The projected field budgets total
+  ;; `e-subagent--persistence-suspect-projection-byte-budget' (4.2 KiB):
+  ;; 2 KiB terminal args, 1 KiB publication error, five 128-byte scalars, and
+  ;; fixed plist overhead.  That is safely below the final 8 KiB ceiling.
+  (condition-case _error
+      (let ((composite
+             (list 'e-subagent-persistence-suspect
+                   "Subagent terminal publication failed"
+                   :participant-id (e-subagent--bounded-publication-scalar
+                                    participant-id)
+                   :terminal-status (e-subagent--bounded-publication-scalar
+                                     terminal-status)
+                   :terminal-proposal
+                   (list :status (e-subagent--bounded-publication-scalar
+                                  terminal-status)
+                         :args
+                         (e-subagent--bounded-terminal-args
+                          terminal-args
+                          e-subagent--persistence-suspect-terminal-args-byte-limit))
+                   :publication-error (e-subagent--bounded-publication-error
+                                       publication-error
+                                       e-subagent--persistence-suspect-publication-error-byte-limit)
+                   :publication-state (e-subagent--bounded-publication-state
+                                       publication-state))))
+        ;; Decoding the bounded canonical value detaches strings/lists from
+        ;; failed Work state before the composite crosses the lifecycle gate.
+        (e-runtime-store-codec-decode
+         (e-runtime-store-codec-encode-bounded
+          composite e-subagent--persistence-suspect-byte-limit)))
+    (error
+     (e-subagent--persistence-suspect-fallback
+      participant-id terminal-status terminal-args publication-error
+      publication-state))))
 
 (defun e-subagent--terminal-gate
     (live board-id participant-id record target report-state authorize-callback)
@@ -811,7 +959,7 @@ provider result for a durable Board result."
                (funcall authorize-callback
                         'failed (list :error composite) composite)))))))))
 
-(defun e-subagent--bounded-terminal-args (args)
+(defun e-subagent--bounded-terminal-args (args &optional byte-limit)
   "Return a bounded detached copy of terminal ARGS.
 
 This bound applies to both ad-hoc lifecycle payloads and run-bound reports;
@@ -824,7 +972,7 @@ contract."
     (if fields
         (e-runtime-store-codec-decode
          (e-runtime-store-codec-encode-bounded
-          fields e-subagent--terminal-payload-byte-limit))
+          fields (or byte-limit e-subagent--terminal-payload-byte-limit)))
       nil)))
 
 (defun e-subagent--report-assignment (record)

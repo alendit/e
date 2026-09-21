@@ -311,10 +311,9 @@ composite, even when the failed status contains a live object."
          e-subagent--persistence-suspect-byte-limit))
     (should (equal (cl-loop for (key _value) on publication-state by #'cddr
                             collect key)
-                    '(:state :id :spec-id :error)))
+                    '(:state :id :spec-id)))
     (should (eq (plist-get publication-state :state) 'failed))
-    (should (eq (car (plist-get publication-state :error))
-                'e-board-sqlite-error))
+    (should-not (plist-member publication-state :error))
     (cl-labels ((contains-marker-p (value)
                   (cond ((eq value marker) t)
                         ((consp value)
@@ -324,6 +323,54 @@ composite, even when the failed status contains a live object."
                          (seq-some #'contains-marker-p (append value nil)))
                         (t nil))))
       (should-not (contains-marker-p composite)))))
+
+(ert-deftest e-subagent-live-test-persistence-suspect-utf8-budget-and-fallback ()
+  "UTF-8 identities and codec overflow retain a bounded scalar composite."
+  (let* ((wide (apply #'concat (make-list 4000 "🙂́")))
+         (terminal-error (list 'e-work-deadline-exceeded wide))
+         (publication-error (list 'e-board-sqlite-error wide))
+         (state (list :id wide :spec-id wide :state 'failed
+                      :result (list :marker (current-buffer))
+                      :metadata (list :marker (current-buffer))))
+         (composite (e-subagent--persistence-suspect
+                     wide 'failed (list :error terminal-error)
+                     publication-error state))
+         (publication-state (plist-get composite :publication-state))
+         (encoded (e-runtime-store-codec-encode composite)))
+    (should (< e-subagent--persistence-suspect-projection-byte-budget
+               e-subagent--persistence-suspect-byte-limit))
+    (should (<= (string-bytes encoded)
+                e-subagent--persistence-suspect-byte-limit))
+    (should (equal (cl-loop for (key _value) on publication-state by #'cddr
+                            collect key)
+                    '(:state :id :spec-id)))
+    (should (<= (string-bytes (plist-get publication-state :id))
+                e-subagent--publication-identity-byte-limit))
+    (should (<= (string-bytes (plist-get publication-state :spec-id))
+                e-subagent--publication-identity-byte-limit))
+    (should (eq (car (plist-get composite :publication-error))
+                'e-board-sqlite-error))
+    (cl-letf (((symbol-function 'e-runtime-store-codec-encode-bounded)
+               (lambda (&rest _arguments)
+                 (error "forced codec overflow"))))
+      (let* ((fallback
+              (e-subagent--persistence-suspect
+               wide 'failed (list :error terminal-error)
+               publication-error state))
+             (fallback-proposal (plist-get fallback :terminal-proposal))
+             (fallback-error
+              (plist-get (plist-get fallback-proposal :args) :error)))
+        (should (eq (car fallback) 'e-subagent-persistence-suspect))
+        (should (eq (plist-get fallback :terminal-status) 'failed))
+        (should (string-match-p "e-work-deadline-exceeded"
+                                fallback-error))
+        (should (eq (car (plist-get fallback :publication-error))
+                    'e-board-sqlite-error))
+        (should-not
+         (plist-member (plist-get fallback :publication-state) :error))
+        (should
+         (<= (string-bytes (e-runtime-store-codec-encode fallback))
+             e-subagent--persistence-suspect-byte-limit))))))
 
 (ert-deftest e-subagent-live-test-run-bound-report-remains-canonical ()
   "Run-bound settlement publishes the orchestration report as canonical."
