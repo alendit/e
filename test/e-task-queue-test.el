@@ -329,7 +329,7 @@ tests need a runner whose handle carries one."
       (should (string-match-p "no-matching-subscription"
                               (plist-get settlement :error)))
       (let ((message (car (e-board-producer-test-records target))))
-        (should (eq (plist-get message :kind) 'input))
+        (should (eq (plist-get message :record-kind) 'input))
         (should (equal (plist-get message :content) "please work"))
         (should (equal (plist-get message :tags) '(task-queue task)))))))
 

@@ -35,7 +35,7 @@
       (should (e-work-handle-p work))
       (e-board-producer-test-await work)
       (let ((record (car (e-board-producer-test-records target))))
-        (should (eq (plist-get record :kind) 'input))
+        (should (eq (plist-get record :record-kind) 'input))
         (should (equal (plist-get record :content) "changed"))
         (should (equal (plist-get record :tags)
                        '(background trigger sources)))

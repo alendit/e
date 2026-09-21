@@ -612,7 +612,7 @@
                (records (e-subagent-runner-test--records parent "parent-1"))
                (facts (cl-remove-if-not
                        (lambda (record)
-                         (eq (plist-get record :kind) 'fact))
+                         (eq (plist-get record :record-kind) 'fact))
                        records)))
           (should (equal (e-chat-service-binding-board-id child-binding)
                          (e-chat-service-binding-board-id binding)))
@@ -1275,12 +1275,21 @@ A later configure-type override is preserved across subsequent spawns."
                 (e-subagent-runner-test--live-child-harness
                  live (plist-get record :participant-id)))
                (child-session-id (plist-get record :session-id))
-               (session-options
-                (plist-get
-                 (e-board-producer-test-await
-                  (e-session-async-query-state
-                   (e-harness-sessions child) child-session-id))
-                 :turn-options)))
+               session-options)
+          ;; Live installation precedes the callback step that enqueues this
+          ;; durable session update.  Wait for the semantic condition rather
+          ;; than treating an unrelated live-table observation as its barrier.
+          (should
+           (e-chat-test--wait-until
+            (lambda ()
+              (setq session-options
+                    (plist-get
+                     (e-board-producer-test-await
+                      (e-session-async-query-state
+                       (e-harness-sessions child) child-session-id))
+                     :turn-options))
+              (eq (plist-get session-options :prompt-cache-default) t))
+            5.0))
           (should (eq (plist-get session-options :prompt-cache-default) t))
           (should (equal (plist-get session-options :prompt-cache-retention)
                          "24h")))))))

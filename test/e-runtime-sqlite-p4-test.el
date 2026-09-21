@@ -31,6 +31,21 @@
   (e-work-with-batch-await
     (e-work-await-batch work :timeout 5.0)))
 
+(defun e-runtime-sqlite-p4-test--drop-current-derived-projections (database)
+  "Remove current rebuildable projections from synthetic legacy DATABASE.
+The canonical session journal remains intact.  The explicit offline upgrader
+will recreate the historical v6/v7 shapes before deriving the current schema,
+so this fixture does not pretend that v8 tables existed in a v4 store."
+  (sqlite-execute database "PRAGMA foreign_keys=OFF")
+  (dolist (table
+           '(session_process_report_index board_pickup_events board_pickups
+             board_routing board_record_attributes board_record_tags
+             board_records board_replay_progress board_session_associations
+             board_session_admissions board_participants boards task_attempts
+             task_records task_queues session_query_state))
+    (sqlite-execute database (format "DROP TABLE IF EXISTS %s" table)))
+  (sqlite-execute database "PRAGMA foreign_keys=ON"))
+
 (defun e-runtime-sqlite-p4-test--query-delta (records)
   "Derive a v6 final query row for translated RECORDS in order."
   (let ((position 0))
@@ -736,10 +751,10 @@
           (setq store nil)
           ;; This fixture mutation occurs only in the isolated test process.
           (let ((db (sqlite-open database)))
+            (e-runtime-sqlite-p4-test--drop-current-derived-projections db)
             (sqlite-execute
              db "UPDATE store_meta SET value='4' WHERE key='schema_version'")
             (sqlite-execute db "DELETE FROM schema_migrations WHERE version>4")
-            (sqlite-execute db "DROP TABLE session_process_report_index")
             (sqlite-execute db "DROP TABLE runtime_store_receipts")
             (sqlite-execute db "DROP TABLE runtime_store_state")
             (sqlite-close db))
@@ -756,7 +771,7 @@
               (sqlite-close db)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
             (should (= (plist-get result :from) 4))
-            (should (= (plist-get result :to) 7))
+            (should (= (plist-get result :to) 8))
             (should (equal (plist-get result :integrity) "ok"))
             (should (= (e-runtime-sqlite-p4-test--mode backup) #o600)))
           (setq store
@@ -764,7 +779,7 @@
                  (e-runtime-store-open directory)))
           (should (= (plist-get (e-runtime-store-metrics store)
                                 :schema-version)
-                     7))
+                     8))
           (should (equal
                    (plist-get
                     (car (plist-get
@@ -808,6 +823,7 @@
           (e-runtime-store-close store)
           (setq store nil)
           (let ((db (sqlite-open database)))
+            (e-runtime-sqlite-p4-test--drop-current-derived-projections db)
             (sqlite-execute db "UPDATE store_meta SET value='4' WHERE key='schema_version'")
             (sqlite-execute db "DELETE FROM schema_migrations WHERE version=5")
             (sqlite-execute db "DROP TABLE runtime_store_receipts")
@@ -839,7 +855,7 @@
         (progn
           (should (plist-get (e-runtime-store-integrity store t) :ok))
           (let ((metrics (e-runtime-store-metrics store)))
-            (should (= (plist-get metrics :schema-version) 7))
+            (should (= (plist-get metrics :schema-version) 8))
             (should (> (plist-get metrics :database-bytes) 0)))
           (should (plist-get (e-runtime-store-backup store backup) :verified))
           (should (= (e-runtime-sqlite-p4-test--mode backup) #o600))

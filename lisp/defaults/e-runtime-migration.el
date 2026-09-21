@@ -749,6 +749,14 @@ they are never published into the v6 store."
                 (list :op 'board-participant-put :board-id board-id
                       :participant participant))))
           (puthash board-id updated state))
+        (e-runtime-store-call
+         store 'write
+         (list :op 'board-session-association-put
+               :session-id session-id
+               :board-id board-id
+               :participant-id participant-id
+               :association-role role
+               :routing-policy policy))
         (setq participant-count (1+ participant-count))))
     (dolist (entry (plist-get (plist-get decoded :boards) :records))
       (let* ((board-id (plist-get entry :board-id))

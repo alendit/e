@@ -704,6 +704,21 @@
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (progn
+                  ;; Preserve only the canonical journal when synthesizing a
+                  ;; stopped v4 image.  Current normalized projections did not
+                  ;; exist in v4 and are rebuilt by the explicit upgrader.
+                  (sqlite-execute database "PRAGMA foreign_keys=OFF")
+                  (dolist (table
+                           '(session_process_report_index board_pickup_events
+                             board_pickups board_routing
+                             board_record_attributes board_record_tags
+                             board_records board_replay_progress
+                             board_session_associations board_session_admissions
+                             board_participants boards task_attempts task_records
+                             task_queues session_query_state))
+                    (sqlite-execute
+                     database (format "DROP TABLE IF EXISTS %s" table)))
+                  (sqlite-execute database "PRAGMA foreign_keys=ON")
                   (sqlite-execute
                    database
                    "UPDATE store_meta SET value='4' WHERE key='schema_version'")

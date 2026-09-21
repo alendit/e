@@ -55,9 +55,7 @@
   '(session_id name summary metadata created_at updated_at last_message_at
     latest_assistant_marker message_count current_branch turn_options
     current_head_id root_event_id current_context_generation_id
-    board_id principal association_role
-    routing_policy root_p board_output_sequence board_activity_sequence
-    journal_position)
+    root_p board_output_sequence board_activity_sequence journal_position)
   "Physical `session_query_state' columns in row-ABI order.")
 
 (defvar e-runtime-store-session-worker--database nil)
@@ -312,12 +310,6 @@ meaning remains owned by the session domain's query derivation."
      (e-runtime-store-session-worker--scalar
       (plist-get state :current-context-generation-id)
       :current-context-generation-id)
-     (e-runtime-store-session-worker--scalar (plist-get state :board-id) :board-id)
-     (e-runtime-store-session-worker--scalar (plist-get state :principal) :principal)
-     (e-runtime-store-session-worker--scalar
-      (plist-get state :association-role) :association-role)
-     (e-runtime-store-session-worker--encode-value
-      (plist-get state :routing-policy) :routing-policy)
      (if (plist-get state :root-p) 1 0)
      (e-runtime-store-session-worker--nonnegative-integer
       (plist-get state :board-output-sequence) :board-output-sequence)
@@ -332,7 +324,7 @@ meaning remains owned by the session domain's query derivation."
     (unless (= (length row) (length e-runtime-store-session-worker--state-columns))
       (e-runtime-store-session-worker--error
        "Session query row has an invalid physical shape" row))
-    (let ((root-p (e-runtime-store-session-worker--column row 18)))
+    (let ((root-p (e-runtime-store-session-worker--column row 14)))
       (unless (memq root-p '(0 1))
         (e-runtime-store-session-worker--error
          "Session query root flag is invalid" root-p)))
@@ -360,16 +352,12 @@ meaning remains owned by the session domain's query derivation."
             :root-event-id (e-runtime-store-session-worker--column row 12)
             :current-context-generation-id
             (e-runtime-store-session-worker--column row 13)
-            :board-id (e-runtime-store-session-worker--column row 14)
-            :principal (e-runtime-store-session-worker--column row 15)
-            :association-role (e-runtime-store-session-worker--column row 16)
-            :routing-policy (e-runtime-store-session-worker--decode-value
-                             (e-runtime-store-session-worker--column row 17)
-                             :routing-policy)
-            :root-p (= 1 (e-runtime-store-session-worker--column row 18))
-            :board-output-sequence (e-runtime-store-session-worker--column row 19)
-            :board-activity-sequence (e-runtime-store-session-worker--column row 20)
-            :journal-position (e-runtime-store-session-worker--column row 21))))
+            :board-id nil :principal nil :association-role nil
+            :routing-policy nil
+            :root-p (= 1 (e-runtime-store-session-worker--column row 14))
+            :board-output-sequence (e-runtime-store-session-worker--column row 15)
+            :board-activity-sequence (e-runtime-store-session-worker--column row 16)
+            :journal-position (e-runtime-store-session-worker--column row 17))))
       (e-runtime-store-session-worker--validate-state state))))
 
 (defun e-runtime-store-session-worker-initialize-process-report-projection (database)
@@ -529,9 +517,28 @@ nor resume checkpoints."
            "DROP INDEX IF EXISTS session_records_position"))
       (sqlite-execute database statement))))
 
+(defun e-runtime-store-session-worker-initialize-v8 (database)
+  "Create normalized schema-v8 session relations and indexes on DATABASE."
+  (let ((e-runtime-store-session-worker--database database))
+    (dolist
+        (statement
+         '("CREATE TABLE IF NOT EXISTS session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, record_type TEXT NOT NULL DEFAULT '', record_id TEXT, record_identity TEXT, parent_id TEXT, timestamp TEXT, PRIMARY KEY(session_id, position))"
+           "CREATE UNIQUE INDEX IF NOT EXISTS session_records_identity ON session_records(session_id, record_identity) WHERE record_identity IS NOT NULL"
+           "CREATE INDEX IF NOT EXISTS session_records_session_page ON session_records(session_id, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_type_page ON session_records(session_id, record_type, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_id_page ON session_records(session_id, record_id, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_record_identity_page ON session_records(session_id, record_identity, position)"
+           "CREATE INDEX IF NOT EXISTS session_records_parent_page ON session_records(session_id, parent_id, position)"
+           "CREATE TABLE IF NOT EXISTS session_query_state (session_id TEXT PRIMARY KEY, name TEXT, summary TEXT, metadata TEXT, created_at TEXT, updated_at TEXT, last_message_at TEXT, latest_assistant_marker TEXT, message_count INTEGER NOT NULL, current_branch TEXT, turn_options TEXT, current_head_id TEXT, root_event_id TEXT, current_context_generation_id TEXT, root_p INTEGER NOT NULL, board_output_sequence INTEGER NOT NULL, board_activity_sequence INTEGER NOT NULL, journal_position INTEGER NOT NULL)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_recent ON session_query_state(updated_at DESC, session_id DESC)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_root ON session_query_state(root_p, updated_at DESC, session_id DESC)"
+           "CREATE INDEX IF NOT EXISTS session_query_state_cursor ON session_query_state(journal_position, session_id)"
+           "DROP INDEX IF EXISTS session_records_position"))
+      (sqlite-execute database statement))))
+
 (defun e-runtime-store-session-worker-initialize (database)
-  "Create the schema-v7 session relations and indexes on DATABASE."
-  (e-runtime-store-session-worker-initialize-v6 database)
+  "Create the current schema-v8 session relations and indexes on DATABASE."
+  (e-runtime-store-session-worker-initialize-v8 database)
   (e-runtime-store-session-worker-initialize-process-report-projection database))
 
 (defun e-runtime-store-session-worker--process-report-index-insert
@@ -642,8 +649,8 @@ that position before its row is written."
       (sqlite-execute
        database
        (concat
-        "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,board_id,principal,association_role,routing_policy,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-        "ON CONFLICT(session_id) DO UPDATE SET name=excluded.name,summary=excluded.summary,metadata=excluded.metadata,created_at=excluded.created_at,updated_at=excluded.updated_at,last_message_at=excluded.last_message_at,latest_assistant_marker=excluded.latest_assistant_marker,message_count=excluded.message_count,current_branch=excluded.current_branch,turn_options=excluded.turn_options,current_head_id=excluded.current_head_id,root_event_id=excluded.root_event_id,current_context_generation_id=excluded.current_context_generation_id,board_id=excluded.board_id,principal=excluded.principal,association_role=excluded.association_role,routing_policy=excluded.routing_policy,root_p=excluded.root_p,board_output_sequence=excluded.board_output_sequence,board_activity_sequence=excluded.board_activity_sequence,journal_position=excluded.journal_position")
+        "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(session_id) DO UPDATE SET name=excluded.name,summary=excluded.summary,metadata=excluded.metadata,created_at=excluded.created_at,updated_at=excluded.updated_at,last_message_at=excluded.last_message_at,latest_assistant_marker=excluded.latest_assistant_marker,message_count=excluded.message_count,current_branch=excluded.current_branch,turn_options=excluded.turn_options,current_head_id=excluded.current_head_id,root_event_id=excluded.root_event_id,current_context_generation_id=excluded.current_context_generation_id,root_p=excluded.root_p,board_output_sequence=excluded.board_output_sequence,board_activity_sequence=excluded.board_activity_sequence,journal_position=excluded.journal_position")
        (e-runtime-store-session-worker--state-values delta))
       delta))))
 
@@ -823,14 +830,50 @@ that position before its row is written."
   "Read one exact detached query state."
   (let ((session-id (e-runtime-store-session-worker--session-id
                      (plist-get body :session-id))))
-    (e-runtime-store-session-worker--state-from-row
-     (car (sqlite-select
-           database
-           (concat "SELECT "
-                   (mapconcat #'symbol-name
-                              e-runtime-store-session-worker--state-columns ",")
-                   " FROM session_query_state WHERE session_id=?")
-           (vector session-id))))))
+    (let ((row
+           (car (sqlite-select
+                 database
+                 (concat "SELECT "
+                         (mapconcat (lambda (column)
+                                      (concat "s." (symbol-name column)))
+                                    e-runtime-store-session-worker--state-columns ",")
+                         ",a.board_id,b.trusted_principal,p.role,"
+                         "a.routing_policy,p.name,a.participant_id "
+                         "FROM session_query_state s "
+                         "LEFT JOIN board_session_associations a ON a.session_id=s.session_id "
+                         "LEFT JOIN boards b ON b.board_id=a.board_id AND b.generation=a.generation "
+                         "LEFT JOIN board_participants p ON p.board_id=a.board_id AND p.generation=a.generation AND p.participant_id=a.participant_id "
+                         "WHERE s.session_id=?")
+                 (vector session-id)))))
+      (when row
+        (e-runtime-store-session-worker--merge-association
+         (e-runtime-store-session-worker--state-from-row
+          (cl-subseq row 0
+                     (length e-runtime-store-session-worker--state-columns)))
+         row)))))
+
+(defun e-runtime-store-session-worker--merge-association
+    (state row &optional offset)
+  "Merge one relation-backed association suffix into STATE from ROW."
+  (let ((offset (or offset (length e-runtime-store-session-worker--state-columns))))
+    (when (e-runtime-store-session-worker--column row offset)
+      (setq state (plist-put state :board-id
+                             (e-runtime-store-session-worker--column row offset)))
+      (setq state (plist-put state :principal
+                             (e-runtime-store-session-worker--decode-value
+                              (e-runtime-store-session-worker--column row (1+ offset))
+                              :principal)))
+      (setq state (plist-put state :association-role
+                             (e-runtime-store-session-worker--column row (+ offset 2))))
+      (let ((policy (e-runtime-store-session-worker--decode-value
+                     (e-runtime-store-session-worker--column row (+ offset 3))
+                     :routing-policy)))
+        (when policy
+          (setq policy
+                (plist-put policy :participant-id
+                           (e-runtime-store-session-worker--column row (+ offset 5)))))
+        (setq state (plist-put state :routing-policy policy))))
+    state))
 
 (defun e-runtime-store-session-worker--metadata (database body)
   "Read exact detached metadata for one session."
@@ -857,16 +900,17 @@ that position before its row is written."
   "Read exact detached Board association for one session."
   (let* ((session-id (e-runtime-store-session-worker--session-id
                       (plist-get body :session-id)))
-         ;; Keep this projection physically narrow.  In particular, an
-         ;; unreadable metadata/options payload must not prevent a Board
-         ;; owner from discovering its association.
          (row (car (sqlite-select
                     database
                     (concat
-                     "SELECT session_id,board_id,principal,association_role,"
-                     "routing_policy,board_output_sequence,"
-                     "board_activity_sequence,name FROM session_query_state "
-                     "WHERE session_id=?")
+                     "SELECT a.session_id,a.board_id,b.trusted_principal,"
+                     "p.role,a.routing_policy,p.name,s.name,a.participant_id,"
+                     "s.board_output_sequence,s.board_activity_sequence "
+                     "FROM board_session_associations a "
+                     "JOIN session_query_state s ON s.session_id=a.session_id "
+                     "JOIN boards b ON b.board_id=a.board_id AND b.generation=a.generation "
+                     "JOIN board_participants p ON p.board_id=a.board_id AND p.generation=a.generation AND p.participant_id=a.participant_id "
+                     "WHERE a.session_id=?")
                     (vector session-id)))))
     (when row
       (let ((row-session-id
@@ -875,7 +919,7 @@ that position before its row is written."
             (board-id (e-runtime-store-session-worker--scalar
                        (e-runtime-store-session-worker--column row 1)
                        :board-id))
-            (principal (e-runtime-store-session-worker--scalar
+            (principal (e-runtime-store-session-worker--decode-value
                         (e-runtime-store-session-worker--column row 2)
                         :principal))
             (association-role
@@ -887,34 +931,22 @@ that position before its row is written."
               (e-runtime-store-session-worker--column row 4)
               :routing-policy))
             (board-output-sequence
-             (e-runtime-store-session-worker--column row 5))
+             (e-runtime-store-session-worker--column row 8))
             (board-activity-sequence
-             (e-runtime-store-session-worker--column row 6))
+             (e-runtime-store-session-worker--column row 9))
             (session-name
              (e-runtime-store-session-worker--scalar
-              (e-runtime-store-session-worker--column row 7) :name)))
-        (let* ((participant-id (plist-get routing-policy :participant-id))
-               (participant-row
-                (and (stringp board-id) (stringp participant-id)
-                     (car
-                      (sqlite-select
-                       database
-                       (concat
-                        "SELECT participant.payload FROM board_participants participant "
-                        "JOIN boards board ON board.board_id=participant.board_id "
-                        "AND board.generation=participant.generation "
-                        "WHERE participant.board_id=? AND participant.participant_id=?")
-                       (vector board-id participant-id)))))
-               (participant
-                (and participant-row
-                     (e-runtime-store-session-worker--decode-value
-                      (e-runtime-store-session-worker--column participant-row 0)
-                      :participant)))
-               (participant-name
-                (or (plist-get participant :name) session-name
-                    (and (equal association-role "owner") "Main"))))
+              (e-runtime-store-session-worker--column row 6) :name))
+            (participant-id (e-runtime-store-session-worker--column row 7)))
+        (setq routing-policy
+              (when routing-policy
+                (plist-put routing-policy :participant-id participant-id)))
+        (let ((participant-name
+               (or (e-runtime-store-session-worker--column row 5) session-name
+                   (and (equal association-role "owner") "Main"))))
         (list :session-id row-session-id :board-id board-id
               :principal principal :association-role association-role
+              :participant-id participant-id
               :participant-name participant-name
               :routing-policy routing-policy
               :board-output-sequence board-output-sequence
@@ -940,31 +972,34 @@ that position before its row is written."
       (e-runtime-store-session-worker--error
        "Session root filter is invalid" root-p))
     (when root-p
-      (setq where (append where (list "root_p=1"))))
+      (setq where (append where (list "s.root_p=1"))))
     (when (plist-member body :board-id)
       (if (null board-id)
-          (setq where (append where (list "board_id IS NULL")))
+          (setq where (append where (list "a.board_id IS NULL")))
         (unless (and (stringp board-id)
                      (<= (string-bytes board-id)
                          e-session-query-state-string-byte-limit))
           (e-runtime-store-session-worker--error
            "Session Board filter is invalid" board-id))
-        (setq where (append where (list "board_id=?"))
+        (setq where (append where (list "a.board_id=?"))
               params (append params (list board-id)))))
     (when (plist-member body :principal)
       (if (null principal)
-          (setq where (append where (list "principal IS NULL")))
+          (setq where (append where (list "b.trusted_principal IS NULL")))
         (unless (and (stringp principal)
                      (<= (string-bytes principal)
                          e-session-query-state-string-byte-limit))
           (e-runtime-store-session-worker--error
            "Session principal filter is invalid" principal))
-        (setq where (append where (list "principal=?"))
-              params (append params (list principal)))))
+        (setq where (append where (list "b.trusted_principal=?"))
+              params (append
+                      params
+                      (list (e-runtime-store-session-worker--encode-value
+                             principal :principal))))))
     (when cursor
       (setq where
             (append where
-                    (list "(updated_at < ? OR (updated_at = ? AND session_id < ?))")))
+                    (list "(s.updated_at < ? OR (s.updated_at = ? AND s.session_id < ?))")))
       (setq params
             (append params
                     (list (plist-get cursor :updated-at)
@@ -972,13 +1007,18 @@ that position before its row is written."
                           (plist-get cursor :session-id)))))
     (setq params (vconcat params (vector (1+ limit))))
     (let* ((sql (concat "SELECT "
-                        (mapconcat #'symbol-name
+                        (mapconcat (lambda (column)
+                                    (concat "s." (symbol-name column)))
                                    e-runtime-store-session-worker--state-columns ",")
-                        " FROM session_query_state"
+                        ",a.board_id,b.trusted_principal,p.role,a.routing_policy,"
+                        "p.name,a.participant_id"
+                        " FROM session_query_state s LEFT JOIN board_session_associations a ON a.session_id=s.session_id "
+                        "LEFT JOIN boards b ON b.board_id=a.board_id AND b.generation=a.generation "
+                        "LEFT JOIN board_participants p ON p.board_id=a.board_id AND p.generation=a.generation AND p.participant_id=a.participant_id"
                         (when where
                           (concat " WHERE "
                                   (mapconcat #'identity where " AND ")))
-                        " ORDER BY updated_at DESC, session_id DESC LIMIT ?"))
+                        " ORDER BY s.updated_at DESC, s.session_id DESC LIMIT ?"))
            (rows (sqlite-select database sql params))
            (states nil)
            (bytes 0)
@@ -991,7 +1031,11 @@ that position before its row is written."
           (when (>= (length states) limit)
             (setq truncated t)
             (throw 'page-full nil))
-          (let* ((state (e-runtime-store-session-worker--state-from-row row))
+          (let* ((state (e-runtime-store-session-worker--merge-association
+                         (e-runtime-store-session-worker--state-from-row
+                          (cl-subseq row 0
+                                     (length e-runtime-store-session-worker--state-columns)))
+                         row))
                  (state-bytes
                   (e-runtime-store-codec-measure-bounded
                    state e-runtime-store-session-worker-page-byte-limit)))

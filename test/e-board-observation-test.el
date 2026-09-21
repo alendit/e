@@ -109,9 +109,9 @@
          (source-key (plist-get fields :source-key)))
     (sqlite-execute
      database
-     "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,payload) VALUES(?,?,?,?,?,?,?,?,?)"
+     "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,created_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)"
      (vector board-id 1 position "fact" record-id "fact"
-             (e-board-sqlite-worker--sql-value source-key) nil
+             (e-board-sqlite-worker--sql-value source-key) nil (float-time)
              (e-board-sqlite-worker--sql-value record)))
     (dolist (tag (plist-get record :tags))
       (sqlite-execute
@@ -331,10 +331,11 @@
                      (source-key (list 'unrelated-history index)))
                 (sqlite-execute
                  database
-                 "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,payload) VALUES(?,?,?,?,?,?,?,?,?)"
+                 "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,created_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)"
                  (vector board-id 1 position "fact"
                          (plist-get record :id) "fact"
                          (e-board-sqlite-worker--sql-value source-key) nil
+                         (float-time)
                          (e-board-sqlite-worker--sql-value record)))))
             (sqlite-execute database "COMMIT")
             (let ((calls 0)

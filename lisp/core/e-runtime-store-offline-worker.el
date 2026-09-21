@@ -42,6 +42,12 @@
 (defconst e-runtime-store-offline-worker--v7-migration-checksum
   "feature92-schema-v7-process-report-projection"
   "Logical checksum for the v7 process-report projection boundary.")
+(defconst e-runtime-store-offline-worker--v8-migration-identity
+  "feature95-v7-to-v8-normalized-communication"
+  "Durable identity installed for the explicit v7-to-v8 normalization.")
+(defconst e-runtime-store-offline-worker--v8-migration-checksum
+  "feature95-schema-v8-normalized-communication"
+  "Logical checksum for the v7-to-v8 normalized communication boundary.")
 
 (defun e-runtime-store-offline-worker--error (message &rest data)
   "Signal a bounded offline error with MESSAGE and DATA."
@@ -280,6 +286,9 @@ is retained by this walker."
      ((member mode '("after-v7-schema" "v7-schema")) 'after-v7-schema)
      ((member mode '("after-v7-populate" "v7-populate")) 'after-v7-populate)
      ((member mode '("after-v7-parity" "v7-parity")) 'after-v7-parity)
+     ((member mode '("after-v8-schema" "v8-schema")) 'after-v8-schema)
+     ((member mode '("after-v8-populate" "v8-populate")) 'after-v8-populate)
+     ((member mode '("after-v8-parity" "v8-parity")) 'after-v8-parity)
      (t nil))))
 
 (defun e-runtime-store-offline-worker--fault (point)
@@ -422,7 +431,7 @@ session-domain replay; neither retired projection is consulted here."
       (sqlite-execute
        database
        (concat
-        "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,board_id,principal,association_role,routing_policy,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
        (e-runtime-store-session-worker--state-values state)))
     summary))
 
@@ -581,13 +590,52 @@ session-domain replay; neither retired projection is consulted here."
   t)
 
 (defun e-runtime-store-offline-worker--verify-v7-lineage (database)
-  "Verify DATABASE's complete v7 lineage using the runtime contract."
+  "Verify DATABASE's complete recognized v7 predecessor lineage.
+
+The runtime worker intentionally exposes only the current v8 lineage check;
+the stopped-store operator owns this pre-install v7 boundary and therefore
+checks its migration rows directly without adding a runtime compatibility
+helper."
+  (let* ((v5 (e-runtime-store-offline-worker--migration-row database 5))
+         (v6 (e-runtime-store-offline-worker--migration-row database 6))
+         (v7 (e-runtime-store-offline-worker--migration-row database 7))
+         (v6-checksum
+          (secure-hash 'sha256
+                       e-runtime-store-offline-worker--v6-migration-checksum))
+         (v7-checksum
+          (secure-hash 'sha256
+                       e-runtime-store-offline-worker--v7-migration-checksum)))
+    (unless (equal v7
+                   (list e-runtime-store-offline-worker--v7-migration-identity
+                         v7-checksum))
+      (e-runtime-store-offline-worker--error
+       "Schema v7 migration lineage is invalid" :version 7))
+    (cond
+     ((equal v6 (list "new-current-schema" v6-checksum))
+      (when v5
+        (e-runtime-store-offline-worker--error
+         "Fresh v6 predecessor has unexpected v5 provenance" :version 5)))
+     ((equal v6
+            (list e-runtime-store-offline-worker--v6-migration-identity
+                  v6-checksum))
+      (unless (or
+               (e-runtime-store-offline-worker--recognized-v5-row-p v5)
+               (e-runtime-store-offline-worker--historical-fresh-v5-row-p v5))
+        (e-runtime-store-offline-worker--error
+         "Migrated v6 predecessor has invalid v5 provenance" :version 5)))
+     (t
+      (e-runtime-store-offline-worker--error
+       "Schema v7 predecessor lineage is invalid" :version 6))))
+  t)
+
+(defun e-runtime-store-offline-worker--verify-v8-lineage (database)
+  "Verify DATABASE's complete v8 lineage using the runtime contract."
   (let ((e-runtime-store-worker--database database))
     (condition-case err
-        (e-runtime-store-worker--verify-v7-lineage)
+        (e-runtime-store-worker--verify-v8-lineage)
       (e-runtime-store-schema-too-old
        (e-runtime-store-offline-worker--error
-        "Schema v7 migration lineage is invalid"
+        "Schema v8 migration lineage is invalid"
         :reason (plist-get (cdr err) :reason))))))
 
 (defun e-runtime-store-offline-worker--install-v7 (database)
@@ -608,6 +656,725 @@ session-domain replay; neither retired projection is consulted here."
   ;; foreign key that SQLite rewrote when the v5 journal was renamed.
   (sqlite-execute database "DROP TABLE IF EXISTS session_process_report_index")
   (e-runtime-store-session-worker-initialize-process-report-projection database))
+
+(defun e-runtime-store-offline-worker--rename-table (database table)
+  "Rename TABLE to its v7 preservation name when it exists."
+  (when (e-runtime-store-offline-worker--table-exists-p database table)
+    (sqlite-execute database
+                    (format "ALTER TABLE %s RENAME TO %s_v7" table table))))
+
+(defun e-runtime-store-offline-worker--decode-text (text)
+  "Decode one legacy SQLite payload TEXT."
+  (and text (e-runtime-store-codec-decode (base64-decode-string text))))
+
+(defun e-runtime-store-offline-worker--v7-conflict
+    (message &rest data)
+  "Reject one contradictory v7 duplicate with bounded DATA."
+  (apply #'e-runtime-store-offline-worker--error
+         (cons message data)))
+
+(defun e-runtime-store-offline-worker--v7-decode
+    (text kind &rest data)
+  "Decode one v7 KIND payload and identify it with DATA."
+  (condition-case nil
+      (let ((value (e-runtime-store-offline-worker--decode-text text)))
+        (unless (listp value)
+          (apply #'e-runtime-store-offline-worker--v7-conflict
+                 (append (list (format "Malformed v7 %s payload" kind))
+                         data)))
+        value)
+    (error
+     (apply #'e-runtime-store-offline-worker--v7-conflict
+            (append (list (format "Malformed v7 %s payload" kind))
+                    data)))))
+
+(defun e-runtime-store-offline-worker--v7-value
+    (text kind &rest data)
+  "Decode one scalar v7 KIND value and identify it with DATA."
+  (condition-case _err
+      (e-runtime-store-offline-worker--decode-text text)
+    (error
+     (apply #'e-runtime-store-offline-worker--v7-conflict
+            (append (list (format "Malformed v7 %s value" kind))
+                    data)))))
+
+(defun e-runtime-store-offline-worker--v7-name (value)
+  "Return VALUE's comparable symbol/string name, or nil."
+  (cond ((symbolp value) (symbol-name value))
+        ((stringp value) value)
+        (t nil)))
+
+(defun e-runtime-store-offline-worker--v7-assert-equal
+    (message expected actual &rest data)
+  "Signal MESSAGE when v7 EXPECTED and ACTUAL facts disagree."
+  (unless (equal expected actual)
+    (apply #'e-runtime-store-offline-worker--v7-conflict
+           (append (list message :expected expected :actual actual) data))))
+
+(defun e-runtime-store-offline-worker--v7-sorted-values (values)
+  "Return VALUES in a deterministic comparison order."
+  (sort (mapcar (lambda (value) (e-runtime-store-codec-encode value))
+                (copy-tree values t))
+        #'string<))
+
+(defun e-runtime-store-offline-worker--v7-record-kind
+    (record &rest data)
+  "Return RECORD's one agreed kind, accepting one retired alias."
+  (let ((canonical (and (plist-member record :record-kind)
+                        (e-runtime-store-offline-worker--v7-name
+                         (plist-get record :record-kind))))
+        (legacy (and (plist-member record :kind)
+                     (e-runtime-store-offline-worker--v7-name
+                      (plist-get record :kind)))))
+    (when (and canonical legacy)
+      (apply #'e-runtime-store-offline-worker--v7-assert-equal
+             (append (list "v7 record kind aliases disagree"
+                           canonical legacy)
+                     data)))
+    (or canonical legacy)))
+
+(defun e-runtime-store-offline-worker--v7-record-position
+    (record &rest data)
+  "Return RECORD's one agreed position, accepting one retired alias."
+  (let ((canonical (and (plist-member record :seq)
+                        (plist-get record :seq)))
+        (legacy (and (plist-member record :durable-position)
+                     (plist-get record :durable-position))))
+    (when (and canonical legacy)
+      (apply #'e-runtime-store-offline-worker--v7-assert-equal
+             (append (list "v7 record position aliases disagree"
+                           canonical legacy)
+                     data)))
+    (or canonical legacy)))
+
+(defun e-runtime-store-offline-worker--v7-record-tags
+    (record &rest data)
+  "Return RECORD's one agreed tag list, accepting one retired alias."
+  (let ((canonical (and (plist-member record :tags)
+                        (plist-get record :tags)))
+        (legacy (and (plist-member record :selector-tags)
+                     (plist-get record :selector-tags))))
+    (when (and canonical legacy)
+      (apply #'e-runtime-store-offline-worker--v7-assert-equal
+             (append
+              (list "v7 record tag aliases disagree"
+                    (e-runtime-store-offline-worker--v7-sorted-values canonical)
+                    (e-runtime-store-offline-worker--v7-sorted-values legacy))
+              data)))
+    (or canonical legacy)))
+
+(defun e-runtime-store-offline-worker--v7-record-attributes
+    (record &rest data)
+  "Return RECORD's one agreed attribute list, accepting one retired alias."
+  (let ((canonical (and (plist-member record :attributes)
+                        (plist-get record :attributes)))
+        (legacy (and (plist-member record :selector-attributes)
+                     (plist-get record :selector-attributes))))
+    (when (and canonical legacy)
+      (apply #'e-runtime-store-offline-worker--v7-assert-equal
+             (append
+              (list "v7 record attribute aliases disagree"
+                    (e-runtime-store-offline-worker--v7-sorted-values
+                     (e-runtime-store-offline-worker--v7-attribute-pairs
+                      canonical))
+                    (e-runtime-store-offline-worker--v7-sorted-values
+                     (e-runtime-store-offline-worker--v7-attribute-pairs
+                      legacy)))
+              data)))
+    (or canonical legacy)))
+
+(defun e-runtime-store-offline-worker--v7-attribute-pairs (values)
+  "Return alternating attribute VALUES as comparable key/value pairs."
+  (let (pairs)
+    (while values
+      (push (list (car values) (cadr values)) pairs)
+      (setq values (cddr values)))
+    (nreverse pairs)))
+
+(defun e-runtime-store-offline-worker--copy-v7-session-state (database)
+  "Copy v7 query rows after association fields leave the session relation."
+  (dolist (row (sqlite-select
+                database
+                (concat "SELECT session_id,name,summary,metadata,created_at,updated_at,"
+                        "last_message_at,latest_assistant_marker,message_count,"
+                        "current_branch,turn_options,current_head_id,root_event_id,"
+                        "current_context_generation_id,root_p,board_output_sequence,"
+                        "board_activity_sequence,journal_position,board_id,principal,"
+                        "association_role,routing_policy FROM session_query_state_v7")))
+    (sqlite-execute
+     database
+     "INSERT INTO session_query_state(session_id,name,summary,metadata,created_at,updated_at,last_message_at,latest_assistant_marker,message_count,current_branch,turn_options,current_head_id,root_event_id,current_context_generation_id,root_p,board_output_sequence,board_activity_sequence,journal_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+     (apply #'vector (cl-subseq (append row nil) 0 18)))))
+
+(defun e-runtime-store-offline-worker--copy-v7-participants (database)
+  "Normalize v7 participant payloads into relational participant columns."
+  (let ((e-board-sqlite-worker--database database))
+    (dolist (row (sqlite-select database
+                                "SELECT board_id,generation,participant_id,payload,revision FROM board_participants_v7"))
+      (let* ((board-id (e-runtime-store-offline-worker--column row 0))
+             (generation (e-runtime-store-offline-worker--column row 1))
+             (participant-id (e-runtime-store-offline-worker--column row 2))
+             (participant (e-runtime-store-offline-worker--v7-decode
+                           (e-runtime-store-offline-worker--column row 3)
+                           "participant"
+                           :board-id board-id :generation generation
+                           :participant-id participant-id))
+             (content (e-board-sqlite-worker--participant-content participant)))
+        (when (plist-member participant :id)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 participant identity disagrees"
+           participant-id (plist-get participant :id)
+           :board-id board-id :generation generation
+           :participant-id participant-id))
+        (sqlite-execute
+         database
+         "INSERT INTO board_participants(board_id,generation,participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,payload,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         (vector board-id generation participant-id
+                 (plist-get participant :principal)
+                 (plist-get participant :author)
+                 (plist-get participant :controller)
+                 (symbol-name (or (plist-get participant :role) 'participant))
+                 (symbol-name (or (plist-get participant :state) 'active))
+                 (plist-get participant :name)
+                 (plist-get participant :subscription-id)
+                 (if (plist-get participant :publication-pending) 1 0)
+                 (e-board-sqlite-worker--sql-value content)
+                 (e-runtime-store-offline-worker--column row 4)))))))
+
+(defun e-runtime-store-offline-worker--copy-v7-board (database)
+  "Normalize v7 Board records, selectors, routing, and pickups."
+  (let ((e-board-sqlite-worker--database database))
+    (dolist (row (sqlite-select
+                  database
+                  "SELECT board_id,trusted_principal,generation,revision,next_position,root_payload FROM boards_v7"))
+      (sqlite-execute
+       database
+       "INSERT INTO boards(board_id,trusted_principal,generation,revision,next_position,root_payload) VALUES(?,?,?,?,?,?)"
+       (apply #'vector (append row nil))))
+    (e-runtime-store-offline-worker--copy-v7-participants database)
+    (dolist (row (sqlite-select database
+                                "SELECT board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,payload FROM board_records_v7"))
+      (let* ((board-id (e-runtime-store-offline-worker--column row 0))
+             (generation (e-runtime-store-offline-worker--column row 1))
+             (position (e-runtime-store-offline-worker--column row 2))
+             (record-id (e-runtime-store-offline-worker--column row 4))
+             (record (e-runtime-store-offline-worker--v7-decode
+                      (e-runtime-store-offline-worker--column row 8)
+                      "record" :board-id board-id :generation generation
+                      :position position :record-id record-id))
+             (record-kind
+              (e-runtime-store-offline-worker--v7-record-kind
+               record :board-id board-id :generation generation
+               :position position :record-id record-id))
+             (record-position
+              (e-runtime-store-offline-worker--v7-record-position
+               record :board-id board-id :generation generation
+               :position position :record-id record-id))
+             (record-tags
+              (e-runtime-store-offline-worker--v7-record-tags
+               record :board-id board-id :generation generation
+               :position position :record-id record-id))
+             (record-attributes
+              (e-runtime-store-offline-worker--v7-record-attributes
+               record :board-id board-id :generation generation
+               :position position :record-id record-id))
+             (tag-rows
+              (sqlite-select
+               database
+               "SELECT tag FROM board_record_tags_v7 WHERE board_id=? AND generation=? AND position=? ORDER BY rowid"
+               (vector board-id generation position)))
+             (attribute-rows
+              (sqlite-select
+               database
+               "SELECT attribute_key,attribute_value FROM board_record_attributes_v7 WHERE board_id=? AND generation=? AND position=? ORDER BY rowid"
+               (vector board-id generation position)))
+             (stored-tags
+              (mapcar (lambda (tag-row)
+                        (e-runtime-store-offline-worker--v7-value
+                         (e-runtime-store-offline-worker--column tag-row 0)
+                         "record tag" :board-id board-id :position position))
+                      tag-rows))
+             (stored-attributes
+              (let (values)
+                (dolist (attribute-row attribute-rows)
+                  (setq values
+                        (append values
+                                (list
+                                 (e-runtime-store-offline-worker--v7-value
+                                  (e-runtime-store-offline-worker--column
+                                   attribute-row 0)
+                                  "record attribute key"
+                                  :board-id board-id :position position)
+                                 (e-runtime-store-offline-worker--v7-value
+                                  (e-runtime-store-offline-worker--column
+                                   attribute-row 1)
+                                  "record attribute value"
+                                  :board-id board-id :position position)))))
+                values))
+             (content (e-board-sqlite-worker--record-content record)))
+        (e-runtime-store-offline-worker--v7-assert-equal
+         "v7 record key disagrees" record-id (plist-get record :id)
+         :board-id board-id :generation generation :position position)
+        (e-runtime-store-offline-worker--v7-assert-equal
+         "v7 record kind disagrees"
+         (e-runtime-store-offline-worker--column row 3) record-kind
+         :board-id board-id :generation generation :position position)
+        (when record-position
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 record position disagrees" position record-position
+           :board-id board-id :generation generation :record-id record-id))
+        (when record-tags
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 record tags disagree"
+           (e-runtime-store-offline-worker--v7-sorted-values stored-tags)
+           (e-runtime-store-offline-worker--v7-sorted-values record-tags)
+           :board-id board-id :generation generation :position position))
+        (when record-attributes
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 record attributes disagree"
+           (e-runtime-store-offline-worker--v7-sorted-values
+            (e-runtime-store-offline-worker--v7-attribute-pairs
+             stored-attributes))
+           (e-runtime-store-offline-worker--v7-sorted-values
+            (e-runtime-store-offline-worker--v7-attribute-pairs
+             record-attributes))
+           :board-id board-id :generation generation :position position))
+        (let ((source (plist-get record :source)))
+          (when source
+            (when (plist-get source :kind)
+              (e-runtime-store-offline-worker--v7-assert-equal
+               "v7 record source kind disagrees"
+               (symbol-name (plist-get source :kind))
+               (e-runtime-store-offline-worker--column row 5)
+               :board-id board-id :position position))
+            (when (plist-member source :key)
+              (e-runtime-store-offline-worker--v7-assert-equal
+               "v7 record source key disagrees"
+               (e-runtime-store-offline-worker--decode-text
+                (e-runtime-store-offline-worker--column row 6))
+               (plist-get source :key)
+               :board-id board-id :position position))))
+        (sqlite-execute
+         database
+         "INSERT INTO board_records(board_id,generation,position,record_kind,record_id,source_kind,source_key,source_hash,created_at,author,subject_participant_id,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+         (vector board-id generation position
+                 (e-runtime-store-offline-worker--column row 3)
+                 record-id
+                 (e-runtime-store-offline-worker--column row 5)
+                 (e-runtime-store-offline-worker--column row 6)
+                 (e-runtime-store-offline-worker--column row 7)
+                 (or (plist-get record :created-at) (float-time))
+                 (e-board-sqlite-worker--sql-value
+                  (plist-get record :author))
+                 (plist-get record :subject-participant-id)
+                 (e-board-sqlite-worker--sql-value content)))))
+    (dolist (row (sqlite-select database
+                                "SELECT board_id,generation,position,tag FROM board_record_tags_v7"))
+      (sqlite-execute database
+                      "INSERT INTO board_record_tags(board_id,generation,position,tag) VALUES(?,?,?,?)"
+                      (apply #'vector (append row nil))))
+    (dolist (row (sqlite-select database
+                                "SELECT board_id,generation,position,attribute_key,attribute_value FROM board_record_attributes_v7"))
+      (sqlite-execute database
+                      "INSERT INTO board_record_attributes(board_id,generation,position,attribute_key,attribute_value) VALUES(?,?,?,?,?)"
+                      (apply #'vector (append row nil))))
+    (dolist (row (sqlite-select database
+                                "SELECT board_id,generation,message_id,outcome,payload,revision FROM board_routing_v7"))
+      (let* ((board-id (e-runtime-store-offline-worker--column row 0))
+             (generation (e-runtime-store-offline-worker--column row 1))
+             (message-id (e-runtime-store-offline-worker--column row 2))
+             (outcome (e-runtime-store-offline-worker--v7-decode
+                       (e-runtime-store-offline-worker--column row 4)
+                       "routing" :board-id board-id :generation generation
+                       :message-id message-id))
+             (pickup-rows
+              (sqlite-select
+               database
+               "SELECT delivery_key,participant_id FROM board_pickups_v7 WHERE board_id=? AND generation=? AND message_id=? ORDER BY participant_id,fifo_position"
+               (vector board-id generation message-id)))
+             (participant-ids
+              (delete-dups
+               (mapcar (lambda (pickup-row)
+                         (e-runtime-store-offline-worker--column pickup-row 1))
+                       pickup-rows)))
+             (pickup-ids
+              (mapcar (lambda (pickup-row)
+                        (e-runtime-store-offline-worker--v7-value
+                         (e-runtime-store-offline-worker--column pickup-row 0)
+                         "pickup identity" :board-id board-id
+                         :generation generation :message-id message-id))
+                      pickup-rows)))
+        (when (plist-member outcome :state)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 routing state disagrees"
+           (e-runtime-store-offline-worker--column row 3)
+           (e-runtime-store-offline-worker--v7-name
+            (plist-get outcome :state))
+           :board-id board-id :generation generation :message-id message-id))
+        (when (plist-member outcome :participant-ids)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 routing participants disagree"
+           (e-runtime-store-offline-worker--v7-sorted-values participant-ids)
+           (e-runtime-store-offline-worker--v7-sorted-values
+            (plist-get outcome :participant-ids))
+           :board-id board-id :generation generation :message-id message-id))
+        (when (plist-member outcome :pickup-ids)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 routing pickups disagree"
+           (e-runtime-store-offline-worker--v7-sorted-values pickup-ids)
+           (e-runtime-store-offline-worker--v7-sorted-values
+            (plist-get outcome :pickup-ids))
+           :board-id board-id :generation generation :message-id message-id))
+        (sqlite-execute
+         database
+         "INSERT INTO board_routing(board_id,generation,message_id,outcome,reason,revision,payload) VALUES(?,?,?,?,?,?,?)"
+         (vector board-id generation message-id
+                 (e-runtime-store-offline-worker--column row 3)
+                 (and (plist-get outcome :reason)
+                      (e-runtime-store-offline-worker--v7-name
+                       (plist-get outcome :reason)))
+                 (e-runtime-store-offline-worker--column row 5)
+                 (e-board-sqlite-worker--sql-value
+                  (e-board-sqlite-worker--without-keys
+                   outcome '(:state :reason :participant-ids :pickup-ids)))))))
+    (dolist (row (sqlite-select database
+                                "SELECT delivery_key,board_id,generation,participant_id,fifo_position,message_id,state,revision,attempt,payload FROM board_pickups_v7"))
+      (let* ((delivery-key (e-runtime-store-offline-worker--column row 0))
+             (board-id (e-runtime-store-offline-worker--column row 1))
+             (generation (e-runtime-store-offline-worker--column row 2))
+             (participant-id (e-runtime-store-offline-worker--column row 3))
+             (fifo-position (e-runtime-store-offline-worker--column row 4))
+             (message-id (e-runtime-store-offline-worker--column row 5))
+             (state (e-runtime-store-offline-worker--column row 6))
+             (revision (e-runtime-store-offline-worker--column row 7))
+             (attempt (e-runtime-store-offline-worker--column row 8))
+             (pickup (e-runtime-store-offline-worker--v7-decode
+                      (e-runtime-store-offline-worker--column row 9)
+                      "pickup" :board-id board-id :generation generation
+                      :participant-id participant-id :message-id message-id)))
+        (dolist (field (list (list :delivery-id
+                                    (e-runtime-store-offline-worker--v7-value
+                                     delivery-key "pickup identity"
+                                     :board-id board-id :message-id message-id)
+                                    (plist-get pickup :delivery-id))
+                             (list :board-id board-id (plist-get pickup :board-id))
+                             (list :participant-id participant-id
+                                   (plist-get pickup :participant-id))
+                             (list :fifo-position fifo-position
+                                   (plist-get pickup :fifo-position))
+                             (list :message-id message-id
+                                   (plist-get pickup :message-id))
+                             (list :state state
+                                   (e-runtime-store-offline-worker--v7-name
+                                    (plist-get pickup :state)))
+                             (list :revision revision
+                                   (plist-get pickup :revision))
+                             (list :attempt attempt
+                                   (plist-get pickup :attempt))))
+          (when (plist-member pickup (car field))
+            (e-runtime-store-offline-worker--v7-assert-equal
+             (format "v7 pickup %s disagrees" (car field))
+             (cadr field) (caddr field)
+             :board-id board-id :generation generation
+             :participant-id participant-id :message-id message-id)))
+        (sqlite-execute
+         database
+         "INSERT INTO board_pickups(delivery_key,board_id,generation,participant_id,fifo_position,message_id,state,revision,attempt,payload) VALUES(?,?,?,?,?,?,?,?,?,?)"
+         (vector delivery-key board-id generation participant-id fifo-position
+                 message-id state revision attempt
+                 (e-board-sqlite-worker--sql-value
+                  (e-board-sqlite-worker--without-keys
+                   pickup '(:delivery-id :board-id :participant-id
+                            :fifo-position :message-id :state :revision :attempt)))))))
+    (sqlite-execute database
+                    "INSERT INTO board_pickup_events(delivery_key,event_position,state,payload,created_at) SELECT delivery_key,event_position,state,payload,created_at FROM board_pickup_events_v7")
+    (sqlite-execute database
+                    "INSERT INTO board_replay_progress(board_id,generation,subscription_id,position,revision) SELECT board_id,generation,subscription_id,position,revision FROM board_replay_progress_v7")))
+
+(defun e-runtime-store-offline-worker--copy-v7-associations (database)
+  "Build constrained session Board associations from v7 state rows."
+  (dolist (row (sqlite-select database
+                              "SELECT session_id,board_id,principal,association_role,routing_policy FROM session_query_state_v7 WHERE board_id IS NOT NULL"))
+    (let* ((session-id (e-runtime-store-offline-worker--column row 0))
+           (board-id (e-runtime-store-offline-worker--column row 1))
+           (principal-sql (e-runtime-store-offline-worker--column row 2))
+           (principal
+            (e-runtime-store-offline-worker--v7-value
+             principal-sql "association principal"
+             :session-id session-id :board-id board-id))
+           (association-role (e-runtime-store-offline-worker--column row 3))
+           (policy (e-runtime-store-offline-worker--v7-decode
+                    (e-runtime-store-offline-worker--column row 4)
+                    "association" :session-id session-id :board-id board-id))
+           (participant-id (plist-get policy :participant-id))
+           (generation-row
+            (car (sqlite-select database
+                                "SELECT generation FROM boards WHERE board_id=?"
+                                (vector board-id))))
+           (generation (and generation-row
+                            (e-runtime-store-offline-worker--column
+                             generation-row 0)))
+           (participant-row
+            (and generation participant-id
+                 (car (sqlite-select
+                       database
+                       "SELECT principal,role FROM board_participants WHERE board_id=? AND generation=? AND participant_id=?"
+                       (vector board-id generation participant-id))))))
+      (unless participant-row
+        (e-runtime-store-offline-worker--error
+         "v7 association does not resolve participant"
+         :session-id session-id :board-id board-id
+         :participant-id participant-id))
+      (e-runtime-store-offline-worker--v7-assert-equal
+       "v7 association principal disagrees"
+       principal (e-runtime-store-offline-worker--column participant-row 0)
+       :session-id session-id :board-id board-id
+       :participant-id participant-id)
+      (e-runtime-store-offline-worker--v7-assert-equal
+       "v7 association role disagrees"
+       association-role
+       (e-runtime-store-offline-worker--v7-name
+        (e-runtime-store-offline-worker--column participant-row 1))
+       :session-id session-id :board-id board-id
+       :participant-id participant-id)
+      (sqlite-execute
+       database
+       "INSERT INTO board_session_associations(session_id,board_id,generation,participant_id,routing_policy,revision) VALUES(?,?,?,?,?,1)"
+       (vector session-id board-id generation participant-id
+               (e-board-sqlite-worker--sql-value
+                (e-board-sqlite-worker--without-keys
+                 policy '(:session-id :board-id :generation :participant-id
+                          :association-role :principal
+                          :participant-name))))))))
+
+(defun e-runtime-store-offline-worker--copy-v7-tasks (database)
+  "Normalize v7 task/attempt rows and map destructive queued attempts."
+  (let* ((queue-rows
+          (sqlite-select database
+                         "SELECT queue_id,revision,sequence,paused FROM task_queues_v7"))
+         (task-rows
+          (sqlite-select database
+                         "SELECT queue_id,task_id,position,status,revision,payload FROM task_records_v7"))
+         (attempt-rows
+          (sqlite-select database
+                         "SELECT queue_id,task_id,attempt_id,attempt_number,state,started_at,settled_at,payload FROM task_attempts_v7"))
+         (queue-sequences (make-hash-table :test 'equal))
+         (tasks (make-hash-table :test 'equal))
+         (attempts (make-hash-table :test 'equal)))
+    (dolist (queue-row queue-rows)
+      (let ((queue-id (e-runtime-store-offline-worker--column queue-row 0)))
+        (puthash queue-id
+                 (e-runtime-store-offline-worker--column queue-row 2)
+                 queue-sequences)
+        (sqlite-execute
+         database
+         "INSERT INTO task_queues(queue_id,revision,sequence,paused) VALUES(?,?,?,?)"
+         (apply #'vector (append queue-row nil)))))
+    (dolist (row task-rows)
+      (let* ((queue-id (e-runtime-store-offline-worker--column row 0))
+             (task-id (e-runtime-store-offline-worker--column row 1))
+             (position (e-runtime-store-offline-worker--column row 2))
+             (status (e-runtime-store-offline-worker--column row 3))
+             (record (e-runtime-store-offline-worker--v7-decode
+                      (e-runtime-store-offline-worker--column row 5)
+                      "task" :queue-id queue-id :task-id task-id))
+             (key (cons queue-id task-id)))
+        (unless (gethash queue-id queue-sequences)
+          (e-runtime-store-offline-worker--v7-conflict
+           "v7 task references unknown queue" :queue-id queue-id :task-id task-id))
+        (when (gethash key tasks)
+          (e-runtime-store-offline-worker--v7-conflict
+           "v7 task identity is duplicated" :queue-id queue-id :task-id task-id))
+        (when (plist-member record :task-id)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 task identity disagrees" task-id (plist-get record :task-id)
+           :queue-id queue-id :task-id task-id))
+        (when (plist-member record :status)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 task status disagrees" status
+           (e-runtime-store-offline-worker--v7-name (plist-get record :status))
+           :queue-id queue-id :task-id task-id))
+        (when (and (plist-member record :harness-instance-id)
+                   (plist-member record :harness-selector))
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 task harness selector aliases disagree"
+           (plist-get record :harness-instance-id)
+           (plist-get record :harness-selector)
+           :queue-id queue-id :task-id task-id))
+        (when (> position (gethash queue-id queue-sequences))
+          (e-runtime-store-offline-worker--v7-conflict
+           "v7 task position exceeds queue sequence" :queue-id queue-id
+           :task-id task-id :position position))
+        (puthash key
+                 (list :row row :record record
+                       :attempt-id (and (plist-member record :attempt-id)
+                                        (plist-get record :attempt-id)))
+                 tasks)))
+    (dolist (row attempt-rows)
+      (let* ((queue-id (e-runtime-store-offline-worker--column row 0))
+             (task-id (e-runtime-store-offline-worker--column row 1))
+             (attempt-id (e-runtime-store-offline-worker--column row 2))
+             (attempt-number (e-runtime-store-offline-worker--column row 3))
+             (state (e-runtime-store-offline-worker--column row 4))
+             (started-at (e-runtime-store-offline-worker--column row 5))
+             (settled-at (e-runtime-store-offline-worker--column row 6))
+             (legacy (e-runtime-store-offline-worker--v7-decode
+                      (e-runtime-store-offline-worker--column row 7)
+                      "attempt" :queue-id queue-id :task-id task-id
+                      :attempt-id attempt-id))
+             (key (cons queue-id task-id))
+             (number-value (and (plist-member legacy :attempt-number)
+                                (plist-get legacy :attempt-number)))
+             (number-alias (and (plist-member legacy :number)
+                                (plist-get legacy :number))))
+        (unless (gethash key tasks)
+          (e-runtime-store-offline-worker--v7-conflict
+           "v7 attempt references unknown task" :queue-id queue-id
+           :task-id task-id :attempt-id attempt-id))
+        (when (and number-value number-alias)
+          (e-runtime-store-offline-worker--v7-assert-equal
+           "v7 attempt number aliases disagree" number-value number-alias
+           :queue-id queue-id :task-id task-id :attempt-id attempt-id))
+        (dolist (field
+                 (list (list :task-id task-id (plist-get legacy :task-id))
+                       (list :attempt-id attempt-id (plist-get legacy :attempt-id))
+                       (list :attempt-number attempt-number
+                             (or number-value number-alias))
+                       (list :state state
+                             (e-runtime-store-offline-worker--v7-name
+                              (plist-get legacy :state)))
+                       (list :started-at started-at (plist-get legacy :started-at))
+                       (list :settled-at settled-at (plist-get legacy :settled-at))))
+          (when (plist-member legacy (car field))
+            (e-runtime-store-offline-worker--v7-assert-equal
+             (format "v7 attempt %s disagrees" (car field))
+             (cadr field) (caddr field)
+             :queue-id queue-id :task-id task-id :attempt-id attempt-id)))
+        (when (and (equal state "queued") settled-at)
+          (e-runtime-store-offline-worker--v7-conflict
+           "Contradictory v7 queued attempt facts"
+           :queue-id queue-id :task-id task-id :attempt-id attempt-id))
+        (when (or (not (integerp attempt-number)) (<= attempt-number 0))
+          (e-runtime-store-offline-worker--v7-conflict
+           "Invalid v7 attempt number" :queue-id queue-id :task-id task-id
+           :attempt-id attempt-id :attempt-number attempt-number))
+        (let ((prior (gethash key attempts)))
+          (when (seq-find
+                 (lambda (existing)
+                   (= attempt-number
+                      (e-runtime-store-offline-worker--column existing 3)))
+                 prior)
+            (e-runtime-store-offline-worker--v7-conflict
+             "Duplicate v7 attempt number" :queue-id queue-id :task-id task-id
+             :attempt-number attempt-number))
+          (puthash key (cons row prior) attempts))))
+    (maphash
+     (lambda (key task)
+       (let* ((queue-id (car key))
+              (task-id (cdr key))
+              (row (plist-get task :row))
+              (record (plist-get task :record))
+              (task-status (e-runtime-store-offline-worker--column row 3))
+              (task-attempt-id (plist-get task :attempt-id))
+              (task-attempts
+               (sort (copy-sequence (gethash key attempts))
+                     (lambda (left right)
+                       (< (e-runtime-store-offline-worker--column left 3)
+                          (e-runtime-store-offline-worker--column right 3)))))
+              (latest-row (car (last task-attempts)))
+              (latest-id (and latest-row
+                              (e-runtime-store-offline-worker--column latest-row 2)))
+              (latest-state (and latest-row
+                                  (e-runtime-store-offline-worker--column latest-row 4))))
+         (when (and task-attempt-id
+                    (not (equal task-attempt-id latest-id)))
+           (e-runtime-store-offline-worker--v7-conflict
+            "v7 task latest attempt disagrees" :queue-id queue-id
+            :task-id task-id :expected latest-id :actual task-attempt-id))
+         (when (and latest-state
+                    (not (or (and (member task-status '("queued" "paused"))
+                                  (equal latest-state "queued"))
+                             (and (equal task-status "running")
+                                  (member latest-state '("claimed" "running")))
+                             (equal task-status latest-state))))
+           (e-runtime-store-offline-worker--v7-conflict
+            "v7 task and latest attempt topology disagrees"
+            :queue-id queue-id :task-id task-id
+            :task-status task-status :attempt-state latest-state))
+         (sqlite-execute
+          database
+          "INSERT INTO task_records(queue_id,task_id,position,status,revision,enqueued_at,harness_selector,retry_count,latest_attempt_id,payload) VALUES(?,?,?,?,?,?,?,?,?,?)"
+          (vector queue-id task-id
+                  (e-runtime-store-offline-worker--column row 2)
+                  task-status
+                  (e-runtime-store-offline-worker--column row 4)
+                  (plist-get record :enqueued-at)
+                  (e-task-storage-sqlite-worker--pack
+                   (or (plist-get record :harness-instance-id)
+                       (plist-get record :harness-selector)))
+                  (or (plist-get record :retries) 0)
+                  latest-id
+                  (e-task-storage-sqlite-worker--pack
+                   (e-task-storage-sqlite-worker--task-content record))))))
+     tasks)
+    (dolist (row attempt-rows)
+      (let* ((queue-id (e-runtime-store-offline-worker--column row 0))
+             (task-id (e-runtime-store-offline-worker--column row 1))
+             (attempt-id (e-runtime-store-offline-worker--column row 2))
+             (state (e-runtime-store-offline-worker--column row 4))
+             (legacy (e-runtime-store-offline-worker--v7-decode
+                      (e-runtime-store-offline-worker--column row 7)
+                      "attempt" :queue-id queue-id :task-id task-id
+                      :attempt-id attempt-id)))
+        (sqlite-execute
+         database
+         "INSERT INTO task_attempts(queue_id,task_id,attempt_id,attempt_number,state,harness_instance_id,session_id,started_at,settled_at,outputs,error) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+         (vector queue-id task-id attempt-id
+                 (e-runtime-store-offline-worker--column row 3)
+                 (if (equal state "queued") "legacy-requeued" state)
+                 (plist-get legacy :harness-instance-id)
+                 (plist-get legacy :session-id)
+                 (e-runtime-store-offline-worker--column row 5)
+                 (e-runtime-store-offline-worker--column row 6)
+                 (and (plist-get legacy :outputs)
+                      (e-task-storage-sqlite-worker--pack
+                       (plist-get legacy :outputs)))
+                 (and (plist-get legacy :error)
+                      (e-task-storage-sqlite-worker--pack
+                       (plist-get legacy :error)))))))))
+
+(defun e-runtime-store-offline-worker--install-v8 (database)
+  "Rebuild normalized v8 communication relations from stopped v7 tables."
+  (sqlite-execute database "DROP TABLE IF EXISTS session_process_report_index")
+  (dolist (index '("session_query_state_board" "session_records_position"
+                   "task_records_dispatch" "board_records_selector"
+                   "board_record_tags_selector" "board_record_attributes_selector"
+                   "board_pickups_unresolved"))
+    (sqlite-execute database (format "DROP INDEX IF EXISTS %s" index)))
+  (dolist (table '("session_query_state" "boards" "board_records" "board_record_tags"
+                   "board_record_attributes" "board_routing" "board_pickups"
+                   "board_pickup_events" "board_participants" "board_replay_progress"
+                   "task_queues" "task_records" "task_attempts"
+                   "board_session_admissions"))
+    (e-runtime-store-offline-worker--rename-table database table))
+  (e-runtime-store-worker--initialize-domain-schema database)
+  (e-runtime-store-offline-worker--copy-v7-session-state database)
+  (e-runtime-store-offline-worker--copy-v7-board database)
+  (e-runtime-store-offline-worker--copy-v7-associations database)
+  (e-runtime-store-offline-worker--copy-v7-tasks database)
+  (e-runtime-store-session-worker-initialize-process-report-projection database)
+  ;; The process-report projection remains derived state.  Rebuild it from
+  ;; the copied canonical journal before parity verification; carrying the old
+  ;; rows would retain the retired foreign-key boundary.
+  (e-runtime-store-offline-worker--populate-v7 database)
+  (dolist (table '("session_query_state_v7" "board_session_admissions_v7"
+                   "board_pickup_events_v7" "board_replay_progress_v7"
+                   "board_routing_v7" "board_pickups_v7"
+                   "board_record_tags_v7" "board_record_attributes_v7"
+                   "board_records_v7" "board_participants_v7" "boards_v7"
+                   "task_attempts_v7" "task_records_v7" "task_queues_v7"))
+    (when (e-runtime-store-offline-worker--table-exists-p database table)
+      (sqlite-execute database (format "DROP TABLE %s" table)))))
 
 (defun e-runtime-store-offline-worker--projection-error
     (error session-id position report)
@@ -788,6 +1555,37 @@ session-domain replay; neither retired projection is consulted here."
       :index (plist-get (cddr err) :index))))
   (e-runtime-store-offline-worker--verify-v7-projection database))
 
+(defun e-runtime-store-offline-worker--verify-v8-schema (database)
+  "Verify normalized v8 relations and projection parity."
+  (dolist (table '("board_session_associations" "board_records"
+                   "board_record_tags" "board_record_attributes"
+                   "board_routing" "board_pickups" "board_participants"
+                   "task_records" "task_attempts" "session_query_state"))
+    (unless (e-runtime-store-offline-worker--table-exists-p database table)
+      (e-runtime-store-offline-worker--error
+       "Schema v8 normalized relation is missing" :table table)))
+  (dolist (table '("board_session_admissions" "session_query_state_v7"
+                   "board_records_v7" "board_pickups_v7" "task_records_v7"
+                   "task_attempts_v7"))
+    (when (e-runtime-store-offline-worker--table-exists-p database table)
+      (e-runtime-store-offline-worker--error
+       "Schema v8 retains obsolete relation" :table table)))
+  (let ((e-runtime-store-worker--database database))
+    (condition-case err
+        (e-runtime-store-worker--verify-v8-normalized-schema)
+      (e-runtime-store-schema-too-old
+       (e-runtime-store-offline-worker--error
+        "Schema v8 normalized relation shape is invalid"
+        :reason (plist-get (cdr err) :reason)))))
+  (condition-case err
+      (e-runtime-store-session-worker-verify-process-report-projection-schema
+       database)
+    (e-runtime-store-worker-error
+     (e-runtime-store-offline-worker--error
+      "Schema v8 process-report shape is invalid"
+      :reason (car (cdr err)))))
+  (e-runtime-store-offline-worker--verify-v7-projection database))
+
 (defun e-runtime-store-offline-worker--remove-sqlite-sidecars (database-file)
   "Remove SQLite WAL sidecars for DATABASE-FILE after its connection closes."
   (dolist (file (list (concat database-file "-wal")
@@ -847,7 +1645,7 @@ fault restores the exact pre-upgrade schema boundary."
       (sqlite-close restored))))
 
 (defun e-runtime-store-offline-worker--upgrade (database-file backup-file)
-  "Upgrade stopped schema v4, v5, or v6 DATABASE-FILE explicitly to v7.
+  "Upgrade stopped schema v4, v5, v6, or v7 DATABASE-FILE explicitly to v8.
 
 The complete supported chain uses one verified backup and one install
 transaction.  A verified v7 source is a read-only no-op and creates no backup."
@@ -874,9 +1672,9 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                           (list :actual version :supported current)))
                  ((= version current)
                   (e-runtime-store-offline-worker--check database)
-                  (e-runtime-store-offline-worker--verify-v7-lineage database)
+                  (e-runtime-store-offline-worker--verify-v8-lineage database)
                   (setq projection
-                        (e-runtime-store-offline-worker--verify-v7-schema
+                        (e-runtime-store-offline-worker--verify-v8-schema
                          database))
                   (list :from version :to current :noop t :backup nil
                         :records (plist-get projection :records)
@@ -885,7 +1683,7 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                         :projection-association-rows
                         (plist-get projection :association-rows)
                         :integrity "ok"))
-                 ((not (memq version '(4 5 6)))
+                 ((not (memq version '(4 5 6 7)))
                   (e-runtime-store-offline-worker--error
                    "No supported direct upgrade path" version current))
                  (t
@@ -894,8 +1692,12 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                     (e-runtime-store-offline-worker--error
                      "Source store has no canonical session journal"))
                   (e-runtime-store-offline-worker--check database)
-                  (when (= version 6)
+                  (when (>= version 6)
                     (e-runtime-store-offline-worker--verify-v6-lineage database))
+                  ;; A v7 lineage failure is a read-only source diagnostic;
+                  ;; reject it before creating the operator backup.
+                  (when (= version 7)
+                    (e-runtime-store-offline-worker--verify-v7-lineage database))
                   (if (< version 6)
                       (e-runtime-store-offline-worker--preflight-v5 database)
                     (e-runtime-store-offline-worker--preflight-v7 database))
@@ -955,26 +1757,40 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                           (e-runtime-store-offline-worker--ensure-v5-provenance
                            database))
                         (e-runtime-store-offline-worker--fault 'after-v6)
-                        (e-runtime-store-offline-worker--install-v7 database)
-                        (e-runtime-store-offline-worker--fault 'after-v7-schema)
+                        (when (< version 7)
+                          (e-runtime-store-offline-worker--install-v7 database)
+                          (e-runtime-store-offline-worker--fault 'after-v7-schema)
+                          (setq projection
+                                (e-runtime-store-offline-worker--populate-v7
+                                 database))
+                          (e-runtime-store-offline-worker--fault
+                           'after-v7-populate)
+                          (setq projection
+                                (e-runtime-store-offline-worker--verify-v7-schema
+                                 database))
+                          (e-runtime-store-offline-worker--fault 'after-v7-parity)
+                          (e-runtime-store-offline-worker--ensure-migration-row
+                           database 7
+                           e-runtime-store-offline-worker--v7-migration-identity
+                           e-runtime-store-offline-worker--v7-migration-checksum)
+                          (e-runtime-store-offline-worker--verify-v7-lineage
+                           database))
+                        (e-runtime-store-offline-worker--install-v8 database)
+                        (e-runtime-store-offline-worker--fault 'after-v8-schema)
+                        (e-runtime-store-offline-worker--fault 'after-v8-populate)
                         (setq projection
-                              (e-runtime-store-offline-worker--populate-v7
+                              (e-runtime-store-offline-worker--verify-v8-schema
                                database))
-                        (e-runtime-store-offline-worker--fault
-                         'after-v7-populate)
-                        (setq projection
-                              (e-runtime-store-offline-worker--verify-v7-schema
-                               database))
-                        (e-runtime-store-offline-worker--fault 'after-v7-parity)
+                        (e-runtime-store-offline-worker--fault 'after-v8-parity)
                         (e-runtime-store-offline-worker--ensure-migration-row
-                         database 7
-                         e-runtime-store-offline-worker--v7-migration-identity
-                         e-runtime-store-offline-worker--v7-migration-checksum)
-                        (e-runtime-store-offline-worker--verify-v7-lineage
+                         database 8
+                         e-runtime-store-offline-worker--v8-migration-identity
+                         e-runtime-store-offline-worker--v8-migration-checksum)
+                        (e-runtime-store-offline-worker--verify-v8-lineage
                          database)
                         (sqlite-execute
                          database
-                         "UPDATE store_meta SET value='7' WHERE key='schema_version'")
+                         "UPDATE store_meta SET value='8' WHERE key='schema_version'")
                         (sqlite-execute database "COMMIT")
                         (setq committed t))
                     (error
@@ -982,9 +1798,9 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                      (signal (car transaction-error) (cdr transaction-error))))
                   (e-runtime-store-offline-worker--fault 'after)
                   (e-runtime-store-offline-worker--check database)
-                  (e-runtime-store-offline-worker--verify-v7-lineage database)
+                  (e-runtime-store-offline-worker--verify-v8-lineage database)
                   (setq projection
-                        (e-runtime-store-offline-worker--verify-v7-schema
+                        (e-runtime-store-offline-worker--verify-v8-schema
                          database))
                   (set-file-modes database-file #o600)
                   (list :from version :to current :backup backup-file

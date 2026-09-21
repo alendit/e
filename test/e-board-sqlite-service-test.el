@@ -157,6 +157,7 @@
            (canonical-pickup (car (plist-get first :pickups))))
       (should (stringp canonical-id))
       (should (eq (plist-get first :status) 'posted))
+      (should (equal (plist-get canonical-pickup :board-id) board-id))
       (should (equal (plist-get canonical-pickup :participant-id)
                      participant-id))
       (dotimes (index 140)
@@ -175,7 +176,14 @@
         (should (equal (plist-get (plist-get duplicate :message) :id)
                        canonical-id))
         (should (equal (plist-get duplicate :pickups)
-                       (plist-get first :pickups)))))))
+                       (plist-get first :pickups)))
+        (should
+         (equal
+          (e-runtime-store-call
+           (e-session-storage-runtime-store store) 'read
+           (list :op 'board-pickup-list :board-id board-id
+                 :generation 1 :participant-id participant-id :limit 8))
+          (plist-get first :pickups)))))))
 
 (ert-deftest e-board-sqlite-service-append-route-work-settles-with-actual-worker-result ()
   "The application work publishes the worker's canonical row, not a prediction."
@@ -189,7 +197,7 @@
            (message (plist-get result :message)))
       (should (integerp (plist-get result :revision)))
       (should (integerp (plist-get result :position)))
-      (should (= (plist-get message :durable-position)
+      (should (= (plist-get message :seq)
                  (plist-get result :position)))
       (should (equal (plist-get (car (plist-get result :pickups)) :message-id)
                      (plist-get message :id))))))
@@ -481,8 +489,8 @@
         (when (e-chat-service-binding harness session-id)
           (e-chat-service--retire-binding binding))))))
 
-(ert-deftest e-chat-service-sqlite-participant-output-carries-durable-name ()
-  "A participant label crosses binding, Board record, and observer delivery."
+(ert-deftest e-chat-service-sqlite-participant-output-resolves-current-name ()
+  "A participant label is resolved relationally for records and observers."
   (e-board-sqlite-service-test--with-fixture
       (store service board-id session-id _participant-id)
     (let* ((parent-harness (e-harness-create :sessions store))

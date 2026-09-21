@@ -50,11 +50,13 @@
 (require 'e-task-storage-sqlite-worker)
 (require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 7)
+(defconst e-runtime-store-worker-schema-version 8)
 (defconst e-runtime-store-worker--v5-schema-checksum "feature92-schema-v5")
 (defconst e-runtime-store-worker--v6-schema-checksum "feature92-schema-v6")
 (defconst e-runtime-store-worker--v7-schema-checksum
   "feature92-schema-v7-process-report-projection")
+(defconst e-runtime-store-worker--v8-schema-checksum
+  "feature95-schema-v8-normalized-communication")
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 
@@ -222,11 +224,14 @@ schema; this helper does not inspect or change `store_meta'."
 Each domain worker owns its own physical mapping; this function only keeps
 the generic worker's current composition order in one reusable seam for the
 normal worker and the stopped-store upgrader."
-  (if (and schema-version (< schema-version 7))
-      (e-runtime-store-session-worker-initialize-v6 database)
-    (e-runtime-store-session-worker-initialize database))
-  (e-board-sqlite-worker-initialize database)
-  (e-task-storage-sqlite-worker-initialize database)
+  (if (and schema-version (< schema-version 8))
+      (progn
+        (e-runtime-store-session-worker-initialize-v6 database)
+        (e-board-sqlite-worker-initialize-v7 database)
+        (e-task-storage-sqlite-worker-initialize-v7 database))
+    (e-runtime-store-session-worker-initialize database)
+    (e-board-sqlite-worker-initialize database)
+    (e-task-storage-sqlite-worker-initialize database))
   (e-cron-storage-sqlite-worker-initialize database)
   (e-voice-storage-sqlite-worker-initialize database)
   (e-goodnite-storage-sqlite-worker-initialize database)
@@ -252,26 +257,89 @@ normal worker and the stopped-store upgrader."
          (list (e-runtime-store-worker--column row 0)
                (e-runtime-store-worker--column row 1)))))
 
-(defun e-runtime-store-worker--verify-v7-lineage ()
-  "Verify the exact recognized migration lineage for current schema v7."
+(defun e-runtime-store-worker--verify-v8-normalized-schema ()
+  "Reject a current store that retains a pre-v8 communication shape.
+
+The v8 clean cut is intentionally exact for the relations whose ownership
+changed.  Checking declared column names keeps ordinary startup read-only:
+the stopped-store upgrader is the only operation allowed to reconstruct a
+store with a different shape."
+  (dolist
+      (expectation
+       '(("session_query_state" "session_id" "name" "summary" "metadata"
+          "created_at" "updated_at" "last_message_at"
+          "latest_assistant_marker" "message_count" "current_branch"
+          "turn_options" "current_head_id" "root_event_id"
+          "current_context_generation_id" "root_p" "board_output_sequence"
+          "board_activity_sequence" "journal_position")
+         ("board_records" "board_id" "generation" "position" "record_kind"
+          "record_id" "source_kind" "source_key" "source_hash" "created_at"
+          "author" "subject_participant_id" "payload")
+         ("board_record_tags" "board_id" "generation" "position" "tag")
+         ("board_record_attributes" "board_id" "generation" "position"
+          "attribute_key" "attribute_value")
+         ("board_routing" "board_id" "generation" "message_id" "outcome"
+          "reason" "revision" "payload")
+         ("board_pickups" "delivery_key" "board_id" "generation"
+          "participant_id" "fifo_position" "message_id" "state" "revision"
+          "attempt" "payload")
+         ("board_pickup_events" "delivery_key" "event_position" "state"
+          "payload" "created_at")
+         ("board_participants" "board_id" "generation" "participant_id"
+          "principal" "author" "controller" "role" "state" "name"
+          "subscription_id" "publication_pending" "payload" "revision")
+         ("board_replay_progress" "board_id" "generation" "subscription_id"
+          "position" "revision")
+         ("board_session_associations" "session_id" "board_id" "generation"
+          "participant_id" "routing_policy" "revision")
+         ("task_queues" "queue_id" "revision" "sequence" "paused")
+         ("task_records" "queue_id" "task_id" "position" "status" "revision"
+          "enqueued_at" "harness_selector" "retry_count" "latest_attempt_id"
+          "payload")
+         ("task_attempts" "queue_id" "task_id" "attempt_id"
+          "attempt_number" "state" "harness_instance_id" "session_id"
+          "started_at" "settled_at" "outputs" "error")))
+    (let* ((table (car expectation))
+           (expected (cdr expectation))
+           (actual
+            (mapcar (lambda (row) (e-runtime-store-worker--column row 1))
+                    (sqlite-select
+                     e-runtime-store-worker--database
+                     (format "PRAGMA table_info(%s)" table)))))
+      (unless (equal actual expected)
+        (e-runtime-store-worker--invalid-current-schema
+         'invalid-normalized-relation :table table
+         :expected expected :actual actual))))
+  t)
+
+(defun e-runtime-store-worker--verify-v8-lineage ()
+  "Verify the exact recognized migration lineage for current schema v8."
   (condition-case err
       (let* ((v5 (e-runtime-store-worker--migration-row 5))
              (v6 (e-runtime-store-worker--migration-row 6))
              (v7 (e-runtime-store-worker--migration-row 7))
+             (v8 (e-runtime-store-worker--migration-row 8))
              (v5-checksum
               (secure-hash 'sha256 e-runtime-store-worker--v5-schema-checksum))
              (v6-checksum
               (secure-hash 'sha256 e-runtime-store-worker--v6-schema-checksum))
              (v7-checksum
-              (secure-hash 'sha256 e-runtime-store-worker--v7-schema-checksum)))
+              (secure-hash 'sha256 e-runtime-store-worker--v7-schema-checksum))
+             (v8-checksum
+              (secure-hash 'sha256 e-runtime-store-worker--v8-schema-checksum)))
         (cond
-         ((equal v7 (list "new-current-schema" v7-checksum))
-          (when (or v5 v6)
+         ((equal v8 (list "new-current-schema" v8-checksum))
+          (when (or v5 v6 v7)
             (e-runtime-store-worker--invalid-current-schema
-             'unexpected-fresh-v7-predecessor)))
-         ((equal v7
-                 (list "feature92-v6-to-v7-process-report-projection"
-                       v7-checksum))
+             'unexpected-fresh-v8-predecessor)))
+         ((equal v8
+                 (list "feature95-v7-to-v8-normalized-communication"
+                       v8-checksum))
+          (unless (equal v7
+                         (list "feature92-v6-to-v7-process-report-projection"
+                               v7-checksum))
+            (e-runtime-store-worker--invalid-current-schema
+             'invalid-v7-predecessor))
           (cond
            ((equal v6 (list "new-current-schema" v6-checksum))
             (when v5
@@ -291,7 +359,7 @@ normal worker and the stopped-store upgrader."
              'invalid-v6-predecessor))))
          (t
           (e-runtime-store-worker--invalid-current-schema
-           'invalid-v7-lineage))))
+           'invalid-v8-lineage))))
     (sqlite-error
      (e-runtime-store-worker--invalid-current-schema
       'missing-migration-relation :cause (car (cdr err)))))
@@ -327,7 +395,8 @@ normal worker and the stopped-store upgrader."
       (signal 'e-runtime-store-schema-too-new
               (list :actual version
                     :supported e-runtime-store-worker-schema-version)))))
-  (e-runtime-store-worker--verify-v7-lineage)
+  (e-runtime-store-worker--verify-v8-lineage)
+  (e-runtime-store-worker--verify-v8-normalized-schema)
   (condition-case err
       (e-runtime-store-session-worker-verify-process-report-projection-schema
        e-runtime-store-worker--database)
@@ -356,7 +425,7 @@ normal worker and the stopped-store upgrader."
      e-runtime-store-worker--database
      "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
      (vector e-runtime-store-worker-schema-version "new-current-schema"
-             (secure-hash 'sha256 e-runtime-store-worker--v7-schema-checksum)
+             (secure-hash 'sha256 e-runtime-store-worker--v8-schema-checksum)
              (float-time))))
   t)
 
@@ -616,6 +685,18 @@ the following ordered open frame is the sole observable acknowledgement."
                  :board-id (plist-get body :board-id)
                  :generation generation
                  :participant participant)))
+         (association-result
+          (e-board-sqlite-worker-write
+           e-runtime-store-worker--database
+           (list :op 'board-session-association-put
+                 :board-id board-id
+                 :generation generation
+                 :session-id (plist-get body :session-id)
+                 :participant-id (plist-get participant :id)
+                 :association-role
+                 (plist-get (plist-get body :query-delta) :association-role)
+                 :routing-policy
+                 (plist-get (plist-get body :query-delta) :routing-policy))))
          (pickup (plist-get body :pickup))
          (pickup-result
           (when pickup
@@ -631,15 +712,10 @@ the following ordered open frame is the sole observable acknowledgement."
     (list :session session-result
           :participant participant-result
           :pickup pickup-result
-          :association
-          (list :board-id board-id
-                :principal (plist-get (plist-get body :query-delta) :principal)
-                :association-role
-                (plist-get (plist-get body :query-delta) :association-role)
-                :participant-name (plist-get participant :name)
-                :routing-policy
-                (copy-tree
-                 (plist-get (plist-get body :query-delta) :routing-policy) t))
+          :association (append association-result
+                                (list :principal
+                                      (plist-get (plist-get body :query-delta) :principal)
+                                      :participant-name (plist-get participant :name)))
           :board-revision
           (or (plist-get pickup-result :board-revision)
               (plist-get participant-result :revision)))))
@@ -652,14 +728,15 @@ the following ordered open frame is the sole observable acknowledgement."
          (existing
           (car (sqlite-select
                 e-runtime-store-worker--database
-                "SELECT board_id,principal,association_role,routing_policy FROM session_query_state WHERE session_id=?"
+                "SELECT a.board_id,b.trusted_principal,p.role,a.routing_policy,a.participant_id FROM board_session_associations a JOIN boards b ON b.board_id=a.board_id AND b.generation=a.generation JOIN board_participants p ON p.board_id=a.board_id AND p.generation=a.generation AND p.participant_id=a.participant_id WHERE a.session_id=?"
                 (vector session-id))))
-         session-result participant-result)
+         session-result participant-result association-result)
     (if existing
         (unless (and (equal board-id
                             (e-runtime-store-worker--column existing 0))
                      (equal principal
-                            (e-runtime-store-worker--column existing 1))
+                            (e-runtime-store-worker--value
+                             (e-runtime-store-worker--column existing 1)))
                      (equal "owner"
                             (e-runtime-store-worker--column existing 2)))
           (signal 'e-runtime-store-board-conflict
@@ -680,22 +757,24 @@ the following ordered open frame is the sole observable acknowledgement."
              (list :op 'board-participant-put :board-id board-id
                    :generation 1 :participant
                    (plist-get body :participant)))))
+    (setq association-result
+          (e-board-sqlite-worker-write
+           e-runtime-store-worker--database
+           (list :op 'board-session-association-put
+                 :board-id board-id :generation 1 :session-id session-id
+                 :participant-id (plist-get (plist-get body :participant) :id)
+                 :association-role 'owner
+                 :routing-policy (plist-get (plist-get body :query-delta)
+                                            :routing-policy))))
     (list :status (if existing 'existing 'created)
           :session session-result
           :participant participant-result
           :session-id session-id
           :association
-          (list :board-id board-id :principal principal
-                :association-role "owner"
-                :participant-name
-                (plist-get (plist-get body :participant) :name)
-                :routing-policy
-                (if existing
-                    (e-runtime-store-worker--value
-                     (e-runtime-store-worker--column existing 3))
-                  (copy-tree
-                   (plist-get (plist-get body :query-delta) :routing-policy)
-                   t))))))
+          (append association-result
+                  (list :principal principal
+                        :participant-name
+                        (plist-get (plist-get body :participant) :name))))))
 
 (defun e-runtime-store-worker--chat-session-input-admit (body)
   "Atomically admit one new chat session and its first routed input."
@@ -844,6 +923,7 @@ the following ordered open frame is the sole observable acknowledgement."
          'board-record-append
          'board-routing-put
          'board-pickup-transition 'board-participant-put
+         'board-session-association-put
          'board-participant-delete 'board-participant-publish
          'board-replay-progress-put 'board-pickup-session-admit)
      (e-board-sqlite-worker-write
@@ -1014,8 +1094,7 @@ acknowledgement prefix."
             (mapcar
              (lambda (row)
                (let* ((record (copy-tree (plist-get row :record) t))
-                      (kind (or (plist-get record :kind)
-                                (plist-get record :record-kind))))
+                      (kind (plist-get record :record-kind)))
                  (plist-put record :role
                             (if (eq kind 'input) 'user 'assistant))
                  (plist-put record :metadata

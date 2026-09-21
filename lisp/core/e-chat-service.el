@@ -939,8 +939,7 @@ runtime and durable Board id, then starts a bounded SQLite reconciliation."
 
 (defun e-chat-service--sql-message-event (binding message)
   "Translate detached canonical SQLite MESSAGE for BINDING."
-  (let* ((kind (or (plist-get message :kind)
-                   (plist-get message :record-kind)))
+  (let* ((kind (plist-get message :record-kind))
          (message-id (plist-get message :id))
          (turn-id (if (eq kind 'input)
                       message-id
@@ -1706,8 +1705,6 @@ semantic interpretation responsibility."
                         (e-chat-service-binding-participant-id binding))
                 :subject-participant-id
                 (e-chat-service-binding-participant-id binding)
-                :participant-name
-                (e-chat-service-binding-participant-name binding)
                 :source-turn-id turn-id :content output
                 :attributes (copy-tree (plist-get event :payload) t))))
          (e-chat-service--sql-notify-turn-deliveries binding event 'done)

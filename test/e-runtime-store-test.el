@@ -473,7 +473,7 @@
                  (push sql selects)
                  (list (list "ok")))))
       (let ((status (e-runtime-store-worker--read '(:op status))))
-        (should (= (plist-get status :schema-version) 7))
+        (should (= (plist-get status :schema-version) 8))
         (should-not (plist-member status :quick-check))
         (should-not selects))
       (let ((integrity
@@ -2027,7 +2027,7 @@
             (should (= (plist-get
                         (e-runtime-store-call store 'read '(:op store-metrics))
                         :schema-version)
-                       7))))
+                       8))))
       (when store (ignore-errors (e-runtime-store-close store)))
       (when (file-directory-p build-directory)
         (delete-directory build-directory t))
@@ -3310,6 +3310,92 @@ tests can present a raw frame that production would refuse to create."
       (should-not (plist-get second :claimed-p))
       (should (equal (plist-get (plist-get first :record) :status)
                      'running)))))
+
+(ert-deftest e-runtime-store-task-snapshot-query-count-is-constant ()
+  "A snapshot reads queue, task/latest-attempt rows, and history as sets."
+  (let* ((database-file (make-temp-file "e-task-snapshot-"))
+         (database (sqlite-open database-file)))
+    (unwind-protect
+        (progn
+          (sqlite-execute database "PRAGMA foreign_keys=ON")
+          (e-task-storage-sqlite-worker-initialize database)
+          (e-task-storage-sqlite-worker-write
+           database '(:op task-queue-open :queue-id "bounded-snapshot"))
+          (dotimes (index 4)
+            (e-task-storage-sqlite-worker-write
+             database
+             (list :op 'task-enqueue :queue-id "bounded-snapshot"
+                   :record
+                   (list :task-id (format "task-%d" index)
+                         :status 'queued :prompt (format "work-%d" index))))
+            (e-task-storage-sqlite-worker-write
+             database
+             (list :op 'task-runnable-claim :queue-id "bounded-snapshot"
+                   :started-at (format "2026-09-06T00:00:0%dZ" index)
+                   :harness-instance-id "actual")))
+          (let ((select (symbol-function 'sqlite-select))
+                (query-count 0)
+                result)
+            (cl-letf (((symbol-function 'sqlite-select)
+                       (lambda (&rest arguments)
+                         (cl-incf query-count)
+                         (apply select arguments))))
+              (setq result
+                    (e-task-storage-sqlite-worker-read
+                     database
+                     '(:op task-snapshot :queue-id "bounded-snapshot"
+                       :limit 16))))
+            (should (= query-count 3))
+            (should (= (length (plist-get result :records)) 4))
+            (should (= (length (plist-get result :attempts)) 4))
+            (should
+             (seq-every-p
+              (lambda (record)
+                (equal (plist-get record :harness-instance-id) "actual"))
+              (plist-get result :records)))))
+      (setq e-task-storage-sqlite-worker--database nil)
+      (sqlite-close database)
+      (delete-file database-file))))
+
+(ert-deftest e-runtime-store-task-legacy-import-returns-whole-result ()
+  "Legacy import completes after all records and stores content only once."
+  (let* ((database-file (make-temp-file "e-task-import-"))
+         (database (sqlite-open database-file)))
+    (unwind-protect
+        (progn
+          (sqlite-execute database "PRAGMA foreign_keys=ON")
+          (e-task-storage-sqlite-worker-initialize database)
+          (e-task-storage-sqlite-worker-write
+           database '(:op task-queue-open :queue-id "legacy-import"))
+          (let ((result
+                 (e-task-storage-sqlite-worker-write
+                  database
+                  '(:op task-import-legacy-snapshot :queue-id "legacy-import"
+                    :snapshot
+                    (:sequence 9 :paused-p t
+                     :order ("first" "second")
+                     :records
+                     ((:task-id "first" :status queued :revision 7
+                       :harness-instance-id "requested" :retries 2
+                       :prompt "one")
+                      (:task-id "second" :status done :revision 8
+                       :outputs ("done") :prompt "two")))))))
+            (should (= (plist-get result :records) 2))
+            (should (= (plist-get result :sequence) 9))
+            (should (plist-get result :paused-p)))
+          (let* ((row (car (sqlite-select
+                            database
+                            "SELECT payload FROM task_records WHERE queue_id=? AND task_id=?"
+                            ["legacy-import" "first"])))
+                 (payload
+                  (e-task-storage-sqlite-worker--unpack
+                   (e-task-storage-sqlite-worker--column row 0))))
+            (should (equal payload '(:prompt "one")))
+            (should-not (plist-member payload :task-id))
+            (should-not (plist-member payload :harness-instance-id))))
+      (setq e-task-storage-sqlite-worker--database nil)
+      (sqlite-close database)
+      (delete-file database-file))))
 
 (ert-deftest e-runtime-store-task-queue-retains-only-live-work ()
   "Persistent task history stays in SQLite after one live task settles."

@@ -1,4 +1,4 @@
-;;; e-runtime-store-session-worker-test.el --- v7 session worker contracts -*- lexical-binding: t; -*-
+;;; e-runtime-store-session-worker-test.el --- v8 session worker contracts -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Dimitri Vorona
 ;; SPDX-License-Identifier: MIT
@@ -33,7 +33,7 @@
 
 (cl-defmacro e-runtime-store-session-worker-test--with-runtime
     ((runtime directory) &rest body)
-  "Run BODY with a disposable v7 runtime STORE."
+  "Run BODY with a disposable v8 runtime STORE."
   (declare (indent 1) (debug ((symbolp symbolp) body)))
   `(let* ((,directory (make-temp-file "e-runtime-store-session-worker-" t))
           (,runtime (e-runtime-store-open ,directory)))
@@ -207,15 +207,15 @@
                    :generation 1)))
                1))))
 
-(ert-deftest e-runtime-store-session-worker-v7-schema-is-relational-and-narrow ()
-  "Fresh v7 storage has query/history relations but no opaque mirrors."
+(ert-deftest e-runtime-store-session-worker-v8-schema-is-relational-and-narrow ()
+  "Fresh v8 storage has query/history relations but no opaque mirrors."
   (e-runtime-store-session-worker-test--with-runtime (runtime directory)
     (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
       (unwind-protect
           (progn
             (should (= (plist-get (e-runtime-store-metrics runtime)
                                   :schema-version)
-                       7))
+                                  8))
             (should (car (sqlite-select database
                                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_query_state'")))
             (should (car (sqlite-select database
@@ -235,8 +235,7 @@
                                "latest_assistant_marker" "message_count"
                                "current_branch" "turn_options" "current_head_id"
                                "root_event_id" "current_context_generation_id"
-                               "board_id" "principal"
-                               "association_role" "routing_policy" "root_p"
+                               "root_p"
                                "board_output_sequence" "board_activity_sequence"
                                "journal_position")))))
             (let ((record-columns
@@ -245,6 +244,16 @@
                            (sqlite-select database
                                           "PRAGMA table_info(session_records)"))))
               (should (member "record_identity" record-columns)))
+            (let ((association-columns
+                   (mapcar (lambda (row)
+                             (if (vectorp row) (aref row 1) (nth 1 row)))
+                           (sqlite-select
+                            database
+                            "PRAGMA table_info(board_session_associations)"))))
+              (should
+               (equal association-columns
+                      '("session_id" "board_id" "generation"
+                        "participant_id" "routing_policy" "revision"))))
         (sqlite-close database)))))
 
 (ert-deftest e-runtime-store-session-worker-append-read-and-detach ()
@@ -280,14 +289,15 @@
 (ert-deftest e-runtime-store-session-worker-board-association-and-cursors ()
   "Board association and newest/root page use typed filters and stable cursors."
   (e-runtime-store-session-worker-test--with-runtime (runtime directory)
+    (e-runtime-store-call
+     runtime 'write
+     '(:op board-create :board-id "board" :trusted-principal "alice"
+       :root (:kind test)))
     (let ((first (e-runtime-store-session-worker-test--state
                   "first" "2026-09-06T00:00:01Z"))
           (second (e-runtime-store-session-worker-test--state
                    "second" "2026-09-06T00:00:02Z")))
       (dolist (state (list first second))
-        (plist-put state :board-id "board")
-        (plist-put state :principal "alice")
-        (plist-put state :association-role "member")
         (e-runtime-store-call
          runtime 'write
          (list :op 'session-append :session-id (plist-get state :session-id)
@@ -295,7 +305,31 @@
                              (plist-get state :session-id)
                              :id (plist-get state :root-event-id)
                              :timestamp (plist-get state :updated-at))
-               :query-delta state)))
+               :query-delta state))
+        (let ((participant-id
+               (concat "participant-" (plist-get state :session-id))))
+          (e-runtime-store-call
+           runtime 'write
+           (list :op 'board-participant-put :board-id "board"
+                 :generation 1
+                 :participant
+                 (list :id participant-id :principal "alice"
+                       :author "test" :controller "test"
+                       :role 'member :state 'active :name participant-id
+                       :subscription-id participant-id
+                       :publication-pending nil)))
+          (e-runtime-store-call
+           runtime 'write
+           (list :op 'board-session-association-put :board-id "board"
+                 :generation 1 :session-id (plist-get state :session-id)
+                 :participant-id participant-id
+                 :association-role 'member
+                 :routing-policy
+                 (list :participant-id participant-id
+                       :pickup-selector '(:tags (main))
+                       :observer-selector :self
+                       :default-tags '(main)
+                       :default-to :self)))))
       (let* ((page (e-runtime-store-call
                     runtime 'read
                     '(:op session-query-page :limit 1 :root-p t
