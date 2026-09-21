@@ -1296,10 +1296,11 @@ helper."
            (e-runtime-store-offline-worker--v7-conflict
             "v7 task latest attempt disagrees" :queue-id queue-id
             :task-id task-id :expected latest-id :actual task-attempt-id))
-         (when (and (equal task-status "running") (null latest-row))
+         (when (and (member task-status '("running" "pausing"))
+                    (null latest-row))
            (e-runtime-store-offline-worker--v7-conflict
-            "v7 running task has no attempt"
-            :queue-id queue-id :task-id task-id))
+            "v7 active task has no attempt"
+            :queue-id queue-id :task-id task-id :task-status task-status))
          (when (and latest-state
                     (not (or (and (member task-status '("queued" "paused"))
                                   (equal latest-state "queued"))

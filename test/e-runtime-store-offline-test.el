@@ -1916,7 +1916,8 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
 
 (ert-deftest e-runtime-store-offline-v7-rejects-underived-normalized-facts ()
   "Missing attempt topology or record time rejects and restores the v7 source."
-  (dolist (case '(running-without-attempt record-without-created-at))
+  (dolist (case '(running-without-attempt pausing-without-attempt
+                  record-without-created-at))
     (let* ((session-id (format "invalid-%s" case))
            (fixture
             (e-runtime-store-offline-test--make-v7
@@ -1931,20 +1932,23 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
             (let ((database (sqlite-open database-file)))
               (unwind-protect
                   (pcase case
-                    ('running-without-attempt
+                    ((or 'running-without-attempt 'pausing-without-attempt)
                      (sqlite-execute
                       database
                       "UPDATE task_queues SET sequence=3 WHERE queue_id='queue-offline'")
-                     (sqlite-execute
-                      database
-                      "INSERT INTO task_records(queue_id,task_id,position,status,revision,payload) VALUES(?,?,?,?,?,?)"
-                      (vector
-                       "queue-offline" "task-running-without-attempt" 3
-                       "running" 1
-                       (e-runtime-store-offline-test--payload
-                        '(:task-id "task-running-without-attempt"
-                          :status running
-                          :enqueued-at "2026-09-06T00:00:00Z")))))
+                     (let* ((pausing-p (eq case 'pausing-without-attempt))
+                            (task-id (if pausing-p
+                                         "task-pausing-without-attempt"
+                                       "task-running-without-attempt"))
+                            (status (if pausing-p 'pausing 'running)))
+                       (sqlite-execute
+                        database
+                        "INSERT INTO task_records(queue_id,task_id,position,status,revision,payload) VALUES(?,?,?,?,?,?)"
+                        (vector
+                         "queue-offline" task-id 3 (symbol-name status) 1
+                         (e-runtime-store-offline-test--payload
+                          (list :task-id task-id :status status
+                                :enqueued-at "2026-09-06T00:00:00Z"))))))
                     ('record-without-created-at
                      (let* ((row
                              (car
@@ -1967,9 +1971,10 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                     (e-runtime-store-offline-upgrade directory backup))))
               (should
                (string-match-p
-                (if (eq case 'running-without-attempt)
-                    "task-running-without-attempt"
-                  "record-1")
+                (pcase case
+                  ('running-without-attempt "task-running-without-attempt")
+                  ('pausing-without-attempt "task-pausing-without-attempt")
+                  (_ "record-1"))
                 (error-message-string error))))
             (should (= (e-runtime-store-offline-test--version database-file) 7))
             (should (= (e-runtime-store-offline-test--version backup) 7)))
