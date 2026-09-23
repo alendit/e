@@ -116,6 +116,34 @@
     (should (null (plist-get round-trip :empty-object)))
     (should (equal (plist-get round-trip :empty-array) []))))
 
+(ert-deftest e-json-test-unicode-serialization-produces-composable-text ()
+  "Serialized Unicode JSON remains valid as nested canonical text."
+  (let* ((value '(:summary "Daily — complete"))
+         (text (e-json-serialize value))
+         (outer-text (e-json-serialize (list :content text)))
+         (outer (e-json-parse-string outer-text)))
+    (should (multibyte-string-p text))
+    (should (equal (e-json-parse-string text) value))
+    (should (equal (plist-get outer :content) text))
+    (should (equal (e-json-parse-string (plist-get outer :content))
+                   value))))
+
+(ert-deftest e-json-test-rejects-non-ascii-raw-byte-strings ()
+  "Canonical JSON rejects byte strings whose character encoding is unknown."
+  (let* ((bytes (encode-coding-string "Daily — complete" 'utf-8 t))
+         (eight-bit-text
+          (string-as-multibyte (unibyte-string #xc0 #xc1))))
+    (should-not (multibyte-string-p bytes))
+    (should-not (e-json-value-p bytes))
+    (should (multibyte-string-p eight-bit-text))
+    (should-not (e-json-value-p eight-bit-text))
+    (should-error (e-json-assert-value bytes)
+                  :type 'e-json-error)
+    (should-error (e-json-assert-value eight-bit-text)
+                  :type 'e-json-error)
+    (should-error (e-json-serialize (list :content bytes))
+                  :type 'e-json-error)))
+
 (ert-deftest e-json-test-serialization-rejects-noncanonical-values ()
   "Serialization asserts the same exact boundary as direct validation."
   (dolist (value (list '(1 2) '((a . 1)) :other))

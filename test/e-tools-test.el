@@ -171,7 +171,14 @@
   (should (equal (e-tools-result-content-text
                   '(:empty-object nil :empty-array []
                     :false :json-false :null :json-null))
-                 "{\"empty-object\":{},\"empty-array\":[],\"false\":false,\"null\":null}")))
+                 "{\"empty-object\":{},\"empty-array\":[],\"false\":false,\"null\":null}"))
+  (let* ((content '(:summary "Daily — complete"))
+         (text (e-tools-result-content-text content))
+         (request-text (e-json-serialize (list :output text))))
+    (should (multibyte-string-p text))
+    (should (equal (e-json-parse-string text) content))
+    (should (equal (e-json-parse-string request-text)
+                   (list :output text)))))
 
 (ert-deftest e-tools-test-result-content-preview-bounds-structured-materialization ()
   "Display previews bound traversal without changing model-facing text."

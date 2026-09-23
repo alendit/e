@@ -45,14 +45,32 @@
            (= value value)
            (not (= (abs value) 1.0e+INF)))))
 
+(defun e-json--text-string-p (value)
+  "Return non-nil when VALUE is JSON character text rather than raw bytes.
+
+ASCII-only unibyte strings are unambiguous character text.  Non-ASCII byte
+strings must be decoded by their owning ingress boundary before entering the
+canonical JSON value model."
+  (and (stringp value)
+       (if (multibyte-string-p value)
+           (cl-loop for character across value
+                    always
+                    (or (< character #xd800)
+                        (<= #xe000 character #x10ffff)))
+         (not (string-match-p "[^\0-\177]" value)))))
+
 (defun e-json--validate (value active)
   "Validate canonical JSON VALUE using ACTIVE compound values."
   (cond
    ((or (null value)
         (eq value t)
         (eq value e-json-false)
-        (eq value e-json-null)
-        (stringp value))
+        (eq value e-json-null))
+    value)
+   ((stringp value)
+    (unless (e-json--text-string-p value)
+      (e-json--error
+       "JSON strings must contain Unicode character text, not raw bytes"))
     value)
    ((numberp value)
     (unless (e-json--finite-number-p value)
@@ -137,12 +155,21 @@
 
 ;;;###autoload
 (defun e-json-serialize (value)
-  "Serialize canonical JSON VALUE into JSON text."
+  "Serialize canonical JSON VALUE into composable JSON character text.
+
+Emacs's `json-serialize' returns UTF-8 wire bytes for non-ASCII content.  This
+canonical boundary decodes those bytes immediately so its result may safely
+become a string value inside another canonical JSON value.  Transport adapters
+remain responsible for encoding the final text to wire bytes."
   (e-json-assert-value value)
   (condition-case error-data
-      (json-serialize value
-                      :null-object e-json-null
-                      :false-object e-json-false)
+      (let ((encoded
+             (json-serialize value
+                             :null-object e-json-null
+                             :false-object e-json-false)))
+        (if (multibyte-string-p encoded)
+            encoded
+          (decode-coding-string encoded 'utf-8-unix t)))
     (error
      (e-json--error "Cannot serialize canonical JSON value: %s"
                     (error-message-string error-data)))))

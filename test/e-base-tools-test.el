@@ -1280,7 +1280,9 @@ picker."
           (e-tool-lifecycle-start-call
            (e-harness-tool-lifecycle harness "raw-session" "turn-1")
            '(:id "call-raw" :name "bash"
-             :arguments (:command "printf '\300\301'"))
+             ;; Keep the command itself as semantic text.  Bash interprets the
+             ;; ASCII octal escapes and still emits the intended raw bytes.
+             :arguments (:command "printf '\\300\\301'"))
            :on-done (lambda (value) (setq result value)))
           (should (e-base-tools-test--wait-until (lambda () result) 2.0))
           (let* ((semantic (plist-get result :content))

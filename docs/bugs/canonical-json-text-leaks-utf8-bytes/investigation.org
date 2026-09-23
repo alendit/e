@@ -1,0 +1,132 @@
+#+title: Canonical JSON Text Leaks UTF-8 Bytes Investigation
+#+startup: overview
+
+* Finding
+
+Board =brd_3057f14764b66960208a89866978b5ad= admitted Daily run
+=daily:2026-09-23:20260923T075602866508000=.  Live inspection through the
+bounded =scripts/e-live-probe= interface showed that Emacs was responsive, but
+the worker had reached a terminal failed status.  The coordinator session
+=20260923T075602-924d52437a87= read the Daily inputs and failed when composing
+the request after a structured workflow-search result.  The Daily file was not
+changed.
+
+The defect reproduced below the Board and provider layers.  Emacs
+=json-serialize= returns a unibyte UTF-8 string when JSON contains non-ASCII
+characters.  =e-json-serialize= exposed that byte sequence as "JSON text".
+=e-tools-result-content-text= then placed it in model-visible tool content, and
+the OpenAI Responses adapter tried to serialize it as a string inside the next
+request.  The nested serialization rejected the byte string at the em dash.
+
+The immediate failure was therefore an encoding bug, but the architectural
+defect was a collapsed boundary:
+
+- canonical values represent semantic data;
+- serialized JSON inside the runtime is character text;
+- provider transports own the final conversion from character text to wire
+  bytes.
+
+=e-json= claimed the second contract while returning the third representation.
+That made its output non-composable: serializing a canonical value succeeded,
+but using the result as a string in another canonical value failed.  The
+validator also admitted arbitrary non-ASCII unibyte strings even though the
+serializer could not honor them as JSON text.
+
+* Fix
+
+=e-json-serialize= now decodes the UTF-8 result of =json-serialize= immediately
+and returns composable Emacs character text.  Transport adapters remain the
+owners of wire encoding.
+
+The canonical validator now rejects non-ASCII raw byte strings, including
+eight-bit data merely re-tagged as an Emacs multibyte string.  Multibyte text
+must consist of Unicode scalar characters.  ASCII-only unibyte strings remain
+valid because their byte and character interpretations are identical.  Binary
+tool results keep their existing explicit carrier with =content_encoding=
+metadata; they do not enter canonical JSON as ambiguous strings.
+
+One binary-output test had accidentally expressed its shell command itself as
+raw bytes.  Its command is now ASCII text containing octal escapes, while Bash
+still emits the same invalid UTF-8 bytes.  This preserves the test's binary
+result contract without weakening the canonical text boundary.
+
+* Behavioral Trace
+
+- Goal ID: =BUG-JSON-TEXT-CLOSURE=
+- Goal: a structured Unicode tool result survives composition into the next
+  provider request.
+- Direct scenario: serialize a structured search result containing an em dash,
+  place that serialized text in a tool message, build a Responses request,
+  serialize the outer request, and recover the original structured result.
+- Authority: the canonical JSON contract owned by =lisp/core/e-json.el= and the
+  provider-neutral tool-result contract owned by =lisp/core/e-tools.el=.
+- Status: covered at the canonical JSON, tool-result, and OpenAI Responses
+  composition boundaries.
+
+* Validation
+
+Focused canonical and provider composition tests pass:
+
+#+begin_example
+eldev test test/e-json-test.el test/e-tools-test.el test/e-openai-request-composition-test.el
+#+end_example
+
+Result: 77 tests passed.
+
+The broader provider, MCP, and compaction suites pass outside the restricted
+sandbox so their socket fixtures can run:
+
+#+begin_example
+eldev test test/e-openai-request-composition-test.el test/e-openai-http-composition-test.el test/e-openai-websocket-composition-test.el test/e-openai-chat-completion-composition-test.el test/e-anthropic-test.el test/e-mcp-test.el test/e-compaction-test.el
+#+end_example
+
+Result: 173 tests passed.
+
+=eldev compile= completed successfully.  It reported only the repository's
+existing Emacs 31 obsolete-macro warnings.
+
+The final complete suite ran 2,680 tests: 2,678 passed and two unrelated
+existing gates remained.  =e-dev-test-reload-refreshes-defaults= expects the
+old default layer list without =board=.  The unchanged Org Canvas directory
+test receives metadata without =:buffer-name= and also fails when run alone.
+Neither failure traverses the changed JSON/tool/provider path.  The earlier
+raw-byte command regression is corrected and its focused test passes.
+
+The user's running Emacs was inspected but not reloaded or changed.  Because
+=e-json= is core runtime code, using this fix in that process requires a full
+Emacs restart; =e-dev-reload= deliberately does not apply it.
+
+* Architecture Self-Check
+
+1. This is a useful stopping point: it restores Unicode tool continuation and
+   strengthens the canonical value contract without requiring a provider or
+   Board special case.
+2. It moves toward one provider-neutral semantic representation with encoding
+   confined to transport adapters.
+3. Provider wire encodings may vary; that uncertainty remains local to
+   transports.  Character-text semantics are stable and modeled directly.
+4. =e-json= owns canonical JSON validation and serialization.  It has one
+   cohesive reason to change: the runtime's JSON value contract.
+5. Coupling is reduced because semantic callers no longer need to know that
+   Emacs =json-serialize= returns UTF-8 bytes.
+6. No stable policy now depends on a concrete provider or transport.
+7. Wire encoding remains outward in transport adapters; no transport side
+   effect moved into the canonical layer.
+8. No state was added.  Serialization performs a temporary byte-to-text
+   conversion owned by the call.
+9. The change adds a linear character-validity scan during validation and a
+   linear UTF-8 decode over serialized output.  Both are required to establish
+   the semantic-text boundary; neither changes asymptotic serialization cost.
+10. The contract is semantically real: values accepted as canonical JSON are
+    serializable, and serialized output can substitute anywhere JSON character
+    text is accepted.
+11. ASCII unibyte strings remain compatible.  Ambiguous non-ASCII byte strings
+    are rejected; binary results retain the existing explicit carrier.
+12. The accidental raw-byte shell-command fixture was removed.  No runtime
+    legacy path was needed.
+13. Invalid raw bytes fail at canonical validation with =e-json-error=;
+    unexpected serializer failures continue to surface through the same public
+    error boundary.
+14. Unit tests prove output closure and byte rejection in =e-json=, tool tests
+    prove model-visible structured content, and the Responses composition test
+    proves the real next-request path without requiring the full Board system.

@@ -48,6 +48,29 @@
       :parallel_tool_calls t
       :reasoning (:effort "high" :summary "auto")))))
 
+(ert-deftest e-openai-test-request-body-composes-unicode-structured-tool-output ()
+  "A structured Unicode tool result remains serializable in the next request."
+  (let* ((content '(:matches [(:text "Daily — accepted")]
+                   :truncated :json-false))
+         (body
+          (e-openai-codex-request-body
+           :messages
+           (list '(:role user :content "inspect")
+                 (list :role 'tool
+                       :content
+                       (list :tool-call-id "call-search"
+                             :name "search"
+                             :status 'ok
+                             :content content
+                             :metadata nil)))
+           :options '(:model "gpt-test")))
+         (wire (e-json-serialize body))
+         (round-trip (e-json-parse-string wire))
+         (tool-output (plist-get (aref (plist-get round-trip :input) 1)
+                                 :output)))
+    (should (multibyte-string-p tool-output))
+    (should (equal (e-json-parse-string tool-output) content))))
+
 (ert-deftest e-openai-test-request-body-retains-native-tool-schema ()
   "Responses carries the native operation schema without reinterpretation."
   (let* ((tool
