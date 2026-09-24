@@ -7,13 +7,13 @@
 
 ;;; Commentary:
 
-;; Sample E_E2E_CONFIG file for GPT-5.6 on the Responses WebSocket transport.
+;; Sample E_E2E_CONFIG file for GPT-6 Sol on the Responses WebSocket transport.
 ;; It uses Codex-managed ChatGPT authentication and the backend-required
 ;; unstored response mode.  The current ChatGPT endpoint does not accept the
-;; OpenAI API's explicit cache fields.  The profile instead uses segmented
-;; developer input so continuation can carry stable context while re-emitting
-;; dynamic context.  The focused explicit-cache probe skips while the rest of
-;; the live suite verifies the supported request shape:
+;; OpenAI API's explicit cache fields.  The profile uses segmented developer
+;; input and replays full context because detached SQLite provider-anchor
+;; selection is not implemented.  The focused explicit-cache probe skips while
+;; the rest of the live suite verifies the supported request shape:
 ;;   E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 ;;     eldev test -f e2e/e-live-e2e-test.el \
 ;;     e-live-e2e-test-openai-gpt56-explicit-cache-continues
@@ -24,7 +24,7 @@
 (require 'e-openai)
 
 (setq e-openai-default-provider 'codex
-      e-openai-default-model "gpt-5.6-sol")
+      e-openai-default-model "gpt-6-sol")
 
 (setf (alist-get 'codex e-openai-model-providers)
       `( :name "ChatGPT Codex"
@@ -35,12 +35,12 @@
          :prompt-cache-breakpoint-mode nil
          :responses-context-layout developer-input
          :include-encrypted-reasoning t
-         :continuation t
+         :continuation nil
          :requires-openai-auth t))
 
 (cl-defun e-e2e-config--openai-chat-harness-create
     (&key provider sessions layer-ids directory)
-  "Create an intentionally context-free GPT-5.6 Codex test harness.
+  "Create an intentionally context-free GPT-6 Codex test harness.
 LAYER-IDS and DIRECTORY are ignored so credentialed tests cannot inherit or
 send project-derived default-layer context.  Individual tests add synthetic
 capabilities explicitly."

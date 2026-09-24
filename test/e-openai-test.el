@@ -37,6 +37,19 @@
   "Buffered HTTP reasoning responses have no unsafe implicit deadline."
   (should-not (default-value 'e-openai-request-timeout-seconds)))
 
+(ert-deftest e-openai-test-codex-gpt6-models-use-supported-session-options ()
+  "Codex defaults to Sol, accepts Luna, and omits unsupported SQL anchors."
+  (let ((sol (e-openai-codex-create-harness))
+        (luna (e-openai-codex-create-harness :model "gpt-6-luna")))
+    (should (equal (plist-get (e-harness-default-options sol) :model)
+                   "gpt-6-sol"))
+    (should (equal (plist-get (e-harness-default-options luna) :model)
+                   "gpt-6-luna"))
+    (should-not (plist-get (e-harness-default-options sol)
+                           :provider-continuation))
+    (should-not (plist-get (e-harness-default-options luna)
+                           :provider-continuation))))
+
 (ert-deftest e-openai-test-read-auth-token-and-account-id ()
   "Auth parsing extracts the access token and account id."
   (let* ((token (e-openai-test--jwt))

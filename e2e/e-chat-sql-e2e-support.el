@@ -116,19 +116,24 @@
   (e-chat-service-submit-session harness session-id prompt))
 
 (defun e-chat-sql-e2e--assistant-content (harness session-id timeout)
-  "Return the newest durable assistant content for SESSION-ID."
-  (let* ((view
-          (e-chat-sql-e2e--await
-           (e-session-async-chat-view
-            (e-harness-sessions harness) session-id :limit 64)
-           timeout))
-         (messages (plist-get view :messages)))
-    (plist-get
-     (car (last (cl-remove-if-not
-                 (lambda (message)
-                   (eq (plist-get message :role) 'assistant))
-                 messages)))
-     :content)))
+  "Return the newest durable assistant content for SESSION-ID.
+The terminal activity event can precede the detached SQLite append, so wait
+for the bounded chat view to include the assistant message."
+  (e-chat-sql-e2e-wait-until
+   (lambda ()
+     (let* ((view
+             (e-chat-sql-e2e--await
+              (e-session-async-chat-view
+               (e-harness-sessions harness) session-id :limit 64)
+              timeout))
+            (messages (plist-get view :messages)))
+       (plist-get
+        (car (last (cl-remove-if-not
+                    (lambda (message)
+                      (eq (plist-get message :role) 'assistant))
+                    messages)))
+        :content)))
+   timeout))
 
 (defun e-chat-sql-e2e-wait-batch (harness session-id &optional timeout)
   "Wait for HARNESS SESSION-ID's observed terminal event and return a result."

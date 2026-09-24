@@ -9,6 +9,8 @@ Status values for coding agents:
 - In-review :: =review.org= exists in the dev work directory and still has notes to resolve.
 - Done :: review finished and has no unresolved notes.
 
+[[file:tiny/030-codex-gpt6-models.org][Tiny 030: Codex GPT-6 Sol and Luna models]] is =Done=.
+
 Feature 91 is =Done=, so its temporary implementation gate is satisfied.
 Before implementation or review remediation resumes in Features 87, 88, or 90,
 rebaseline that feature's source anchors and assumptions against the accepted

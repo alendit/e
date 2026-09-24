@@ -39,7 +39,7 @@
 
 (defvaralias 'e-openai-codex-default-model 'e-openai-default-model)
 
-(defcustom e-openai-default-model "gpt-5.5"
+(defcustom e-openai-default-model "gpt-6-sol"
   "Default model for OpenAI-like Responses requests."
   :type 'string
   :group 'e-openai)
@@ -291,7 +291,8 @@ including its nil no-timer behavior."
      :responses-context-layout developer-input
      :observation-delivery inherited
      :include-encrypted-reasoning t
-     :continuation t
+     ;; Detached SQLite context assembly cannot yet query provider anchors.
+     :continuation nil
      :requires-openai-auth t)
     (openai
      :name "OpenAI API"

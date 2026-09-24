@@ -1360,6 +1360,9 @@ test covers only the chat presentation subscription's redundant callbacks."
 
 (ert-deftest e-chat-test-mode-line-status-formats-model-effort-and-context ()
   "Mode-line status includes model, effort, and estimated context usage."
+  (dolist (model '("gpt-6-sol" "gpt-6-luna"))
+    (should (equal (e-context-status-model-token-limit model)
+                   258400)))
   (dolist (model '("gpt-5.6"
                    "gpt-5.6-sol"
                    "gpt-5.6-terra"

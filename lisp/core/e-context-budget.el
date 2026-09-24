@@ -21,6 +21,8 @@
 
 (defcustom e-context-budget-model-token-limits
   '(("claude-sonnet-5" . 364000)
+    ("gpt-6-sol" . 258400)
+    ("gpt-6-luna" . 258400)
     ("gpt-5.6" . 353400)
     ("gpt-5.6-sol" . 353400)
     ("gpt-5.6-terra" . 353400)

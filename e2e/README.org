@@ -135,30 +135,8 @@ adds checkout paths, so stale generated autoloads cannot retain a retired
 command or omit its replacement unnoticed.  It accepts the same optional
 =E_E2E_EMACS_INIT_DIRECTORY= override.
 
-The compatibility mode intentionally sends no provider request.  To exercise
-the machine's actual configured =:chat-default= adapter and provider, run:
-
-#+begin_src sh
-E_CURRENT_CONFIG_E2E_MODE=live-basic \
-bash e2e/run-current-config-tests.sh
-#+end_src
-
-This starts the same private current-configuration Emacs with a fresh runtime
-directory.  It takes the exact backend adapter, endpoint/auth configuration,
-model defaults, and SQLite store from the locally configured =:chat-default=,
-then places them in a fresh harness containing only one test-owned dynamic
-non-tool context source.  No unrelated local layers, tools, or instructions
-are sent.  The test requires the exact assistant token in the settled result,
-SQLite-backed session transcript, and Board output.  It also verifies that any
-reasoning emitted by the configured adapter is combined once per stream and
-provider request.  It does not require the model to retain or summarize the
-source, and it does not substitute an =E_E2E_CONFIG= fixture or injected
-transport.  If the model calls the optional carrier while selecting no labels,
-the valid all-omission path must still reach the assistant response.
-The model may answer without choosing the optional curation action;
-deterministic post-cutover coverage always exercises that protocol.  Missing configuration,
-authentication, provider availability, or persistence failure is a failed
-test; this mode has no skip path.
+The compatibility mode intentionally sends no provider request.  Use the live
+provider E2E below to exercise a real request with an isolated test harness.
 
 * Live provider E2E
 
@@ -176,8 +154,18 @@ opt-in external-evidence tier.  They are not exceptions to the deterministic
 ordinary suite's zero-skipped contract.
 
 The Codex sample uses the normal Codex auth file and sends no project-derived
-layers, tools, or context.  The canonical first-party API profile is selected
-with =OPENAI_API_KEY= and:
+layers, tools, or context.
+
+To check both configured Codex model IDs with one context-free live turn each:
+
+#+begin_src sh
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+  eldev -s test -f e2e/e-live-e2e-test.el e-live-e2e-test-basic-assistant-response
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex-luna.el \
+  eldev -s test -f e2e/e-live-e2e-test.el e-live-e2e-test-basic-assistant-response
+#+end_src
+
+The canonical first-party API profile is selected with =OPENAI_API_KEY= and:
 
 #+begin_src sh
 E_E2E=1 \
@@ -185,8 +173,8 @@ E_E2E_CONFIG=e2e/e-e2e-config-openai-api.el \
 eldev -s test -f e2e/e-live-e2e-test.el
 #+end_src
 
-The Engineering AI Model Gateway profile used by the Doom configuration is
-selected with =ENG_AI_MODEL_GW_KEY= and:
+The separate Engineering AI Model Gateway sample profile is selected with
+=ENG_AI_MODEL_GW_KEY= and:
 
 #+begin_src sh
 E_E2E=1 \

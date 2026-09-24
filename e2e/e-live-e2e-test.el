@@ -4021,7 +4021,7 @@ START is an e2e-only producer seam; production tools register canonical
 
 (defmacro e-live-e2e--with-harness (spec &rest body)
   "Run BODY with a live HARNESS and SESSION-ID.
-SPEC is (HARNESS SESSION-ID &key LAYERS PERSISTENT EVENTS-VAR EVENTS-HOLDER).
+SPEC is (HARNESS SESSION-ID &key LAYERS EVENTS-VAR EVENTS-HOLDER).
 When EVENTS-VAR is supplied, bind it to the newest-first public activity sink
 events collected during BODY.  When EVENTS-HOLDER is supplied, its first cell
 is updated through BODY so an outer finalizer can observe later events."
@@ -4038,9 +4038,7 @@ is updated through BODY so an outer finalizer can observe later events."
     `(progn
        (e-live-e2e--require-enabled)
        (let* ((,root (make-temp-file "e-live-e2e-" t))
-              (,store (if ,(plist-get options :persistent)
-                          (e-session-persistent-store-create ,root)
-                        (e-session-store-create)))
+              (,store (e-session-persistent-store-create ,root))
               (,harness (e-live-e2e--make-harness ,store))
               (,session-id
                (e-chat-sql-e2e-create-session
@@ -4068,6 +4066,7 @@ is updated through BODY so an outer finalizer can observe later events."
                                 (e-layer-capabilities layer))))))
                ,@body)
            (ignore-errors (e-harness-activity-unsubscribe ,harness ,subscription))
+           (ignore-errors (e-session-sqlite-store-close ,store))
            (ignore-errors (delete-directory ,root t)))))))
 
 (defmacro e-live-e2e--with-responses-request-capture
@@ -4325,6 +4324,9 @@ evidence record on every terminal path."
                     harness session-id
                     (format "Reply with exactly this token and no extra words: %s"
                             nonce))))
+      (unless (eq (plist-get result :status) 'done)
+        (ert-fail (format "Live provider turn failed: %s"
+                          (plist-get result :error))))
       (should (e-live-e2e--contains-p
                (e-live-e2e--assistant-content result)
                nonce)))))
@@ -5529,7 +5531,7 @@ replay, where those same values are strings."
 
 (ert-deftest e-live-e2e-test-session-persists-and-loads-live_messages ()
   "Live user and assistant messages survive session store reload."
-  (e-live-e2e--with-harness (harness session-id :persistent t)
+  (e-live-e2e--with-harness (harness session-id)
     (let* ((store-dir (e-session-store-directory (e-harness-sessions harness)))
            (nonce (e-live-e2e--nonce)))
       (e-chat-sql-e2e-prompt-batch

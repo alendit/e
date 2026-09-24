@@ -1,0 +1,46 @@
+#+title: Codex GPT-6 Sol and Luna Models
+
+* Status
+
+Done.
+
+* Change
+
+The built-in Codex profile defaults to =gpt-6-sol=, and explicit
+=gpt-6-luna= selection remains available through the existing model option.
+Both slugs have a 258,400-token effective context budget, calculated from the
+local Codex catalog's 272,000-token window at 95 percent.  The current Doom
+configuration selects Codex for chat and subagents: Sol for chat, tool-user,
+and plan-implementer, and Luna for fast-tool-user.
+
+The Codex profile disables provider continuation anchors because detached
+SQLite context assembly explicitly rejects the anchor query.  Requests replay
+the complete selected context until that query is implemented.  This removes a
+pre-request failure for ordinary SQL-backed chat without adding a fallback
+path.  The live E2E fixture now uses disposable asynchronous SQLite and waits
+for the durable assistant append after the terminal activity event.
+
+* Validation
+
+- =eldev test -f test/e-openai-test.el test/e-context-budget-test.el test/e-chat-test.el=: 91/91 passed.
+- =bash e2e/run-current-config-tests.sh=: 8/8 passed in a private daemon with no warnings.
+- Context-free live Codex basic E2E: Sol 1/1 and Luna 1/1 passed.
+- The running Emacs was left unchanged; it needs a restart to use the new core
+  profile and current Doom configuration.
+
+* Architecture self-check
+
+1. The package leaves the configured chat and subagent routes usable with the requested models.
+2. It advances the generic backend through the existing Codex adapter.
+3. Model choice is a local option; the unsupported anchor query stays explicit until implemented.
+4. The adapter owns model defaults; the core budget owns context limits; Doom owns local routing.
+5. No new interface or coupling was added.
+6. Core policy still does not depend on the Codex cache file.
+7. Provider I/O remains in the adapter.
+8. Model choice lives in harness/session options; static limits live in the core table.
+9. Full replay costs more tokens than a valid anchor, but is required to send complete context while SQL anchor selection is unavailable; the prior SQL path failed before any request.
+10. The existing model option is the real substitution point for Sol and Luna.
+11. The obsolete gateway GPT route was removed from the current Doom config; the Codex route is explicit.
+12. The unused gateway GPT profile and stale E2E mode documentation were removed.
+13. Unsupported anchor selection fails explicitly in core; Codex no longer opts into it by default.
+14. Focused ERT and private live E2E prove model selection, budgeting, and a durable assistant response.

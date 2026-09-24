@@ -32,6 +32,8 @@
 (ert-deftest e-context-budget-test-model-window-uses-table ()
   "Model windows are read from the supplied or default budget table."
   (should (equal (e-context-budget-model-window "claude-sonnet-5") 364000))
+  (dolist (model '("gpt-6-sol" "gpt-6-luna"))
+    (should (equal (e-context-budget-model-window model) 258400)))
   (dolist (model '("gpt-5.6"
                    "gpt-5.6-sol"
                    "gpt-5.6-terra"
