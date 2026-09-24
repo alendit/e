@@ -142,6 +142,15 @@ optional field used by the provider event schema."
       (unless (string-empty-p text)
         text))))
 
+(defun e-openai-decoder--message-item-phase (item)
+  "Return the documented assistant phase from a Responses message ITEM."
+  (let ((phase (plist-get item :phase)))
+    (when phase
+      (unless (member phase '("commentary" "final_answer"))
+        (signal 'e-openai-provider-invalid
+                (list "Unsupported Responses assistant phase" phase)))
+      phase)))
+
 (defun e-openai-decoder--event-summary (event item)
   "Return a compact diagnostics summary for provider EVENT and parsed ITEM."
   (let ((provider-item (plist-get event :item))
@@ -354,10 +363,15 @@ WIRE-API identifies the expected OpenAI streaming protocol."
                             (plist-get item :arguments))))))
      ((and (equal type "response.output_item.done")
            (e-openai-decoder--message-item-text (plist-get event :item)))
-      (list :type 'assistant-message-candidate
-            :content (e-openai-decoder--message-item-text
-                      (plist-get event :item))
-            :source 'output-item))
+      (let* ((message (plist-get event :item))
+             (phase (e-openai-decoder--message-item-phase message)))
+        (if phase
+            (list :type 'assistant-message
+                  :content (e-openai-decoder--message-item-text message)
+                  :phase phase)
+          (list :type 'assistant-message-candidate
+                :content (e-openai-decoder--message-item-text message)
+                :source 'output-item))))
      ((and (equal type "response.content_part.done")
            (member (plist-get (plist-get event :part) :type)
                    '("output_text" "text")))
@@ -394,7 +408,9 @@ continuation anchors."
           (pcase (plist-get item :type)
             ('assistant-message
              (setq assistant-message-seen t)
-             (push item items))
+             (if (and (plist-get item :phase) items)
+                 (setcar items item)
+               (push item items)))
             ('assistant-message-candidate
              (unless assistant-message-candidate
                (setq assistant-message-candidate

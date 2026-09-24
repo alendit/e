@@ -1558,6 +1558,26 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
       incremental-input))))
 
 
+(ert-deftest e-openai-test-responses-replays-assistant-phase ()
+  "Responses replay preserves phase on assistant input messages only."
+  (let ((commentary
+         (e-openai-responses-input-message
+          '(:role assistant :content "preamble" :phase "commentary")))
+        (final
+         (e-openai-responses-input-message
+          '(:role assistant :content "answer" :phase "final_answer")))
+        (legacy
+         (e-openai-responses-input-message
+          '(:role assistant :content "legacy")))
+        (user
+         (e-openai-responses-input-message
+          '(:role user :content "prompt" :phase "commentary"))))
+    (should (equal (plist-get commentary :phase) "commentary"))
+    (should (equal (plist-get final :phase) "final_answer"))
+    (should-not (plist-member legacy :phase))
+    (should-not (plist-member user :phase))))
+
+
 (ert-deftest e-openai-test-provider-compaction-rejects-malformed-output ()
   "Malformed compact responses fail at the adapter boundary."
   (dolist (response

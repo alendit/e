@@ -1,0 +1,42 @@
+#+title: Responses Assistant Phase Preservation
+
+* Status
+
+Done.
+
+* Change
+
+Preserve OpenAI Responses assistant =phase= from the canonical output-message
+item through the provider-neutral transcript and the next Responses request.
+=commentary= is an intermediate assistant message and starts the next request;
+=final_answer= and legacy phase-less output settle the turn.  The continuation
+also keeps a reserved =context-curate= acknowledgement request-local, so the
+commentary message and the opaque call/output pair replay in their required
+forms.
+
+This is tiny because it extends the existing message and response-completion
+seams without adding a provider-specific lifecycle or presentation path.
+
+* Validation
+
+- OpenAI stream, mechanism, and loop suites: 133/133 passed.
+- Decoder regression covers text-done followed by canonical commentary output.
+- Loop regressions cover commentary-to-final continuation and commentary plus
+  =context-curate= acknowledgement replay.
+
+* Architecture self-check
+
+1. The slice prevents a valid intermediate response from terminating a turn.
+2. It moves toward faithful provider transcript replay.
+3. The stable two-value provider contract is explicit; legacy no-phase output remains a local compatibility rule.
+4. The adapter owns wire mapping; the loop owns terminal turn policy.
+5. One optional message field crosses existing narrow boundaries.
+6. Core depends only on a provider-neutral phase attribute, not OpenAI wire objects.
+7. No side effect moved inward; request dispatch remains at the adapter edge.
+8. Phase is durable transcript data because it changes replay semantics.
+9. The change is constant work per assistant message.
+10. No new abstraction or broad interface was introduced.
+11. Existing phase-less providers retain terminal behavior.
+12. No legacy path became obsolete.
+13. Unknown documented-phase values fail at the OpenAI decode boundary.
+14. Decoder, wire-mapping, and loop tests prove the behavior independently.

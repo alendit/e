@@ -265,6 +265,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
      "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello from item\"}]}}\n\n")
     '((:type assistant-message :content "hello from item")))))
 
+(ert-deftest e-openai-test-parse-message-output-item-preserves-phase ()
+  "Responses message output items retain the documented assistant phase."
+  (should
+   (equal
+    (e-openai-codex-parse-stream
+     "data: {\"type\":\"response.output_text.done\",\"text\":\"preamble\"}\n\n\
+data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"commentary\",\"content\":[{\"type\":\"output_text\",\"text\":\"preamble\"}]}}\n\n\
+data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+    '((:type assistant-message :content "preamble" :phase "commentary")
+      (:type done :reason stop)))))
+
 (ert-deftest e-openai-test-parse-live-codex-message-shape-deduplicates ()
   "The live Codex text event sequence prefers canonical final text."
   (should

@@ -66,14 +66,17 @@ schema validation rejected the call."
     (funcall thunk)))
 
 (defun e-loop--assistant-message
-    (content &optional metadata response-entry-id)
-  "Return an assistant message with CONTENT, METADATA, and optional ID.
+    (content &optional metadata response-entry-id phase)
+  "Return an assistant message with CONTENT, METADATA, ID, and PHASE.
 
 RESPONSE-ENTRY-ID is allocated before completion preflight so that a pure
-preflight and the subsequent durable append share one identity."
+preflight and the subsequent durable append share one identity.  PHASE is the
+optional Responses assistant phase; older providers leave it absent."
   (let ((message (list :role 'assistant
                        :content content
                        :metadata metadata)))
+    (when phase
+      (plist-put message :phase phase))
     (when response-entry-id
       (plist-put message :id response-entry-id))
     message))
@@ -540,6 +543,8 @@ schedules it behind the owning session's active commit barrier."
                   (followup-started nil)
                   (response-assistant-content nil)
                   (response-assistant-message nil)
+                  (response-assistant-phase nil)
+                  (response-commentary-appended-p nil)
                   (token-usage nil)
                   (done-reason nil)
                   (provider-anchor-candidate nil)
@@ -608,6 +613,38 @@ schedules it behind the owning session's active commit barrier."
                   ((response-text ()
                      (or response-assistant-message
                          response-assistant-content))
+                   (response-commentary-p ()
+                     (equal response-assistant-phase "commentary"))
+                   (append-response-commentary ()
+                     ;; Responses commentary is an actual assistant message,
+                     ;; not a display-only reasoning summary.  When it is
+                     ;; followed by an ordinary tool call, append it before
+                     ;; that call so an explicit replay retains the original
+                     ;; assistant phase and causal order.  A curation-only
+                     ;; response defers this append until its preflight below.
+                     (when (and (response-commentary-p)
+                                (not response-commentary-appended-p)
+                                (not (string-empty-p
+                                      (or (response-text) ""))))
+                       (unless response-entry-id
+                         (setq response-entry-id (e-session-generate-ulid)))
+                       (let ((message
+                              (e-loop--assistant-message
+                               (response-text)
+                               ;; Reserved curation acknowledgement is valid
+                               ;; only for the immediate next request, not as
+                               ;; durable assistant replay metadata.
+                               (unless response-curation-effects
+                                 (when pending-provider-replay-items
+                                   (list :provider-replay-items
+                                         pending-provider-replay-items)))
+                               response-entry-id
+                               response-assistant-phase)))
+                         (setq turn-messages
+                               (append turn-messages (list message))
+                               response-commentary-appended-p t)
+                         (funcall append-message message)
+                         message)))
                    (publish-provider-request
                     (request)
                     (setq provider-request request)
@@ -694,6 +731,7 @@ schedules it behind the owning session's active commit barrier."
                           (copy-tree response-curation-effects)
                           :response-entry-id response-entry-id
                           :assistant-content (response-text)
+                          :assistant-phase response-assistant-phase
                           :tool-called tool-called
                           :reason done-reason))
                   (run-response-preflight
@@ -878,15 +916,17 @@ schedules it behind the owning session's active commit barrier."
                                (not settled)
                                (not (cancelled)))
                       (setq followup-started t)
-                      (when (not (string-empty-p
-                                  (or (response-text) "")))
-                        (e-loop--emit
-                         :on-event on-event
-                         :type 'reasoning-delta
-                         :payload
-                         (list :type 'reasoning-delta
-                               :stream-kind 'summary
-                               :content (response-text))))
+                      (if (response-commentary-p)
+                          (append-response-commentary)
+                        (when (not (string-empty-p
+                                    (or (response-text) "")))
+                          (e-loop--emit
+                           :on-event on-event
+                           :type 'reasoning-delta
+                           :payload
+                           (list :type 'reasoning-delta
+                                 :stream-kind 'summary
+                                 :content (response-text)))))
                       (if response-curation-rejection
                           (stage-curation-rejection)
                         (attach-pending-provider-replay-items))
@@ -1438,7 +1478,9 @@ schedules it behind the owning session's active commit barrier."
                                             :payload item))
                              ('assistant-message
                               (setq response-assistant-message
-                                    (plist-get item :content)))
+                                    (plist-get item :content)
+                                    response-assistant-phase
+                                    (plist-get item :phase)))
                              ('reasoning-delta
                               (e-loop--emit :on-event on-event
                                             :type 'reasoning-delta
@@ -1518,6 +1560,10 @@ schedules it behind the owning session's active commit barrier."
                      (signal 'e-context-lifetime-invalid-record
                              (list 'curation-mixed-order
                                    provider-request-id)))
+                   ;; A commentary preamble is an assistant message in the
+                   ;; provider transcript.  Admit it before the ordinary tool
+                   ;; call that follows it, preserving replay order.
+                   (append-response-commentary)
                    (setq tool-called t)
                    (setq tool-queue
                          (append tool-queue
@@ -1601,7 +1647,39 @@ schedules it behind the owning session's active commit barrier."
                                                  (run-response-preflight))
                                                (cond
                                                 (response-curation-rejection
-                                                 (maybe-start-curation-rejection-followup))
+                                                 (if (response-commentary-p)
+                                                     (progn
+                                                       (append-response-commentary)
+                                                       (setq followup-started t)
+                                                       (stage-curation-rejection)
+                                                       (promote-provider-anchor t)
+                                                       (start-request))
+                                                   (maybe-start-curation-rejection-followup)))
+                                                ((response-commentary-p)
+                                                 ;; `commentary' is an
+                                                 ;; intermediate assistant
+                                                 ;; message.  Preserve it,
+                                                 ;; complete any curation
+                                                 ;; preflight, and continue
+                                                 ;; the same provider turn.
+                                                 (append-response-commentary)
+                                                 (if response-curation-rejection
+                                                     (stage-curation-rejection)
+                                                   (progn
+                                                     (notify-response-complete)
+                                                     (when response-curation-effects
+                                                       (unless
+                                                           (attach-pending-provider-replay-items)
+                                                         (setq
+                                                          next-request-provider-replay-items
+                                                          (copy-tree
+                                                           pending-provider-replay-items))
+                                                         (setq pending-provider-replay-items
+                                                               nil)))))
+                                                 (setq followup-started t)
+                                                 (promote-provider-anchor
+                                                  (and response-curation-effects t))
+                                                 (start-request))
                                                 ((string-empty-p
                                                   (or (response-text) ""))
                                                  (if response-curation-effects
@@ -1630,7 +1708,8 @@ schedules it behind the owning session's active commit barrier."
                                                          (list
                                                           :provider-replay-items
                                                           pending-provider-replay-items))
-                                                       response-entry-id))))
+                                                       response-entry-id
+                                                       response-assistant-phase))))
                                                  (setq turn-messages
                                                        (append turn-messages
                                                                (list message)))

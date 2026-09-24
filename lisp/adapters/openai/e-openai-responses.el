@@ -46,7 +46,8 @@ representation or dropping their structure."
   "Map backend-neutral MESSAGE to a Responses input item.
 CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
   (let ((role (plist-get message :role))
-        (content (plist-get message :content)))
+        (content (plist-get message :content))
+        (phase (plist-get message :phase)))
     (pcase role
       ('tool-call
        (list :type "function_call"
@@ -63,10 +64,13 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
                :output (e-tools-result-content-text
                         (plist-get result :content)))))
       (_
-       (list :type "message"
-             :role (if (eq role 'system) "developer" (symbol-name role))
-             :content (e-openai-responses--message-content
-                       role content cache-breakpoint-p))))))
+       (append
+        (list :type "message"
+              :role (if (eq role 'system) "developer" (symbol-name role))
+              :content (e-openai-responses--message-content
+                        role content cache-breakpoint-p))
+        (when (and (eq role 'assistant) phase)
+          (list :phase phase)))))))
 
 (defun e-openai-responses--input-replay-item (item)
   "Return an input-safe copy of opaque OpenAI replay ITEM.

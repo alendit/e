@@ -175,6 +175,115 @@
     (should (member 'turn-started (mapcar (lambda (event) (plist-get event :type)) events)))
     (should (member 'turn-finished (mapcar (lambda (event) (plist-get event :type)) events)))))
 
+(ert-deftest e-loop-test-commentary-phase-continues-until-final-answer ()
+  "A Responses commentary message is replayed before the final answer."
+  (let* ((request-count 0)
+         (requests nil)
+         (messages nil)
+         (backend
+          (e-backend-create
+           :name "phase-continuation"
+           :stream
+           (cl-function
+            (lambda (&key messages on-item &allow-other-keys)
+              (setq request-count (1+ request-count))
+              (push (copy-tree messages) requests)
+              (if (= request-count 1)
+                  (progn
+                    (funcall on-item
+                             '(:type assistant-message
+                               :content "I will inspect the repository."
+                               :phase "commentary"))
+                    (funcall on-item '(:type done :reason stop)))
+                (funcall on-item
+                         '(:type assistant-message
+                           :content "The refresh is complete."
+                           :phase "final_answer"))
+                (funcall on-item '(:type done :reason stop))))))))
+    (e-loop-run-turn-batch
+     :session-id "session-phase"
+     :turn-id "turn-phase"
+     :messages '((:role user :content "Refresh the index."))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:model "fake")
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (setq messages (append messages (list (copy-tree message))))))
+    (should (= request-count 2))
+    (should (equal (mapcar (lambda (message) (plist-get message :phase))
+                           messages)
+                   '("commentary" "final_answer")))
+    (let ((second-request (cadr (nreverse requests))))
+      (should (equal (plist-get (car (last second-request)) :phase)
+                     "commentary")))))
+
+(ert-deftest e-loop-test-commentary-curation-replays-ack-before-continuing ()
+  "Commentary and reserved curation continue with phase and opaque ack intact."
+  (let* ((request-count 0)
+         (requests nil)
+         (messages nil)
+         (curation
+          (e-openai-decoder--context-curation-effect
+           '(:keep [1] :summaries [] :erase []) "curation-call"))
+         (backend
+          (e-backend-create
+           :name "commentary-curation"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item &allow-other-keys)
+              (setq request-count (1+ request-count))
+              (push (list :messages (copy-tree messages)
+                          :options (copy-tree options))
+                    requests)
+              (if (= request-count 1)
+                  (progn
+                    (funcall on-item
+                             '(:type assistant-message
+                               :content "I will inspect the repository."
+                               :phase "commentary"))
+                    (funcall on-item curation)
+                    (funcall on-item '(:type done :reason stop)))
+                (funcall on-item
+                         '(:type assistant-message
+                           :content "The refresh is complete."
+                           :phase "final_answer"))
+                (funcall on-item '(:type done :reason stop))))))))
+    (e-loop-run-turn-batch
+     :session-id "session-commentary-curation"
+     :turn-id "turn-commentary-curation"
+     :messages '((:role user :content "Refresh the index."))
+     :backend backend
+     :tools (e-tools-registry-create)
+     :options '(:model "gpt-test" :context-lifetime-enabled t)
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (setq messages (append messages (list (copy-tree message))))))
+    (should (= request-count 2))
+    (should (equal (plist-get (car messages) :phase) "commentary"))
+    (let* ((second (cadr (nreverse requests)))
+           (body (e-openai-codex-request-body
+                  :messages (plist-get second :messages)
+                  :options (plist-get second :options)
+                  :tools nil))
+           (input (append (plist-get body :input) nil)))
+      (should
+       (seq-find
+        (lambda (item)
+          (and (equal (plist-get item :type) "message")
+               (equal (plist-get item :role) "assistant")
+               (equal (plist-get item :phase) "commentary")))
+        input))
+      (should
+       (seq-find
+        (lambda (item)
+          (and (equal (plist-get item :type) "function_call_output")
+               (equal (plist-get item :call_id) "curation-call")
+               (equal (plist-get item :output) "")))
+        input)))))
+
 (ert-deftest e-loop-test-attaches-provider-replay-items-to-assistant-message ()
   "Opaque provider replay items persist with the output they precede."
   (let* ((replay-item
