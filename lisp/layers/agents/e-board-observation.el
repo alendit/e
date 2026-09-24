@@ -87,6 +87,82 @@ request-local observation error when the returned work settles."
           :deferred)))
      (list :child child))))
 
+(defun e-board-observation-activity-detail-start
+    (target record-id store)
+  "Return work for authorized summary RECORD-ID on TARGET.
+STORE is an internal session-owner dependency supplied by the admitted
+observation context; the public action accepts only the Board target and
+record identity."
+  (unless (e-board-sqlite-publication-target-valid-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
+  (unless (e-session-storage-sqlite-p store)
+    (signal 'e-board-observation-error
+            (list "Summary detail requires SQLite session storage")))
+  (unless (and (stringp record-id) (not (string-empty-p record-id)))
+    (signal 'e-board-observation-error
+            (list "Summary record identity must be a non-empty string")))
+  (let ((board-work
+         (e-board-sqlite-publication-target-activity-detail-start
+          target record-id)))
+    (e-work-start
+     (e-work-spec-create
+      :id "board-observation-activity-detail"
+      :execution 'cooperative :interactive-policy 'async
+      :owner 'board-observation
+      :runner
+      (lambda (parent arguments _context)
+        (let ((current (plist-get arguments :board-work))
+              (store (plist-get arguments :store)))
+          (cl-labels
+              ((finish-session (settled)
+                 (pcase (plist-get (e-work-status settled) :state)
+                   ('finished
+                    (e-work-finish
+                     parent
+                     (list :summary
+                           (plist-get (e-work-handle-result settled)
+                                      :summary))))
+                   ('failed (e-work-fail parent
+                                         (e-work-handle-error settled)))
+                   ('cancelled (e-work-cancel parent))))
+               (finish-board (settled)
+                 (pcase (plist-get (e-work-status settled) :state)
+                   ('finished
+                    (let* ((source (e-work-handle-result settled))
+                           (session-id (plist-get source :session-id))
+                           (entry-id (plist-get source :activity-entry-id)))
+                      (if (not (and (stringp session-id)
+                                    (stringp entry-id)))
+                          (e-work-fail
+                           parent
+                           (list 'e-board-observation-error
+                                 "Board summary source is unavailable"))
+                        (when (eq (plist-get (e-work-status parent) :state)
+                                  'started)
+                          (condition-case _error
+                              (let ((session-work
+                                     (e-session-async--reasoning-summary
+                                      store session-id entry-id)))
+                                (setf current session-work
+                                      (e-work-handle-cancel-function parent)
+                                      (lambda (_handle)
+                                        (e-work-cancel session-work)))
+                                (e-work-on-settle session-work #'finish-session))
+                            (error
+                             (e-work-fail
+                              parent
+                              (list 'e-board-observation-error
+                                    "Unable to start summary detail"))))))))
+                   ('failed (e-work-fail parent
+                                         (e-work-handle-error settled)))
+                   ('cancelled (e-work-cancel parent)))))
+            (setf (e-work-handle-cancel-function parent)
+                  (lambda (_handle) (e-work-cancel current)))
+            (e-work-on-settle current #'finish-board)
+            :deferred))))
+     (list :board-work board-work :store store))))
+
 (defun e-board-observation-session-page-start (store participant-id &optional limit)
   "Return bounded durable transcript work for PARTICIPANT-ID from STORE.
 This is an explicit SQL session query and never consults process-local child
@@ -150,6 +226,18 @@ state or a live transcript cache."
              e-board-observation-raw-page-limit))
       (e-board-observation-activity-participant-start
        (e-board-observation--context-target context) participant-id))))
+
+(defun e-board-observation--detail (context arguments)
+  "Resolve one Board-authorized summary detail without exposing its source."
+  (let* ((harness (plist-get context :harness))
+         (record-id (plist-get arguments :record-id)))
+    (unless harness
+      (signal 'e-board-observation-error
+              (list "Board summary detail requires a harness context")))
+    (e-board-observation-activity-detail-start
+     (e-board-observation--context-target context)
+     record-id
+     (e-chat-service-session-store harness))))
 
 (defun e-board-observation--canonical-string (value)
   "Return VALUE as a canonical string or explicit JSON null."
@@ -225,6 +313,12 @@ state or a live transcript cache."
                   (plist-get value :attempt))
         :subagent-role (e-board-observation--canonical-string
                         (plist-get value :subagent-role))
+        :reasoning-summary-preview
+        (e-board-observation--canonical-string
+         (plist-get value :reasoning-summary-preview))
+        :reasoning-summary-record-id
+        (e-board-observation--canonical-string
+         (plist-get value :reasoning-summary-record-id))
         :outcome (if (plist-member value :outcome)
                      (e-board-observation--canonical-outcome
                       (plist-get value :outcome))
@@ -285,6 +379,11 @@ state or a live transcript cache."
         :high-water (e-board-observation--canonical-number
                      (plist-get value :high-water))))
 
+(defun e-board-observation--canonical-detail (value)
+  "Project a summary-only detail DTO into canonical JSON."
+  (list :summary (e-board-observation--canonical-string
+                  (plist-get value :summary))))
+
 (defun e-board-observation--canonical-result (value)
   "Project one Board observation result into canonical JSON."
   (cond
@@ -292,6 +391,8 @@ state or a live transcript cache."
     (e-board-observation--canonical-page value))
    ((and (listp value) (plist-member value :messages))
     (e-board-observation--canonical-message-page value))
+   ((and (listp value) (plist-member value :summary))
+    (e-board-observation--canonical-detail value))
    ((and (listp value) (plist-member value :participant-id))
     (e-board-observation--canonical-row value))
    ((e-json-value-p value) value)
@@ -361,9 +462,18 @@ state or a live transcript cache."
     :additionalProperties :json-false)
   "Action parameters for durable participant reads.")
 
+(defconst e-board-observation--detail-parameters
+  '(:type "object"
+    :properties
+    (:record-id
+     (:type "string" :description "Board activity record identity."))
+    :required ["record-id"]
+    :additionalProperties :json-false)
+  "Action parameters for one authorized summary detail read.")
+
 (defun e-board-observation-parent-alist ()
   "Return Board-backed parent observation actions.
-The three actions share the same explicit Board target and never consult the
+The actions share the same explicit Board target and never consult the
 private live execution owner."
   (list :list
         (e-board-observation--action
@@ -377,7 +487,11 @@ private live execution owner."
         :read
         (e-board-observation--action
          #'e-board-observation--read e-board-observation--read-parameters
-         "Read one participant projection or bounded durable transcript.")))
+         "Read one participant projection or bounded durable transcript.")
+        :detail
+        (e-board-observation--action
+         #'e-board-observation--detail e-board-observation--detail-parameters
+         "Read one Board-authorized combined reasoning summary.")))
 
 (provide 'e-board-observation)
 

@@ -13,6 +13,7 @@
 (require 'e-board-sqlite-worker)
 (require 'e-runtime-store-codec)
 (require 'e-runtime-store)
+(require 'e-session-sqlite)
 (require 'e-work)
 
 (defun e-board-observation-test--await (work)
@@ -160,6 +161,31 @@
               (throw 'settled bytes)
             (setq candidate (plist-put candidate :bytes bytes))))))))
 
+(defun e-board-observation-test--append-summary-record
+    (target participant-id session-id activity-entry-id content)
+  "Append one test-only sanitized summary record through TARGET."
+  (e-board-observation-test--await
+   (e-board-sqlite-publication-target-record-append-start
+    target 'activity 'reasoning-summary
+    (list session-id activity-entry-id)
+    :author (format "participant:%s" participant-id)
+    :subject-participant-id participant-id
+    :source-turn-id "turn-summary"
+    :content content
+    :activity-kind 'reasoning-summary
+    :attributes '(:detail-version 1))))
+
+(defun e-board-observation-test--append-session-summary
+    (store session-id turn-id content &optional stream-kind event-type)
+  "Append one durable test summary EVENT and return its generated identity."
+  (let ((event
+         (e-board-observation-test--await
+          (e-session-append-activity-event
+           store session-id turn-id (or event-type 'reasoning-delta)
+           (list :stream-kind (or stream-kind 'summary)
+                 :content content :content-mode 'snapshot :combined t)))))
+    (plist-get event :id)))
+
 (ert-deftest e-board-observation-test-mixed-page-is-one-ordered-consumer-model ()
   "Ordinary and run-bound participants share one ordered outcome page."
   (e-board-observation-test--with-fixture
@@ -203,6 +229,145 @@
       (should (eq (plist-get (plist-get worker :outcome) :status) 'done))
       (should (equal (plist-get (plist-get worker :outcome) :summary)
                      "accepted report")))))
+
+(ert-deftest e-board-observation-test-summary-detail-is-board-authorized-and-summary-only ()
+  "Summary detail follows Board admission and excludes private stream kinds."
+  (let* ((session-directory (make-temp-file "e-board-summary-session-" t))
+         (session-store
+          (e-session-sqlite-store-create session-directory :asynchronous t))
+         (session-id "summary-session")
+         (participant-id "summary-participant")
+         (summary-id nil)
+         (replacement-id nil)
+         (raw-id nil)
+         (encrypted-id nil))
+    (unwind-protect
+        (progn
+          (e-board-observation-test--await
+           (e-session-create session-store :id session-id))
+          (setq summary-id
+                (e-board-observation-test--append-session-summary
+                 session-store session-id "turn-summary"
+                 "combined readable summary"))
+          (setq replacement-id
+                (e-board-observation-test--append-session-summary
+                 session-store session-id "turn-replacement"
+                 "replacement combined summary"))
+          (setq raw-id
+                (e-board-observation-test--append-session-summary
+                 session-store session-id "turn-raw" "raw-private-secret"
+                 'raw))
+          (setq encrypted-id
+                (e-board-observation-test--append-session-summary
+                 session-store session-id "turn-encrypted"
+                 "encrypted-private-secret" 'encrypted))
+          (e-board-observation-test--with-fixture
+              (_directory _runtime service target board-id)
+            ;; Participant and session identities intentionally differ.  The
+            ;; Board association, rather than an ID coincidence, authorizes
+            ;; the source lookup.
+            (e-board-observation-test--admit
+             service board-id session-id participant-id)
+            (let* ((first
+                    (e-board-observation-test--append-summary-record
+                     target participant-id session-id summary-id "first preview"))
+                   (first-id (plist-get (plist-get first :message) :id))
+                   (detail
+                    (e-board-observation-test--await
+                     (e-board-observation-activity-detail-start
+                      target first-id session-store))))
+              (should (equal detail '(:summary "combined readable summary")))
+              (should-not (string-match-p
+                           "raw-private-secret\|encrypted-private-secret"
+                           (prin1-to-string detail)))
+              ;; The latest valid Board projection is selected once per
+              ;; participant and carries only the safe preview plus opaque id.
+              (let* ((second
+                      (e-board-observation-test--append-summary-record
+                       target participant-id session-id replacement-id
+                       "replacement preview"))
+                     (second-id (plist-get (plist-get second :message) :id))
+                     (page
+                      (e-board-observation-test--await
+                       (e-board-observation-activity-page-start
+                        target :limit 4)))
+                     (row (car (plist-get page :participants))))
+                (should (equal (plist-get row :reasoning-summary-preview)
+                               "replacement preview"))
+                (should (equal (plist-get row :reasoning-summary-record-id)
+                               second-id))
+                (should (equal
+                         (e-board-observation-test--await
+                          (e-board-observation-activity-detail-start
+                           target second-id session-store))
+                         '(:summary "replacement combined summary"))))
+              ;; A record from another Board is not addressable through this
+              ;; target, even when its opaque identity is known.
+              (let* ((other-board-id "other-summary-board")
+                     (other-target
+                      (e-board-sqlite-publication-target-create
+                       service other-board-id :author "observation-test")))
+                (e-board-observation-test--await
+                 (e-board-sqlite-service-board-create-start
+                  service other-board-id "observation-test"))
+                (let ((error
+                       (condition-case condition
+                           (progn
+                             (e-board-observation-test--await
+                              (e-board-observation-activity-detail-start
+                               other-target first-id session-store))
+                             nil)
+                         (error condition))))
+                  (should error)
+                  (should-not (string-match-p
+                               "combined readable summary"
+                               (error-message-string error)))))
+              ;; A subject mismatch is rejected before the source session is
+              ;; queried, so an arbitrary participant cannot borrow a detail.
+              (let* ((mismatch
+                      (e-board-observation-test--append-summary-record
+                       target "other-participant" session-id "missing-entry"
+                       "mismatch preview"))
+                     (mismatch-id
+                      (plist-get (plist-get mismatch :message) :id))
+                     (error
+                      (condition-case condition
+                          (progn
+                            (e-board-observation-test--await
+                             (e-board-observation-activity-detail-start
+                              target mismatch-id session-store))
+                            nil)
+                        (error condition))))
+                (should error)
+                (should-not (string-match-p
+                             "mismatch preview"
+                             (error-message-string error))))
+              ;; Raw and encrypted session items are not readable summary
+              ;; details even when an adversarial Board row has a safe-looking
+              ;; preview and a valid participant association.
+              (dolist (case
+                       `((,raw-id "raw preview" "raw-private-secret")
+                         (,encrypted-id "encrypted preview"
+                                        "encrypted-private-secret")))
+                (let* ((record
+                        (e-board-observation-test--append-summary-record
+                         target participant-id session-id (nth 0 case)
+                         (nth 1 case)))
+                       (record-id (plist-get (plist-get record :message) :id))
+                       (error
+                        (condition-case condition
+                            (progn
+                              (e-board-observation-test--await
+                               (e-board-observation-activity-detail-start
+                                target record-id session-store))
+                              nil)
+                          (error condition))))
+                  (should error)
+                  (should-not (string-match-p
+                               (regexp-quote (nth 2 case))
+                               (error-message-string error))))))))
+      (ignore-errors (e-session-sqlite-store-close session-store))
+      (delete-directory session-directory t))))
 
 (ert-deftest e-board-observation-test-participant-columns-author-activity-page ()
   "Activity identity comes from normalized participant columns after reopen."
@@ -382,9 +547,9 @@
                   (should (eq (plist-get outcome :status) 'done))
                   (should (equal (plist-get outcome :summary)
                                  "behind unrelated history"))
-                  ;; Root, participant, session, lifecycle, and report set
-                  ;; reads stay constant despite 4097 unrelated fact rows.
-                  (should (= calls 5))))))
+                  ;; Root, participant, session, summary, lifecycle, and
+                  ;; report set reads stay constant despite unrelated rows.
+                  (should (= calls 6))))))
         (when database
           (sqlite-close database))))))
 
@@ -427,9 +592,9 @@
                   (should (eq (plist-get outcome :status) 'done))
                   (should (equal (plist-get outcome :summary)
                                  "accepted report"))
-                  ;; Root, participant, session, lifecycle, and exact report
-                  ;; set reads stay constant despite 4097 same-run reports.
-                  (should (= calls 5))))))
+                  ;; Root, participant, session, summary, lifecycle, and exact
+                  ;; report set reads stay constant despite unrelated rows.
+                  (should (= calls 6))))))
         (when database
           (sqlite-close database))))))
 
@@ -497,10 +662,88 @@
                           :after "" :limit 8
                           :byte-limit e-board-sqlite-activity-page-byte-limit))))
               (should (= (length (plist-get page :participants)) 3))
-              ;; Board root, participant set, current session set, lifecycle
-              ;; set, and report set: no participant-specific reads.
-              (should (= calls 5))))
+              ;; Board root, participant set, current session, summary,
+              ;; lifecycle, and report sets: no participant-specific reads.
+              (should (= calls 6))))
         (sqlite-close database)))))
+
+(ert-deftest e-board-observation-test-authorized-summary-detail-is-detached-and-private-safe ()
+  "Board detail resolves one combined summary and rejects another Board."
+  (e-board-observation-test--with-fixture
+      (directory runtime service target board-id)
+    (let* ((store (e-session-sqlite-store-create
+                   directory :runtime-store runtime :asynchronous t))
+           (other-board-id "other-observation-board")
+           (other-target nil)
+           session-work activity-work record-work page row detail)
+      (unwind-protect
+          (progn
+            (e-board-observation-test--await
+             (e-board-sqlite-service-board-create-start
+              service other-board-id "observation-test"))
+            (setq other-target
+                  (e-board-sqlite-publication-target-create
+                   service other-board-id :author "observation-test"))
+            (e-board-observation-test--admit
+             service board-id "detail-session" "detail-participant")
+            (setq activity-work
+                  (e-session-append-activity-event
+                   store "detail-session" "detail-turn" 'reasoning-delta
+                   '(:stream-kind summary :content-mode snapshot :combined t
+                     :content "combined readable summary" :raw-content "raw-secret"
+                     :encrypted-content "encrypted-secret")))
+            (setq activity-work
+                  (e-board-observation-test--await activity-work))
+            (let ((activity-entry-id (plist-get activity-work :id)))
+              (should (stringp activity-entry-id))
+              (setq record-work
+                    (e-board-sqlite-publication-target-record-append-start
+                     target 'activity 'reasoning-summary
+                     (list "detail-session" activity-entry-id)
+                     :author "participant:detail-participant"
+                     :subject-participant-id "detail-participant"
+                     :source-turn-id "detail-turn"
+                     :content "combined readable summary"
+                     :activity-kind 'reasoning-summary
+                     :attributes '(:detail-version 1)))
+              (setq record-work (e-board-observation-test--await record-work))
+              ;; A later projection for the same participant replaces the
+              ;; older row in the single set-based page query.
+              (let* ((second-activity
+                      (e-board-observation-test--await
+                       (e-session-append-activity-event
+                        store "detail-session" "detail-turn-2"
+                        'reasoning-delta
+                        '(:stream-kind summary :content-mode snapshot :combined t
+                          :content "latest readable summary"))))
+                     (second-id (plist-get second-activity :id)))
+                (e-board-observation-test--await
+                 (e-board-sqlite-publication-target-record-append-start
+                  target 'activity 'reasoning-summary
+                  (list "detail-session" second-id)
+                  :author "participant:detail-participant"
+                  :subject-participant-id "detail-participant"
+                  :source-turn-id "detail-turn-2"
+                  :content "latest readable summary"
+                  :activity-kind 'reasoning-summary
+                  :attributes '(:detail-version 1))))
+              (setq page (e-board-observation-test--await
+                          (e-board-observation-activity-page-start
+                           target :limit 4)))
+              (setq row (car (plist-get page :participants)))
+              (let ((record-id (plist-get row :reasoning-summary-record-id)))
+                (should (stringp record-id))
+                (setq detail
+                      (e-board-observation-test--await
+                       (e-board-observation-activity-detail-start
+                        target record-id store)))
+                (should (equal detail '(:summary "latest readable summary")))
+                (should-error
+                 (e-board-observation-test--await
+                  (e-board-observation-activity-detail-start
+                   other-target record-id store))
+                 :type 'e-runtime-store-board-conflict))))
+        (ignore-errors (e-session-sqlite-store-close store))))))
 
 (provide 'e-board-observation-test)
 

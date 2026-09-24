@@ -65,6 +65,147 @@
       (ignore-errors (e-session-sqlite-store-close store))
       (delete-directory directory t))))
 
+(ert-deftest e-harness-test-reasoning-snapshot-committed-after-async-append ()
+  "A held summary append leaves live delivery unblocked and emits its id later."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (events nil)
+         (summary-work nil)
+         (spec
+          (e-work-spec-create
+           :id "harness-reasoning-append-test"
+           :execution 'cooperative
+           :interactive-policy 'async
+           :owner 'e-harness-tool-composition-test
+           :runner (lambda (_handle _arguments _context) :deferred))))
+    (e-harness-create-session harness :id "session-1")
+    ;; Isolate the activity owner from SQLite while retaining the real async
+    ;; append/settlement protocol.
+    (cl-letf (((symbol-function 'e-session-storage-runtime-store)
+               (lambda (_store) t)))
+      (e-session-async-enable store))
+    (e-harness-activity-subscribe
+     harness (lambda (event) (push event events)) :session-id "session-1")
+    (cl-letf (((symbol-function 'e-session-append-activity-event)
+               (lambda (_store _session-id _turn-id type _payload &rest _options)
+                 (if (eq type 'reasoning-delta)
+                     (setq summary-work (e-work-start spec nil))
+                   (list :id (format "activity-%s" type))))))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-started
+       '(:provider-request-id "request-1"))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'reasoning-delta
+       '(:stream-kind summary :content "live summary"))
+      ;; This request boundary flushes the combined snapshot while the fake
+      ;; session append remains held.  The ordinary live snapshot is still
+      ;; delivered immediately, and no durable identity is guessed yet.
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-finished
+       '(:status done)))
+    (let ((published (reverse events)))
+      (should (e-work-handle-p summary-work))
+      (should (equal (mapcar (lambda (event) (plist-get event :type)) published)
+                     '(provider-request-started reasoning-delta reasoning-delta
+                       provider-request-finished)))
+      (should-not
+       (seq-find (lambda (event)
+                   (eq (plist-get event :type)
+                       'reasoning-snapshot-committed))
+                 published))
+      (should-not (plist-get (nth 1 published) :activity-entry-id))
+      (e-work-finish summary-work '(:id "activity-42"))
+      (let ((committed
+             (seq-filter
+              (lambda (event)
+                (eq (plist-get event :type)
+                    'reasoning-snapshot-committed))
+              events)))
+        (should (= (length committed) 1))
+        (should (equal (plist-get (car committed) :activity-entry-id)
+                       "activity-42"))
+        (should (equal (plist-get (plist-get (car committed) :payload)
+                                  :content)
+                       "live summary"))))))
+
+(ert-deftest e-harness-test-reasoning-snapshot-commit-failure-emits-no-board-event ()
+  "A failed summary append never emits the detached committed notification."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (events nil)
+         (summary-work nil)
+         (spec
+          (e-work-spec-create
+           :id "harness-reasoning-failed-append-test"
+           :execution 'cooperative
+           :interactive-policy 'async
+           :owner 'e-harness-tool-composition-test
+           :runner (lambda (_handle _arguments _context) :deferred))))
+    (e-harness-create-session harness :id "session-1")
+    (cl-letf (((symbol-function 'e-session-storage-runtime-store)
+               (lambda (_store) t)))
+      (e-session-async-enable store))
+    (e-harness-activity-subscribe
+     harness (lambda (event) (push event events)) :session-id "session-1")
+    (cl-letf (((symbol-function 'e-session-append-activity-event)
+               (lambda (&rest _options)
+                 (setq summary-work (e-work-start spec nil)))))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-started nil)
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'reasoning-delta
+       '(:stream-kind summary :content "held summary"))
+      (e-harness-activity-emit-turn-event
+       harness "session-1" "turn-1" 'provider-request-finished nil))
+    (should (e-work-handle-p summary-work))
+    (should-not
+     (seq-find (lambda (event)
+                 (eq (plist-get event :type)
+                     'reasoning-snapshot-committed))
+               events))
+    (e-work-fail summary-work '(e-session-error "append failed"))
+    (should-not
+     (seq-find (lambda (event)
+                 (eq (plist-get event :type)
+                     'reasoning-snapshot-committed))
+               events))))
+
+(ert-deftest e-harness-test-reasoning-snapshot-committed-after-sync-live-publication ()
+  "A synchronous append reports the committed identity after live delivery."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store))
+         (events nil))
+    (e-harness-create-session harness :id "session-1")
+    (e-harness-activity-subscribe
+     harness (lambda (event) (push event events)) :session-id "session-1")
+    (e-harness-activity-emit-turn-event
+     harness "session-1" "turn-1" 'provider-request-started nil)
+    (e-harness-activity-emit-turn-event
+     harness "session-1" "turn-1" 'reasoning-delta
+     '(:stream-kind summary :content "sync summary"))
+    (e-harness-activity-emit-turn-event
+     harness "session-1" "turn-1" 'provider-request-finished nil)
+    (let* ((published (reverse events))
+           (types (mapcar (lambda (event) (plist-get event :type)) published))
+           (committed
+            (seq-find
+             (lambda (event)
+               (eq (plist-get event :type)
+                   'reasoning-snapshot-committed))
+             published)))
+      (should (equal types
+                     '(provider-request-started reasoning-delta reasoning-delta
+                       reasoning-snapshot-committed provider-request-finished)))
+      (should (stringp (plist-get committed :activity-entry-id)))
+      (should (equal (plist-get (plist-get committed :payload) :content)
+                     "sync summary")))))
+
 (ert-deftest e-harness-test-async-hook-audit-returns-published-event-without-history-read ()
   "An async hook audit returns its live event without rereading the aggregate."
   (let* ((directory (make-temp-file "e-harness-hook-audit-" t))

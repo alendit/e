@@ -61,6 +61,9 @@
 (defvar-local e-board-activity-shell--request nil
   "Current request-scoped Board activity work handle.")
 
+(defvar-local e-board-activity-shell--detail-request nil
+  "Current request-scoped Board summary detail work handle.")
+
 (defvar-local e-board-activity-shell--error nil
   "Request-local observation error displayed by this buffer.")
 
@@ -124,11 +127,14 @@
                     "-")
                   (if entry "available" "unavailable")
                   (format "%s" summary)
+                  (format "%s"
+                          (or (plist-get row :reasoning-summary-preview) "-"))
                   (e-board-activity-shell--progress-label entry)))))
 
 (defconst e-board-activity-shell--hint-bindings
   '(("RET" . "open chat")
     ("d" . "durable details")
+    ("v" . "reasoning summary")
     ("r" . "raw transcript")
     ("p" . "live progress")
     ("s" . "steer")
@@ -212,6 +218,16 @@
                                     e-board-activity-shell--request) :state)
                         '(finished failed cancelled))))
     (e-work-cancel e-board-activity-shell--request)))
+
+(defun e-board-activity-shell--cancel-detail-request ()
+  "Cancel the current nonterminal summary-detail request, if any."
+  (when (and e-board-activity-shell--detail-request
+             (not (memq (plist-get (e-work-status
+                                    e-board-activity-shell--detail-request)
+                                   :state)
+                        '(finished failed cancelled))))
+    (e-work-cancel e-board-activity-shell--detail-request))
+  (setq e-board-activity-shell--detail-request nil))
 
 (defun e-board-activity-shell--refresh (&optional reset)
   "Start one detached Board observation request for the current buffer."
@@ -335,6 +351,51 @@
       (list :participant-id participant-id
             :progress (copy-tree (plist-get entry :progress) t))))))
 
+(defun e-board-activity-shell-show-summary ()
+  "Load the selected Board participant's combined reasoning summary."
+  (interactive)
+  (let* ((row (e-board-activity-shell--selected-row))
+         (record-id (plist-get row :reasoning-summary-record-id)))
+    (unless (and (stringp record-id) (not (string-empty-p record-id)))
+      (user-error "Selected participant has no reasoning summary"))
+    (e-board-activity-shell--cancel-detail-request)
+    (let* ((participant-id (plist-get row :participant-id))
+           (harness (e-board-activity-shell--harness row))
+           (owner (current-buffer))
+           (buffer (e-board-activity-shell--show-buffer
+                    e-board-activity-shell-detail-buffer-name
+                    (format "Loading reasoning summary for %s...\n"
+                            participant-id)))
+           (work (e-board-observation-activity-detail-start
+                  e-board-activity-shell--target record-id
+                  (e-chat-service-session-store harness))))
+      (setf (buffer-local-value 'e-board-activity-shell--detail-request owner)
+            work)
+      (e-work-on-settle
+       work
+       (lambda (settled)
+         (when (and (buffer-live-p owner)
+                    (eq (buffer-local-value
+                         'e-board-activity-shell--detail-request owner)
+                        work))
+           (setf (buffer-local-value 'e-board-activity-shell--detail-request
+                                     owner)
+                 nil)
+           (when (buffer-live-p buffer)
+             (with-current-buffer buffer
+               (let ((inhibit-read-only t)
+                     (status (e-work-status settled)))
+                 (erase-buffer)
+                 (if (eq (plist-get status :state) 'finished)
+                     (insert (plist-get (e-work-handle-result settled)
+                                        :summary))
+                   (insert (format "Unable to read reasoning summary: %s\n"
+                                   (e-work-error-message
+                                    (or (plist-get status :error)
+                                        '(e-work-cancelled "cancelled"))))))
+               (special-mode)))))))
+      buffer)))
+
 (defun e-board-activity-shell-show-raw ()
   "Show a bounded durable transcript page for the selected participant."
   (interactive)
@@ -418,6 +479,7 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'e-board-activity-shell-open-chat)
     (define-key map (kbd "d") #'e-board-activity-shell-show-details)
+    (define-key map (kbd "v") #'e-board-activity-shell-show-summary)
     (define-key map (kbd "r") #'e-board-activity-shell-show-raw)
     (define-key map (kbd "p") #'e-board-activity-shell-show-progress)
     (define-key map (kbd "s") #'e-board-activity-shell-steer)
@@ -442,6 +504,7 @@
          ("Attempt" 8 t)
          ("Live" 12 t)
          ("Summary" 32 nil)
+         ("Reasoning" 36 nil)
          ("Progress" 32 nil)])
   (setq tabulated-list-padding 1
         tabulated-list-sort-key nil)
@@ -472,6 +535,7 @@ belonging to that durable run after the page settles."
       ;; request before replacing its target and request identity.  Otherwise
       ;; a held read can continue after the buffer has moved to another Board.
       (e-board-activity-shell--cancel-request)
+      (e-board-activity-shell--cancel-detail-request)
       (setq e-board-activity-shell--target target
             e-board-activity-shell--live live
             e-board-activity-shell--after nil

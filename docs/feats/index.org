@@ -303,7 +303,11 @@ cold-start gate without touching the running Emacs or canonical user database.
 A live Daily follow-up also closed an owner-chat presentation leak: Board
 continuations retain their bounded terminal projection as durable model input
 but are hidden from the clean transcript, including already-stored
-continuations identified by durable metadata.
+continuations identified by durable metadata.  An =In-progress= follow-up,
+[[file:82-board-native-subagent-supervision/addendum2.org][Session-Owned Reasoning and Live Chat Preview]], keeps readable provider
+summary activity live in the selected chat, publishes a bounded
+cross-participant Board summary only after its session-owned snapshot commits,
+and excludes raw/private reasoning from Board publication and detail lookup.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

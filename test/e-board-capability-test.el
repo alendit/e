@@ -25,7 +25,8 @@
          (subagents (e-subagents-parent-capability-create))
          (board-keys (e-board-capability-test--keys board))
          (subagent-keys (e-board-capability-test--keys subagents)))
-    (should (equal board-keys '(:list :status :read :list-runs :run-status)))
+    (should (equal board-keys
+                   '(:list :status :read :detail :list-runs :run-status)))
     (dolist (key board-keys)
       (let ((action (plist-get (e-capability-actions board) key)))
         (should (stringp (e-action-description action)))

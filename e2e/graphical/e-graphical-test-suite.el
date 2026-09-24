@@ -17,6 +17,8 @@
   (load (expand-file-name "e-chat-behavior-test.el" directory) nil nil t)
   (load (expand-file-name "e-board-activity-behavior-test.el" directory)
         nil nil t)
+  (load (expand-file-name "e-board-reasoning-behavior-test.el" directory)
+        nil nil t)
   (load (expand-file-name "e-runtime-store-recovery-behavior-test.el" directory) nil nil t)
   (load (expand-file-name "e-window-surface-behavior-test.el" directory) nil nil t)
   (load (expand-file-name "e-workspace-behavior-test.el" directory) nil nil t))

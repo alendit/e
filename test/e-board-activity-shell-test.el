@@ -253,6 +253,91 @@
                            (e-work-handle-lifecycle work-b))))
             (e-work-cancel work-b))))))))
 
+(ert-deftest e-board-activity-shell-test-summary-detail-settles-and-retarget-cancels ()
+  "Summary detail renders settlement and cannot outlive a Board retarget."
+  (e-board-producer-test-with-target (target-a service)
+    (let* ((target-b
+            (e-board-sqlite-publication-target-create
+             service "second-summary-board" :author "activity-test"))
+           (success (e-work-start e-board-activity-shell-test--deferred-spec nil))
+           (failure (e-work-start e-board-activity-shell-test--deferred-spec nil))
+           (held (e-work-start e-board-activity-shell-test--deferred-spec nil))
+           (page-work (e-work-start e-board-activity-shell-test--deferred-spec nil))
+           (detail-works (list success failure held))
+           (buffer (get-buffer-create e-board-activity-shell-buffer-name)))
+      (unwind-protect
+          (progn
+            (with-current-buffer buffer
+              (e-board-activity-shell-mode)
+              (setq e-board-activity-shell--target target-a
+                    e-board-activity-shell--page
+                    '(:participants
+                      ((:participant-id "participant-1"
+                        :name "Participant"
+                        :state active
+                        :reasoning-summary-preview "safe preview"
+                        :reasoning-summary-record-id "summary-record")))
+                    e-board-activity-shell--detail-request nil)
+              (e-board-activity-shell--render))
+            (cl-letf (((symbol-function 'e-board-activity-shell--selected-row)
+                       (lambda ()
+                         '(:participant-id "participant-1"
+                           :reasoning-summary-record-id "summary-record")))
+                      ((symbol-function 'e-board-activity-shell--harness)
+                       (lambda (_row) 'test-harness))
+                      ((symbol-function 'e-chat-service-session-store)
+                       (lambda (_harness) 'test-store))
+                      ((symbol-function 'e-board-observation-activity-detail-start)
+                       (lambda (&rest _arguments) (pop detail-works)))
+                      ((symbol-function 'e-board-observation-activity-page-start)
+                       (lambda (&rest _arguments) page-work)))
+              (with-current-buffer buffer
+                (e-board-activity-shell-show-summary))
+              (with-current-buffer buffer
+                (should (eq e-board-activity-shell--detail-request success)))
+              (e-work-finish success '(:summary "combined summary"))
+              (e-board-activity-shell-test--wait
+               (lambda ()
+                 (let ((detail
+                        (get-buffer e-board-activity-shell-detail-buffer-name)))
+                   (and (buffer-live-p detail)
+                        (with-current-buffer detail
+                          (equal (buffer-string) "combined summary"))))))
+              (with-current-buffer
+                  (get-buffer e-board-activity-shell-detail-buffer-name)
+                (should (equal (buffer-string) "combined summary"))
+                (should (derived-mode-p 'special-mode)))
+              (with-current-buffer buffer
+                (e-board-activity-shell-show-summary))
+              (e-work-fail failure '(e-board-observation-error "detail failed"))
+              (e-board-activity-shell-test--wait
+               (lambda ()
+                 (let ((detail
+                        (get-buffer e-board-activity-shell-detail-buffer-name)))
+                   (and (buffer-live-p detail)
+                        (with-current-buffer detail
+                          (string-match-p "detail failed" (buffer-string)))))))
+              (with-current-buffer
+                  (get-buffer e-board-activity-shell-detail-buffer-name)
+                (should (string-match-p "detail failed" (buffer-string))))
+              (with-current-buffer buffer
+                (e-board-activity-shell-show-summary))
+              (with-current-buffer buffer
+                (should (eq e-board-activity-shell--detail-request held)))
+              (e-board-activity-list-buffer :target target-b :live nil)
+              (should (eq (plist-get (e-work-status held) :state) 'cancelled))
+              (with-current-buffer buffer
+                (should (eq e-board-activity-shell--target target-b))
+                (should-not e-board-activity-shell--detail-request)))
+        (dolist (work (list success failure held page-work))
+          (when (and (e-work-handle-p work)
+                     (not (e-request-terminal-p
+                           (e-work-handle-lifecycle work))))
+            (e-work-cancel work)))
+        (when (buffer-live-p buffer) (kill-buffer buffer))
+        (let ((detail (get-buffer e-board-activity-shell-detail-buffer-name)))
+          (when (buffer-live-p detail) (kill-buffer detail))))))))
+
 (ert-deftest e-board-activity-shell-test-request-failure-is-local ()
   "A failed Board page request leaves a local error and no durable rows."
   (e-board-producer-test-with-target (target)
@@ -342,6 +427,7 @@
           (e-board-activity-shell-mode)
           (dolist (cell '(("RET" . e-board-activity-shell-open-chat)
                           ("d" . e-board-activity-shell-show-details)
+                          ("v" . e-board-activity-shell-show-summary)
                           ("r" . e-board-activity-shell-show-raw)
                           ("p" . e-board-activity-shell-show-progress)
                           ("s" . e-board-activity-shell-steer)

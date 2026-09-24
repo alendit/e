@@ -1277,8 +1277,53 @@ that position before its row is written."
                          (plist-get last-record :position))
               :limit limit :byte-count bytes
               :byte-limit e-runtime-store-session-worker-page-byte-limit
-          :high-water (e-runtime-store-session-worker--position
+              :high-water (e-runtime-store-session-worker--position
                            database session-id))))))
+
+(defun e-runtime-store-session-worker--reasoning-summary (database body)
+  "Return one exact combined readable reasoning snapshot.
+This is intentionally narrower than the generic record/history page and
+returns no session or provider identity to its caller."
+  (let* ((session-id (e-runtime-store-session-worker--session-id
+                      (plist-get body :session-id)))
+         (activity-entry-id (plist-get body :activity-entry-id)))
+    (unless (and (stringp activity-entry-id)
+                 (> (string-bytes activity-entry-id) 0)
+                 (<= (string-bytes activity-entry-id)
+                     e-session-query-state-string-byte-limit))
+      (e-runtime-store-session-worker--error
+       "Session reasoning summary identity is invalid"))
+    (let ((row
+           (car
+            (sqlite-select
+             database
+             "SELECT position,record_type,record_id,record_identity,parent_id,timestamp,LENGTH(payload),payload FROM session_records WHERE session_id=? AND record_type='activity-event' AND record_id=? ORDER BY position DESC LIMIT 1"
+             (vector session-id activity-entry-id)))))
+      (unless row
+        (e-runtime-store-session-worker--error
+         "Session reasoning summary is unavailable"))
+      (let* ((record (e-runtime-store-session-worker--decode-record-row row))
+             (value (plist-get record :value))
+             (event-type (plist-get value :event-type))
+             (payload (plist-get value :payload))
+             (content (plist-get payload :content)))
+        (unless (and (equal (plist-get value :type) "activity-event")
+                     (or (eq event-type 'reasoning-delta)
+                         (equal event-type "reasoning-delta"))
+                     (eq (plist-get payload :stream-kind) 'summary)
+                     (eq (plist-get payload :content-mode) 'snapshot)
+                     (eq (plist-get payload :combined) t)
+                     (stringp content)
+                     (> (string-bytes content) 0))
+          (e-runtime-store-session-worker--error
+           "Session record is not a readable combined reasoning summary"))
+        (let ((result (list :summary (copy-sequence content))))
+          (when (> (e-runtime-store-codec-measure-bounded
+                    result e-runtime-store-session-worker-page-byte-limit)
+                   e-runtime-store-session-worker-page-byte-limit)
+            (e-runtime-store-session-worker--error
+             "Session reasoning summary exceeds read bound"))
+          result)))))
 
 (defun e-runtime-store-session-worker--process-report (row expected-type)
   "Decode canonical process report ROW and require EXPECTED-TYPE."
@@ -2126,6 +2171,8 @@ unselected branch rows and unrelated journal families are never returned."
        (e-runtime-store-session-worker--id-page database body))
       ((or 'session-record-page 'session-history-page)
        (e-runtime-store-session-worker--record-page database body))
+      ('session-reasoning-summary
+       (e-runtime-store-session-worker--reasoning-summary database body))
       ('session-process-report-marker-page
        (e-runtime-store-session-worker--process-report-marker-page
         database body))

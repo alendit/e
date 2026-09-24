@@ -1513,6 +1513,75 @@ other assignments in the same run from displacing the selected report."
                     (length source-keys))))))
      '(orchestration))))
 
+(defun e-board-sqlite-worker--activity-summary-preview-p (content)
+  "Return non-nil when CONTENT is a valid Board summary preview."
+  (and (stringp content)
+       (> (string-bytes content) 0)
+       (<= (string-bytes content) 1024)
+       (let ((lines (split-string content "\n" nil)))
+         (and (<= (length lines) 3)
+              (cl-every (lambda (line) (not (string-empty-p line))) lines)))))
+
+(defun e-board-sqlite-worker--activity-summary-rows
+    (board-id generation participants by-participant by-principal)
+  "Return newest valid summary record per selected PARTICIPANT.
+The candidate set is selected once for the page's participant identities.  A
+malformed or stale candidate is ignored, allowing an older valid projection to
+remain observable without issuing a participant-specific read."
+  (let ((participant-ids
+         (delete-dups
+          (delq nil (mapcar (lambda (entry)
+                              (plist-get entry :participant-id))
+                            participants))))
+        (result (make-hash-table :test 'equal)))
+    (when participant-ids
+      (dolist (row
+               (sqlite-select
+                e-board-sqlite-worker--database
+                (format
+                 (concat
+                  "WITH candidates AS ("
+                  "SELECT record_id,record_kind,source_kind,source_key,"
+                  "subject_participant_id,payload,position,"
+                  "ROW_NUMBER() OVER (PARTITION BY subject_participant_id "
+                  "ORDER BY position DESC) AS summary_rank "
+                  "FROM board_records WHERE board_id=? AND generation=? "
+                  "AND record_kind='activity' AND source_kind='reasoning-summary' "
+                  "AND subject_participant_id IN (%s)) "
+                  "SELECT record_id,record_kind,source_kind,source_key,"
+                  "subject_participant_id,payload FROM candidates "
+                  "WHERE summary_rank <= ? ORDER BY position DESC")
+                 (mapconcat (lambda (_id) "?") participant-ids ","))
+                (vconcat (append (list board-id generation)
+                                 participant-ids
+                                 (list e-board-sqlite-activity-fact-row-limit)))))
+        (let* ((record-id (e-board-sqlite-worker--column row 0))
+               (record (e-board-sqlite-worker--value
+                        (e-board-sqlite-worker--column row 5)))
+               (subject (e-board-sqlite-worker--column row 4))
+               (source-key (e-board-sqlite-worker--value
+                            (e-board-sqlite-worker--column row 3)))
+               (context (or (gethash subject by-participant)
+                            (let ((principal (plist-get record :principal)))
+                              (and principal (gethash principal by-principal))))))
+          (when (and (not (gethash subject result))
+                     (eq (plist-get record :activity-kind)
+                         'reasoning-summary)
+                     (e-board-sqlite-worker--activity-summary-preview-p
+                      (plist-get record :content))
+                     (listp source-key)
+                     (= (length source-key) 2)
+                     (stringp (nth 0 source-key))
+                     (stringp (nth 1 source-key))
+                     context
+                     (equal (plist-get context :session-id)
+                            (nth 0 source-key)))
+            (puthash subject
+                     (list :preview (plist-get record :content)
+                           :record-id record-id)
+                     result)))))
+    result))
+
 (defun e-board-sqlite-worker--activity-identities
     (participants by-participant by-principal)
   "Return relevant session and exact report identities for PARTICIPANTS."
@@ -1579,6 +1648,12 @@ participant-specific session reads."
                                         :principal)))
                         (and (stringp principal) principal)))
                     participants))))
+           (participant-ids
+            (delete-dups
+             (delq nil
+                   (mapcar (lambda (entry)
+                             (plist-get entry :participant-id))
+                           participants))))
            (clauses nil)
            (parameters (list board-id)))
       ;; The selected participant page supplies the exact session/principal
@@ -1602,6 +1677,14 @@ participant-specific session reads."
         (setq parameters
               (append parameters
                       (mapcar #'e-board-sqlite-worker--sql-value principals))))
+      (when participant-ids
+        (setq clauses
+              (append clauses
+                      (list
+                       (format "a.participant_id IN (%s)"
+                               (mapconcat (lambda (_id) "?")
+                                          participant-ids ",")))))
+        (setq parameters (append parameters participant-ids)))
       (dolist
           (row
            (if clauses
@@ -1697,6 +1780,9 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
              board-id participant-values))
            (by-participant (nth 0 contexts))
            (by-principal (nth 1 contexts))
+           (summary-by-participant
+            (e-board-sqlite-worker--activity-summary-rows
+             board-id generation participant-values by-participant by-principal))
            (identities
             (e-board-sqlite-worker--activity-identities
              participant-values by-participant by-principal))
@@ -1774,6 +1860,7 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                  (subagent-role (plist-get metadata :subagent-role))
                  (assignment (and run-id task-key (integerp attempt)
                                   (list run-id task-key attempt)))
+                 (summary (gethash participant-id summary-by-participant))
                  (report
                   (or (and assignment
                            (if session-id
@@ -1816,6 +1903,11 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
               (when task-key (list :task-key task-key))
               (when (integerp attempt) (list :attempt attempt))
               (when subagent-role (list :subagent-role subagent-role))
+              (when summary
+                (list :reasoning-summary-preview
+                      (plist-get summary :preview)
+                      :reasoning-summary-record-id
+                      (plist-get summary :record-id)))
               (when outcome
                 (list :outcome
                       (append
@@ -1933,6 +2025,69 @@ owners and validate every identity before installing a live binding."
                     :participant-id participant-id
                     :participant (gethash participant-id participants))))
           owner-rows))))))
+
+(defun e-board-sqlite-worker--activity-detail (body)
+  "Authorize RECORD-ID and return its opaque session source identity.
+Only the current generation of BODY's Board is addressable.  The session
+snapshot is resolved by the session owner after this Board-side check."
+  (let* ((board-id (plist-get body :board-id))
+         (record-id (plist-get body :record-id))
+         (board-row (e-board-sqlite-worker--board-row board-id))
+         (generation (e-board-sqlite-worker--column board-row 1)))
+    (unless (and (stringp record-id) (not (string-empty-p record-id)))
+      (signal 'e-runtime-store-board-conflict
+              (list "Board activity record identity is invalid")))
+    (let ((row
+           (car
+            (sqlite-select
+             e-board-sqlite-worker--database
+             (concat
+              "SELECT record_id,record_kind,source_kind,source_key,"
+              "subject_participant_id,payload FROM board_records "
+              "WHERE board_id=? AND generation=? AND record_id=?")
+             (vector board-id generation record-id)))))
+      (unless row
+        (signal 'e-runtime-store-board-conflict
+                (list "Unknown Board activity record")))
+      (let* ((record (e-board-sqlite-worker--value
+                      (e-board-sqlite-worker--column row 5)))
+             (subject (e-board-sqlite-worker--column row 4))
+             (source-key (e-board-sqlite-worker--value
+                          (e-board-sqlite-worker--column row 3)))
+             (subject-row
+              (and (stringp subject)
+                   (car
+                    (sqlite-select
+                     e-board-sqlite-worker--database
+                     "SELECT 1 FROM board_participants WHERE board_id=? AND generation=? AND participant_id=?"
+                     (vector board-id generation subject))))))
+        (unless (and (equal (e-board-sqlite-worker--column row 1)
+                            "activity")
+                     (equal (e-board-sqlite-worker--column row 2)
+                            "reasoning-summary")
+                     subject-row
+                     (eq (plist-get record :activity-kind)
+                         'reasoning-summary)
+                     (e-board-sqlite-worker--activity-summary-preview-p
+                      (plist-get record :content))
+                     (listp source-key)
+                     (= (length source-key) 2)
+                     (stringp (nth 0 source-key))
+                     (stringp (nth 1 source-key)))
+          (signal 'e-runtime-store-board-conflict
+                  (list "Board activity record is not a readable summary")))
+        (unless
+            (car
+             (sqlite-select
+              e-board-sqlite-worker--database
+              "SELECT 1 FROM board_session_associations WHERE board_id=? AND generation=? AND participant_id=? AND session_id=?"
+              (vector board-id generation subject (nth 0 source-key))))
+          (signal 'e-runtime-store-board-conflict
+                  (list "Board activity summary participant mismatch")))
+        (list :board-id board-id :generation generation
+              :record-id record-id :subject-participant-id subject
+              :session-id (nth 0 source-key)
+              :activity-entry-id (nth 1 source-key))))))
 
 (defun e-board-sqlite-worker-read (database body)
   "Execute one typed Board read BODY on DATABASE."
@@ -2274,6 +2429,8 @@ owners and validate every identity before installing a live binding."
                              (< run-count run-limit)))))
     ('board-activity-page
      (e-board-sqlite-worker--activity-page body))
+    ('board-activity-detail
+     (e-board-sqlite-worker--activity-detail body))
     ('board-routing-get
      (when-let* ((row (car (sqlite-select
                             e-board-sqlite-worker--database

@@ -1175,6 +1175,7 @@ acknowledgement prefix."
          'session-query-page 'session-state-page 'session-id-page
          'session-recent-page 'session-root-page
          'session-record-page 'session-history-page
+         'session-reasoning-summary
          'session-recent-failures 'session-turn-inspection
          'session-continuation-outcome
          'session-visible-message-page 'session-visible-messages
@@ -1205,7 +1206,7 @@ acknowledgement prefix."
          'board-owner-resolve
          'board-routing-get
          'board-pickup-list 'board-participant-list
-         'board-replay-progress-get)
+         'board-replay-progress-get 'board-activity-detail)
      (e-board-sqlite-worker-read
       e-runtime-store-worker--database body))
     ((or 'task-snapshot 'task-queue-status)

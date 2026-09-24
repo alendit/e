@@ -311,6 +311,21 @@ an Emacs-owned transcript."
         (setq body (append body (list (car entry) (cdr entry))))))
     (e-session-async--start-read store body)))
 
+(defun e-session-async--reasoning-summary
+    (store session-id activity-entry-id)
+  "Return exact combined reasoning summary for internal Board composition.
+Callers must obtain SESSION-ID and ACTIVITY-ENTRY-ID from an authorized Board
+record; this private seam is not a public session-history operation."
+  (unless (and (stringp session-id) (not (string-empty-p session-id))
+               (stringp activity-entry-id)
+               (not (string-empty-p activity-entry-id)))
+    (signal 'e-session-storage-error
+            (list "Reasoning summary identity is invalid")))
+  (e-session-async--start-read
+   store (list :op 'session-reasoning-summary
+               :session-id session-id
+               :activity-entry-id activity-entry-id)))
+
 (cl-defun e-session-async-process-report-marker-page
     (store session-id &key before status (limit 64))
   "Return newest bounded markers with each latest triage from SQLite."

@@ -2010,6 +2010,86 @@ semantic interpretation responsibility."
           (e-chat-service-binding-session-id binding)
           source-id)))
 
+(defconst e-chat-service--reasoning-summary-line-limit 3
+  "Maximum non-empty lines retained in a public Board summary preview.")
+
+(defconst e-chat-service--reasoning-summary-byte-limit 1024
+  "Maximum UTF-8 bytes retained in a public Board summary preview.")
+
+(defun e-chat-service--utf8-byte-prefix (text max-bytes)
+  "Return TEXT prefix limited to MAX-BYTES UTF-8 bytes."
+  (let ((bytes 0)
+        (index 0)
+        (length (length text)))
+    (while (and (< index length)
+                (let ((next-bytes
+                       (string-bytes (substring text index (1+ index)))))
+                  (when (<= (+ bytes next-bytes) max-bytes)
+                    (setq bytes (+ bytes next-bytes))
+                    t)))
+      (setq index (1+ index)))
+    (substring text 0 index)))
+
+(defun e-chat-service--reasoning-summary-preview (payload)
+  "Return the bounded public preview from summary PAYLOAD.
+
+Only readable summary content crosses this projection boundary.  Empty lines
+are discarded before the three-line limit; the final UTF-8 prefix enforces the
+byte bound without carrying any provider or transcript metadata."
+  (when-let* ((content (plist-get payload :content))
+              ((stringp content)))
+    (let* ((normalized (replace-regexp-in-string "\r\n?" "\n" content))
+           (lines
+            (seq-filter
+             (lambda (line) (not (string-empty-p line)))
+             (mapcar #'string-trim (split-string normalized "\n" nil))))
+           (preview (string-join
+                     (seq-take lines e-chat-service--reasoning-summary-line-limit)
+                     "\n")))
+      (and (not (string-empty-p preview))
+           (e-chat-service--utf8-byte-prefix
+            preview e-chat-service--reasoning-summary-byte-limit)))))
+
+(defun e-chat-service--sql-publish-reasoning-summary (binding event)
+  "Publish committed reasoning EVENT as one sanitized Board activity row.
+
+EVENT is the harness's post-append projection and therefore must carry the
+durable activity-entry identity.  The bridge consumes only its summary content;
+provider request metadata and private activity payload fields never enter the
+Board record."
+  (let* ((session-id (e-chat-service-binding-session-id binding))
+         (activity-entry-id (plist-get event :activity-entry-id))
+         (preview
+          (e-chat-service--reasoning-summary-preview
+           (plist-get event :payload)))
+         (participant-id (e-chat-service-binding-participant-id binding))
+         (source-key (and (stringp activity-entry-id)
+                          (list session-id activity-entry-id))))
+    (when (and (e-chat-service--binding-live-p binding)
+               source-key preview)
+      (condition-case error
+          (let ((work
+                 (e-board-sqlite-publication-target-record-append-start
+                  (e-chat-service-publication-target binding)
+                  'activity 'reasoning-summary source-key
+                  :author (format "participant:%s" participant-id)
+                  :subject-participant-id participant-id
+                  :source-turn-id (plist-get event :turn-id)
+                  :content preview
+                  :activity-kind 'reasoning-summary
+                  :attributes '(:detail-version 1))))
+            (e-work-on-settle
+             work
+             (lambda (settled)
+               (let ((status (e-work-status settled)))
+                 (unless (eq (plist-get status :state) 'finished)
+                   (e-chat-service--sql-note-failure
+                    binding (plist-get status :error) t)))))
+            work)
+        (error
+         (e-chat-service--sql-note-failure binding error t)
+         nil)))))
+
 (defun e-chat-service--sql-publish-context-curated (binding event projection)
   "Persist EVENT's safe curation PROJECTION and wake BINDING subscribers."
   (let* ((attributes
@@ -2125,6 +2205,11 @@ semantic interpretation responsibility."
                     (plist-get (plist-get event :payload) :curation)))
          (e-chat-service--sql-publish-context-curated
           binding event curation)))
+      ('reasoning-snapshot-committed
+       ;; This detached post-append event is intentionally not delivered back
+       ;; to selected-chat subscribers.  Their live summary and replacement
+       ;; snapshot already arrived through the ordinary reasoning events.
+       (e-chat-service--sql-publish-reasoning-summary binding event))
       ((or 'message-added) nil)
       (_
        (when (memq type e-chat-service--public-live-harness-event-types)

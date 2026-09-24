@@ -519,6 +519,14 @@ the keyword arguments accepted by `e-board-sqlite-service-activity-page-start'."
          (e-board-sqlite-publication-target--board-id target)
          arguments))
 
+(defun e-board-sqlite-publication-target-activity-detail-start
+    (target record-id)
+  "Read authorized summary detail RECORD-ID from TARGET."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-activity-detail-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target) record-id))
+
 (defun e-board-sqlite-publication-target-record-page-start
     (target &rest arguments)
   "Read a bounded canonical record page from TARGET using ARGUMENTS."
@@ -749,6 +757,18 @@ operation retains the returned page after the consumer's work handle settles."
            :limit limit :byte-limit byte-limit
            :participant-id
            (e-board-sqlite-service--detached-copy participant-id)))))
+
+(defun e-board-sqlite-service-activity-detail-start
+    (service board-id record-id)
+  "Read one Board-authorized summary detail by RECORD-ID.
+The worker validates the current Board generation, participant association,
+record kind, and opaque source identity before returning a detached mapping."
+  (unless (and (stringp record-id) (not (string-empty-p record-id)))
+    (signal 'e-board-sqlite-error
+            (list "Board activity record identity is invalid")))
+  (e-board-sqlite-service--start
+   service 'read (list :op 'board-activity-detail
+                       :board-id board-id :record-id record-id)))
 
 (defun e-board-sqlite-service-pickup-page-start
     (service board-id generation participant-id &optional limit)

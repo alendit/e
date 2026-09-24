@@ -123,6 +123,15 @@ Classes are `audit', `replay', `presentation-log', and `transient-progress'.")
 (defconst e-harness-activity-current-turn-event-limit 64
   "Maximum bounded activity events retained for one executing turn.")
 
+(defconst e-harness-activity--reasoning-snapshot-committed-event-type
+  'reasoning-snapshot-committed
+  "Ephemeral event type emitted after a combined summary append commits.
+
+This is a post-persistence notification for detached consumers such as the
+chat-service Board bridge.  It is deliberately not a durable activity type or
+part of the selected-chat live stream: the live combined snapshot is emitted
+before persistence and already owns chat replacement semantics.")
+
 (defun e-harness-activity--current-turn-events-table (harness)
   "Return HARNESS's process-local active-turn event table."
   (or (e-harness-activity-state-current-turn-events
@@ -519,8 +528,13 @@ fields outside that error contract."
     (_ payload)))
 
 (defun e-harness-activity--append-durable-activity-event
-    (harness session-id turn-id type payload)
-  "Append durable activity TYPE for HARNESS SESSION-ID TURN-ID."
+    (harness session-id turn-id type payload &optional on-success)
+  "Append durable activity TYPE for HARNESS SESSION-ID TURN-ID.
+
+When ON-SUCCESS is non-nil, call it with the detached committed activity entry
+when an asynchronous append settles successfully.  The callback is an
+owner-neutral post-append seam; it never participates in live event delivery or
+turn persistence admission."
   (e-harness-activity--profile-call
    'harness.activity-append
    (list :session-id session-id
@@ -560,6 +574,13 @@ fields outside that error contract."
          ;; turn owns its bounded in-flight writes until they settle.  This
          ;; lets cancellation and explicit batch boundaries observe the work
          ;; without turning the activity stream into a synchronous barrier.
+         (when on-success
+           (e-work-on-settle
+            event
+            (lambda (settled)
+              (let ((status (e-work-status settled)))
+                (when (eq (plist-get status :state) 'finished)
+                  (funcall on-success (plist-get status :result)))))))
          (when-let* ((entry (gethash session-id
                                      (e-harness-active-turns harness))))
            (push event (plist-get entry :persistence-works))
@@ -569,6 +590,23 @@ fields outside that error contract."
               (plist-put entry :persistence-works
                          (delq work (plist-get entry :persistence-works))))))
          nil)))))
+
+(defun e-harness-activity--emit-committed-reasoning-snapshot
+    (harness session-id turn-id payload activity-entry)
+  "Publish the post-append summary PAYLOAD with ACTIVITY-ENTRY identity.
+
+The event is intentionally separate from the live `reasoning-delta' event.
+Consumers that need durable identity can bridge it without sending a second
+activity event back through the selected chat presentation path."
+  (when-let ((activity-entry-id (plist-get activity-entry :id)))
+    (e-harness-activity--emit
+     harness
+     (e-events-make
+      :type e-harness-activity--reasoning-snapshot-committed-event-type
+      :session-id session-id
+      :turn-id turn-id
+      :payload (copy-tree payload t)
+      :activity-entry-id activity-entry-id))))
 
 (defun e-harness-activity--flush-reasoning-stream
     (harness session-id turn-id)
@@ -582,6 +620,7 @@ available."
   (let* ((streams (e-harness-activity--reasoning-streams harness))
          (key (e-harness-activity--reasoning-stream-key session-id turn-id))
          (stream (gethash key streams))
+         (async-p (e-session-async-enabled-p (e-harness-sessions harness)))
          appended)
     (when stream
       (remhash key streams)
@@ -597,16 +636,23 @@ available."
         (when-let* ((payload
                      (e-harness-activity--combined-reasoning-payload
                       stream (nth 1 spec) (nth 2 spec))))
-          (let ((activity-entry
-                 (e-harness-activity--append-durable-activity-event
-                  harness session-id turn-id (car spec) payload)))
+          (let* ((event-type (car spec))
+                 (activity-entry
+                  (e-harness-activity--append-durable-activity-event
+                   harness session-id turn-id event-type payload
+                   (when (and async-p (eq event-type 'reasoning-delta))
+                     (lambda (entry)
+                       (e-harness-activity--emit-committed-reasoning-snapshot
+                        harness session-id turn-id payload entry))))))
             (setq appended
                   (append
                    appended
                    (list
-                    (list :event-type (car spec)
+                    (list :event-type event-type
                           :payload payload
                           :activity-entry-id (plist-get activity-entry :id)
+                          :post-append-p (and (not async-p)
+                                              (eq event-type 'reasoning-delta))
                           :board-activity-sequence
                           (plist-get activity-entry
                                      :board-activity-sequence)))))))))
@@ -627,7 +673,14 @@ available."
       :payload (plist-get entry :payload)
       :activity-entry-id (plist-get entry :activity-entry-id)
       :board-activity-sequence
-      (plist-get entry :board-activity-sequence)))))
+      (plist-get entry :board-activity-sequence)))
+    ;; Synchronous stores already have the durable identity.  Emit the
+    ;; detached bridge notification only after the live combined snapshot has
+    ;; reached subscribers, preserving the existing presentation ordering.
+    (when (plist-get entry :post-append-p)
+      (e-harness-activity--emit-committed-reasoning-snapshot
+       harness session-id turn-id (plist-get entry :payload)
+       (list :id (plist-get entry :activity-entry-id))))))
 
 (defun e-harness-activity-emit-turn-event (harness session-id turn-id type payload)
   "Emit public event TYPE with PAYLOAD for HARNESS SESSION-ID TURN-ID."

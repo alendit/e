@@ -1,0 +1,396 @@
+#+title: Board-Native Subagent Supervision Addendum 2: Session-Owned Reasoning and Live Chat Preview
+#+startup: overview
+
+* Status
+
+In-progress.
+
+This addendum is a follow-up to the [[file:addendum.org][one-participant-activity-model
+addendum]].  It describes the reasoning-display and persistence boundary that
+lets the chat shell show provider-supplied reasoning during a turn without
+making raw provider reasoning part of the Board's public activity stream.
+
+The operator has approved a Board-visible, cross-participant *summary* surface.
+The session remains the sole durable owner of complete summary and raw-provider
+values.  This plan adds a bounded Board projection and an explicitly authorized
+summary-detail operation; it does not turn Board records into a second session
+activity journal.
+
+* Behavioral trace
+
+- Goal ID :: F82A2
+- Behavioral goal :: An operator who is admitted to a Board can observe a
+  bounded readable reasoning summary for a participant's completed provider
+  request, while that participant's selected chat shows the same summary live
+  and provider-private reasoning remains unavailable from Board observation.
+- Direct scenario :: A Board-attached participant receives two readable
+  reasoning deltas while its session-store append is held.  Its selected chat
+  immediately shows the bounded live preview, remains responsive, and then
+  replaces the fragments with one combined snapshot.  Once the append commits,
+  another participant opens the Board activity page and sees one bounded
+  summary preview for that participant.  The observer explicitly requests the
+  detail through the same Board target and receives the combined readable
+  summary only.  Raw reasoning, encrypted replay content, tool arguments,
+  tool results, and transcript text are absent from the page and detail result.
+  After restart, the same Board preview and authorized detail resolve from
+  durable records without a duplicate Board activity entry.
+- Product authority :: The operator.
+- Owning contract :: F82A2-C01 through F82A2-C06 below.
+- Behavioral status :: In-progress.  Provider classification, asynchronous
+  session-owned consolidation, live classic-chat preview, snapshot replacement,
+  authorized Board detail, and the set-based Board consumer are implemented.
+  F82A2-C01 through F82A2-C05 are accepted by focused evidence; F82A2-C06
+  remains pending the complete graphical restart gate.
+
+* Product goal
+
+When a provider supplies a readable reasoning summary, the selected chat shell
+shows a bounded preview while the turn is running.  The preview is live,
+ordered with the turn's tool and action activity, and replaced by the combined
+snapshot when a provider request completes.  Persistence must not delay the
+preview, and replay must not duplicate it.
+
+The product does not display hidden chain-of-thought or raw provider reasoning.
+Raw reasoning remains an adapter/session-owned audit or replay concern when the
+provider supplies it.  An encrypted provider reasoning item is retained only
+as an opaque replay item and is never rendered as text.
+
+* Problem
+
+The runtime has three related but different representations:
+
+- provider stream items, which distinguish readable reasoning summaries from
+  raw or encrypted reasoning;
+- session activity, which is the durable per-session history used for replay;
+  and
+- Board activity, which is a bounded, authorized, cross-participant
+  observation surface consumed by chat shells and supervisors.
+
+Treating these as one payload causes two failures.  The chat shell either waits
+for durable storage before showing progress or renders a raw/private provider
+event.  Conversely, copying raw reasoning into Board activity makes every
+supervisor and Board history reader a consumer of provider-private material.
+
+* Decision
+
+Keep the live presentation path and the durable session path independent:
+
+1. The provider adapter classifies summary deltas, raw deltas, encrypted
+   replay items, assistant output, and tool calls into backend-neutral items.
+2. The harness activity owner accumulates summary and raw fragments in
+   process-local reverse-order lists.  It emits readable summary deltas to
+   live subscribers immediately.
+3. At the provider-request boundary, the harness joins each stream once into a
+   combined session activity snapshot.  Persistence is asynchronous and does
+   not become a presentation barrier.
+4. After the combined summary has appended to the session successfully, the
+   Board bridge writes exactly one idempotent =reasoning-summary= activity
+   record.  Its source key is the durable =session-id= plus
+   =activity-entry-id=; its public content is a UTF-8-safe preview of at most
+   three non-empty lines and 1 KiB.  The record carries only its immutable
+   Board identity, participant, turn, the safe preview, and the opaque detail
+   reference.  It never carries raw reasoning, encrypted content, tool
+   arguments, tool results, transcript text, endpoint tokens, or provider
+   correlation identifiers.
+5. The chat activity owner appends streamed summary deltas to the current
+   round.  A combined session snapshot is marked as a replacement, so live
+   delivery followed by session replay replaces the preview rather than
+   appending it a second time.  Board observation is a separate consumer and
+   does not feed a second activity event back into the selected chat.
+
+The Board therefore remains the observation and routing boundary, while the
+session remains the durable source of per-session activity.  A Board detail
+operation may resolve the record's opaque reference only for a caller already
+admitted to that Board target and only when the record's subject participant
+belongs to that target.  It returns the one matching combined
+=reasoning-delta= summary under its normal byte limit.  It neither accepts an
+arbitrary session ID nor exposes =reasoning-raw-delta= or provider replay
+items.  The Board does not need a second durable copy of raw reasoning.
+
+* Presentation contract
+
+The classic chat shell:
+
+- shows at most
+  =e-chat-activity-reasoning-visible-line-limit= non-empty summary lines in
+  the compact live preview (the default is three);
+- shows no summary preview when that limit is zero;
+- places the summary above the current mutable =Thinking= or progress row and
+  keeps tool/action ordering intact;
+- retains the complete provider-summary text in explicitly expanded turn
+  details when available; and
+- ignores =reasoning-raw-delta= for ordinary transcript and activity rendering.
+
+The shell must not synthesize reasoning text from token counts, model names,
+encrypted provider items, or the absence of a summary.  If the provider emits
+no readable summary, the shell shows ordinary turn progress only.
+
+* Data contracts
+
+The live summary event is backend-neutral and bounded:
+
+#+begin_src emacs-lisp
+(:type reasoning-delta
+ :session-id "participant-17"
+ :turn-id "turn-3"
+ :payload (:stream-kind summary
+           :content "Checking the selected session and its latest activity."))
+#+end_src
+
+The request-boundary durable snapshot has the same semantic kind but replaces
+the fragments already displayed:
+
+#+begin_src emacs-lisp
+(:type reasoning-delta
+ :session-id "participant-17"
+ :turn-id "turn-3"
+ :activity-entry-id "..."
+ :payload (:stream-kind summary
+           :content "Checking the selected session and its latest activity.\n"
+           :content-mode snapshot
+           :combined t
+           :provider-request-id "..."))
+#+end_src
+
+The Board record is created only from the successful durable snapshot, not
+from individual live fragments:
+
+#+begin_src emacs-lisp
+(:record-kind activity
+ :source-kind reasoning-summary
+ :source-key ("participant-17" "activity-entry-42")
+ :subject-participant-id "participant-17"
+ :source-turn-id "turn-3"
+ :content "Checking the selected session and its latest activity."
+ :attributes (:detail-version 1))
+#+end_src
+
+The =:content= field is the bounded public preview.  The Board record's normal
+immutable identity is the detail reference; it is not a provider identifier.
+The provider's raw stream, encrypted reasoning content, endpoint tokens,
+arguments, results, and internal correlation identities are excluded from the
+public record and detail DTO.
+
+* Ownership and dependency direction
+
+| Responsibility | Owner | Boundary |
+|----------------+-------+----------|
+| Provider item classification | Provider adapter | Backend-neutral stream items |
+| Fragment accumulation and one-time join | Harness activity owner | Live events plus session append |
+| Durable per-session activity | Session storage | Restart/replay authority |
+| Board-safe observation | Board runtime/publication | Sanitized activity and source identity |
+| Compact/expanded rendering | Chat activity shell | Buffer-local presentation state |
+
+The Board does not call provider or session-private helpers.  The chat shell
+does not inspect a harness object, provider connection, or SQLite handle.  It
+consumes the public activity event.  A Board-owned observation operation maps a
+Board record identity to its exact session-owned summary after Board-target
+admission; the shell consumes that detached DTO rather than a harness or SQLite
+handle.
+
+* Contract matrix
+
+| ID | Contract | Semantic owner | Lifetime, bound, and recovery | Establishing delivery package | Observable acceptance |
+|----+----------+----------------+--------------------------------+-------------------------------+-----------------------|
+| F82A2-C01 | Live summary delivery and selected-chat rendering remain asynchronous and replaceable.  Board work cannot delay or duplicate the chat preview. | Harness activity owner and chat activity shell | Per provider request; reverse-order fragments are O(1), combined once at the request boundary, and discarded after flush. | F82A2-DP1 | A held session append still permits a responsive selected chat to render live summary; its eventual snapshot appears once. |
+| F82A2-C02 | A Board gets one durable, idempotent, sanitized summary record only after its corresponding combined session snapshot commits. | Chat-service Board bridge | One Board record per durable activity-entry ID; source key is =(session-id activity-entry-id)=; restart reuses durable state. | F82A2-DP1 | Repeated settlement/replay produces one Board record and never a fragment record. |
+| F82A2-C03 | Board summary content is a public preview, bounded to three non-empty lines and 1 KiB, with no provider-private or transcript-derived fields. | Board projection mapper | Bounded immutable record; preview is reconstructible from the session snapshot and is not a raw-reasoning store. | F82A2-DP1 | A mixed raw/encrypted/tool response yields only the allowed preview fields in the Board row. |
+| F82A2-C04 | Board detail resolves only the matching combined readable summary for a Board-admitted caller and its participant record. | Board observation application service | One detached asynchronous result under the existing response byte bound; no arbitrary session ID, raw event, or replay item is addressable. | F82A2-DP2 | Same-Board detail returns the combined summary; cross-Board/mismatched participant and raw-item requests fail visibly without leaking data. |
+| F82A2-C05 | The Board participant/activity surface presents the safe preview and a detail affordance without N+1 reads or a second Board history model. | Board SQL observation service and Board activity shell | One bounded set query page; detached buffer state only; restart reconstructs from SQLite. | F82A2-DP2 | A page with multiple participants shows each latest safe preview once; one explicit detail request returns promptly as work. |
+| F82A2-C06 | The complete chat-to-Board composition remains responsive and privacy-safe through persistence and restart. | Public composition | Disposable SQLite, isolated Emacs, and no running-Emacs mutation. | F82A2-DP3 | The direct scenario passes with held append, redelivery, restart, and forbidden-content assertions. |
+
+* Delivery packages
+
+** F82A2-DP1: Durable safe-summary projection
+
+Keep the existing provider classification, harness accumulation, and chat
+replacement protocol unchanged except for a narrow post-append publication
+event.  The harness emits that event only when the combined summary append has
+settled with its durable activity-entry identity; it does not rerun a session
+aggregate query to recover that identity.  The chat-service Board bridge owns
+the resulting Board record append through its existing explicit publication
+target.  It uses the durable source key, maps only the bounded safe preview,
+and reports Board-write failure through its existing owner-local failure path.
+The selected chat continues from its live event and never waits for either
+session or Board persistence.
+
+Exit evidence:
+
+- focused adapter, harness, loop, and chat tests preserve summary/raw
+  classification, no synchronous storage wait, and snapshot replacement;
+- disposable-SQL tests prove one Board record after successful append, stable
+  idempotence across duplicate completion, and no record when append fails;
+- privacy tests scan Board record content and attributes for raw reasoning,
+  encrypted content, tool arguments/results, transcript text, endpoint tokens,
+  and provider correlation identities; and
+- a source-boundary assertion proves the harness has no Board dependency and
+  the Board bridge has no provider-parser dependency.
+
+Implementation and acceptance: =lisp/core/e-harness-activity.el= now emits an
+ephemeral post-append =reasoning-snapshot-committed= event only after the
+combined summary has a durable activity-entry identity.  The Board bridge in
+=lisp/core/e-chat-service.el= maps that event to one bounded,
+=reasoning-summary= record without returning it to selected-chat subscribers.
+Focused harness/chat/Board tests pass 48/48, and =git diff --check= passes.
+This establishes F82A2-C01 through F82A2-C03; the running Emacs was not
+reloaded.
+
+** F82A2-DP2: Board observation and authorized summary detail
+
+Extend the existing bounded Board participant/activity query with each row's
+latest =reasoning-summary= preview and Board-record identity using a set-based
+join/reduction.  Add one Board-observation detail operation that accepts the
+selected Board target plus Board record identity, validates target admission and
+subject participant membership, and resolves exactly one combined
+=reasoning-delta= snapshot from the session owner.  Return a detached work
+handle immediately; do not expose a generic session ID or reuse the raw
+transcript command.  The Board shell renders the safe preview and offers an
+explicit summary-detail command.  Existing =show raw= remains a transcript
+operation and is not reused or broadened for reasoning detail.
+
+Exit evidence:
+
+- Board worker/service tests prove bounded-page ordering, byte enforcement,
+  latest-per-participant selection, and no N+1 session reads;
+- observation and shell tests cover empty/mixed pages, detail loading,
+  cancellation, failure, restart, and keyboard-only access;
+- authorization tests reject another Board, mismatched participant, unknown
+  record, raw reasoning entry, and encrypted replay item without bytes in the
+  error or DTO; and
+- direct Board DTO tests prove no provider or raw fields can cross the boundary.
+
+Implementation and acceptance: =e-board-sqlite-worker.el= now reduces the
+latest valid summary projection per participant with one bounded set query and
+returns only its preview plus opaque Board record identity.  The observation
+service authorizes detail against the current Board generation, participant
+association, record kind, and session-owned source identity before issuing one
+private summary query.  The shell renders a bounded reasoning column and a
+keyboard-accessible =v= detail command.  Focused Board/session/observation/shell
+tests pass 69/69, including latest-per-participant replacement, same-Board
+detail, cross-Board rejection, and detached privacy-safe output.  The running
+Emacs was not reloaded; these core/session/Board changes require a full restart
+to consume.
+
+** F82A2-DP3: Public composition and exact-source gate
+
+Add one graphical disposable-SQL scenario for the behavioral trace.  Hold the
+session append after two summary deltas, verify the selected classic chat is
+responsive and shows its live bounded preview, release the append, and verify a
+second Board-attached participant sees exactly one safe preview and can request
+the combined detail.  Restart the isolated Emacs/SQLite pair and repeat the
+Board observation/detail assertions.  Include raw and encrypted provider items
+in the fixture and assert their distinctive text is absent from every Board
+surface and detail result.
+
+Run the focused package suites, graphical selector, byte compilation, the
+real-current-config cold-start gate, the complete exact-source suite, and
+=git diff --check=.  Do not reload or otherwise mutate the user's running
+Emacs; these core/session/Board changes require a full restart to consume.
+
+Implementation: =e-board-reasoning-behavior-test.el= adds the isolated
+graphical composition witness for a held session append, live selected-chat
+preview, Board preview, explicit summary detail, raw/encrypted-content
+exclusion, and a process-local SQLite reopen that reconstructs the same Board
+preview and authorized detail.  The graphical runner remains the final
+acceptance gate for F82A2-C06; this environment could not start its daemon
+because the sandbox denied the server socket.
+
+Repository-side evidence at this checkpoint is the focused 69/69 package suite,
+targeted byte compilation, balanced graphical-source parsing, and a clean
+=git diff --check=.  The complete 2,710-test Eldev run reached the end with
+2,702 expected results; its eight unexpected results were confined to =e-dev=
+reload, MCP HTTP, OpenAI HTTP/process, and Org Canvas tests, with no F82A2 test
+among them.  The graphical and real-current-config runners both
+remain environment-blocked before test execution because their private daemon
+socket cannot be created in this sandbox.
+
+* Acceptance scenarios
+
+** Live summary
+
+Given a provider that emits summary deltas, a selected chat receives the deltas
+before the request finishes, shows a bounded preview, and keeps the composer
+responsive while persistence is queued.
+
+** Snapshot replacement
+
+After the request boundary, one combined session snapshot replaces the streamed
+fragments.  Live delivery followed by session replay produces one visible
+reasoning block, not duplicate text.  Board observation does not re-deliver an
+activity event to that chat.
+
+** Raw-reasoning exclusion
+
+Given raw reasoning deltas or an encrypted reasoning item, the session may
+retain the provider-specific audit/replay value according to its adapter
+contract, but the Board activity page, Board summary-detail result, and
+ordinary chat transcript contain no raw/private reasoning text.
+
+** Missing summary
+
+Given a provider response with no readable summary, the turn still renders
+normal progress, tool/action activity, and final output without inventing a
+reasoning preview.
+
+** Restart and detail lookup
+
+After restart, the Board activity page restores the safe preview from its
+durable record.  An authorized explicit detail request can recover the
+session-owned combined summary within the normal bounded asynchronous query;
+the Board does not require a duplicated raw-reasoning payload.
+
+* Scope and non-goals
+
+This addendum covers provider-summary classification, live classic-chat
+presentation, snapshot replacement, durable ownership, Board sanitization, and
+restart/replay behavior.
+
+It does not expose hidden chain-of-thought, add a raw-reasoning browser,
+change provider request semantics, make persistence synchronous, publish raw
+reasoning to other participants, or redesign the existing ModernChat DTO
+contract beyond carrying the same sanitized activity semantics.
+
+* Design self-check
+
+1. If this package stopped after DP1, it would add a privacy-safe durable Board
+   summary without changing the selected chat path; after DP2, it would add a
+   useful bounded observer surface even before the graphical gate.
+2. It moves toward one Board activity model with session-owned durable detail,
+   rather than a second provider-reasoning journal.
+3. Provider wire shape, summary wording, and Board presentation are likely to
+   evolve and stay behind adapter, projection, and shell boundaries.  The
+   session snapshot, Board-record identity, and privacy exclusion are stable
+   contracts; no speculative variation layer is introduced.
+4. The harness owns event ordering and session append; the chat-service bridge
+   owns cross-boundary publication; Board observation owns query and detail
+   authorization; and shells own rendering.  Each has one reason to change.
+5. Coupling decreases: providers never depend on Board, Board never parses
+   provider items, and shells consume detached public DTOs.
+6. No dependency points from durable Board policy toward a provider, shell, or
+   session aggregate.  The bridge consumes an emitted post-append projection
+   event and an explicit Board publication target.
+7. Session and Board writes stay at their existing side-effect boundaries; the
+   projection mapper is pure.  Shells do not write or query SQLite directly.
+8. The only new durable state is a bounded immutable Board preview plus its
+   source identity.  Session activity remains the complete summary/raw owner;
+   live fragments remain request-local and are discarded after flush.
+9. The extra work is one idempotent Board append per completed summary and one
+   bounded set query/detail request.  It is necessary to make the approved
+   cross-participant observation durable without polling, N+1 reads, or
+   blocking the live chat.
+10. The public interfaces are consumer-shaped: Board detail accepts Board
+    record identity, not provider/session internals, and every implementation
+    can provide the same safe detached DTO without weakening privacy.
+11. This is a clean additive contract.  Existing raw transcript behavior is
+    not reinterpreted as reasoning detail; no compatibility aliases or fallback
+    publication routes are retained.
+12. No legacy code must remain for this plan.  DP2 explicitly avoids extending
+    =show raw=, eliminating the tempting legacy/raw-detail reuse path.
+13. Expected absence is no summary and produces no Board summary record.
+    Invalid/mismatched detail requests fail visibly at Board observation;
+    unexpected session or Board write failures surface through existing
+    owner-local failure events.
+14. Focused provider/harness/chat tests prove the live contract independently;
+    disposable-SQL Board tests prove projection/detail isolation; and one
+    graphical restart scenario proves their composition.  A design change
+    therefore changes only its owning package's tests, not unrelated shells.
