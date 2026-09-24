@@ -521,7 +521,7 @@ the live UI Emacs just as it does in batch."
          (file (make-temp-file "e-run-elisp-interactive-load-" nil ".el")))
     (unwind-protect
         (progn
-          (write-region "(setq e-emacs-tools-test--interactive-loaded t)"
+          (write-region ";;; -*- lexical-binding: t; -*-\n(setq e-emacs-tools-test--interactive-loaded t)"
                         nil file nil 'silent)
           (e-emacs-tools-register-run-elisp registry)
           (let ((result (e-emacs-tools-test--run-elisp-result
@@ -615,7 +615,7 @@ point, so the test loop must yield rather than spin the CPU."
          (file (make-temp-file "e-run-elisp-batch-load-" nil ".el")))
     (unwind-protect
         (progn
-          (write-region "(setq e-emacs-tools-test--batch-loaded t)"
+          (write-region ";;; -*- lexical-binding: t; -*-\n(setq e-emacs-tools-test--batch-loaded t)"
                         nil file nil 'silent)
           (e-emacs-tools-register-run-elisp registry)
           (let ((result (e-emacs-tools-test--run-elisp-result

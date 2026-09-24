@@ -101,14 +101,14 @@
                            :additionalProperties)
                 :json-false))))
 
-(ert-deftest e-openai-test-request-body-defaults-to-gpt55-high-effort ()
-  "OpenAI request bodies default to GPT-5.5 with high reasoning effort."
+(ert-deftest e-openai-test-request-body-defaults-to-gpt6-sol-high-effort ()
+  "OpenAI request bodies default to GPT-6 Sol with high reasoning effort."
   (should
    (equal
     (e-openai-codex-request-body
      :messages '((:role user :content "hello"))
      :options nil)
-    '(:model "gpt-5.5"
+    '(:model "gpt-6-sol"
       :store :json-false
       :stream t
       :instructions "You are a helpful assistant."
@@ -117,7 +117,6 @@
                :content [(:type "input_text" :text "hello")])]
       :tool_choice "auto"
       :parallel_tool_calls t
-      :text (:verbosity "low")
       :reasoning (:effort "high" :summary "auto")))))
 
 (ert-deftest e-openai-test-request-body-maps-explicit-text-verbosity ()
@@ -916,11 +915,14 @@
            custom-profile '(:responses-transport http)
            :provider 'custom-proven
            :request-function #'ignore)))
-    (dolist (capabilities (list canonical-openai canonical-codex))
-      (should (eq (plist-get capabilities :observation-delivery)
-                  'inherited))
-      (e-openai-test--assert-observation-delivery capabilities nil)
-      (should (eq (plist-get capabilities :continuation) 'linear)))
+    (should (eq (plist-get canonical-openai :observation-delivery)
+                'inherited))
+    (e-openai-test--assert-observation-delivery canonical-openai nil)
+    (should (eq (plist-get canonical-openai :continuation) 'linear))
+    (should (eq (plist-get canonical-codex :observation-delivery)
+                'inherited))
+    (e-openai-test--assert-observation-delivery canonical-codex nil)
+    (should (eq (plist-get canonical-codex :continuation) 'none))
     (dolist (capabilities (list openai-endpoint-override
                                 codex-endpoint-override
                                 openai-request-override

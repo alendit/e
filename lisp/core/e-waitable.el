@@ -52,7 +52,7 @@ Re-registering a scheme replaces its resolver."
   "Split REFERENCE into a (SCHEME . LOCAL-ID) cons, or nil when malformed.
 A valid reference is \"SCHEME:LOCAL-ID\" with a non-empty scheme and id."
   (when (stringp reference)
-    (when-let ((colon (string-search ":" reference)))
+    (when-let* ((colon (string-search ":" reference)))
       (let ((scheme (substring reference 0 colon))
             (local-id (substring reference (1+ colon))))
         (unless (or (string-empty-p scheme) (string-empty-p local-id))

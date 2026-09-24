@@ -142,7 +142,7 @@ workspace root are allowed."
 
 (defun e-base-tools-file--buffer-from-view (view)
   "Return live buffer described by coherence VIEW, or nil."
-  (when-let ((name (plist-get (plist-get view :metadata) :name)))
+  (when-let* ((name (plist-get (plist-get view :metadata) :name)))
     (get-buffer name)))
 
 (defun e-base-tools-file--file-buffer-view-status (file buffer disk-content disk-error)
@@ -250,7 +250,7 @@ workspace root are allowed."
            file
            (plist-get uri :uri))))
        ("buffer"
-        (when-let ((buffer (get-buffer (plist-get uri :address))))
+        (when-let* ((buffer (get-buffer (plist-get uri :address))))
           (with-current-buffer buffer
             (if buffer-file-name
                 (e-base-tools-file-buffer-coherence-group
@@ -386,7 +386,7 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
 
 (defun e-base-tools-file-preferred-buffer-for-group (group)
   "Return preferred live buffer view from generic coherence GROUP, or nil."
-  (when-let ((view (e-resource-coherence-preferred-view
+  (when-let* ((view (e-resource-coherence-preferred-view
                    (e-resource-coherence-views-by-kind group 'buffer)
                    "live buffer view")))
     (e-base-tools-file--buffer-from-view view)))
@@ -412,7 +412,7 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
       (e-resource-coherence-conflict-if-dirty group subject-uri action)
     (e-resource-coherence-conflict
      (e-base-tools-file--signal-base-coherence-conflict err)))
-  (when-let ((stale (e-base-tools-file--stale-buffer-views group subject-uri)))
+  (when-let* ((stale (e-base-tools-file--stale-buffer-views group subject-uri)))
     (signal
      'user-error
      (list
@@ -431,7 +431,7 @@ Live resource views visiting PATH win over disk so unsaved edits are visible
 through file:// reads."
   (let* ((absolute-path (e-base-tools-file--canonical-file-name path))
          (group (e-base-tools-file-buffer-coherence-group absolute-path)))
-    (if-let ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
+    (if-let* ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
         (with-current-buffer buffer
           (buffer-substring-no-properties (point-min) (point-max)))
       (e-base-tools-file-disk-text absolute-path))))
@@ -672,7 +672,7 @@ retains only JSON-compatible metadata."
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
     (e-resource-pattern-compile-glob actual-pattern)
     (if (file-regular-p scope)
-        (let* ((resources (if-let ((single (e-base-tools-file--file-glob-single-result
+        (let* ((resources (if-let* ((single (e-base-tools-file--file-glob-single-result
                                             scope
                                             scope-relative
                                             actual-pattern
@@ -779,7 +779,7 @@ retains only JSON-compatible metadata."
         (if (file-regular-p scope)
                   (list :immediate
                   (list :resources
-                        (if-let ((single
+                        (if-let* ((single
                                   (e-base-tools-file--file-glob-single-result
                                    scope
                                    scope-relative
@@ -857,7 +857,7 @@ retains only JSON-compatible metadata."
 (defun e-base-tools-file--rg-json-text (object)
   "Return text value from rg JSON OBJECT."
   (or (plist-get object :text)
-      (when-let ((bytes (plist-get object :bytes)))
+      (when-let* ((bytes (plist-get object :bytes)))
         (base64-decode-string bytes))))
 
 (defun e-base-tools-file--search-match-from-rg-json
@@ -878,7 +878,7 @@ retains only JSON-compatible metadata."
              (uri (e-base-tools-file--file-resource-uri absolute directory)))
         (when (or (null glob-pattern)
                   (e-resource-pattern-glob-match-p glob-pattern name t))
-          (when-let ((score (e-resource-pattern-search-score
+          (when-let* ((score (e-resource-pattern-search-score
                              line-text query options uri name)))
             (list :uri uri
                   :line (plist-get data :line_number)
@@ -954,7 +954,7 @@ retains only JSON-compatible metadata."
 When a registered provider claims the request scope, run it and return its
 result plist; otherwise return nil so the caller runs the default backend."
   (let ((request (e-base-tools-file--file-search-request uri query options directory)))
-    (when-let ((provider (e-search-providers-provider-for request)))
+    (when-let* ((provider (e-search-providers-provider-for request)))
       (e-search-providers-run provider request))))
 
 (defun e-base-tools-file--file-search-resource (uri query options directory)
@@ -993,7 +993,7 @@ result plist; otherwise return nil so the caller runs the default backend."
                   '(0 1)))
           matches)
       (dolist (line lines)
-        (when-let ((match (e-base-tools-file--search-match-from-rg-json
+        (when-let* ((match (e-base-tools-file--search-match-from-rg-json
                            line
                            directory
                            scope
@@ -1011,7 +1011,7 @@ result plist; otherwise return nil so the caller runs the default backend."
   "Return ranked file search content from rg JSON LINES."
   (let (matches)
     (dolist (line lines)
-      (when-let ((match (e-base-tools-file--search-match-from-rg-json
+      (when-let* ((match (e-base-tools-file--search-match-from-rg-json
                          line
                          directory
                          scope
@@ -1124,7 +1124,7 @@ result plist; otherwise return nil so the caller runs the default backend."
                  (plist-get uri :uri))))
     (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
     (make-directory (file-name-directory absolute-path) t)
-    (if-let ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
+    (if-let* ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
         (let* ((saved (e-base-tools-file--save-buffer-content-to-file buffer content))
                (synced (e-base-tools-file--sync-other-live-buffers
                         buffer
@@ -1257,7 +1257,7 @@ result plist; otherwise return nil so the caller runs the default backend."
                        :views (vconcat
                                (mapcar #'e-base-tools-file--model-coherence-view
                                        (e-resource-coherence-group-views group))))))
-    (when-let ((file (plist-get metadata :file)))
+    (when-let* ((file (plist-get metadata :file)))
       (setq result
             (append result
                     (list :file file

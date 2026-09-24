@@ -252,7 +252,7 @@ LABEL names the backend in error messages and defaults to \"backend\"."
 (defun e-web-tools--search-result-source (result)
   "Return normalized source for bx RESULT."
   (or (plist-get result :source)
-      (when-let ((profile (plist-get result :profile)))
+      (when-let* ((profile (plist-get result :profile)))
         (plist-get profile :name))))
 
 (defun e-web-tools--normalize-search-result (result rank)
@@ -322,7 +322,7 @@ operators because ddgr's --site accepts only a single domain."
         (signal 'wrong-type-argument (list 'stringp site)))
       (setq terms (append terms (list (concat "-site:" site)))))
     (let ((argv (list "--json" "--noprompt")))
-      (when-let ((count (e-web-tools--optional-number arguments :count)))
+      (when-let* ((count (e-web-tools--optional-number arguments :count)))
         (setq argv (append argv (list "--num" (number-to-string count)))))
       (when-let* ((freshness (e-web-tools--optional-string arguments :freshness))
                   (span (e-web-tools--ddgr-freshness freshness)))
@@ -332,9 +332,9 @@ operators because ddgr's --site accepts only a single domain."
 (defun e-web-tools--search-argv (arguments)
   "Return bx web argv for model-facing ARGUMENTS."
   (let ((argv (list "web" (e-web-tools--argument-string arguments :query))))
-    (when-let ((count (e-web-tools--optional-number arguments :count)))
+    (when-let* ((count (e-web-tools--optional-number arguments :count)))
       (setq argv (append argv (list "--count" (number-to-string count)))))
-    (when-let ((freshness (e-web-tools--optional-string arguments :freshness)))
+    (when-let* ((freshness (e-web-tools--optional-string arguments :freshness)))
       (setq argv (append argv (list "--freshness" freshness))))
     (dolist (site (e-web-tools--string-list arguments :include_site))
       (unless (stringp site)
@@ -997,36 +997,36 @@ them into an object."
   (pcase operation
     ("open"
      (let ((request (list :url (e-web-tools--argument-string arguments :url))))
-       (when-let ((session (e-web-tools--optional-string arguments :session)))
+       (when-let* ((session (e-web-tools--optional-string arguments :session)))
          (setq request (append request (list :session session))))
        request))
     ("observe"
-     (when-let ((session (e-web-tools--optional-string arguments :session)))
+     (when-let* ((session (e-web-tools--optional-string arguments :session)))
        (list :session session)))
     ("click"
      (append
-      (when-let ((session (e-web-tools--optional-string arguments :session)))
+      (when-let* ((session (e-web-tools--optional-string arguments :session)))
         (list :session session))
       (list :selector (e-web-tools--argument-string arguments :selector))))
     ("type"
      (append
-      (when-let ((session (e-web-tools--optional-string arguments :session)))
+      (when-let* ((session (e-web-tools--optional-string arguments :session)))
         (list :session session))
       (list :selector (e-web-tools--argument-string arguments :selector)
             :text (e-web-tools--argument-string arguments :text))))
     ("press"
      (append
-      (when-let ((session (e-web-tools--optional-string arguments :session)))
+      (when-let* ((session (e-web-tools--optional-string arguments :session)))
         (list :session session))
       (list :key (e-web-tools--argument-string arguments :key))))
     ("screenshot"
      (append
-      (when-let ((session (e-web-tools--optional-string arguments :session)))
+      (when-let* ((session (e-web-tools--optional-string arguments :session)))
         (list :session session))
-      (when-let ((path (e-web-tools--optional-string arguments :path)))
+      (when-let* ((path (e-web-tools--optional-string arguments :path)))
         (list :path path))))
     ("close"
-     (when-let ((session (e-web-tools--optional-string arguments :session)))
+     (when-let* ((session (e-web-tools--optional-string arguments :session)))
        (list :session session)))
     (_ (signal 'e-web-unimplemented
                (list (format "Unsupported browser operation: %s"

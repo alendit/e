@@ -152,7 +152,7 @@ FIELD-FUNCTIONS is an alist of string field names to functions taking one entry.
             (setq result
                   (seq-filter
                    (lambda (entry)
-                     (when-let ((entry-time
+                     (when-let* ((entry-time
                                  (e-resource-query--time
                                   (e-resource-query--field-value
                                    entry field field-functions))))

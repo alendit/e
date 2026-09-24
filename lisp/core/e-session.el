@@ -140,12 +140,12 @@ the storage owner's state representation."
 (defun e-session--load-index (store)
   "Load detached session stubs from STORE's physical index."
   (when (e-session--persistent-p store)
-    (when-let ((value (e-session-storage-read-catalog-projection store)))
+    (when-let* ((value (e-session-storage-read-catalog-projection store)))
       (let ((entries (e-session--index-entries value)))
         (when entries
           (e-session-aggregate-reset store)
           (dolist (entry entries)
-            (when-let ((session (e-session--index-entry-session store entry)))
+            (when-let* ((session (e-session--index-entry-session store entry)))
               (e-session-aggregate-install-index-session store session))))
         (and entries t)))))
 
@@ -1318,7 +1318,7 @@ it is not a durable SQLite read API."
 This application-level projection is used by offline maintenance callers that
 must preserve an unloaded index stub while replaying one journal.  It keeps
 the aggregate record and storage reference behind their owner boundaries."
-  (when-let ((session (e-session-aggregate-peek-session store session-id)))
+  (when-let* ((session (e-session-aggregate-peek-session store session-id)))
     (e-session-catalog-index-entry
      session (e-session-storage-session-reference store session-id))))
 
@@ -1343,10 +1343,10 @@ never touches durable files or another session's aggregate state."
 
 (defun e-session-refresh-index-metadata (store)
   "Refresh unloaded session metadata from the physical index."
-  (when-let ((value (and (e-session--persistent-p store)
+  (when-let* ((value (and (e-session--persistent-p store)
                          (e-session-storage-read-catalog-projection store))))
     (dolist (entry (e-session--index-entries value))
-      (when-let ((replacement (e-session--index-entry-session store entry)))
+      (when-let* ((replacement (e-session--index-entry-session store entry)))
         (e-session-aggregate-merge-index-session store replacement))))
   store)
 

@@ -162,7 +162,7 @@ capability-owned message details."
   "Return display kind for ATTACHMENT."
   (or (plist-get attachment :kind)
       (plist-get attachment :type)
-      (when-let ((uri (plist-get attachment :uri)))
+      (when-let* ((uri (plist-get attachment :uri)))
         (cond
          ((string-prefix-p "buffer://" uri) 'buffer)
          ((string-prefix-p "file://" uri) 'file)

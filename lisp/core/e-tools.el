@@ -149,7 +149,7 @@ other live runtime objects held by `e-tools-current-context'."
 
 (defun e-tools-cancel-request (request)
   "Cancel REQUEST when it has a tool cancellation function."
-  (when-let ((cancel (and (e-tools-request-p request)
+  (when-let* ((cancel (and (e-tools-request-p request)
                           (e-tools-request-cancel request))))
     (funcall cancel)))
 
@@ -553,7 +553,7 @@ strings."
 
 (defun e-tool-lifecycle-prepare-call (lifecycle tool-call)
   "Return TOOL-CALL after LIFECYCLE preparation."
-  (if-let ((prepare (and (e-tool-lifecycle-p lifecycle)
+  (if-let* ((prepare (and (e-tool-lifecycle-p lifecycle)
                          (e-tool-lifecycle-prepare lifecycle))))
       (funcall prepare tool-call)
     tool-call))
@@ -1039,7 +1039,7 @@ handle after allocation and before its runner may execute."
                "Expose HANDLE, then enroll its exact board invocation when requested."
                (when on-work-prepared
                  (funcall on-work-prepared handle))
-               (when-let ((enroll (plist-get tool-context :board-enroll-work)))
+               (when-let* ((enroll (plist-get tool-context :board-enroll-work)))
                  (condition-case err
                      (funcall
                       enroll handle
@@ -1059,7 +1059,7 @@ handle after allocation and before its runner may execute."
                       (signal (car err) (cdr err))))))
               (arm-deadline
               ()
-              (when-let ((deadline (effective-deadline)))
+              (when-let* ((deadline (effective-deadline)))
                 (unless (or settled (timerp deadline-timer))
                   (setq deadline-timer
                         (run-at-time

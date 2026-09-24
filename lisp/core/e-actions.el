@@ -136,7 +136,7 @@ settled handles are validated recursively."
 
 (defun e-actions--parent-tool-call-id (context)
   "Return parent tool call id from CONTEXT, if any."
-  (when-let ((tool-call (plist-get context :tool-call)))
+  (when-let* ((tool-call (plist-get context :tool-call)))
     (plist-get tool-call :id)))
 
 (defun e-actions--activity-payload

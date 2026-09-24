@@ -215,7 +215,7 @@ so a child-frame adapter can be added without changing controller logic."
 
 (defun e-chat-starter--record-activity-event (state event)
   "Record starter harness EVENT as reusable chat activity for STATE."
-  (when-let ((events (e-chat-starter--activity-events-for-event state event)))
+  (when-let* ((events (e-chat-starter--activity-events-for-event state event)))
     (setf (e-chat-starter-state-activity-events state)
           (append (e-chat-starter-state-activity-events state) events))))
 
@@ -223,7 +223,7 @@ so a child-frame adapter can be added without changing controller logic."
   "Return semantic activity display reconstructed from STATE events.
 The activity owner keeps its registry local to this starter buffer and returns
 text/status values; the starter never reaches into a chat turn record."
-  (when-let ((turn-id (or (e-chat-starter-state-turn-id state)
+  (when-let* ((turn-id (or (e-chat-starter-state-turn-id state)
                           (e-chat-starter-state-session-id state))))
     (e-chat-activity-reset)
     (e-chat-activity-replay-events
@@ -238,7 +238,7 @@ text/status values; the starter never reaches into a chat turn record."
   (when display
     (pcase (e-chat-starter-state-status state)
       ((or 'answered 'failed 'continued)
-       (or (when-let ((summary (plist-get display :summary-text)))
+       (or (when-let* ((summary (plist-get display :summary-text)))
              (concat summary "\n"))
            (plist-get display :transient-text)))
       (_
@@ -282,7 +282,7 @@ text/status values; the starter never reaches into a chat turn record."
 (defun e-chat-starter--show-tail ()
   "Move point and any visible starter popup window to the rendered tail."
   (goto-char (point-max))
-  (when-let ((window (get-buffer-window (current-buffer) t)))
+  (when-let* ((window (get-buffer-window (current-buffer) t)))
     (set-window-point window (point))
     (with-selected-window window
       (ignore-errors
@@ -298,7 +298,7 @@ text/status values; the starter never reaches into a chat turn record."
     (e-chat-starter--insert-block
      (e-chat-starter-state-question state)
      'e-chat-user-face)
-    (when-let ((label (plist-get reference :label)))
+    (when-let* ((label (plist-get reference :label)))
       (insert (propertize label 'font-lock-face 'shadow) "\n"))
     (insert "\n")
     (e-chat-starter--render-status state)
@@ -319,7 +319,7 @@ text/status values; the starter never reaches into a chat turn record."
 
 (defun e-chat-starter--cleanup ()
   "Clean up the current starter popup subscription and repaint timer."
-  (when-let ((state e-chat-starter--state))
+  (when-let* ((state e-chat-starter--state))
     (e-ui-work-cancel-matching
      (current-buffer) 'chat-starter-render :key :any)
     (e-chat-starter--stop-progress-timer state)
@@ -331,12 +331,12 @@ text/status values; the starter never reaches into a chat turn record."
 
 (defun e-chat-starter--close-state-buffer (state)
   "Close STATE's popup buffer and clean up its subscription."
-  (when-let ((buffer (e-chat-starter-state-buffer state)))
+  (when-let* ((buffer (e-chat-starter-state-buffer state)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (e-chat-starter--cleanup))
       (setf (e-chat-starter-state-buffer state) nil)
-      (when-let ((source-window (e-chat-starter-state-source-window state)))
+      (when-let* ((source-window (e-chat-starter-state-source-window state)))
         (when (window-live-p source-window)
           (select-window source-window)))
       (let ((popup-windows
@@ -354,7 +354,7 @@ text/status values; the starter never reaches into a chat turn record."
 
 (defun e-chat-starter--render-state-buffer (state)
   "Render STATE when its popup buffer is live."
-  (when-let ((buffer (e-chat-starter-state-buffer state)))
+  (when-let* ((buffer (e-chat-starter-state-buffer state)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when (derived-mode-p 'e-chat-starter-mode)
@@ -362,7 +362,7 @@ text/status values; the starter never reaches into a chat turn record."
 
 (defun e-chat-starter--schedule-render-state-buffer (state)
   "Schedule a coalesced repaint of STATE's live popup buffer."
-  (when-let ((buffer (e-chat-starter-state-buffer state)))
+  (when-let* ((buffer (e-chat-starter-state-buffer state)))
     (when (buffer-live-p buffer)
       (e-ui-work-schedule
        (e-ui-work-spec-create
@@ -380,7 +380,7 @@ text/status values; the starter never reaches into a chat turn record."
 
 (defun e-chat-starter--stop-progress-timer (state)
   "Cancel STATE's live progress repaint timer when one is running."
-  (when-let ((timer (e-chat-starter-state-progress-timer state)))
+  (when-let* ((timer (e-chat-starter-state-progress-timer state)))
     (when (timerp timer)
       (cancel-timer timer))
     (setf (e-chat-starter-state-progress-timer state) nil)))

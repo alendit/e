@@ -693,7 +693,7 @@ those owner ports into the host hook lists."
 
 (defun e-chat--preserve-host-alt-leader (map)
   "Preserve a host-provided alternate leader prefix in MAP."
-  (when-let ((binding (e-chat--host-alt-leader-binding)))
+  (when-let* ((binding (e-chat--host-alt-leader-binding)))
     (define-key map (kbd (car binding)) (cdr binding))))
 
 (defun e-chat--make-mode-map (&optional map)
@@ -1117,7 +1117,7 @@ context insertions from the chat buffer the user is looking at."
       e-chat-session-id
       e-chat-session-metadata)
      t)
-    (when-let ((composer (e-chat-surface-composer-buffer)))
+    (when-let* ((composer (e-chat-surface-composer-buffer)))
       (with-current-buffer composer
         (rename-buffer
          (format " *e-chat input:%s*"
@@ -1136,7 +1136,7 @@ context insertions from the chat buffer the user is looking at."
                      summary))
                  (e-chat--short-session-id e-chat-session-id)))
      t)
-    (when-let ((composer (e-chat-surface-composer-buffer)))
+    (when-let* ((composer (e-chat-surface-composer-buffer)))
       (with-current-buffer composer
         (rename-buffer
          (format " *e-chat input:%s*"
@@ -1870,7 +1870,7 @@ Nil means the caller must query SQLite for the newest failure."
       (insert "- Do not retry, mutate, or edit the original failed session unless explicitly asked.\n\n")
       (insert (format "Failure target: session `%s`, turn `%s`.\n"
                       session-id turn-id))
-      (when-let ((project-root (plist-get session :project-root)))
+      (when-let* ((project-root (plist-get session :project-root)))
         (insert (format "Project root: `%s`.\n" project-root)))
       (insert "\nTerminal error:\n")
       (insert "```elisp\n")
@@ -2465,7 +2465,7 @@ CATEGORY is exposed through completion metadata when non-nil."
                        :new-session t)
           (append new-target (list :session-id session-id :new-session t)))
       (let ((candidate
-             (when-let ((index (cl-position selected (cdr labels)
+             (when-let* ((index (cl-position selected (cdr labels)
                                       :test #'equal)))
                (nth index candidates))))
         (unless candidate
@@ -2516,7 +2516,7 @@ CATEGORY is exposed through completion metadata when non-nil."
 
 (defun e-chat--default-context-target (candidates)
   "Return visible or newest detached context target from CANDIDATES."
-  (if-let ((buffer (e-chat--visible-chat-buffer)))
+  (if-let* ((buffer (e-chat--visible-chat-buffer)))
       (with-current-buffer buffer
         (list :harness e-chat-harness
               :instance-id e-chat-harness-instance-id
@@ -2828,7 +2828,7 @@ the transcript matches the new mode immediately."
   "Reject a turn until the exact Board binding is durably ready.
 The composer remains untouched, so the user can retry after the detached
 initial run-set projection settles."
-  (when-let ((work e-chat--session-readiness-work))
+  (when-let* ((work e-chat--session-readiness-work))
     (let ((state (plist-get (e-work-status work) :state)))
       (pcase state
         ('finished nil)

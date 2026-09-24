@@ -163,7 +163,7 @@ layer-owned shells for that harness."
 Global shell ids take precedence over layer-owned shell ids."
   (or (e-shell-get id)
       (when harness
-        (when-let ((registration
+        (when-let* ((registration
                     (cl-find id (e-shell--harness-registrations harness)
                              :key #'e-shell-registration-id
                              :test #'eq)))

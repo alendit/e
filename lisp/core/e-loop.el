@@ -322,7 +322,7 @@ CAUSES lists every completed tool call that induced a follow-up request."
     (when causes
       (setq payload
             (append payload (e-loop--request-cause-fields causes))))
-    (when-let ((diagnostics
+    (when-let* ((diagnostics
                 (e-loop--sanitize-diagnostics
                  (plist-get metadata :diagnostics))))
       (setq payload (append payload (list :diagnostics diagnostics))))
@@ -1428,7 +1428,7 @@ schedules it behind the owning session's active commit barrier."
                               (let ((replay-items
                                      (or (plist-get item
                                                    :provider-replay-items)
-                                         (when-let ((replay-item
+                                         (when-let* ((replay-item
                                                      (plist-get
                                                       item
                                                       :provider-replay-item)))
@@ -1437,7 +1437,7 @@ schedules it behind the owning session's active commit barrier."
                                   (setq pending-provider-replay-items
                                         (append pending-provider-replay-items
                                                 (copy-tree replay-items)))))
-                              (when-let ((corrective-replay-items
+                              (when-let* ((corrective-replay-items
                                          (plist-get
                                           item
                                           :provider-corrective-replay-items)))
@@ -1445,7 +1445,7 @@ schedules it behind the owning session's active commit barrier."
                                       (append
                                        pending-provider-corrective-replay-items
                                        (copy-tree corrective-replay-items))))
-                              (when-let ((invalid-replay-items
+                              (when-let* ((invalid-replay-items
                                          (plist-get
                                           item
                                           :provider-invalid-replay-items)))

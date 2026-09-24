@@ -215,7 +215,7 @@ optional field used by the provider event schema."
   "Return provider anchor candidate item from completed RESPONSE.
 PROMPT-LAYOUT-REVISION records the request layout carried by the response;
 REASONING-IDENTITY fences the effective effort and summary pair."
-  (when-let ((response-id (and (consp response)
+  (when-let* ((response-id (and (consp response)
                                (plist-get response :id))))
     (when (stringp response-id)
       (list :type 'provider-anchor-candidate
@@ -459,10 +459,10 @@ continuation anchors."
       (when assistant-message-candidate
         (push assistant-message-candidate items)))
     (unless items
-      (when-let ((error-item (e-openai-decoder--json-error-item stream-text)))
+      (when-let* ((error-item (e-openai-decoder--json-error-item stream-text)))
         (push error-item items)))
     (unless (or items (e-openai-decoder--sse-response-p stream-text))
-      (when-let ((error-item
+      (when-let* ((error-item
                   (e-openai-decoder--non-stream-error-item stream-text)))
         (push error-item items)))
     (e-openai-diagnostics-record-stream stream-text (nreverse event-summaries))
@@ -632,7 +632,7 @@ continuation anchors."
                                 items)
                           (setq done-seen t)))))))))))))
     (unless items
-      (when-let ((error-item (e-openai-decoder--json-error-item stream-text)))
+      (when-let* ((error-item (e-openai-decoder--json-error-item stream-text)))
         (push error-item items)))
     (nreverse items)))
 

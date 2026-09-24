@@ -66,7 +66,7 @@ adapter mapping adds no replay, anchor, diagnostic, or current-state fields."
       (dolist (mapping '((:input_tokens . :input-tokens)
                          (:output_tokens . :output-tokens)
                          (:total_tokens . :total-tokens)))
-        (when-let ((value (plist-get usage (car mapping))))
+        (when-let* ((value (plist-get usage (car mapping))))
           (unless (and (integerp value) (>= value 0))
             (signal 'e-openai-provider-invalid
                     (list "Invalid compact usage" usage)))

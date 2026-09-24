@@ -474,7 +474,7 @@ semantic block projection and its displayed text instead of that overlay."
 
 (defun e-chat-test--kill-buffer-name (name)
   "Kill buffer NAME when it exists."
-  (when-let ((buffer (get-buffer name)))
+  (when-let* ((buffer (get-buffer name)))
     (kill-buffer buffer)))
 
 

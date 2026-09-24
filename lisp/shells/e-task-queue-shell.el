@@ -177,10 +177,10 @@ settles; this surfaces them in a help buffer for inspection."
                         (or (plist-get record :retries) 0)
                         (or (plist-get record :session-id) "-")))
         (insert (format "Prompt:\n%s\n\n" (plist-get record :prompt)))
-        (when-let ((error (plist-get record :error)))
+        (when-let* ((error (plist-get record :error)))
           (insert (format "Error:\n%s\n\n" error)))
         (insert "Outputs:\n")
-        (if-let ((outputs (plist-get record :outputs)))
+        (if-let* ((outputs (plist-get record :outputs)))
             (dolist (output outputs)
               (insert (format "- [%s] %s\n"
                               (plist-get output :kind)

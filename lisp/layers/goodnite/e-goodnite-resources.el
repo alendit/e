@@ -299,9 +299,9 @@ precedes the distilled body."
      (format "# %s\n" (e-goodnite-entry-title entry))
      (format "type: %s\n" (substring type 0 (1- (length type))))
      (format "confidence: %s\n" (e-goodnite-entry-confidence entry))
-     (when-let ((scope (e-goodnite-entry-scope entry)))
+     (when-let* ((scope (e-goodnite-entry-scope entry)))
        (format "scope: %s\n" scope))
-     (when-let ((when-to-use (e-goodnite-entry-when-to-use entry)))
+     (when-let* ((when-to-use (e-goodnite-entry-when-to-use entry)))
        (format "when-to-use: %s\n" when-to-use))
      "\n"
      (string-trim body)

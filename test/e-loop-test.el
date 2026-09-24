@@ -3274,7 +3274,7 @@
        :lifetime-frame frame
        :on-response-preflight
        (lambda (payload)
-         (when-let ((effect (car (plist-get payload :curation-effects))))
+         (when-let* ((effect (car (plist-get payload :curation-effects))))
            (e-context-lifetime-prepare-curation-disposition
             frame (plist-get effect :arguments)
             (plist-get payload :response-entry-id))))

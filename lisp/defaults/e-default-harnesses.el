@@ -234,7 +234,7 @@ not await readiness."
 This is a bounded test seam.  It records the transport state immediately after
 the real default startup prewarm submits its private open control, before any
 test file is loaded; it never observes or queries domain state."
-  (when-let ((path (getenv "E_GRAPHICAL_E2E_STARTUP_REPORT")))
+  (when-let* ((path (getenv "E_GRAPHICAL_E2E_STARTUP_REPORT")))
     (let (pending)
       (maphash
        (lambda (_id request)
@@ -591,7 +591,7 @@ Only existing instances are touched; lazy factories are left lazy."
   ;; Query metadata is requested by the session application service when a
   ;; caller actually opens or lists data.
   (dolist (spec (e-default-harness--effective-specs specs))
-    (when-let ((harness (e-harness-registry-get (plist-get spec :id))))
+    (when-let* ((harness (e-harness-registry-get (plist-get spec :id))))
       (funcall (or (plist-get spec :sync)
                    #'e-default-harness-sync-from-factory)
                harness spec)))

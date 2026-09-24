@@ -383,13 +383,13 @@ entry is armed immediately."
     (signal 'wrong-type-argument (list 'functionp :action)))
   (unless (memq catch-up '(skip run))
     (signal 'e-cron-invalid-when (list :catch-up catch-up)))
-  (when-let ((existing (e-cron-get id)))
+  (when-let* ((existing (e-cron-get id)))
     (e-cron-stop existing))
   (let* (;; Derive the fixed interval once; also validates WHEN so an invalid
          ;; recurrence fails at registration rather than at the first tick.
          (interval (e-cron--derive-interval when))
          (persisted (and (not storage) (e-cron--state-get id)))
-         (last (when-let ((secs (plist-get persisted :last-fire)))
+         (last (when-let* ((secs (plist-get persisted :last-fire)))
                  (seconds-to-time secs)))
          (anchor (if storage
                      (float-time (e-cron--now))
@@ -420,7 +420,7 @@ entry is armed immediately."
 
 (defun e-cron-remove (id)
   "Stop and unregister the schedule with ID."
-  (when-let ((schedule (e-cron-get id)))
+  (when-let* ((schedule (e-cron-get id)))
     (e-cron-stop schedule)
     (remhash id e-cron--schedules)))
 
@@ -428,7 +428,7 @@ entry is armed immediately."
 
 (defun e-cron--cancel-timer (schedule)
   "Cancel SCHEDULE's armed timer, if any."
-  (when-let ((timer (e-cron-schedule-timer schedule)))
+  (when-let* ((timer (e-cron-schedule-timer schedule)))
     (when (timerp timer) (cancel-timer timer)))
   (setf (e-cron-schedule-timer schedule) nil))
 
@@ -448,7 +448,7 @@ missed fire the caller has decided to run) fires on the next event-loop tick."
   "Timer callback: fire the schedule with ID if it is still enabled.
 Resolves the schedule by id so a replaced or removed entry does not fire a
 stale closure."
-  (when-let ((schedule (e-cron-get id)))
+  (when-let* ((schedule (e-cron-get id)))
     (when (e-cron-schedule-enabled schedule)
       (e-cron-fire schedule)
       ;; Re-arm for the next occurrence unless firing disabled the entry.

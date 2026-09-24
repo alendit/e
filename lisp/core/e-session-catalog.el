@@ -229,7 +229,7 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
   "Return context components carried by semantic ENTRY."
   (pcase (plist-get entry :type)
     ('context-promotion
-     (when-let ((record (plist-get entry :context-record)))
+     (when-let* ((record (plist-get entry :context-record)))
        (list (cons 'context-promotion (copy-tree record)))))
     ('context-curation-package
      (delq nil
@@ -287,7 +287,7 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
            (promotion-entry-set (make-hash-table :test #'eq))
            (erasure-entry-set (make-hash-table :test #'eq)))
       (dolist (record erasures)
-        (when-let ((generation-id (plist-get record :generation-id)))
+        (when-let* ((generation-id (plist-get record :generation-id)))
           (puthash generation-id t erasure-generation-ids)))
       (dolist (entry generations)
         (when (or (eq entry generation-entry)
@@ -382,7 +382,7 @@ Malformed unresolved or cyclic paths signal `e-session-catalog-error`."
                            curation-controls))
       (dolist (entry entries)
         (puthash (plist-get entry :id) t required-ids)))
-    (when-let ((latest (plist-get session :latest-token-usage-event)))
+    (when-let* ((latest (plist-get session :latest-token-usage-event)))
       (puthash (plist-get latest :id) t required-ids))
     (let ((context-entry-ids (plist-get context :entry-ids)))
       (dotimes (index (length context-entry-ids))

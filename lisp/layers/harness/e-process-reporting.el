@@ -268,7 +268,7 @@ SQLite selects the semantic marker association before its exact bound."
     (when report-type
       (plist-put copy :type report-type)
       (cl-remf copy :report-type))
-    (when-let ((chain (plist-get copy :trigger-chain)))
+    (when-let* ((chain (plist-get copy :trigger-chain)))
       (when (vectorp chain)
         (plist-put copy :trigger-chain (append chain nil))))
     copy))
@@ -857,7 +857,7 @@ are mapped to strings without changing the persisted domain record."
     (dolist (key '(:input-tokens :cached-input-tokens
                    :cache-creation-input-tokens :output-tokens
                    :reasoning-output-tokens :total-tokens))
-      (when-let ((number (plist-get value key)))
+      (when-let* ((number (plist-get value key)))
         (unless (numberp number)
           (user-error "%s must be numeric" key))
         (setq result (append result (list key number)))))
@@ -901,7 +901,7 @@ are mapped to strings without changing the persisted domain record."
 
 (defun e-process-reporting--request-usage (events request-id)
   "Return provider token usage in EVENTS joined to REQUEST-ID."
-  (when-let ((event
+  (when-let* ((event
               (seq-find
                (lambda (candidate)
                  (and (eq (plist-get candidate :event-type) 'token-usage)
@@ -1019,7 +1019,7 @@ needed."
             :prompt-cache-key-present
             (and (plist-get options :prompt-cache-key) t)
             :prompt-cache-key-sha256
-            (when-let ((key (plist-get options :prompt-cache-key)))
+            (when-let* ((key (plist-get options :prompt-cache-key)))
               (secure-hash 'sha256 (format "%s" key)))
             :prompt-cache-retention
             (plist-get options :prompt-cache-retention)))))
@@ -1040,7 +1040,7 @@ needed."
       (dolist (key '(:revision :serialization :tokenizer-revision :model
                      :reasoning-effort :prompt-cache-key-sha256
                      :prompt-cache-retention))
-        (when-let ((value (plist-get shape key)))
+        (when-let* ((value (plist-get shape key)))
           (when (stringp value)
             (setq projected
                   (append projected
@@ -1054,7 +1054,7 @@ needed."
                                  t)))))
       (dolist (key '(:actual-shape :without-passive-shape
                      :without-active-shape :paired-shape))
-        (when-let ((measure
+        (when-let* ((measure
                     (e-process-reporting--shape-measure-projection
                      (plist-get shape key))))
           (setq projected (append projected (list key measure)))))
@@ -1099,7 +1099,7 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
 (defun e-process-reporting--recorded-request-shape (payload records)
   "Return the explicit or legacy request shape for PAYLOAD from RECORDS."
   (or (plist-get payload :request-shape)
-      (when-let ((record
+      (when-let* ((record
                   (car
                    (last
                     (seq-filter
@@ -1123,7 +1123,7 @@ REQUEST-ORDINAL is the ordinary provider lifecycle ordinal used for the join."
          (measured (and actual paired without-passive without-active))
          (causes
           (or (plist-get payload :caused-by-tool-calls)
-              (when-let ((name (plist-get payload :caused-by-tool-name)))
+              (when-let* ((name (plist-get payload :caused-by-tool-name)))
                 (list (list :id (plist-get payload :caused-by-tool-call-id)
                             :name name)))))
          (marker-causes

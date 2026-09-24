@@ -88,7 +88,7 @@ The attached adapter must not depend on the active turn's execution plist.
 Only the semantic identity and lifecycle status needed for routing are exposed;
 the returned values are copied so mutating the observation cannot mutate the
 turn owner."
-  (when-let ((entry
+  (when-let* ((entry
               (gethash (e-harness-attached-turn-port-session-id port)
                        (e-harness-active-turns
                         (e-harness-attached-turn-port-harness port)))))
@@ -475,7 +475,7 @@ activity persistence."
       (e-harness-turn-state-remove-active-turn harness session-id settled-entry))
     (unless (e-harness-turn-state-active-turn-running-p
              (gethash session-id (e-harness-active-turns harness)))
-      (when-let ((item (car (e-harness-queued-prompts harness session-id))))
+      (when-let* ((item (car (e-harness-queued-prompts harness session-id))))
         (e-harness-turn-state-set-queued-prompts
          harness session-id
          (cdr (e-harness-queued-prompts harness session-id)) -1)
@@ -1290,7 +1290,7 @@ also emitting the normal compaction failure event."
 
 (defun e-harness-turn--auto-compaction-no-progress-p (harness session-id)
   "Return non-nil when another auto-compaction would not move the boundary."
-  (when-let ((latest (e-harness-turn--auto-compaction-latest
+  (when-let* ((latest (e-harness-turn--auto-compaction-latest
                       harness session-id)))
     (let ((suffix-tokens
            (e-harness-turn--auto-compaction-suffix-tokens
@@ -1370,7 +1370,7 @@ also emitting the normal compaction failure event."
   (when-let* ((work (plist-get entry :context-work)))
     (when (e-work-handle-p work)
       (e-work-cancel work)))
-  (when-let ((request (plist-get entry :request)))
+  (when-let* ((request (plist-get entry :request)))
     (condition-case err
         (cond
          ((e-backend-request-p request)
@@ -1433,7 +1433,7 @@ they are never included in the transcript message or lifecycle event."
 
 (defun e-harness-turn--append-cancelled-tool-result (harness session-id turn-id entry)
   "Append a cancellation tool result when ENTRY has an open tool call."
-  (when-let ((tool-call (plist-get entry :open-tool-call)))
+  (when-let* ((tool-call (plist-get entry :open-tool-call)))
     (let* ((archival-call (plist-get entry :open-tool-archival-call))
            (archival-rejected-p (plist-get entry :open-tool-archival-rejected-p))
            (archival-received-arguments
@@ -1585,7 +1585,7 @@ provider or loop failure."
        ;; the active turn that owns it; durable session state replaces it on
        ;; ordinary synchronous and post-commit reads.
        (when (eq (plist-get message :role) 'assistant)
-         (when-let ((entry (gethash session-id
+         (when-let* ((entry (gethash session-id
                                     (e-harness-active-turns harness))))
            (when (equal (plist-get entry :id) turn-id)
              (plist-put entry :assistant-message (copy-sequence message)))))
@@ -1646,7 +1646,7 @@ commit acknowledgement.  For a local test store, return the updated message."
 (defun e-harness-turn--turn-assistant-message (harness session-id turn-id)
   "Return the final assistant message for SESSION-ID TURN-ID in HARNESS.
 When a turn produced multiple assistant messages, return the last one."
-  (or (when-let ((entry (gethash session-id
+  (or (when-let* ((entry (gethash session-id
                                   (e-harness-active-turns harness))))
         (when (equal (plist-get entry :id) turn-id)
           (copy-sequence (plist-get entry :assistant-message))))
@@ -1829,7 +1829,7 @@ cancellation.  SESSION-ID identifies the session."
                           :endpoint-token attachment-token
                           :attached-turn-port attached-turn-port
                           :request nil)))
-        (when-let ((enroll (e-harness-work-enrollment-function harness)))
+        (when-let* ((enroll (e-harness-work-enrollment-function harness)))
           (condition-case err
               (funcall enroll turn-work nil)
             (error
@@ -2137,7 +2137,7 @@ cancellation.  SESSION-ID identifies the session."
                 (lambda (payload)
                   (when (and (active-entry-p)
                              (not (plist-get entry :cancelled)))
-                    (when-let ((frame
+                    (when-let* ((frame
                                 (e-harness-context-lifetime-tool-observation-frame
                                  harness session-id turn-id entry payload)))
                       (e-harness-turn-state-set-context-frame entry frame)
@@ -2340,11 +2340,11 @@ cancellation.  SESSION-ID identifies the session."
       (signal 'e-harness-no-active-turn (list session-id)))
     (if (listp entry)
         (let ((turn-id (plist-get entry :id)))
-          (when-let ((timer (plist-get entry :timer)))
+          (when-let* ((timer (plist-get entry :timer)))
             (cancel-timer timer))
           (plist-put entry :cancelled t)
            (e-harness-turn--cancel-active-request entry)
-           (when-let ((turn-work (plist-get entry :work-handle)))
+           (when-let* ((turn-work (plist-get entry :work-handle)))
              (e-work-cancel turn-work))
           (e-harness-turn--append-cancelled-tool-result
            harness session-id turn-id entry)

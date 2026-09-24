@@ -326,7 +326,7 @@ condition list.  Return a cancellable `e-backend-request' handle."
 (defun e-anthropic--context-window-failure-fresh-p (key)
   "Return non-nil when KEY has a failed fetch still within the retry cooldown."
   (and (> e-anthropic-context-window-retry-cooldown 0)
-       (when-let ((failed-at (gethash key
+       (when-let* ((failed-at (gethash key
                                       e-anthropic--context-window-failure-cache)))
          (< (- (float-time) failed-at)
             e-anthropic-context-window-retry-cooldown))))
@@ -388,7 +388,7 @@ The value comes from the in-memory `/models' catalog cache.  Use
 `e-anthropic-refresh-context-window-cache' to refresh that cache asynchronously.
 Returns nil when no cached catalog is available or MODEL is not listed."
   (when (stringp model)
-    (when-let ((table (gethash (or provider e-anthropic-default-provider)
+    (when-let* ((table (gethash (or provider e-anthropic-default-provider)
                               e-anthropic--context-window-cache)))
       (gethash model table))))
 
@@ -626,14 +626,14 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
     ;; Haiku) reject `adaptive' thinking outright.  `:anthropic-thinking' nil
     ;; omits the thinking + effort knobs entirely; absent it, keep the adaptive
     ;; default so ordinary chat is unchanged.
-    (when-let ((thinking-type (e-anthropic--thinking-type options)))
+    (when-let* ((thinking-type (e-anthropic--thinking-type options)))
       (setq body (append body
                          (list :thinking (list :type thinking-type)
                                :output_config (list :effort effort)))))
-    (when-let ((container (plist-get options :anthropic-container-id)))
+    (when-let* ((container (plist-get options :anthropic-container-id)))
       (when (and (stringp container) (not (string-empty-p container)))
         (setq body (append body (list :container container)))))
-    (when-let ((context-management
+    (when-let* ((context-management
                 (plist-get options :anthropic-context-management)))
       (setq body
             (append body (list :context_management context-management))))
@@ -668,7 +668,7 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                       (list :anthropic-cache-mode mode
                             :anthropic-cache-breakpoint breakpoint
                             :full-history t)))
-        (when-let ((breakpoint-segment
+        (when-let* ((breakpoint-segment
                     (and (eq breakpoint 'system-stable-prefix)
                          (e-anthropic--cache-breakpoint-segment options))))
           (setq metadata
@@ -678,11 +678,11 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                                (plist-get breakpoint-segment :id))
                               :anthropic-breakpoint-fingerprint
                               (plist-get breakpoint-segment :fingerprint)))))
-        (when-let ((ttl (plist-get options :prompt-cache-ttl)))
+        (when-let* ((ttl (plist-get options :prompt-cache-ttl)))
           (setq metadata
                 (append metadata
                         (list :anthropic-cache-ttl ttl))))))
-    (when-let ((container (plist-get options :anthropic-container-id)))
+    (when-let* ((container (plist-get options :anthropic-container-id)))
       (when (and (stringp container) (not (string-empty-p container)))
         (setq metadata
               (append metadata
@@ -696,7 +696,7 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
             (append metadata
                     (list :anthropic-beta-headers
                           (plist-get options :anthropic-beta-headers)))))
-    (when-let ((segments (plist-get options :segments)))
+    (when-let* ((segments (plist-get options :segments)))
       (setq metadata
             (append metadata
                     (list :segment-fingerprints
@@ -1007,7 +1007,7 @@ instead of a stream (the failure mode this adapter was built to make visible)."
                     :reason (e-anthropic--stop-reason-symbol stop-reason))
               items))
       (when (zerop event-count)
-        (when-let ((error-item (e-anthropic--non-stream-error-item stream-text)))
+        (when-let* ((error-item (e-anthropic--non-stream-error-item stream-text)))
           (push error-item items)))
       (nreverse items))))
 
@@ -1163,7 +1163,7 @@ condition list.  Return a cancellable `e-backend-request' handle."
 
 (defun e-anthropic--anchor-candidate-item (context)
   "Return provider anchor candidate item for successful CONTEXT, when useful."
-  (when-let ((metadata (plist-get context :metadata)))
+  (when-let* ((metadata (plist-get context :metadata)))
     (when (or (plist-get metadata :anthropic-cache-mode)
               (plist-get metadata :anthropic-container-id)
               (plist-get metadata :anthropic-context-management)

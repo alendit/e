@@ -197,10 +197,10 @@ session id as their second argument."
   "Return stable metadata for SESSION index entry."
   (let ((metadata (copy-sequence (or (plist-get session :metadata) nil))))
     (dolist (key '(:project-root :harness-instance-id))
-      (when-let ((value (plist-get metadata key)))
+      (when-let* ((value (plist-get metadata key)))
         (setq metadata (plist-put metadata key value))))
     (dolist (key '(:created-at :updated-at :last-message-at))
-      (when-let ((value (plist-get session key)))
+      (when-let* ((value (plist-get session key)))
         (setq metadata (plist-put metadata key value))))
     metadata))
 

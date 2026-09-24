@@ -290,7 +290,7 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
          :shown_bytes (string-bytes (plist-get collector :preview))
          :shown_lines (e-elisp-job--line-count
                        (plist-get collector :preview)))
-   (when-let ((uri (plist-get collector :uri)))
+   (when-let* ((uri (plist-get collector :uri)))
      (list :tmp_uri uri))))
 
 (defun e-elisp-job--command (code worker-load-path)
@@ -342,17 +342,17 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
 
 (defun e-elisp-job--work-result (job)
   "Return terminal work result for JOB, when available."
-  (when-let ((handle (plist-get job :handle)))
+  (when-let* ((handle (plist-get job :handle)))
     (e-work-handle-result handle)))
 
 (defun e-elisp-job--work-error (job)
   "Return terminal work error for JOB, when available."
-  (when-let ((handle (plist-get job :handle)))
+  (when-let* ((handle (plist-get job :handle)))
     (e-work-handle-error handle)))
 
 (defun e-elisp-job--work-state (job)
   "Return `e-work' state for JOB."
-  (if-let ((handle (plist-get job :handle)))
+  (if-let* ((handle (plist-get job :handle)))
       (plist-get (e-work-status handle) :state)
     'created))
 
@@ -371,7 +371,7 @@ When nil, prefer the current Emacs executable and fall back to `emacs' on
 (defun e-elisp-job--message (job)
   "Return public terminal message for JOB."
   (or (plist-get (e-elisp-job--work-result job) :suffix)
-      (when-let ((err (e-elisp-job--work-error job)))
+      (when-let* ((err (e-elisp-job--work-error job)))
         (e-work-error-message err))))
 
 (defun e-elisp-job--exit-code (job)
@@ -506,7 +506,7 @@ ARGUMENTS is a plist with :code and optional :directory, :load_path, and
   (e-waitable-register-resolver
    "elisp-job"
    (lambda (id)
-     (when-let ((job (gethash id e-elisp-job--jobs)))
+     (when-let* ((job (gethash id e-elisp-job--jobs)))
        (plist-get job :handle)))))
 
 (defun e-elisp-job-status (job-id)

@@ -245,7 +245,7 @@ HARNESS, when present, contributes session-scoped runtime config."
 
 (defun e-mcp-capability--active-state-entry-to-pair (entry)
   "Return active-set pair for persisted ENTRY."
-  (when-let ((server-id (plist-get entry :server-id)))
+  (when-let* ((server-id (plist-get entry :server-id)))
     (cons server-id
           (e-mcp-capability--active-tools-from-state
            (plist-get entry :tools)))))
@@ -553,7 +553,7 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
 
 (defun e-mcp-capability--catalog-for-server-cached (server-id)
   "Return cached (SERVER . CATALOG) for SERVER-ID, or nil."
-  (when-let ((server (e-mcp-client-known-server server-id)))
+  (when-let* ((server (e-mcp-client-known-server server-id)))
     (when (e-mcp-client-catalog-cached-p (list server))
       (cons server (e-mcp-client-catalog-cache-entry (list server))))))
 
@@ -687,7 +687,7 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
                                        '(finished failed cancelled))))
                    (e-work-cancel activation-work))
                  t))
-         (if-let ((server+catalog (e-mcp-capability--catalog-for-server-cached server-id)))
+         (if-let* ((server+catalog (e-mcp-capability--catalog-for-server-cached server-id)))
              (setq timer
                    (run-at-time 0 nil
                                 (lambda ()

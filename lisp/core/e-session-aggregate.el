@@ -501,7 +501,7 @@ for every touched aggregate reference when application fails."
   (let ((delta (e-session-aggregate-install-token-delta token))
         (command (e-session-aggregate-install-token-command token)))
     (let ((inhibit-quit t))
-      (when-let ((record (plist-get delta :record)))
+      (when-let* ((record (plist-get delta :record)))
         (e-session-aggregate-apply-committed-record store record))
       (setf (e-session-aggregate-install-token-installed token) t))
     (let ((result (e-session-aggregate-command-result store command delta)))
@@ -559,7 +559,7 @@ aggregate and must be treated as read-only by projection consumers."
 Loaded transcripts remain authoritative.  This narrow operation is used by a
 catalog refresh and avoids exposing the aggregate's session table to the
 application service."
-  (when-let ((session (gethash (plist-get replacement :id)
+  (when-let* ((session (gethash (plist-get replacement :id)
                                (e-session-store-sessions store))))
     (unless (plist-get session :loaded)
       (dolist (field '(:metadata :updated-at :updated-seq :name :summary
@@ -660,7 +660,7 @@ metadata policy has its own contract in `e-session-metadata'."
 
 (defun e-session-aggregate--index-entry (store session-id entry)
   "Index durable ENTRY for SESSION-ID in STORE."
-  (when-let ((entry-id (plist-get entry :id)))
+  (when-let* ((entry-id (plist-get entry :id)))
     (puthash entry-id entry (e-session-aggregate--entry-index store session-id)))
   entry)
 
@@ -694,7 +694,7 @@ or after constructing an unloaded index stub."
 (defun e-session-aggregate--replace-list-field (session field items)
   "Destructively replace SESSION FIELD with ITEMS and update its tail."
   (plist-put session field items)
-  (when-let ((tail-field (e-session-aggregate--tail-field field)))
+  (when-let* ((tail-field (e-session-aggregate--tail-field field)))
     (plist-put session tail-field (e-session-aggregate--list-tail items)))
   items)
 
@@ -706,7 +706,7 @@ appending."
   (let* ((tail-field (e-session-aggregate--tail-field field))
          (cell (list item))
          (tail (or (and tail-field (plist-get session tail-field))
-                   (when-let ((items (plist-get session field)))
+                   (when-let* ((items (plist-get session field)))
                      (e-session-aggregate--list-tail items)))))
     (if tail
         (setcdr tail cell)
@@ -738,7 +738,7 @@ appending."
     (plist-put session :last-message-at (e-session-aggregate--last-message-at session))
     (plist-put session :latest-assistant-marker
                (e-session-aggregate--latest-assistant-marker session))
-    (when-let ((sessions-directory (e-session-store-sessions-directory store)))
+    (when-let* ((sessions-directory (e-session-store-sessions-directory store)))
       (plist-put session :file
                  (expand-file-name
                   (concat (plist-get session :id) ".jsonl")
@@ -747,7 +747,7 @@ appending."
 
 (defun e-session-aggregate--refresh-file-field (store session)
   "Refresh persistent file metadata for SESSION in STORE."
-  (when-let ((sessions-directory (e-session-store-sessions-directory store)))
+  (when-let* ((sessions-directory (e-session-store-sessions-directory store)))
     (plist-put session :file
                (expand-file-name
                 (concat (plist-get session :id) ".jsonl")
@@ -771,7 +771,7 @@ appending."
                    (1+ count)
                  (length (plist-get session :messages)))))
   (unless (plist-get session :summary)
-    (when-let ((summary (e-session-aggregate--message-summary message)))
+    (when-let* ((summary (e-session-aggregate--message-summary message)))
       (plist-put session :summary summary)))
   (plist-put session :last-message-at (plist-get message :created-at))
   (when (eq (plist-get message :role) 'assistant)
@@ -790,9 +790,9 @@ appending."
 (defun e-session-aggregate--display-title-for-session (session)
   "Return a display title for SESSION."
   (or (plist-get session :name)
-      (when-let ((summary (plist-get session :summary)))
+      (when-let* ((summary (plist-get session :summary)))
         (e-session-aggregate--default-title summary))
-      (when-let ((created-at (plist-get session :created-at)))
+      (when-let* ((created-at (plist-get session :created-at)))
         (format "Untitled %s" created-at))
       (format "Untitled %s" (plist-get session :id))))
 
@@ -834,7 +834,7 @@ When RECORD is non-nil, identity fields may be replayed from the JSONL record."
                 session type (e-session-aggregate--next-entry-ordinal session) timestamp)
              (e-session-identity-generate-ulid)))))
     (unless (plist-member entry :parent-id)
-      (when-let ((parent-id
+      (when-let* ((parent-id
                   (or (e-session-aggregate--entry-parent-id-from-record record entry)
                       (plist-get session :current-head-id))))
         (plist-put entry :parent-id parent-id)))
@@ -944,8 +944,8 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session-aggregate-entry-previous (store session-id entry-id)
   "Return the previous entry before ENTRY-ID on SESSION-ID current path."
-  (when-let ((entry (e-session-aggregate-entry-by-id store session-id entry-id)))
-    (when-let ((parent-id (plist-get entry :parent-id)))
+  (when-let* ((entry (e-session-aggregate-entry-by-id store session-id entry-id)))
+    (when-let* ((parent-id (plist-get entry :parent-id)))
       (e-session-aggregate-entry-by-id store session-id parent-id))))
 
 (defun e-session-aggregate-entry-next (store session-id entry-id)
@@ -1006,7 +1006,7 @@ and RECORD supplies persisted identity fields during replay."
 
 (defun e-session-aggregate--last-message-at (session)
   "Return SESSION's latest message timestamp, when it has messages."
-  (when-let ((message (car (last (plist-get session :messages)))))
+  (when-let* ((message (car (last (plist-get session :messages)))))
     (plist-get message :created-at)))
 
 (defun e-session-aggregate--message-assistant-marker (message)
@@ -1046,11 +1046,11 @@ and RECORD supplies persisted identity fields during replay."
 (defun e-session-aggregate--normalize-turn-options (options)
   "Return canonical session turn OPTIONS."
   (let (normalized)
-    (when-let ((model (plist-get options :model)))
+    (when-let* ((model (plist-get options :model)))
       (when (and (stringp model) (not (string-empty-p (string-trim model))))
         (setq normalized
               (plist-put normalized :model (string-trim model)))))
-    (when-let ((effort (plist-get options :reasoning-effort)))
+    (when-let* ((effort (plist-get options :reasoning-effort)))
       (when (and (stringp effort) (not (string-empty-p (string-trim effort))))
         (setq normalized
               (plist-put normalized :reasoning-effort (string-trim effort)))))
@@ -1060,14 +1060,14 @@ and RECORD supplies persisted identity fields during replay."
             (plist-put normalized
                        :prompt-cache-default
                        (plist-get options :prompt-cache-default))))
-    (when-let ((cache-key (plist-get options :prompt-cache-key)))
+    (when-let* ((cache-key (plist-get options :prompt-cache-key)))
       (when (and (stringp cache-key)
                  (not (string-empty-p (string-trim cache-key))))
         (setq normalized
               (plist-put normalized
                          :prompt-cache-key
                          (string-trim cache-key)))))
-    (when-let ((retention (plist-get options :prompt-cache-retention)))
+    (when-let* ((retention (plist-get options :prompt-cache-retention)))
       (when (and (stringp retention)
                  (not (string-empty-p (string-trim retention))))
         (setq normalized
@@ -1489,7 +1489,7 @@ records as if they were v3 records."
 Legacy frame/generation journal entries are intentionally not reconstructed as
 runtime frames.  Only the current v2 generation codec participates in this
 projection."
-  (when-let ((entry (e-session-aggregate--context-active-generation
+  (when-let* ((entry (e-session-aggregate--context-active-generation
                      store session-id head-id)))
     (condition-case error
         (e-context-lifetime-generation-from-record
@@ -1512,7 +1512,7 @@ projection."
           (cl-remf message :turn-id)
           (cl-remf message :type)
           (cl-remf message :durability-state)
-          (when-let ((metadata (plist-get message :metadata)))
+          (when-let* ((metadata (plist-get message :metadata)))
             (setq metadata (copy-tree metadata))
             (cl-remf metadata :provider-replay-items)
             (if metadata
@@ -1543,7 +1543,7 @@ the catalog owner."
 
 (defun e-session-aggregate--path-after-boundary (path boundary-id)
   "Return PATH strictly after BOUNDARY-ID, or PATH when it is absent."
-  (if-let ((boundary (seq-find
+  (if-let* ((boundary (seq-find
                       (lambda (entry)
                         (equal (plist-get entry :id) boundary-id))
                       path)))
@@ -1801,7 +1801,7 @@ DISPLAY is a display disposition symbol (e.g. `hidden'); nil clears it back to
 the default visible state.  Mutates the in-memory message in place and appends
 a durable `message-display' record so the change replays on reload.  Returns
 the updated message, or nil when no such message exists."
-  (when-let ((message (e-session-aggregate--message-by-id store session-id message-id)))
+  (when-let* ((message (e-session-aggregate--message-by-id store session-id message-id)))
     (let ((timestamp (e-session-aggregate--timestamp)))
       (if display
           (plist-put message :display display)
@@ -2503,11 +2503,11 @@ erasure components are never represented as independently persisted entries."
          (timestamp (e-session-aggregate--timestamp))
          (base-parent (plist-get session :current-head-id))
          (_promotion
-          (when-let ((record (plist-get package :promotion)))
+          (when-let* ((record (plist-get package :promotion)))
             (e-session-aggregate--validate-context-entry-ownership
              store session-id 'context-promotion record)))
          (_erasure
-          (when-let ((record (plist-get package :erasure)))
+          (when-let* ((record (plist-get package :erasure)))
             (e-session-aggregate--validate-context-entry-ownership
              store session-id 'context-erasure record)))
          (package-id (e-session-aggregate--context-curation-package-id
@@ -2924,7 +2924,7 @@ RECORD must already be detached by `e-session-codec-decode-record'."
          (e-session-aggregate--touch store session timestamp)))
       ("message-display"
        (when session
-         (when-let ((message
+         (when-let* ((message
                      (seq-find
                       (lambda (message)
                         (equal (plist-get message :id)
@@ -3353,7 +3353,7 @@ This is the active C07 post-ACK aggregate boundary."
                (delq nil
                      (mapcar
                       (lambda (pair)
-                        (when-let ((tail (plist-get old-session (cdr pair))))
+                        (when-let* ((tail (plist-get old-session (cdr pair))))
                           (cons tail (cdr tail))))
                       e-session-aggregate--list-tail-fields))))
          ;; Incremental apply never mutates an old index table wholesale.  It

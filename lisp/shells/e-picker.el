@@ -310,7 +310,7 @@ Return non-nil when the picker needs a full rerender."
 
 (defun e-picker--render-preview (candidate)
   "Return preview text for CANDIDATE according to current spec."
-  (when-let ((preview (plist-get e-picker--spec :preview)))
+  (when-let* ((preview (plist-get e-picker--spec :preview)))
     (with-temp-buffer
       (funcall preview candidate (current-buffer))
       (buffer-string))))
@@ -354,7 +354,7 @@ Return non-nil when the picker needs a full rerender."
 
 (defun e-picker--preview-lines (width)
   "Return selected candidate preview lines wrapped to WIDTH."
-  (when-let ((preview-text (e-picker--render-preview
+  (when-let* ((preview-text (e-picker--render-preview
                             (e-picker--selected-candidate))))
     (cl-mapcan (lambda (line)
                  (e-picker--wrap-preview-line line width))
@@ -386,7 +386,7 @@ Return non-nil when the picker needs a full rerender."
 
 (defun e-picker--set-candidate-prefix (index selected)
   "Set candidate INDEX prefix according to SELECTED."
-  (when-let ((start (e-picker--candidate-row-start index)))
+  (when-let* ((start (e-picker--candidate-row-start index)))
     (save-excursion
       (goto-char start)
       (let ((inhibit-read-only t))
@@ -395,7 +395,7 @@ Return non-nil when the picker needs a full rerender."
 
 (defun e-picker--move-selection-overlay ()
   "Move selection overlay and point to the selected candidate row."
-  (if-let ((start (e-picker--candidate-row-start e-picker--selection)))
+  (if-let* ((start (e-picker--candidate-row-start e-picker--selection)))
       (let ((overlay (e-picker--ensure-selection-overlay)))
         (save-excursion
           (goto-char start)
@@ -623,7 +623,7 @@ When SELECTED is non-nil, run ACTION after closing."
 (defun e-picker-select ()
   "Select the current picker candidate."
   (interactive)
-  (if-let ((candidate (e-picker--selected-candidate)))
+  (if-let* ((candidate (e-picker--selected-candidate)))
       (e-picker--close candidate (plist-get e-picker--spec :on-select))
     (user-error "No picker candidate selected")))
 
@@ -660,7 +660,7 @@ When SELECTED is non-nil, run ACTION after closing."
   (let ((action (alist-get key (plist-get e-picker--spec :actions))))
     (unless action
       (user-error "No picker action for %s" (single-key-description key)))
-    (if-let ((candidate (e-picker--selected-candidate)))
+    (if-let* ((candidate (e-picker--selected-candidate)))
         (let ((keep-open (funcall action candidate)))
           (unless keep-open
             (e-picker--close)))
@@ -686,7 +686,7 @@ When SELECTED is non-nil, run ACTION after closing."
                    (cycle-sort-function . identity)
                    (annotation-function
                     . ,(lambda (label)
-                         (when-let ((candidate
+                         (when-let* ((candidate
                                      (cdr (assoc label candidate-by-label))))
                            (concat " " (funcall candidate-line candidate))))))
                (complete-with-action action labels string predicate)))

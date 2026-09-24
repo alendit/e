@@ -352,12 +352,12 @@ explicit JSON false sentinel for boolean fields."
 This is the consumer-shaped projection for shells that need to display or
 compare an attachment without depending on the chat-session metadata
 representation."
-  (or (when-let ((buffer-name (plist-get attachment :buffer-name)))
+  (or (when-let* ((buffer-name (plist-get attachment :buffer-name)))
         (get-buffer buffer-name))
-      (when-let ((buffer-name (e-chat-session--uri-buffer-name
+      (when-let* ((buffer-name (e-chat-session--uri-buffer-name
                                (plist-get attachment :uri))))
         (get-buffer buffer-name))
-      (when-let ((file (e-chat-session--uri-file-name
+      (when-let* ((file (e-chat-session--uri-file-name
                         (plist-get attachment :uri))))
         (find-buffer-visiting file))))
 
@@ -367,10 +367,10 @@ Open Emacs buffers win over disk contents so unsaved canvas edits are included
 in the next turn's context."
   (let ((uri (plist-get attachment :uri)))
     (cond
-     ((when-let ((buffer (e-chat-session-attachment-live-buffer attachment)))
+     ((when-let* ((buffer (e-chat-session-attachment-live-buffer attachment)))
         (with-current-buffer buffer
           (buffer-substring-no-properties (point-min) (point-max)))))
-     ((when-let ((file (e-chat-session--uri-file-name uri)))
+     ((when-let* ((file (e-chat-session--uri-file-name uri)))
         (if (file-readable-p file)
             (with-temp-buffer
               (let ((coding-system-for-read 'utf-8))

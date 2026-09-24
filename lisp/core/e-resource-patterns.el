@@ -289,7 +289,7 @@ candidate text with `e-resource-pattern-search-matches-in-text'."
 (defun e-resource-pattern-search-score (text query options &optional uri name)
   "Return ranked lexical match data for TEXT and QUERY, or nil.
 All query terms must occur in TEXT.  Higher scores are better."
-  (when-let ((matches (e-resource-pattern--search-term-matches text query options)))
+  (when-let* ((matches (e-resource-pattern--search-term-matches text query options)))
     (let* ((starts (mapcar (lambda (match) (plist-get match :start)) matches))
            (ends (mapcar (lambda (match) (plist-get match :end)) matches))
            (first (apply #'min starts))
@@ -336,7 +336,7 @@ All query terms must occur in TEXT.  Higher scores are better."
       (while (and (not stopped) (string-match "\n" text start))
         (let ((line (substring text start (match-beginning 0))))
           (setq start (match-end 0))
-          (when-let ((match
+          (when-let* ((match
                       (funcall
                        (e-resource-pattern-search-collector-transform collector)
                        line)))
@@ -356,7 +356,7 @@ All query terms must occur in TEXT.  Higher scores are better."
 
 (defun e-resource-pattern-search-collector-finish (collector)
   "Process COLLECTOR's final unterminated line, if any."
-  (when-let ((carry (e-resource-pattern-search-collector-carry collector)))
+  (when-let* ((carry (e-resource-pattern-search-collector-carry collector)))
     (unless (or (string-empty-p carry)
                 (e-resource-pattern-search-collector-truncated collector))
       (e-resource-pattern-search-collector-feed collector "\n")))
@@ -377,7 +377,7 @@ All query terms must occur in TEXT.  Higher scores are better."
   "Return one ranked lexical search match for URI in TEXT.
 All query terms may occur anywhere in TEXT.  The reported line points at the
 first matching term, and `:text' is that line as a compact snippet."
-  (when-let ((score (e-resource-pattern-search-score text query options uri name)))
+  (when-let* ((score (e-resource-pattern-search-score text query options uri name)))
     (let* ((line-number (or start-line 1))
            (position (1- (plist-get score :column)))
            (line-column

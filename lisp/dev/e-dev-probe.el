@@ -151,7 +151,7 @@ DEPTH limits nesting, SEEN prevents cycles, and BUDGET bounds total work."
 
 (defun e-dev-live-probe--selected-buffer ()
   "Return the selected window's live buffer, or nil."
-  (when-let ((window (selected-window)))
+  (when-let* ((window (selected-window)))
     (when (window-live-p window)
       (window-buffer window))))
 

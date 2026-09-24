@@ -279,7 +279,7 @@ the call so a transient failure cannot abort project switching; see
 (defun e-project-local--projectile-project-root ()
   "Return the current Projectile project root, or nil."
   (when (fboundp 'projectile-project-root)
-    (when-let ((root (ignore-errors (projectile-project-root))))
+    (when-let* ((root (ignore-errors (projectile-project-root))))
       (e-skills-normalize-directory root))))
 
 (defun e-project-local-prime-projectile-project ()
@@ -293,7 +293,7 @@ rides on.  A byte-compile or helper-load error is caught, logged as a warning,
 and the just-touched discovery cache is reset so the next project entry
 re-primes cleanly instead of reusing a half-loaded layer."
   (when e-project-local-projectile-prime-on-project-entry
-    (when-let ((root (e-project-local--projectile-project-root)))
+    (when-let* ((root (e-project-local--projectile-project-root)))
       (condition-case err
           (e-project-local-prime-project root)
         (error
@@ -538,7 +538,7 @@ e://<capability>/skills/project/<slug> resources.  Returns nil when none."
 
 (defun e-project-local--with-capability-skills (capability directory)
   "Return CAPABILITY extended with capability-scoped skill resources in DIRECTORY."
-  (if-let ((provider (e-project-local--capability-skill-resources directory)))
+  (if-let* ((provider (e-project-local--capability-skill-resources directory)))
       (e-capability-create
        :id (e-capability-id capability)
        :name (e-capability-name capability)
@@ -588,7 +588,7 @@ e://<capability>/skills/project/<slug> resources.  Returns nil when none."
 
 (defun e-project-local--with-layer-skills (layer directory)
   "Return LAYER extended with layer-scoped skill resources from DIRECTORY."
-  (if-let ((capability (e-project-local--layer-skill-capability
+  (if-let* ((capability (e-project-local--layer-skill-capability
                         (e-layer-id layer)
                         directory)))
       (progn

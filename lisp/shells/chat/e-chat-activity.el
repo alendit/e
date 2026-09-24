@@ -311,7 +311,7 @@ here so activity changes do not mutate a transcript record.")
   "Append reasoning CONTENT to RECORD's current round.
 When APPEND is non-nil, merge CONTENT into the previous reasoning child.
 When REPLACE is non-nil, replace that child with a combined snapshot."
-  (when-let ((round (and content
+  (when-let* ((round (and content
                          (not (string-empty-p content))
                          (e-chat-activity--round-record-for-child record))))
     (let* ((reasoning (plist-get round :reasoning))
@@ -346,7 +346,7 @@ When REPLACE is non-nil, replace that child with a combined snapshot."
 (defun e-chat-activity--append-round-tool-call (record payload &optional created-at)
   "Append tool call PAYLOAD to RECORD's current round.
 CREATED-AT records when the tool started so the running row can tick."
-  (when-let ((round (e-chat-activity--round-record-for-child record)))
+  (when-let* ((round (e-chat-activity--round-record-for-child record)))
     (let* ((batch (e-chat-activity--current-round-tool-batch round))
            (items (plist-get batch :items))
            (tool-id (or (plist-get payload :id)
@@ -537,7 +537,7 @@ ACTIVE-AT is used for active thinking duration."
                 (plist-get round :ended-at))
                (or (plist-get round :retry-attempt) 1)
                (or (plist-get round :retry-backoff-seconds) 0))
-       (when-let ((error-message (plist-get round :error)))
+       (when-let* ((error-message (plist-get round :error)))
          (format "\nError: %s" error-message)))
     (e-chat-activity--thought-content
      (plist-get round :status)
@@ -564,7 +564,7 @@ ACTIVE-AT is used for active thinking duration."
 When COMPLETE is non-nil, return the complete explicitly requested detail."
   (let ((lines nil))
     (dolist (reasoning (plist-get round :reasoning))
-      (when-let ((content (plist-get reasoning :content)))
+      (when-let* ((content (plist-get reasoning :content)))
         (dolist (line (string-lines content))
           (setq line (string-trim line))
           (unless (string-empty-p line)
@@ -606,7 +606,7 @@ append the single action name or a count when several distinct actions ran."
 (defun e-chat-activity--round-tool-names-text (round)
   "Return a comma-joined list of the distinct tool names called in ROUND.
 Returns nil when ROUND recorded no tool calls."
-  (when-let ((names (delete-dups
+  (when-let* ((names (delete-dups
                      (mapcar #'e-chat-activity--tool-item-name
                              (e-chat-activity--round-tool-items round)))))
     (string-join names ", ")))
@@ -635,7 +635,7 @@ Returns nil while any tool is still running or when timing is missing."
   "Return live running-tool row text for ROUND, or nil when nothing runs.
 Shows a spinner, the running tool name (or a count when several run at once),
 and how long the oldest running tool has been active."
-  (when-let ((running (e-chat-activity--round-running-tool-items round)))
+  (when-let* ((running (e-chat-activity--round-running-tool-items round)))
     (let* ((names (delete-dups
                    (mapcar #'e-chat-activity--tool-item-name running)))
            (started (delq nil (mapcar (lambda (item)
@@ -802,7 +802,7 @@ offsets and markers are deliberately not part of this owner-to-owner value."
                        'done))))
         (if between-tail-p
             (progn
-              (when-let ((reasoning-lines
+              (when-let* ((reasoning-lines
                           (e-chat-activity--activity-round-visible-reasoning-lines
                            round complete)))
                 (setq chunks
@@ -812,12 +812,12 @@ offsets and markers are deliberately not part of this owner-to-owner value."
                       (append chunks
                               (list (e-chat-activity--intermittent-entry-text
                                      entry)))))
-              (when-let ((progress-row
+              (when-let* ((progress-row
                           (e-chat-activity--activity-round-progress-row-text
                            round t)))
                 (setq progress-tail-text progress-row
                       chunks (append chunks (list progress-row)))))
-          (when-let ((text (e-chat-activity--activity-round-visible-text
+          (when-let* ((text (e-chat-activity--activity-round-visible-text
                             round latest-active-p complete)))
             (when latest-active-p
               (setq progress-tail-text
@@ -918,7 +918,7 @@ Count tool invocations after the reasoning chunk they followed."
 
 (defun e-chat-activity--record-message-details (turn-id message-id details)
   "Record generic DETAILS for durable MESSAGE-ID in TURN-ID."
-  (when-let ((record (e-chat-activity--turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--turn-record turn-id)))
     (let* ((key (or message-id (list 'turn-message turn-id)))
            (current (assoc-delete-all
                      key (plist-get record :message-details))))
@@ -933,7 +933,7 @@ Count tool invocations after the reasoning chunk they followed."
   (let (summaries)
     (dolist (entry (plist-get record :message-details))
       (dolist (detail (cdr entry))
-        (when-let ((summary (e-message-detail-summary detail)))
+        (when-let* ((summary (e-message-detail-summary detail)))
           (unless (member summary summaries)
             (setq summaries (append summaries (list summary)))))))
     (if summaries
@@ -980,7 +980,7 @@ Count tool invocations after the reasoning chunk they followed."
 (defun e-chat-activity--activity-expanded-text (record)
   "Return expanded per-line activity history for RECORD."
   (if (e-chat-activity--activity-records record)
-      (when-let ((chunks (append (e-chat-activity--activity-record-visible-chunks
+      (when-let* ((chunks (append (e-chat-activity--activity-record-visible-chunks
                                   record t)
                                  (e-chat-activity--activity-action-visible-chunks record))))
         (when chunks
@@ -988,14 +988,14 @@ Count tool invocations after the reasoning chunk they followed."
                    chunks
                    (concat "\n" e-chat-activity-separator "\n"))
                   "\n\n")))
-    (when-let ((chunks (e-chat-activity--activity-visible-chunks
+    (when-let* ((chunks (e-chat-activity--activity-visible-chunks
                         (plist-get record :intermittent-entries))))
       (when chunks
         (concat (mapconcat #'identity chunks "\n") "\n\n")))))
 
 (defun e-chat-activity--intermittent-details-text (record)
   "Return expanded intermittent details text for RECORD."
-  (when-let ((entries (plist-get record :intermittent-entries)))
+  (when-let* ((entries (plist-get record :intermittent-entries)))
     (concat
      (mapconcat
       (lambda (entry)
@@ -1083,7 +1083,7 @@ later navigation."
                                                   details))
       (when turn-id
         (e-chat-activity--record-message-details turn-id message-id details)
-        (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+        (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
           (when (plist-get record :final-rendered)
             (e-chat-activity--render-turn-transient turn-id record)))))))
 
@@ -1091,14 +1091,14 @@ later navigation."
   "Return navigable child block descriptors for RECORD's activity summary."
   (let (children)
     (dolist (round (e-chat-activity--activity-records record))
-      (when-let ((thought (e-chat-activity--round-thought-text round)))
+      (when-let* ((thought (e-chat-activity--round-thought-text round)))
         (unless (equal thought "Thinking...")
           (push (list :kind 'activity-thought
                       :text thought
                       :action-text thought)
                 children)))
       (dolist (reasoning (plist-get round :reasoning))
-        (when-let ((content (plist-get reasoning :content)))
+        (when-let* ((content (plist-get reasoning :content)))
           (unless (string-empty-p content)
             (push (list :kind 'activity-reasoning
                         :text content
@@ -1143,12 +1143,12 @@ later navigation."
 
 (defun e-chat-activity--failure-details-text (record)
   "Return expanded failure details text for RECORD."
-  (when-let ((error-message (plist-get record :failure-error)))
+  (when-let* ((error-message (plist-get record :failure-error)))
     (concat
      (e-chat-activity--indent-detail-text
       (format "Failure\n%s" error-message))
      "\n\n"
-     (when-let ((details (plist-get record :failure-details)))
+     (when-let* ((details (plist-get record :failure-details)))
        (concat
         (e-chat-activity--indent-detail-text
          (format "Provider details\n%s" (pp-to-string details)))
@@ -1169,7 +1169,7 @@ later navigation."
                   (concat text
                           (format "\nReset wait: %s seconds"
                                   (plist-get round :retry-reset-wait)))))
-          (when-let ((error-message (plist-get round :error)))
+          (when-let* ((error-message (plist-get round :error)))
             (setq text (concat text "\nError: " error-message)))
           (when (plist-member round :error-details)
             (setq text
@@ -1226,7 +1226,7 @@ When LIVE-PROJECTION is non-nil, include only live-projected rounds."
   "Return visible transient text for RECORD."
   (if (e-chat-activity--activity-records record)
       (plist-get (e-chat-activity--activity-record-transient-data record) :text)
-    (when-let ((entries (plist-get record :intermittent-entries)))
+    (when-let* ((entries (plist-get record :intermittent-entries)))
       (let ((chunks (e-chat-activity--activity-visible-chunks entries)))
         (when chunks
           (concat (mapconcat #'identity chunks "\n\n") "\n\n"))))))
@@ -1271,7 +1271,7 @@ When LIVE-PROJECTION is non-nil, include only live-projected rounds."
 (defun e-chat-activity--record-provider-finished (turn-id created-at &optional status)
   "Record provider request finish for TURN-ID at CREATED-AT.
 STATUS defaults to `done'."
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (let ((round (e-chat-activity--active-round-record record))
           (status (e-chat-activity--normalize-round-status (or status 'done))))
       (when round
@@ -1300,7 +1300,7 @@ STATUS defaults to `done'."
 
 (defun e-chat-activity--record-turn-retrying (turn-id payload)
   "Record retry decision PAYLOAD for TURN-ID's latest failed attempt."
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (let ((round
            (cl-find-if
             (lambda (candidate)
@@ -1344,12 +1344,12 @@ STATUS defaults to `done'."
 
 (defun e-chat-activity--settle-open-thinking (turn-id ended-at status)
   "Settle TURN-ID's open thinking round at ENDED-AT with STATUS."
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (let ((status (e-chat-activity--normalize-round-status status)))
-      (when-let ((round (e-chat-activity--latest-open-round-record record)))
+      (when-let* ((round (e-chat-activity--latest-open-round-record record)))
         (plist-put round :status status)
         (plist-put round :ended-at ended-at))
-      (when-let ((entry
+      (when-let* ((entry
                   (cl-find-if
                    (lambda (candidate)
                      (and (eq (plist-get candidate :kind) 'thinking)
@@ -1737,7 +1737,7 @@ small one, since each repaint of a big block costs more."
                      ('progress
                       (e-chat-activity--render-progress-indicator turn-id))
                      (_
-                      (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+                      (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
                         (e-chat-activity--render-turn-transient turn-id record)))))))))
           (setq e-chat-activity--activity-redraw-running nil)
           (e-chat-activity--ensure-pending-activity-redraw-work))))))
@@ -1927,7 +1927,7 @@ When TURN-ID is non-nil, only stop a matching active indicator."
       (setq e-chat-activity--progress-turn-id nil)
       (setq e-chat-activity--progress-frame 0)
       (setq e-chat-activity--progress-next-tick-time nil)
-      (if-let ((record (and old-turn-id
+      (if-let* ((record (and old-turn-id
                             (e-chat-activity--existing-turn-record old-turn-id))))
           (e-chat-activity--render-running-status old-turn-id record)
         (e-chat-transcript-remove-activity)))))
@@ -1958,7 +1958,7 @@ SOURCE identifies where the entry came from for duplicate suppression."
 
 (defun e-chat-activity--record-replayed-message-time (record message)
   "Record MESSAGE's replay timestamp into RECORD."
-  (when-let ((created-at (plist-get message :created-at)))
+  (when-let* ((created-at (plist-get message :created-at)))
     (unless (plist-get record :started-at)
       (plist-put record :started-at created-at))
     (plist-put record :ended-at created-at))
@@ -1970,7 +1970,7 @@ SOURCE identifies where the entry came from for duplicate suppression."
 SOURCE identifies replayed durable activity or a live event.  Capability-owned
 message semantics come through the separate message-details contract; this
 function records only lifecycle audit text."
-  (when-let ((summary (plist-get payload :summary)))
+  (when-let* ((summary (plist-get payload :summary)))
     (e-chat-activity--add-intermittent-entry record "Hook audit" summary nil source))
   (when (plist-member payload :pending-summary)
     (let ((pending-summary (plist-get payload :pending-summary)))
@@ -2019,7 +2019,7 @@ function records only lifecycle audit text."
                        (:action-count . :summary-action-count)))
       (when (plist-member payload (car mapping))
         (plist-put record (cdr mapping) (plist-get payload (car mapping)))))
-    (when-let ((created-at (plist-get activity-event :created-at)))
+    (when-let* ((created-at (plist-get activity-event :created-at)))
       (plist-put record :ended-at created-at)
       (unless (plist-get record :started-at)
         (when-let* ((duration (plist-get payload :duration-seconds))
@@ -2118,7 +2118,7 @@ function records only lifecycle audit text."
   "Return presentation turn ids represented by replayed MESSAGES."
   (let (turn-ids)
     (dolist (message messages)
-      (when-let ((turn-id (plist-get message :turn-id)))
+      (when-let* ((turn-id (plist-get message :turn-id)))
         (cl-pushnew turn-id turn-ids :test #'equal)))
     ;; Active-turn state belongs to the live Board controller.  Asking durable
     ;; storage whether this is a Board session first is redundant and, for v6
@@ -2216,7 +2216,7 @@ remain aligned while their registries remain independent."
   "Return TURN-IDs represented in ACTIVITY-EVENTS, preserving order."
   (let (turn-ids)
     (dolist (event activity-events)
-      (when-let ((turn-id (plist-get event :turn-id)))
+      (when-let* ((turn-id (plist-get event :turn-id)))
         (unless (member turn-id turn-ids)
           (push turn-id turn-ids))))
     (nreverse turn-ids)))
@@ -2302,7 +2302,7 @@ the transcript owner's activity projection port."
 
 (defun e-chat-activity--render-turn-activity-events (turn-id activity-events)
   "Render durable ACTIVITY-EVENTS for TURN-ID once."
-  (when-let ((record (e-chat-activity--turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--turn-record turn-id)))
     (unless (plist-get record :activity-rendered)
       (let (selected-event-p)
         (dolist (event activity-events)
@@ -2312,7 +2312,7 @@ the transcript owner's activity projection port."
               (when selected-p
                 (setq selected-event-p t))
               (e-chat-activity--record-activity-event render-turn-id event)
-              (when-let ((render-record
+              (when-let* ((render-record
                           (e-chat-activity--existing-turn-record render-turn-id)))
                 (plist-put render-record :activity-rendered t)))))
         ;; An observed sibling can share the causal TURN-ID.  Do not mutate
@@ -2323,14 +2323,14 @@ the transcript owner's activity projection port."
           (e-chat-activity--render-turn-transient turn-id record))
         (when (and (not selected-event-p)
                    e-chat-activity--progress-turn-id)
-          (when-let ((selected-record
+          (when-let* ((selected-record
                       (e-chat-activity--existing-turn-record e-chat-activity--progress-turn-id)))
             (e-chat-activity--render-turn-transient
              e-chat-activity--progress-turn-id selected-record)))))))
 
 (defun e-chat-activity--record-turn-failure (turn-id payload)
   "Record failed-turn PAYLOAD for TURN-ID."
-  (when-let ((record (e-chat-activity--turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--turn-record turn-id)))
     (plist-put record :failure-error
                (or (plist-get payload :error) "Turn failed"))
     (plist-put record :failure-details (plist-get payload :details))
@@ -2376,7 +2376,7 @@ status, and composer are owned by the selected terminal path only."
   ;; failure entry.  Without this the transient block and its separators
   ;; linger, and the next submitted prompt renders into the orphaned region
   ;; and appears to vanish.
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (e-chat-activity--delete-turn-transient record))
   (let* ((record (e-chat-activity--record-turn-failure turn-id payload))
          (error-message (or (plist-get payload :error) "Turn failed")))
@@ -2401,7 +2401,7 @@ status, and composer are owned by the selected terminal path only."
   (e-chat-activity--settle-open-thinking turn-id created-at 'cancelled)
   (e-chat-activity--cancel-pending-activity-redraw turn-id)
   (e-chat-activity--stop-progress-indicator turn-id)
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (e-chat-activity--delete-turn-transient record))
   (e-chat-surface-set-status "cancelled")
   (let ((record (e-chat-activity--existing-turn-record turn-id)))
@@ -2415,7 +2415,7 @@ status, and composer are owned by the selected terminal path only."
 
 (defun e-chat-activity--finalize-turn-display (turn-id)
   "Mark TURN-ID as having rendered its final response."
-  (when-let ((record (e-chat-activity--turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--turn-record turn-id)))
     (plist-put record :final-rendered t)
     (if (e-chat-activity--settled-activity-p record)
         (e-chat-activity--render-turn-transient turn-id record)
@@ -2433,7 +2433,7 @@ records or classifies activity events."
     (e-chat-activity--settle-open-thinking turn-id ended-at 'done)
     (e-chat-activity--cancel-pending-activity-redraw turn-id)
     (e-chat-activity--stop-progress-indicator turn-id)
-    (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+    (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
       (when (plist-get record :assistant-output-rendered)
         (e-chat-activity--finalize-turn-display turn-id)))
     (e-chat-surface-restore-output-tail-windows output-tail-windows))
@@ -2450,7 +2450,7 @@ provider/tool activity does not require a central per-record dispatch branch."
        (let ((turn-id (plist-get event :turn-id)))
          (e-chat-activity--set-turn-time
           turn-id :started-at (plist-get event :created-at))
-         (when-let ((pending-summary
+         (when-let* ((pending-summary
                      (e-chat-activity--turn-pending-hook-summary turn-id)))
            (plist-put (e-chat-activity--turn-record turn-id)
                       :pending-hook-summary pending-summary))
@@ -2710,7 +2710,7 @@ inserted, without exposing activity records to the facade."
 
 (defun e-chat-activity-failed-turn-p (turn-id)
   "Return non-nil when TURN-ID has an activity failure recorded."
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (and (plist-get record :failure-error) t)))
 
 (defun e-chat-activity-turn-display (turn-id)
@@ -2718,7 +2718,7 @@ inserted, without exposing activity records to the facade."
 The returned plist contains text and scalar status values only.  Activity
 records, provider-round plists, and transcript block metadata remain private
 to their owning components."
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (list :turn-id turn-id
           :summary-text (e-chat-activity--activity-summary-text record)
           :expanded-text (e-chat-activity--activity-expanded-text record)
@@ -2778,7 +2778,7 @@ its deferred redraw work is represented."
 
 (defun e-chat-activity-active-p (turn-id)
   "Return non-nil when TURN-ID has an active provider activity round."
-  (when-let ((record (e-chat-activity--existing-turn-record turn-id)))
+  (when-let* ((record (e-chat-activity--existing-turn-record turn-id)))
     (and (e-chat-activity--active-activity-p record) t)))
 
 (defun e-chat-activity-replay-events (turn-id activity-events)

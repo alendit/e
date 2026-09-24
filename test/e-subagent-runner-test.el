@@ -206,12 +206,12 @@
 
 (defun e-subagent-runner-test--live-get (live participant-id)
   "Return the current internal execution snapshot for PARTICIPANT-ID."
-  (when-let ((entry (e-subagent-runner-test--entry live participant-id)))
+  (when-let* ((entry (e-subagent-runner-test--entry live participant-id)))
     (e-subagent-runner-test--record-from-entry entry 'running)))
 
 (defun e-subagent-runner-test--live-pending (live participant-id)
   "Return a bounded pending snapshot without private callbacks."
-  (when-let ((entry (e-subagent-runner-test--entry live participant-id t)))
+  (when-let* ((entry (e-subagent-runner-test--entry live participant-id t)))
     (let ((record (e-subagent-runner-test--record-from-entry entry 'pending)))
       (setq record (plist-put record :work-handle
                               (plist-get entry :work-handle)))
@@ -219,7 +219,7 @@
 
 (defun e-subagent-runner-test--live-work-handle (live participant-id)
   "Return PARTICIPANT-ID's work handle, if pending or live."
-  (when-let ((identity (e-subagent-live-find-identity live participant-id)))
+  (when-let* ((identity (e-subagent-live-find-identity live participant-id)))
     (e-subagent-live-work-handle live (car identity) participant-id)))
 
 (defun e-subagent-runner-test--await-work-state (handle state)

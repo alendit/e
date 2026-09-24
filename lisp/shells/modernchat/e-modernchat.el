@@ -83,7 +83,7 @@
 (defun e-modernchat--source-directory ()
   "Return the root directory of the e source tree."
   (or (and (fboundp 'e-source-directory) (e-source-directory))
-      (when-let ((root (locate-dominating-file
+      (when-let* ((root (locate-dominating-file
                         (or load-file-name buffer-file-name default-directory)
                         "e.el")))
         (file-name-as-directory (expand-file-name root)))
@@ -102,7 +102,7 @@
 
 (defun e-modernchat--ensure-runtime-path ()
   "Add vendored emacs-egui to `load-path' when present."
-  (when-let ((directory (e-modernchat--vendored-egui-lisp-directory)))
+  (when-let* ((directory (e-modernchat--vendored-egui-lisp-directory)))
     (add-to-list 'load-path directory)))
 
 (defun e-modernchat--runtime-available-p ()
@@ -400,7 +400,7 @@
          (project-root
           (let ((default-directory directory))
             (ignore-errors
-              (when-let ((project (project-current nil)))
+              (when-let* ((project (project-current nil)))
                 (project-root project)))))
          (git-root (locate-dominating-file directory ".git")))
     (file-name-as-directory

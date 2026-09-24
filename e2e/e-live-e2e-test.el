@@ -106,7 +106,7 @@ never returned or recorded here."
 
 (defun e-live-e2e--identity-base-url (endpoint)
   "Return the base identity for Responses ENDPOINT."
-  (when-let ((endpoint (e-live-e2e--identity-url endpoint)))
+  (when-let* ((endpoint (e-live-e2e--identity-url endpoint)))
     (let ((base
            (replace-regexp-in-string
             "/responses\\(?:/[^/?#]+\\)?\\'" "" endpoint)))
@@ -256,14 +256,14 @@ crossed the native requester."
 The file configures the default `:chat-default' harness the same way the
 interactive installation does; a batch e2e run has no user init, so the backend
 choice is loaded from here."
-  (when-let ((path (e-live-e2e--env "E_E2E_CONFIG")))
+  (when-let* ((path (e-live-e2e--env "E_E2E_CONFIG")))
     (expand-file-name path)))
 
 (defun e-live-e2e--load-config ()
   "Load the backend configuration file once and register default harnesses.
 Signal nothing when unconfigured; callers skip in that case."
   (unless e-live-e2e--config-loaded
-    (when-let ((path (e-live-e2e--config-file)))
+    (when-let* ((path (e-live-e2e--config-file)))
       (when (file-readable-p path)
         (load path nil t)
         ;; The config sets `e-default-harness-specs' /
@@ -1588,7 +1588,7 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
 
 (defun e-live-e2e--cancel-newest-request (request-handles)
   "Cancel the newest captured request in newest-first REQUEST-HANDLES."
-  (when-let ((request (car request-handles)))
+  (when-let* ((request (car request-handles)))
     (e-backend-cancel-request request)))
 
 (cl-defun e-live-e2e--run-external-scenario
@@ -1771,7 +1771,7 @@ finalization, including when the original condition is re-signalled."
 
 (defun e-live-e2e--adoption-record-disposition (record sentinel)
   "Return the preserving disposition in RECORD for SENTINEL, or nil."
-  (when-let ((item
+  (when-let* ((item
               (seq-find
                (lambda (item)
                  (pcase (plist-get item :kind)
@@ -6390,7 +6390,7 @@ continuation and socket assertions used by the compatibility selector."
         ;; HTTP profiles without continuation already full-replay every turn.
         ;; For WebSocket profiles, deliberately discard the connection-local
         ;; anchor so the next live request must take the same full path.
-        (when-let ((websocket-session
+        (when-let* ((websocket-session
                     (plist-get (car (last request-bodies)) :session)))
           (e-openai-websocket-session-close websocket-session))
         (e-chat-sql-e2e-prompt-batch
@@ -6526,7 +6526,7 @@ WebSocket and socket-replacement assertions."
                ;; Only WebSocket profiles have a retained connection to
                ;; replace.  Each HTTP request is already an independent pair.
                (when (eq transport 'websocket)
-                 (when-let ((session
+                 (when-let* ((session
                              (plist-get (car (last request-bodies)) :session)))
                    (e-openai-websocket-session-close session)))
                (setq latest-turn-start-count (length request-bodies))

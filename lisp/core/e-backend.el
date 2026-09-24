@@ -386,7 +386,7 @@ without a normalizer preserve DETAILS unchanged."
 
 (defun e-backend-cancel-request (request)
   "Cancel REQUEST when it has a provider cancellation function."
-  (when-let ((cancel (and (e-backend-request-p request)
+  (when-let* ((cancel (and (e-backend-request-p request)
                           (e-backend-request-cancel request))))
     (funcall cancel)))
 

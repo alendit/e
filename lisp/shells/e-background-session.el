@@ -97,7 +97,7 @@ bounded descriptive fact attributes."
             (list 'e-board-sqlite-publication-target-p publication-target)))
   (unless (and (stringp prompt) (not (string-empty-p prompt)))
     (user-error "Background trigger requires a non-empty :prompt string"))
-  (when-let ((existing (e-background-session-get id)))
+  (when-let* ((existing (e-background-session-get id)))
     (e-background-session-stop existing))
   (let ((trigger (e-background-trigger--create
                   :id id
@@ -114,7 +114,7 @@ bounded descriptive fact attributes."
 
 (defun e-background-session-remove (id)
   "Stop and unregister the background trigger with ID."
-  (when-let ((trigger (e-background-session-get id)))
+  (when-let* ((trigger (e-background-session-get id)))
     (e-background-session-stop trigger)
     (remhash id e-background-session--triggers)))
 
@@ -144,7 +144,7 @@ bounded descriptive fact attributes."
               (mapcar (lambda (path)
                         (e-background-session--arm-path trigger path))
                       (e-background-trigger-paths trigger))))
-  (when-let ((interval (e-background-trigger-schedule-seconds trigger)))
+  (when-let* ((interval (e-background-trigger-schedule-seconds trigger)))
     (setf (e-background-trigger-schedule-timer trigger)
           (run-at-time interval interval
                        (lambda ()
@@ -160,10 +160,10 @@ bounded descriptive fact attributes."
   (dolist (watch (e-background-trigger-watches trigger))
     (ignore-errors (file-notify-rm-watch watch)))
   (setf (e-background-trigger-watches trigger) nil)
-  (when-let ((timer (e-background-trigger-schedule-timer trigger)))
+  (when-let* ((timer (e-background-trigger-schedule-timer trigger)))
     (when (timerp timer) (cancel-timer timer)))
   (setf (e-background-trigger-schedule-timer trigger) nil)
-  (when-let ((timer (e-background-trigger-debounce-timer trigger)))
+  (when-let* ((timer (e-background-trigger-debounce-timer trigger)))
     (when (timerp timer) (cancel-timer timer)))
   (setf (e-background-trigger-debounce-timer trigger) nil)
   trigger)
@@ -192,7 +192,7 @@ our own teardown and is ignored."
   "Schedule a coalesced fire of TRIGGER after its debounce window.
 Restarting the debounce timer on each request is what coalesces a burst of
 events into one fire."
-  (when-let ((timer (e-background-trigger-debounce-timer trigger)))
+  (when-let* ((timer (e-background-trigger-debounce-timer trigger)))
     (when (timerp timer) (cancel-timer timer)))
   (setf (e-background-trigger-debounce-timer trigger)
         (run-at-time (max 0 (e-background-trigger-debounce-seconds trigger)) nil

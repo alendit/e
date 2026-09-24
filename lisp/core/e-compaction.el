@@ -471,7 +471,7 @@ cache counters, runtime frames, and diagnostics."
           (delq nil
                 (mapcar
                  (lambda (entry)
-                   (when-let ((message
+                   (when-let* ((message
                                (e-session-context-lifetime-durable-message
                                 entry)))
                      (e-context-lifetime-portable-message message)))
@@ -637,7 +637,7 @@ for optional opaque backend compaction."
                     covered-session-boundary)))
     (dolist (entry path)
       (when after-boundary
-        (when-let ((message (e-session-context-lifetime-durable-message entry)))
+        (when-let* ((message (e-session-context-lifetime-durable-message entry)))
           (push (e-context-lifetime-portable-message message) tail)))
       (when (equal (plist-get entry :id) covered-session-boundary)
         (setq after-boundary t)))

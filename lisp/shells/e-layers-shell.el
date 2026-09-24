@@ -42,7 +42,7 @@
 
 (defun e-layers--spec-for-label (specs labels label)
   "Return the spec from SPECS corresponding to LABELS LABEL."
-  (when-let ((index (cl-position label labels :test #'equal)))
+  (when-let* ((index (cl-position label labels :test #'equal)))
     (nth index specs)))
 
 (defun e-layers--read-layer-id (harness)

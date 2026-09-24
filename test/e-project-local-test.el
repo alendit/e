@@ -37,9 +37,15 @@
 (defvar e-project-local-test--layer-load-count)
 
 (defun e-project-local-test--write-file (path content)
-  "Write CONTENT to PATH, creating parent directories."
+  "Write CONTENT to PATH, creating parent directories.
+Preserve dynamic binding in generated fixtures while declaring it explicitly."
   (make-directory (file-name-directory path) t)
-  (write-region content nil path nil 'silent))
+  (write-region
+   (if (and (string-suffix-p ".el" path)
+            (not (string-match-p "\\`[^\n]*lexical-binding:" content)))
+       (concat ";;; -*- lexical-binding: nil; -*-\n" content)
+     content)
+   nil path nil 'silent))
 
 (defun e-project-local-test--capability-source (id)
   "Return capability.el source contributing a tool and resource for ID."

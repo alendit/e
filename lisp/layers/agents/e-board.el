@@ -259,7 +259,7 @@ failed."
     (puthash state controls e-board--run-set-controls)
     (setf (e-work-handle-cancel-function work)
           (lambda (_handle)
-            (when-let ((current (plist-get
+            (when-let* ((current (plist-get
                                  (e-board--run-set-controls state)
                                  :current-child)))
               (unless (e-request-terminal-p
@@ -275,8 +275,8 @@ failed."
 
 (defun e-board--run-set-refresh (binding state)
   "Refresh STATE after a durable Board commit without polling."
-  (when-let ((controls (e-board--run-set-controls state)))
-    (if-let ((work (plist-get controls :query-work)))
+  (when-let* ((controls (e-board--run-set-controls state)))
+    (if-let* ((work (plist-get controls :query-work)))
         (unless (memq (plist-get (e-work-status work) :state)
                       '(finished failed cancelled))
           (setq controls (plist-put controls :rerun-p t))
@@ -545,17 +545,17 @@ chat service only knows that the hook returns asynchronous readiness work."
               (e-chat-service-binding-register-cleanup
                binding
                (lambda (_binding)
-                 (when-let ((current (e-board--run-set-controls state)))
+                 (when-let* ((current (e-board--run-set-controls state)))
                    ;; Cancel barriers before cancelling a held query.  Query
                    ;; cancellation publishes unavailable; a retiring binding
                    ;; must settle its consumers as cancelled instead of
                    ;; exposing that retirement transition as a query failure.
                    (e-board--run-set-barriers-cancel state)
-                   (when-let ((query (plist-get current :query-work)))
+                   (when-let* ((query (plist-get current :query-work)))
                      (unless (memq (plist-get (e-work-status query) :state)
                                    '(finished failed cancelled))
                        (e-work-cancel query)))
-                   (when-let ((wake (plist-get current :observer)))
+                   (when-let* ((wake (plist-get current :observer)))
                      (e-board-sqlite-commit-observation-cancel wake))
                    (remhash state e-board--run-set-controls)
                    (remhash binding e-board--run-set-states)
@@ -568,14 +568,14 @@ chat service only knows that the hook returns asynchronous readiness work."
 
 (defun e-board-run-set-retire-binding (binding)
   "Retire BINDING's Board run-set state and wake-up subscription."
-  (when-let ((state (gethash binding e-board--run-set-states)))
-    (when-let ((controls (e-board--run-set-controls state)))
-      (when-let ((observer (plist-get controls :observer)))
+  (when-let* ((state (gethash binding e-board--run-set-states)))
+    (when-let* ((controls (e-board--run-set-controls state)))
+      (when-let* ((observer (plist-get controls :observer)))
         (e-board-sqlite-commit-observation-cancel observer))
       ;; See the binding cleanup callback above: retirement is cancellation,
       ;; not an observation failure, even when a query is currently held.
       (e-board--run-set-barriers-cancel state)
-      (when-let ((work (plist-get controls :query-work)))
+      (when-let* ((work (plist-get controls :query-work)))
         (unless (memq (plist-get (e-work-status work) :state)
                       '(finished failed cancelled))
           (e-work-cancel work)))

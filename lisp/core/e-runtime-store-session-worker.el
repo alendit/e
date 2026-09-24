@@ -1820,7 +1820,7 @@ unknown rather than inferred as success."
                    (throw 'unknown
                           (e-runtime-store-session-worker--continuation-outcome-unknown
                            'activity-shape)))
-                 (when-let ((event
+                 (when-let* ((event
                              (e-runtime-store-session-worker--activity-event
                               value)))
                    (let ((status

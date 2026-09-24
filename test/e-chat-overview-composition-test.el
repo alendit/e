@@ -305,7 +305,7 @@
               (should (string-match-p "newer prompt" (buffer-string))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (when-let ((preview
+      (when-let* ((preview
                   (get-buffer (e-chat-overview-resume-preview-buffer-name))))
         (kill-buffer preview)))))
 

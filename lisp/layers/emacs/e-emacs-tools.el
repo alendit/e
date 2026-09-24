@@ -110,7 +110,7 @@ runs a separate process."
           :name name
           :kind "buffer"
           :metadata (append (e-emacs-tools--buffer-metadata buffer)
-                            (when-let ((updated-at
+                            (when-let* ((updated-at
                                         (e-emacs-tools--buffer-updated-at buffer)))
                               (list :updated-at updated-at))))))
 

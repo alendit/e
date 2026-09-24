@@ -1,0 +1,30 @@
+#+title: Emacs 31 Warning Cleanup
+
+* Status
+
+Done.
+
+* Change
+
+Replace 504 obsolete =when-let= and =if-let= calls across 107 tracked Lisp
+files with their Emacs 31 supported =when-let*= and =if-let*= forms.  The old
+macros expand through the new forms, so this is a mechanical syntax update.
+
+The test cleanup makes generated project-local =.el= fixtures declare their
+existing dynamic binding behavior, gives a reload metadata test a valid
+compiler macro sentinel, and waits for Canvas's acknowledged SQL mutation
+before checking durable metadata.  Stale GPT-5.5/Codex continuation assertions
+now reflect Tiny 030.  Org Canvas fixtures use the current top-level
+=:org-canvas-ref= metadata shape.  The installed =org-annotate= checkout has
+its own separate nine-form Emacs 31 update in local commit =8e2c002=; its package and
+the =e= repository remain separate.
+
+* Validation
+
+- Focused changed tests: 7/7 passed.
+- Project-local suite: 49/49 passed, zero warnings.
+- Annotation suite: 10/10 passed, zero warnings.
+- Installed =org-annotate= suite: 23/23 passed, zero warnings.
+- Sol and Luna live Codex E2E: 1/1 each, zero warnings.
+- Complete =eldev -s test=: 2,713/2,713 passed, zero warnings.
+- =bash e2e/run-current-config-tests.sh=: 8/8 passed, zero warnings.

@@ -1084,7 +1084,7 @@ durable or public live-table projection."
 
 (defun e-subagent--durable-assignment (record)
   "Return RECORD's persisted orchestration assignment, or nil."
-  (when-let ((run-id (plist-get record :run-id)))
+  (when-let* ((run-id (plist-get record :run-id)))
     (list :run-id run-id
           :task-key (plist-get record :task-key)
           :attempt (plist-get record :attempt))))
@@ -1093,7 +1093,7 @@ durable or public live-table projection."
   "Publish RECORD's terminal orchestration fact through TARGET.
 SQLite source keys provide idempotency; no terminal publication state is
 retained in the private live owner."
-  (when-let ((assignment (e-subagent--durable-assignment record)))
+  (when-let* ((assignment (e-subagent--durable-assignment record)))
     (e-board-orchestration-actions-publish-terminal
      target assignment status
      :summary (or (plist-get record :result-summary) "")
@@ -1133,7 +1133,7 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
               (error
                (e-subagent--remember-progress-error
                 work-handle event error))))))
-    (when-let ((enroll (e-harness-work-enrollment-function parent-harness)))
+    (when-let* ((enroll (e-harness-work-enrollment-function parent-harness)))
       (funcall enroll work-handle nil))
     (e-work-start-prepared work-handle)
     (e-subagent-live-update live board-id participant-id
@@ -1469,7 +1469,7 @@ report is accepted only while the live execution exists.  Durable terminal
 publication happens exactly once during settlement; this function retains only
 the runner-owned closure callback and never writes a terminal result inventory.
 Return a detached acknowledgement, or nil when SESSION-ID is not live."
-  (when-let ((entry (e-subagent-live-find-by-session live board-id session-id)))
+  (when-let* ((entry (e-subagent-live-find-by-session live board-id session-id)))
     (let* ((proposed (append (list :summary summary :outputs outputs)
                              (when result (list :result result))))
            (callbacks (plist-get entry :callbacks))

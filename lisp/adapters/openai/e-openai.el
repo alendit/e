@@ -102,7 +102,7 @@
                             :provider-anchor-safety
                             (plist-get options :provider-anchor-safety))))
         (setq metadata (plist-put metadata :diagnostics diagnostics)))
-      (when-let ((revision (e-openai-responses-prompt-layout-revision options)))
+      (when-let* ((revision (e-openai-responses-prompt-layout-revision options)))
         (setq diagnostics
               (append diagnostics
                       (list :prompt-cache-mode
@@ -117,7 +117,7 @@
         (setq metadata
               (append metadata
                       (list :provider-anchor-response-id response-id))))
-      (when-let ((covered-entry-id (plist-get anchor :covered-entry-id)))
+      (when-let* ((covered-entry-id (plist-get anchor :covered-entry-id)))
         (setq metadata
               (append metadata
                       (list :provider-anchor-covered-entry-id
@@ -135,7 +135,7 @@
                             (plist-get
                              options
                              :provider-anchor-source-message-count)))))
-      (when-let ((reason
+      (when-let* ((reason
                   (plist-get options :provider-anchor-invalidation-reason)))
         (setq metadata
               (append metadata
@@ -330,9 +330,9 @@ OpenAI request and backend-neutral context."
   "Return backend error details carried by structured HTTP RESPONSE."
   (when (e-openai-http-response-p response)
     (append
-     (when-let ((status (e-openai-http-response-status response)))
+     (when-let* ((status (e-openai-http-response-status response)))
        (list :status status))
-     (when-let ((retry-after (e-openai-http-response-retry-after response)))
+     (when-let* ((retry-after (e-openai-http-response-retry-after response)))
        (list :retry-after retry-after)))))
 
 (defun e-openai--http-error-item (response items)

@@ -92,7 +92,7 @@
                  (funcall function)
                (error
                 (setf (e-graphical-test-stream-failure stream) err)
-                (when-let ((on-error
+                (when-let* ((on-error
                             (e-graphical-test-stream-on-error stream)))
                   (funcall on-error err)))))))
     (push timer (e-graphical-test-stream-timers stream))
@@ -196,7 +196,7 @@ on the first redisplay after this helper returns."
 
 (defun e-graphical-test-tail-y (window position)
   "Return POSITION's graphical Y coordinate in WINDOW, or nil."
-  (when-let ((posn (posn-at-point (max (point-min) (1- position)) window)))
+  (when-let* ((posn (posn-at-point (max (point-min) (1- position)) window)))
     (cdr (posn-x-y posn))))
 
 (provide 'e-graphical-test-support)

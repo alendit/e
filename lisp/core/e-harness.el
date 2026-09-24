@@ -102,7 +102,7 @@ backend/configuration fields are copied from FRESH."
   "Return session METADATA with normalized harness-owned fields."
   (let ((metadata (copy-sequence metadata)))
     (when (plist-member metadata :project-root)
-      (if-let ((root (e-harness-normalize-project-root
+      (if-let* ((root (e-harness-normalize-project-root
                       (plist-get metadata :project-root))))
           (setq metadata (plist-put metadata :project-root root))
         (cl-remf metadata :project-root)))
@@ -171,7 +171,7 @@ is left untouched.  See `e-session-fork'."
 
 (defun e-harness--apply-pending-runtime-refresh (harness)
   "Apply HARNESS's pending runtime refresh once no turn is running."
-  (when-let ((pending (gethash harness e-harness--pending-runtime-refreshes)))
+  (when-let* ((pending (gethash harness e-harness--pending-runtime-refreshes)))
     (plist-put pending :timer nil)
     (unless (e-harness--running-turns-p harness)
       (e-harness-activity-unsubscribe harness (plist-get pending :subscription))
@@ -180,7 +180,7 @@ is left untouched.  See `e-session-fork'."
 
 (defun e-harness--schedule-pending-runtime-refresh (harness)
   "Schedule one post-terminal pending runtime refresh check for HARNESS."
-  (when-let ((pending (gethash harness e-harness--pending-runtime-refreshes)))
+  (when-let* ((pending (gethash harness e-harness--pending-runtime-refreshes)))
     (unless (timerp (plist-get pending :timer))
       (plist-put pending :timer
                  (run-at-time 0 nil #'e-harness--apply-pending-runtime-refresh
@@ -194,7 +194,7 @@ is left untouched.  See `e-session-fork'."
     (signal 'wrong-type-argument (list 'e-harness-p fresh)))
   (if (not (e-harness--running-turns-p harness))
       (e-harness-refresh-runtime-from harness fresh)
-    (if-let ((pending (gethash harness e-harness--pending-runtime-refreshes)))
+    (if-let* ((pending (gethash harness e-harness--pending-runtime-refreshes)))
         (plist-put pending :fresh fresh)
       (let (subscription)
         (setq subscription

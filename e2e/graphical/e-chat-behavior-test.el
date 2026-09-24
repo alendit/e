@@ -155,21 +155,21 @@ Return a plist containing its stream, harness, transcript, and visible windows."
 
 (defun e-chat-behavior-test--cleanup (fixture configuration frame-size)
   "Clean FIXTURE and restore CONFIGURATION and FRAME-SIZE."
-  (when-let ((stream (plist-get fixture :stream)))
+  (when-let* ((stream (plist-get fixture :stream)))
     (e-graphical-test-stream-cancel stream))
-  (when-let ((transcript (plist-get fixture :transcript)))
+  (when-let* ((transcript (plist-get fixture :transcript)))
     (when (buffer-live-p transcript)
       (kill-buffer transcript)))
-  (when-let ((outside (get-buffer "*e graphical outside*")))
+  (when-let* ((outside (get-buffer "*e graphical outside*")))
     (kill-buffer outside))
-  (when-let ((store (plist-get fixture :store)))
+  (when-let* ((store (plist-get fixture :store)))
     ;; This is an isolated test-runtime boundary.  Do not synchronously wait
     ;; for a close acknowledgement from inside the server-hosted graphical
     ;; callback; already-acknowledged durable work is sufficient here.
     (ignore-errors
       (e-runtime-store-shutdown
        (e-session-storage-runtime-store store))))
-  (when-let ((directory (plist-get fixture :store-directory)))
+  (when-let* ((directory (plist-get fixture :store-directory)))
     (when (file-directory-p directory)
       (delete-directory directory t)))
   (when (window-configuration-p configuration)
@@ -210,7 +210,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
                  seconds nil
                  (lambda ()
                    (funcall before-exit)
-                   (when-let ((window (active-minibuffer-window)))
+                   (when-let* ((window (active-minibuffer-window)))
                      (with-selected-window window
                        (exit-minibuffer))))))
           (minibuffer-with-setup-hook
@@ -336,7 +336,7 @@ than the invisible insertion position."
         (e-graphical-test-wait-until
          (lambda ()
            (redisplay t)
-           (when-let ((windows
+           (when-let* ((windows
                        (e-chat-behavior-test--surface-windows transcript)))
              (let ((window (car windows)))
                (with-current-buffer transcript
@@ -1122,7 +1122,7 @@ than the invisible insertion position."
            "r100")
           (e-chat-behavior-test--assert-tail-near-bottom fixture)
           (e-chat-behavior-test--finish fixture "short settled answer")
-          (when-let ((artifact
+          (when-let* ((artifact
                       (e-chat-behavior-test--capture-state
                        "settled-output-after-tall-transient")))
             (let* ((state (plist-get artifact :state-data))
@@ -1613,7 +1613,7 @@ than the invisible insertion position."
                           (window-atom-root (cdr windows)))
                       (eq (selected-window) (cdr windows)))))
              3.0 "persp-restored chat surface with focused composer")))
-      (when-let ((away (get-buffer "*e graphical away*")))
+      (when-let* ((away (get-buffer "*e graphical away*")))
         (kill-buffer away))
       (e-chat-behavior-test--cleanup fixture configuration frame-size)
       (if persp-was-enabled

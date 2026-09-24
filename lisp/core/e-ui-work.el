@@ -132,14 +132,14 @@
 
 (defun e-ui-work--remember-job (job)
   "Track JOB in its target buffer."
-  (when-let ((buffer (e-ui-work--pending-buffer
+  (when-let* ((buffer (e-ui-work--pending-buffer
                       (e-ui-work-job-buffer job))))
     (with-current-buffer buffer
       (push job e-ui-work--pending-jobs))))
 
 (defun e-ui-work--drop-job (job)
   "Drop JOB from its target buffer registry."
-  (when-let ((buffer (e-ui-work--pending-buffer
+  (when-let* ((buffer (e-ui-work--pending-buffer
                       (e-ui-work-job-buffer job))))
     (with-current-buffer buffer
       (setq e-ui-work--pending-jobs
@@ -147,21 +147,21 @@
 
 (defun e-ui-work--job-pending-p (job)
   "Return non-nil when JOB is still pending."
-  (when-let ((buffer (e-ui-work--pending-buffer
+  (when-let* ((buffer (e-ui-work--pending-buffer
                       (e-ui-work-job-buffer job))))
     (with-current-buffer buffer
       (memq job e-ui-work--pending-jobs))))
 
 (defun e-ui-work--running-p (job)
   "Return non-nil when JOB's owner/key is already running."
-  (when-let ((buffer (e-ui-work--pending-buffer
+  (when-let* ((buffer (e-ui-work--pending-buffer
                       (e-ui-work-job-buffer job))))
     (with-current-buffer buffer
       (member (e-ui-work--job-key job) e-ui-work--running-keys))))
 
 (defun e-ui-work--cancel-job-timer (job)
   "Cancel JOB's current timer, if any."
-  (when-let ((timer (e-ui-work-job-timer job)))
+  (when-let* ((timer (e-ui-work-job-timer job)))
     (when (timerp timer)
       (cancel-timer timer))
     (setf (e-ui-work-job-timer job) nil)))
@@ -189,7 +189,7 @@
 
 (cl-defun e-ui-work-cancel-matching (buffer owner &key (key :any))
   "Cancel pending UI work in BUFFER matching OWNER and KEY."
-  (when-let ((buffer (e-ui-work--pending-buffer buffer)))
+  (when-let* ((buffer (e-ui-work--pending-buffer buffer)))
     (with-current-buffer buffer
       (dolist (job (copy-sequence e-ui-work--pending-jobs))
         (when (e-ui-work--matches-p job owner key)
@@ -197,7 +197,7 @@
 
 (defun e-ui-work--target-window-state (buffer)
   "Capture point and visible window state for BUFFER."
-  (when-let ((buffer (e-ui-work--pending-buffer buffer)))
+  (when-let* ((buffer (e-ui-work--pending-buffer buffer)))
     (with-current-buffer buffer
       (list :point (copy-marker (point) nil)
             :windows
@@ -210,15 +210,15 @@
 (defun e-ui-work--restore-target-window-state (state)
   "Restore point and window STATE captured by `e-ui-work--target-window-state'."
   (when state
-    (when-let ((point (plist-get state :point)))
+    (when-let* ((point (plist-get state :point)))
       (when (marker-position point)
         (goto-char (min (marker-position point) (point-max)))))
     (dolist (entry (plist-get state :windows))
       (let ((window (plist-get entry :window)))
         (when (window-live-p window)
-          (when-let ((start (plist-get entry :start)))
+          (when-let* ((start (plist-get entry :start)))
             (set-window-start window (min start (point-max)) t))
-          (when-let ((point (plist-get entry :point)))
+          (when-let* ((point (plist-get entry :point)))
             (set-window-point window (min point (point-max)))))))))
 
 (defun e-ui-work--position-value (position)
@@ -496,7 +496,7 @@ Any other non-error return value finishes the work handle."
 
 (cl-defun e-ui-work-pending (buffer &key owner (key :any))
   "Return pending UI work status plists for BUFFER."
-  (when-let ((buffer (e-ui-work--pending-buffer buffer)))
+  (when-let* ((buffer (e-ui-work--pending-buffer buffer)))
     (with-current-buffer buffer
       (mapcar
        (lambda (job)

@@ -53,7 +53,7 @@
            "Graphical E2E: Emacs %s, window system %S, config %s, selector %S\n"
            emacs-version window-system
            (or (getenv "E_E2E_EMACS_CONFIG") "isolated") selector)
-          (when-let ((directory
+          (when-let* ((directory
                       (getenv "E_GRAPHICAL_E2E_SCREENSHOT_DIR")))
             (when (fboundp 'e-graphical-test-reset-screenshots)
               (e-graphical-test-reset-screenshots))

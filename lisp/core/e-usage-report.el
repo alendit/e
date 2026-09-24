@@ -46,10 +46,10 @@
     (dolist (event events)
       (pcase (plist-get event :event-type)
         ('tool-started
-         (when-let ((name (e-usage-report--tool-name event)))
+         (when-let* ((name (e-usage-report--tool-name event)))
            (e-usage-report--increment tools name)))
         ('action-started
-         (when-let ((name (e-usage-report--action-name event)))
+         (when-let* ((name (e-usage-report--action-name event)))
            (e-usage-report--increment actions name)))))
     (list :tools tools :actions actions)))
 

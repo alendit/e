@@ -160,7 +160,7 @@ VISIBILITY, when non-nil, is `always' or `hidden'."
   (when kind
     (e-harness-instance--validate-kind kind))
   (or (when kind
-        (when-let ((id (gethash kind e-harness-instance--defaults)))
+        (when-let* ((id (gethash kind e-harness-instance--defaults)))
           (let ((instance (e-harness-instance-get id)))
             (and instance
                  (eq (e-harness-instance-kind instance) kind)

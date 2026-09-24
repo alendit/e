@@ -425,7 +425,7 @@ assigned to their presentation owner after settlement."
 (defun e-chat-overview--set-read-marker
     (session-id marker &optional harness instance-id)
   "Set SESSION-ID read marker to MARKER in HARNESS."
-  (when-let ((target-harness (or harness
+  (when-let* ((target-harness (or harness
                                  e-chat-overview--harness
                                  (e-chat-overview--default-harness))))
     (e-chat-overview--set-session-read-marker
@@ -441,7 +441,7 @@ assigned to their presentation owner after settlement."
 
 (defun e-chat-overview--session-unread-p (harness session &optional instance-id)
   "Return non-nil when SESSION has unread assistant output in HARNESS."
-  (when-let ((marker (e-chat-overview--latest-assistant-marker harness session)))
+  (when-let* ((marker (e-chat-overview--latest-assistant-marker harness session)))
     (not (equal marker
                 (e-chat-overview--session-read-marker
                  harness session instance-id)))))
@@ -687,14 +687,14 @@ adds its display name to the row."
 (defun e-chat-overview--active-session-user-prompt-p (message)
   "Return non-nil when MESSAGE is a user prompt."
   (and (eq (plist-get message :role) 'user)
-       (when-let ((content (plist-get message :content)))
+       (when-let* ((content (plist-get message :content)))
          (and (stringp content)
               (not (string-empty-p (string-trim content)))))))
 
 (defun e-chat-overview--active-session-preview-message-p (message)
   "Return non-nil when MESSAGE belongs in the active-session preview."
   (and (memq (plist-get message :role) '(user assistant))
-       (when-let ((content (plist-get message :content)))
+       (when-let* ((content (plist-get message :content)))
          (and (stringp content)
               (not (string-empty-p (string-trim content)))))))
 
@@ -706,7 +706,7 @@ adds its display name to the row."
                  (plist-get session :messages))
         (and (integerp message-count)
              (> message-count 0)
-             (when-let ((summary (plist-get session :summary)))
+             (when-let* ((summary (plist-get session :summary)))
                (and (stringp summary)
                     (not (string-empty-p (string-trim summary)))))))))
 
@@ -932,7 +932,7 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
 
 (defun e-chat-overview--candidate-for-label (candidates labels label)
   "Return session candidate from CANDIDATES matching LABELS LABEL."
-  (when-let ((index (cl-position label labels :test #'equal)))
+  (when-let* ((index (cl-position label labels :test #'equal)))
     (nth index candidates)))
 
 (defun e-chat-overview--consult-read-available-p ()
@@ -953,7 +953,7 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
    (delq nil
          (list (plist-get session :title)
                (e-chat-transcript-session-summary-preview session)
-               (when-let ((message-count (plist-get session :message-count)))
+               (when-let* ((message-count (plist-get session :message-count)))
                  (format "%d messages" message-count))
                (plist-get session :last-message-at)))
    "\n\n"))
@@ -997,7 +997,7 @@ When SHOW-INSTANCE is non-nil, prefix the owning target label."
            (ensure-origin))
           ('preview
            (ensure-origin)
-           (if-let ((candidate
+           (if-let* ((candidate
                      (e-chat-overview--candidate-for-label
                       candidates labels candidate-label)))
                (when (window-live-p origin-window)
@@ -1155,7 +1155,7 @@ surface; the overview owner never opens a chat buffer itself."
                       (e-chat-overview--session-for-id harness session-or-id)
                     session-or-id))
          (session-id (plist-get session :id)))
-    (when-let ((marker (and session
+    (when-let* ((marker (and session
                             (e-chat-overview--latest-assistant-marker
                              harness session))))
       (unless (equal marker
@@ -1323,7 +1323,7 @@ not open an unbounded process-wide presentation subscription."
 
 (defun e-chat-overview--visible-window ()
   "Return the visible overview sidebar window, or nil."
-  (when-let ((buffer (get-buffer e-chat-overview-buffer-name))
+  (when-let* ((buffer (get-buffer e-chat-overview-buffer-name))
              (window (get-buffer-window buffer t)))
     (and (window-live-p window) window)))
 
@@ -1352,7 +1352,7 @@ not open an unbounded process-wide presentation subscription."
   (interactive)
   (let ((buffer (get-buffer e-chat-overview-buffer-name)))
     (when (buffer-live-p buffer)
-      (when-let ((window (get-buffer-window buffer t)))
+      (when-let* ((window (get-buffer-window buffer t)))
         (delete-window window))
       (kill-buffer buffer))))
 

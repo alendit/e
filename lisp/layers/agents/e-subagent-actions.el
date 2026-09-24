@@ -110,7 +110,7 @@ record live."
     (condition-case error
         (setq board-id (e-subagent-actions--board-id context))
       (error
-       (when-let ((identity
+       (when-let* ((identity
                    (e-subagent-live-find-identity live participant-id)))
          (setq board-id (car identity)))
        (unless board-id

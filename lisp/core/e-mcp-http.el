@@ -178,7 +178,7 @@ Return the parsed JSON-RPC result on success, signal on error."
            (unless settled
              (condition-case condition
                  (progn
-                   (when-let ((transport-error (plist-get status :error)))
+                   (when-let* ((transport-error (plist-get status :error)))
                      (signal 'e-mcp-backend-error
                              (list (e-format-safe
                                     "HTTP request to %s failed: %S"

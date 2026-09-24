@@ -100,9 +100,9 @@
 (defun e-workspace-behavior-test--cleanup
     (configuration frame-size save-directory)
   "Release the active fixture and restore frame state."
-  (when-let ((stream (plist-get e-workspace-behavior-test--chat-fixture :stream)))
+  (when-let* ((stream (plist-get e-workspace-behavior-test--chat-fixture :stream)))
     (e-graphical-test-stream-cancel stream))
-  (when-let ((transcript
+  (when-let* ((transcript
               (plist-get e-workspace-behavior-test--chat-fixture :transcript)))
     (when (buffer-live-p transcript)
       (let ((kill-buffer-query-functions nil))

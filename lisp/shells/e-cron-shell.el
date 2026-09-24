@@ -81,7 +81,7 @@ Bound to `e-cron-fire-functions' so the list tracks live fire state."
 
 (defun e-cron-shell--id-at-point ()
   "Return the schedule id symbol of the row at point, or signal."
-  (if-let ((id (tabulated-list-get-id)))
+  (if-let* ((id (tabulated-list-get-id)))
       (intern id)
     (user-error "No schedule on this line")))
 

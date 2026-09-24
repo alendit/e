@@ -312,7 +312,7 @@ entry's own parent."
   (let ((message (copy-sequence message)))
     (plist-put message :role
                (e-session-codec--known-role (plist-get message :role)))
-    (when-let ((origin (plist-get message :origin)))
+    (when-let* ((origin (plist-get message :origin)))
       (when (stringp origin)
         (plist-put message :origin (intern origin))))
     (when (plist-member message :display)
@@ -338,7 +338,7 @@ entry's own parent."
     (when (eq (plist-get event :event-type) 'hook-audit)
       (let ((payload (copy-sequence (plist-get event :payload))))
         (dolist (key '(:owner :outcome :truth-status))
-          (when-let ((value (plist-get payload key)))
+          (when-let* ((value (plist-get payload key)))
             (when (stringp value)
               (plist-put payload key (intern value)))))
         (plist-put event :payload payload)))

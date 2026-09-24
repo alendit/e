@@ -257,7 +257,7 @@ safe to store in a board envelope and contains no runtime state."
            (list :version version :type type :idempotency-key key
                  :payload
                  (list :run-id run-id :publication-key publication-key :status status
-                       :error (when-let ((error (plist-get payload :error)))
+                       :error (when-let* ((error (plist-get payload :error)))
                                 (truncate-string-to-width
                                  (format "%s" error)
                                  e-board-orchestration-error-limit nil nil "..."))))))
@@ -277,7 +277,7 @@ safe to store in a board envelope and contains no runtime state."
                   (list :run-id run-id :publication-key publication-key
                         :status status)
                   (when turn-id (list :turn-id turn-id))
-                  (when-let ((error (plist-get payload :error)))
+                  (when-let* ((error (plist-get payload :error)))
                     (list :error
                           (truncate-string-to-width
                            (format "%s" error)
@@ -308,7 +308,7 @@ safe to store in a board envelope and contains no runtime state."
                               (e-board-orchestration--outputs
                                (plist-get payload :outputs))
                               :error
-                              (when-let ((error (plist-get payload :error)))
+                              (when-let* ((error (plist-get payload :error)))
                                 (truncate-string-to-width
                                  (format "%s" error)
                                  e-board-orchestration-error-limit nil nil "..."))

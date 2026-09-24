@@ -93,7 +93,7 @@ status, and retry metadata in an `e-openai-http--response'."
 
 (defun e-openai-http--retry-after ()
   "Return a numeric Retry-After response delay from the current buffer."
-  (when-let ((value (e-openai-http--make-response-header "Retry-After")))
+  (when-let* ((value (e-openai-http--make-response-header "Retry-After")))
     (when (string-match-p "\\`[0-9]+\\(?:\\.[0-9]+\\)?\\'" value)
       (string-to-number value))))
 
@@ -113,7 +113,7 @@ The exit query is disabled and `kill-buffer-query-functions' is bound off so a
 still-live process can never raise the blocking \"has a running process; kill
 it?\" prompt that stalls a headless agent."
   (when (buffer-live-p buffer)
-    (when-let ((process (get-buffer-process buffer)))
+    (when-let* ((process (get-buffer-process buffer)))
       (when (process-live-p process)
         (set-process-query-on-exit-flag process nil)
         (if (memq (process-type process) '(real pipe))

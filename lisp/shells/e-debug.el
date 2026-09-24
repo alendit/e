@@ -138,7 +138,7 @@ A fractional value is interpreted relative to the selected frame height."
 
 (defun e-debug--record-focused-buffer ()
   "Remember the selected non-debug buffer for future debug session roots."
-  (when-let ((buffer (window-buffer (selected-window))))
+  (when-let* ((buffer (window-buffer (selected-window))))
     (unless (or (minibufferp buffer)
                 (e-debug--buffer-p buffer))
       (setq e-debug--last-focused-buffer buffer))))
@@ -158,7 +158,7 @@ A fractional value is interpreted relative to the selected frame height."
 
 (defun e-debug--ensure-session-project-root (harness session-id)
   "Keep the standing debug session rooted in the last focused project."
-  (when-let ((project-root (e-debug--last-focused-project-root)))
+  (when-let* ((project-root (e-debug--last-focused-project-root)))
     (when (or (not e-debug--session-project-root)
               (e-debug--narrower-project-root-p
                project-root e-debug--session-project-root))
@@ -243,7 +243,7 @@ A fractional value is interpreted relative to the selected frame height."
           :session-id e-chat-session-id
           :source 'chat-buffer))
    (t
-    (when-let ((harness (ignore-errors (e-chat-default-harness))))
+    (when-let* ((harness (ignore-errors (e-chat-default-harness))))
       (list :harness harness
             :source 'default-chat)))))
 
@@ -517,7 +517,7 @@ reload so package-specific workspace behavior can live in user config."
   "Emit a compact debug notification for terminal EVENT when hidden."
   (when (and (e-debug--terminal-event-p event)
              (not (e-debug--popup-visible-p)))
-    (when-let ((status (e-debug--notification-status event)))
+    (when-let* ((status (e-debug--notification-status event)))
       (message "*e-debug*: %s" status))))
 
 (defun e-debug--notification-binding-settled

@@ -272,9 +272,9 @@
           (format "Continue goal %s: %s."
                   (plist-get goal :goal-id)
                   (plist-get goal :title))
-          (when-let ((objective (plist-get goal :objective)))
+          (when-let* ((objective (plist-get goal :objective)))
             (format "Objective: %s" objective))
-          (when-let ((reference (plist-get goal :reference-uri)))
+          (when-let* ((reference (plist-get goal :reference-uri)))
             (format "Read the process/reference material as needed: %s" reference))
           (format "Do only this step: %s -- %s."
                   (plist-get step :id)
@@ -295,7 +295,7 @@
           (format "Review goal %s: %s."
                   (plist-get goal :goal-id)
                   (plist-get goal :title))
-          (when-let ((reference (plist-get goal :reference-uri)))
+          (when-let* ((reference (plist-get goal :reference-uri)))
             (format "Use reference: %s" reference))
           (format "Verify success criterion %s -- %s."
                   (plist-get criterion :id)

@@ -113,7 +113,7 @@ metadata belonging to an unloaded session."
               buffer
               (plist-get metadata :uri))
              buffer))
-      (when-let ((file (e-org-canvas--uri-file-name
+      (when-let* ((file (e-org-canvas--uri-file-name
                         (plist-get metadata :uri))))
         (or (find-buffer-visiting file)
             (and (file-readable-p file)
@@ -122,10 +122,10 @@ metadata belonging to an unloaded session."
 (defun e-org-canvas-session-buffer (harness session-id)
   "Return the live Org Canvas buffer for HARNESS SESSION-ID, if available."
   (or (e-org-canvas--live-session-buffer harness session-id)
-      (when-let ((metadata (e-org-canvas-session-metadata harness session-id)))
+      (when-let* ((metadata (e-org-canvas-session-metadata harness session-id)))
         (or (e-org-canvas-session-buffer-from-metadata
              harness session-id metadata)
-            (when-let ((attachment
+            (when-let* ((attachment
                         (seq-find
                          (lambda (candidate)
                            (equal (plist-get candidate :uri)
@@ -161,7 +161,7 @@ metadata belonging to an unloaded session."
 
 (defun e-org-canvas--window-range ()
   "Return visible window range as (START . END), falling back to the buffer."
-  (if-let ((window (get-buffer-window (current-buffer) t)))
+  (if-let* ((window (get-buffer-window (current-buffer) t)))
       (cons (window-start window) (window-end window t))
     (cons (point-min) (point-max))))
 
@@ -270,7 +270,7 @@ metadata while the corresponding SQLite write remains in flight."
   (or (e-org-canvas-session-metadata harness session-id)
       (and (buffer-live-p buffer)
            (e-org-canvas--metadata-for-buffer buffer))
-      (when-let ((uri (plist-get prompt-metadata :org-canvas-uri)))
+      (when-let* ((uri (plist-get prompt-metadata :org-canvas-uri)))
         (list :uri uri :buffer-name nil))))
 
 (defun e-org-canvas--context-provider-messages
@@ -394,9 +394,9 @@ metadata while the corresponding SQLite write remains in flight."
 
 (defun e-org-canvas--goto-tool-target (arguments)
   "Move point to the tool target described by ARGUMENTS."
-  (if-let ((path (e-org-canvas--tool-target-heading-path arguments)))
+  (if-let* ((path (e-org-canvas--tool-target-heading-path arguments)))
       (e-org-canvas--goto-heading-path path)
-    (when-let ((point (e-org-canvas--tool-target-point arguments)))
+    (when-let* ((point (e-org-canvas--tool-target-point arguments)))
       (goto-char (max (point-min) (min (point-max) point))))))
 
 (defun e-org-canvas--visibility-state-tool (buffer _arguments)

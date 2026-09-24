@@ -1108,7 +1108,7 @@ is caught."
               (let ((id (substring reference (length "work:"))))
                 (should (e-work-handle-p (e-work-detached-handle id))))))
         (dolist (id (e-work-detached-handle-ids))
-          (when-let ((h (e-work-detached-handle id)))
+          (when-let* ((h (e-work-detached-handle id)))
              (e-work-cancel h)))))))
 
 (ert-deftest e-work-test-detachable-spec-enrolls-child-before-runner ()

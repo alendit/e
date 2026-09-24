@@ -1617,7 +1617,7 @@ picker."
           (should (equal (plist-get result :status) 'error))
           (should (string-match-p "Command timed out after 0.1 seconds"
                                   (plist-get result :content)))
-          (when-let ((process (plist-get (e-tools-request-metadata request)
+          (when-let* ((process (plist-get (e-tools-request-metadata request)
                                          :process)))
             (should-not (process-live-p process))))
       (delete-directory directory t))))

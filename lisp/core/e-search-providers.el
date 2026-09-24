@@ -87,7 +87,7 @@ ROOT is compared against the request's `:absolute-path'; a request at ROOT
 itself is claimed."
   (let ((root (file-name-as-directory (expand-file-name root))))
     (lambda (request)
-      (when-let ((path (plist-get request :absolute-path)))
+      (when-let* ((path (plist-get request :absolute-path)))
         (let ((path (expand-file-name path)))
           (or (string-prefix-p root (file-name-as-directory path))
               (string-prefix-p root path)))))))

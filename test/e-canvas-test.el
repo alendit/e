@@ -261,7 +261,7 @@
                 (should (equal (plist-get attachment :uri)
                                (concat "file://" file)))
                 (should (get-buffer (plist-get attachment :buffer-name)))))))
-      (when-let ((buffer (find-buffer-visiting file)))
+      (when-let* ((buffer (find-buffer-visiting file)))
         (kill-buffer buffer))
       (delete-file file))))
 

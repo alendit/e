@@ -89,7 +89,7 @@
 Only spawnable instances with `always' context-visibility appear; `hidden'
 types stay out of the default context and are read on demand from
 e://subagents/refs/types.md."
-  (when-let ((instances (e-harness-instance-list-subagents :visibility 'always)))
+  (when-let* ((instances (e-harness-instance-list-subagents :visibility 'always)))
     (string-join
      (cons
       "Subagent types available to spawn (id -- name -- when to use). Read e://subagents/refs/types.md for the full catalog."
@@ -98,7 +98,7 @@ e://subagents/refs/types.md."
 
 (defun e-subagents--runtime-label (record now)
   "Return a short runtime label for RECORD at NOW."
-  (if-let ((started-at (plist-get record :started-at)))
+  (if-let* ((started-at (plist-get record :started-at)))
       (format "%.0fs" (max 0.0 (- now started-at)))
     "not started"))
 
@@ -220,7 +220,7 @@ resolves only to the current process's live work handle."
     (e-waitable-register-resolver
      "subagent"
      (lambda (encoded)
-       (when-let ((identity (e-subagent-live-reference-identity
+       (when-let* ((identity (e-subagent-live-reference-identity
                              (format "subagent:%s" encoded))))
          (e-subagent-live-work-handle live (nth 0 identity) (nth 1 identity)))))))
 

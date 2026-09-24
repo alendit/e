@@ -645,7 +645,7 @@ the display to a normal window when the selected window is a side window."
      ((get-buffer-window buffer t)
       (select-window (get-buffer-window buffer t)))
      ((e-chat-surface-side-window-p)
-      (when-let ((window (e-chat-surface-display-from-side-window buffer)))
+      (when-let* ((window (e-chat-surface-display-from-side-window buffer)))
         (select-window window)))
      (t (e-workspace-switch-to-buffer
          buffer
@@ -667,7 +667,7 @@ the display to a normal window when the selected window is a side window."
 
 (defun e-org-canvas--display-and-select-chat-buffer (buffer)
   "Display Org Canvas backing chat BUFFER and focus its composer."
-  (when-let ((window (e-org-canvas--display-chat-buffer buffer)))
+  (when-let* ((window (e-org-canvas--display-chat-buffer buffer)))
     (when (window-live-p window)
       ;; Select the transcript first so the shared chat shell can find its
       ;; paired composer window.  It must be the last focus owner: selecting
@@ -1067,7 +1067,7 @@ TARGET-BUFFER is presentation-owned state; no durable session read is needed."
 (defun e-org-canvas--input-focus-target ()
   "Move focus to the Org Canvas buffer targeted by the current input pane."
   (when (buffer-live-p e-org-canvas-input--target-buffer)
-    (if-let ((window (get-buffer-window e-org-canvas-input--target-buffer t)))
+    (if-let* ((window (get-buffer-window e-org-canvas-input--target-buffer t)))
         (select-window window)
       (e-workspace-pop-to-buffer
        e-org-canvas-input--target-buffer
@@ -1411,7 +1411,7 @@ in-flight turn does not re-scroll -- and re-scan the pane -- on every frame."
   "Insert the thread-scope cursor reference into the current input pane."
   (when (and (eq e-org-canvas-input--scope 'thread)
              (null e-org-canvas-input--scope-reference))
-    (when-let ((reference
+    (when-let* ((reference
                 (e-org-canvas--input-thread-reference
                  e-org-canvas-input--target-buffer)))
       (goto-char (or (e-chat-composer-start-position) (point-max)))
@@ -1555,7 +1555,7 @@ TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
     (when (buffer-live-p input)
       (kill-buffer input))
     (when (buffer-live-p target)
-      (if-let ((window (get-buffer-window target t)))
+      (if-let* ((window (get-buffer-window target t)))
           (select-window window)
         (e-workspace-pop-to-buffer
          target
@@ -1583,7 +1583,7 @@ TARGET-BUFFER is the already-bound live Canvas source when the caller owns it."
     (e-org-canvas--input-abort-active-turn)
     (e-org-canvas--input-clear-source-selection)
     (e-org-canvas--input-cleanup)
-    (if-let ((target-window (and (buffer-live-p target)
+    (if-let* ((target-window (and (buffer-live-p target)
                                  (get-buffer-window target t))))
         (progn
           (when (window-live-p input-window)

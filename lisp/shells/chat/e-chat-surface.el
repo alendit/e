@@ -262,7 +262,7 @@ window callbacks loadable before the composition root is evaluated."
       (setq-local e-chat-surface--mode-line-status status)
       (setq-local mode-name (e-chat-surface--mode-line-display-text status))
       (force-mode-line-update)
-      (when-let ((composer (e-chat-surface-composer-buffer)))
+      (when-let* ((composer (e-chat-surface-composer-buffer)))
         (force-window-update composer)))))
 
 (defun e-chat-surface--request-mode-line-status-refresh
@@ -324,7 +324,7 @@ window callbacks loadable before the composition root is evaluated."
 
 (defun e-chat-surface--ui-work-diagnostics-text ()
   "Return compact pending UI work diagnostics for the header line."
-  (when-let ((pending (and e-chat-ui-work-diagnostics
+  (when-let* ((pending (and e-chat-ui-work-diagnostics
                            (e-ui-work-pending (current-buffer)))))
     (let* ((counts (e-chat-surface--ui-work-owner-counts))
            (owners nil))
@@ -636,7 +636,7 @@ TRANSCRIPT-WINDOW owns the viewport that activation is allowed to move."
                       (e-chat-surface--selected-chat-surface
                        (frame-selected-window frame))))
       (with-current-buffer (car surface)
-        (when-let ((composer e-chat-surface--surface-composer-buffer))
+        (when-let* ((composer e-chat-surface--surface-composer-buffer))
           ;; The composer owner creates and binds the constituent.  Surface
           ;; activation only restores an already-established pair.
           (e-chat-surface--surface-display-composer window t composer)))
@@ -696,7 +696,7 @@ configuration change."
           ;; Input focus is a surface-membership operation once the composer
           ;; has been established by its owner.  Do not create state here, but
           ;; preserve the established pair's activation behavior.
-          (when-let ((composer e-chat-surface--surface-composer-buffer))
+          (when-let* ((composer e-chat-surface--surface-composer-buffer))
             (e-chat-surface--surface-display-composer selected t composer)))))
     (e-chat-surface--show-surface-latest-output surface)
     (e-chat-surface--schedule-surface-activation surface)))
@@ -760,7 +760,7 @@ workspace transition has finished changing the window tree."
                 (buffer-local-value 'e-chat-session-id transcript))
     (setq-local default-directory
                 (buffer-local-value 'default-directory transcript))
-    (when-let ((workspace (e-buffer-workspace transcript)))
+    (when-let* ((workspace (e-buffer-workspace transcript)))
       (e-buffer-set-workspace composer workspace)
       (e-workspace-add-buffer composer workspace)))
   composer)
@@ -791,7 +791,7 @@ window tree."
   (setq transcript-window (or transcript-window (selected-window)))
   (when (and (window-live-p transcript-window)
              (buffer-live-p e-chat-surface--surface-composer-buffer))
-    (when-let ((atom-root (window-atom-root transcript-window)))
+    (when-let* ((atom-root (window-atom-root transcript-window)))
       (cl-find-if
        (lambda (candidate)
          (and (eq atom-root (window-atom-root candidate))
@@ -947,7 +947,7 @@ non-nil, select the composer window."
   (when (and (e-chat-surface--surface-composer-p)
              e-chat-surface--surface-composer-layout-dirty)
     (setq e-chat-surface--surface-composer-layout-dirty nil)
-    (when-let ((transcript e-chat-surface--surface-transcript-buffer))
+    (when-let* ((transcript e-chat-surface--surface-transcript-buffer))
       (when (buffer-live-p transcript)
         (with-current-buffer transcript
           (dolist (transcript-window
@@ -1150,7 +1150,7 @@ the explicit window-local follow decision across transient status removal."
   "Capture each transcript viewport before an active-status redraw.
 Windows already showing the old output tail follow the new tail.  Every other
 window retains its scroll position, including when the composer is focused."
-  (when-let ((bounds (e-chat-surface--running-status-bounds)))
+  (when-let* ((bounds (e-chat-surface--running-status-bounds)))
     (let ((point-offset (e-chat-surface--position-running-offset (point) bounds)))
       (list
        :point-offset point-offset
@@ -1176,7 +1176,7 @@ window retains its scroll position, including when the composer is focused."
 (defun e-chat-surface--restore-running-status-display-state (state)
   "Restore transcript viewports captured by STATE after an active-status redraw."
   (when state
-    (when-let ((bounds (e-chat-surface--running-status-bounds)))
+    (when-let* ((bounds (e-chat-surface--running-status-bounds)))
       (let ((tail (e-chat-surface--output-follow-position))
             (point-position
              (e-chat-surface--running-status-position-from-offset
@@ -1206,7 +1206,7 @@ window retains its scroll position, including when the composer is focused."
   (let ((transcript (e-chat-surface--surface-transcript-buffer)))
     (when (buffer-live-p transcript)
       (with-current-buffer transcript
-        (when-let ((transcript-window (get-buffer-window transcript t)))
+        (when-let* ((transcript-window (get-buffer-window transcript t)))
           (e-chat-surface--surface-fit-composer-window
            (e-chat-surface--surface-composer-window transcript-window)))))))
 
@@ -1242,7 +1242,7 @@ window retains its scroll position, including when the composer is focused."
           (goto-char (point-max)))
         (set-window-point window (with-current-buffer composer (point))))
     (goto-char (point-max))
-    (when-let ((window (get-buffer-window (current-buffer) t)))
+    (when-let* ((window (get-buffer-window (current-buffer) t)))
       (set-window-point window (point))
       (unless e-chat-surface--recenter-inhibited
         (with-selected-window window
@@ -1319,7 +1319,7 @@ with no main window and break ordinary commands like \\[split-window-right]."
 When the selected window is a side window it cannot show BUFFER, so route the
 display to a normal window and select it instead of erroring."
   (if (e-chat-surface--side-window-p)
-      (when-let ((window (e-chat-surface--display-from-side-window buffer)))
+      (when-let* ((window (e-chat-surface--display-from-side-window buffer)))
         (select-window window))
     (e-workspace-switch-to-buffer
      buffer
@@ -1337,10 +1337,10 @@ signal; route the display to a normal window in that case."
    ((and (e-chat-surface--side-window-p)
          (not workspace)
          (not action))
-    (when-let ((window (e-chat-surface--display-from-side-window buffer)))
+    (when-let* ((window (e-chat-surface--display-from-side-window buffer)))
       (select-window window)))
    ((or workspace action)
-    (when-let ((window (e-workspace-display-buffer
+    (when-let* ((window (e-workspace-display-buffer
                        buffer
                        :workspace (or workspace
                                       (e-buffer-workspace buffer)
@@ -1379,7 +1379,7 @@ signal; route the display to a normal window in that case."
 (defun e-chat-surface--surface-composer-killed ()
   "Clear this input pane from its transcript surface when it is killed."
   (let ((composer (current-buffer)))
-    (when-let ((transcript e-chat-surface--surface-transcript-buffer))
+    (when-let* ((transcript e-chat-surface--surface-transcript-buffer))
       (when (buffer-live-p transcript)
         (with-current-buffer transcript
           (when (eq e-chat-surface--surface-composer-buffer composer)
@@ -1394,7 +1394,7 @@ signal; route the display to a normal window in that case."
   (dolist (window (get-buffer-window-list (current-buffer) nil t))
     (set-window-dedicated-p window nil)
     (set-window-parameter window 'window-atom nil))
-  (when-let ((composer e-chat-surface--surface-composer-buffer))
+  (when-let* ((composer e-chat-surface--surface-composer-buffer))
     (when (buffer-live-p composer)
       ;; The surface is already being torn down.  Releasing its temporary
       ;; dedication lets Emacs replace both buffers without mutating the window

@@ -80,7 +80,7 @@ this fixture does that explicitly so the test does not reach into turn state."
               (should (equal (plist-get queued :prompt) "corrective"))
               (should (eq (plist-get (plist-get queued :metadata) :input-origin)
                           'harness))))
-        (when-let ((timer (plist-get entry :timer)))
+        (when-let* ((timer (plist-get entry :timer)))
           (cancel-timer timer))))))
 
 ;;;; Deterministic mark-completeness checks

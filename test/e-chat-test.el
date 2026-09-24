@@ -1706,7 +1706,7 @@ test covers only the chat presentation subscription's redundant callbacks."
               (should-error (insert "mutate") :type 'buffer-read-only))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
-      (when-let ((context-buffer (get-buffer e-chat-context-buffer-name)))
+      (when-let* ((context-buffer (get-buffer e-chat-context-buffer-name)))
         (kill-buffer context-buffer)))))
 
 

@@ -91,7 +91,7 @@ request details and cancellation."
 
 (defun e-session-async-pending-count (store session-id)
   "Return STORE's admitted unsettled mutation count for SESSION-ID."
-  (if-let ((state (gethash store e-session-async--states)))
+  (if-let* ((state (gethash store e-session-async--states)))
       (length (gethash session-id (e-session-async--state-pending state)))
     0))
 
@@ -130,7 +130,7 @@ request details and cancellation."
           :operation (plist-get properties :operation)
           :kind (plist-get properties :kind)
           :request-id
-          (when-let ((request-id (plist-get properties :request-id)))
+          (when-let* ((request-id (plist-get properties :request-id)))
             (if (stringp request-id) (copy-sequence request-id) request-id)))))
 
 (defun e-session-async--note-suspect (store session-id error)
@@ -540,7 +540,7 @@ or ambiguous evidence remains an unsettled/no-outcome result for callers."
       (let* ((command (e-session-aggregate-command-prepare
                        tag session-id arguments))
              (effective-id (e-session-aggregate-command-session-id command)))
-        (if-let ((suspect (e-session-async-session-suspect store effective-id)))
+        (if-let* ((suspect (e-session-async-session-suspect store effective-id)))
             (e-session-async--failed-work effective-id suspect)
           (let* ((state (e-session-async--state store))
                  (operation
@@ -589,7 +589,7 @@ happens-before, and an explicitly dependent group belongs in one transaction."
 
 (defun e-session-async-reset (store)
   "Clear STORE's process-local pending and suspect session state."
-  (when-let ((state (gethash store e-session-async--states)))
+  (when-let* ((state (gethash store e-session-async--states)))
     (let (operations)
       ;; Detach every application-owned link before arbitrary work observers.
       (unwind-protect

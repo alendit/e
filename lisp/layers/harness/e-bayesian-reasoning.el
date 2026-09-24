@@ -279,7 +279,7 @@ claim about the truth of the response."
 The provider derives handles from immutable transcript messages.  It stores no
 separate ledger and lists only the current prompt plus successful tool results
 from this turn, keeping the prompt cost bounded."
-  (when-let ((messages (and harness session-id
+  (when-let* ((messages (and harness session-id
                             (e-harness-messages harness session-id))))
     (let (lines)
       (dolist (message messages)
@@ -311,7 +311,7 @@ from this turn, keeping the prompt cost bounded."
          (turn-id (plist-get context :turn-id))
          handles)
     (dolist (source (e-bayesian-reasoning--context-evidence-sources context))
-      (when-let ((handle (e-context-source-handle source)))
+      (when-let* ((handle (e-context-source-handle source)))
         (push handle handles)))
     (when (and harness session-id turn-id)
       (dolist (message (e-harness-messages harness session-id))
@@ -524,7 +524,7 @@ The target travels only in the private validation prompt's metadata."
          (session-id (plist-get context :session-id))
          (turn-id (plist-get context :turn-id)))
     (when (and harness session-id turn-id)
-      (when-let ((prompt
+      (when-let* ((prompt
                   (seq-find
                    (lambda (message)
                      (and (eq (plist-get message :role) 'user)
@@ -576,11 +576,11 @@ capability owns only the meaning and wording of its claim presentation."
                       (list
                        (format "- %s" (or (plist-get mark :claim)
                                            "Unspecified claim"))
-                       (when-let ((confidence (plist-get mark :confidence)))
+                       (when-let* ((confidence (plist-get mark :confidence)))
                          (format "  Confidence: %s" confidence))
-                       (when-let ((alternatives (plist-get mark :alternatives)))
+                       (when-let* ((alternatives (plist-get mark :alternatives)))
                          (format "  Alternatives: %s" alternatives))
-                       (when-let ((evidence (plist-get mark :evidence)))
+                       (when-let* ((evidence (plist-get mark :evidence)))
                          (unless (string-empty-p evidence)
                            (format "  Evidence: %s" evidence)))))
                 "\n"))

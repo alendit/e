@@ -486,7 +486,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
          (actual-case-sensitive (if (null case-sensitive) t case-sensitive)))
     (e-resource-pattern-compile-glob actual-pattern)
     (if (file-regular-p scope)
-        (let* ((resources (if-let ((single (e-session-tmp--glob-single-result
+        (let* ((resources (if-let* ((single (e-session-tmp--glob-single-result
                                             scope
                                             scope-relative
                                             actual-pattern
@@ -572,7 +572,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
 (defun e-session-tmp--rg-json-text (object)
   "Return text value from rg JSON OBJECT."
   (or (plist-get object :text)
-      (when-let ((bytes (plist-get object :bytes)))
+      (when-let* ((bytes (plist-get object :bytes)))
         (base64-decode-string bytes))))
 
 (defun e-session-tmp--search-match-from-rg-json
@@ -594,7 +594,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
              (uri (concat "tmp://" relative)))
         (when (or (null glob-pattern)
                   (e-resource-pattern-glob-match-p glob-pattern name t))
-          (when-let ((score (e-resource-pattern-search-score
+          (when-let* ((score (e-resource-pattern-search-score
                              line-text query options uri name)))
             (list :uri uri
                   :line (plist-get data :line_number)
@@ -693,7 +693,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
                   '(0 1)))
           matches)
       (dolist (line lines)
-        (when-let ((match (e-session-tmp--search-match-from-rg-json
+        (when-let* ((match (e-session-tmp--search-match-from-rg-json
                            line
                            root
                            scope
@@ -711,7 +711,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
   "Return ranked tmp search content from rg JSON LINES."
   (let (matches)
     (dolist (line lines)
-      (when-let ((match (e-session-tmp--search-match-from-rg-json
+      (when-let* ((match (e-session-tmp--search-match-from-rg-json
                          line
                          root
                          scope
@@ -744,7 +744,7 @@ When QUERY-METADATA is non-nil, include sortable timestamp metadata."
         (if (file-regular-p scope)
             (list :immediate
                   (list :resources
-                        (if-let ((single (e-session-tmp--glob-single-result
+                        (if-let* ((single (e-session-tmp--glob-single-result
                                           scope
                                           scope-relative
                                           actual-pattern
@@ -1168,7 +1168,7 @@ root and is suitable for streaming writes."
              handle result error transform)))))
     (setf (e-work-handle-cancel-function handle)
           (lambda (_handle)
-            (when-let ((runtime (e-session-tmp--sqlite-store harness)))
+            (when-let* ((runtime (e-session-tmp--sqlite-store harness)))
               (e-runtime-store-cancel runtime request))
             t))
     :deferred))

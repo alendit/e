@@ -230,7 +230,7 @@
                    '(agents-std-context harness-base process-reporting
                                         harness-advanced e os-base emacs-base
                                         resource-toc web annotations org-canvas
-                                        project-local writing
+                                        project-local writing board
                                         subagents-parent)))
     (should (eq e-debug-display-strategy 'popup))
     (let ((harness (e-harness-registry-get-or-create :chat-default)))
@@ -238,14 +238,14 @@
                      '(agents-std-context harness-base process-reporting
                                           harness-advanced e os-base emacs-base
                                           resource-toc web annotations org-canvas
-                                          project-local writing
+                                          project-local writing board
                                           subagents-parent)))
       (should (equal (e-harness-effective-layer-ids harness)
                      '(agents-std-context harness-base process-reporting
                                           harness-advanced e resource-discovery
                                           os-base async-control emacs-base resource-toc
                                           web annotations org-canvas project-local
-                                          writing subagents-parent))))))
+                                          writing board subagents-parent))))))
 
 (provide 'e-dev-test)
 

@@ -651,9 +651,9 @@ artifacts under `e-dev-perf-run-directory'."
                 lines))))
     (push "" lines)
     (push "* Artifacts" lines)
-    (when-let ((json-file (plist-get run :json-file)))
+    (when-let* ((json-file (plist-get run :json-file)))
       (push (format "- JSON: =%s=" json-file) lines))
-    (when-let ((org-file (plist-get run :org-file)))
+    (when-let* ((org-file (plist-get run :org-file)))
       (push (format "- Org: =%s=" org-file) lines))
     (mapconcat #'identity (nreverse lines) "\n")))
 
@@ -979,12 +979,12 @@ artifacts under `e-dev-perf-run-directory'."
 
 (defun e-dev-perf--chat-teardown (_scenario state)
   "Clean up chat scenario STATE."
-  (when-let ((buffer (plist-get state :buffer)))
+  (when-let* ((buffer (plist-get state :buffer)))
     (when (buffer-live-p buffer)
       (kill-buffer buffer)))
-  (when-let ((store (plist-get state :store)))
+  (when-let* ((store (plist-get state :store)))
     (ignore-errors (e-session-storage-close store)))
-  (when-let ((directory (plist-get state :directory)))
+  (when-let* ((directory (plist-get state :directory)))
     (ignore-errors (delete-directory directory t))))
 
 (defun e-dev-perf--drain-ui-work (buffer &rest args)

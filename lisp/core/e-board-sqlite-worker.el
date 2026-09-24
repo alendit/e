@@ -1718,9 +1718,9 @@ participant-specific session reads."
                           (e-board-sqlite-worker--column row 6))))
         (setq policy (plist-put policy :participant-id
                                 (e-board-sqlite-worker--column row 6)))
-        (when-let ((participant-id (plist-get entry :participant-id)))
+        (when-let* ((participant-id (plist-get entry :participant-id)))
           (puthash participant-id entry by-participant))
-        (when-let ((principal (plist-get entry :principal)))
+        (when-let* ((principal (plist-get entry :principal)))
           (puthash principal entry by-principal))))
     (list by-participant by-principal))))
 

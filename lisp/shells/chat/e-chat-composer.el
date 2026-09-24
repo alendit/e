@@ -168,7 +168,7 @@ may also derive a transient standalone input/result pane from this mode."
   (let ((transcript (e-chat-surface-transcript-buffer)))
     (unless (buffer-live-p transcript)
       (user-error "This e chat composer has no live transcript"))
-    (when-let ((window (get-buffer-window transcript t)))
+    (when-let* ((window (get-buffer-window transcript t)))
       (select-window window))
     (with-current-buffer transcript
       ;; A brand-new transcript has no block to navigate, but Escape still
@@ -392,7 +392,7 @@ PRESERVE-FOCUS retains composer point when the current buffer is the composer."
 
 (defun e-chat-composer--scroll-composer-edit-into-view ()
   "Scroll the current composer edit down without changing user scroll policy."
-  (when-let ((window (e-chat-composer--visible-window)))
+  (when-let* ((window (e-chat-composer--visible-window)))
     (set-window-point window (point))
     (with-selected-window window
       (ignore-errors
@@ -597,7 +597,7 @@ cancellable process request."
 
 (defun e-chat-composer--git-root (directory)
   "Return Git worktree root containing DIRECTORY, or nil."
-  (when-let ((root (locate-dominating-file directory ".git")))
+  (when-let* ((root (locate-dominating-file directory ".git")))
     (file-name-as-directory (expand-file-name root))))
 
 (defun e-chat-composer--project-root (&optional directory)
@@ -614,7 +614,7 @@ present."
          (project-root
           (let ((default-directory directory))
             (ignore-errors
-              (when-let ((project (project-current nil)))
+              (when-let* ((project (project-current nil)))
                 (project-root project)))))
          (root (or projectile-root
                    project-root
@@ -675,7 +675,7 @@ scan."
 
 (defun e-chat-composer--fd-file-candidates (root limit)
   "Return at most LIMIT regular file paths under ROOT using fd."
-  (when-let ((fd (e-chat-composer--fd-executable)))
+  (when-let* ((fd (e-chat-composer--fd-executable)))
     (with-temp-buffer
       (let ((status (process-file
                      fd
@@ -1130,7 +1130,7 @@ Matching is case-insensitive."
                 (let ((key (read-key)))
                   (cond
                    ((memq key '(return ?\r))
-                    (when-let ((candidate (nth index matches)))
+                    (when-let* ((candidate (nth index matches)))
                       (throw 'selected candidate)))
                    ((memq key '(?\C-g escape))
                     (signal 'quit nil))
@@ -1207,7 +1207,7 @@ Matching is case-insensitive."
   (if (not (e-chat-composer--composer-word-boundary-prefix-p))
       (e-chat-composer--self-insert-prefix)
     (condition-case nil
-        (if-let ((candidate (e-chat-composer--inline-completion-select
+        (if-let* ((candidate (e-chat-composer--inline-completion-select
                              "@ reference: "
                              (e-chat-composer--at-candidates))))
             (e-chat-composer--insert-at-reference candidate)
@@ -1475,7 +1475,7 @@ This is the composer implementation behind the public source-reference port."
 
 (defun e-chat-composer--delete-context-reference-at (position)
   "Delete the inline context reference adjacent to POSITION, when present."
-  (when-let ((bounds (e-chat-composer--context-reference-bounds-at position)))
+  (when-let* ((bounds (e-chat-composer--context-reference-bounds-at position)))
     (let ((inhibit-read-only t))
       (delete-region (car bounds) (cdr bounds)))
     t))
@@ -1631,7 +1631,7 @@ This is the composer implementation behind the public formatting port."
   (let* ((document (e-chat-composer--composer-document))
          (text (plist-get document :text))
          (references (plist-get document :references)))
-    (when-let ((pending (e-chat-composer--composer-pending-references)))
+    (when-let* ((pending (e-chat-composer--composer-pending-references)))
       (user-error "Command output still running: %s"
                   (mapconcat (lambda (reference)
                                (or (plist-get reference :label)

@@ -270,7 +270,7 @@ a session store and therefore cannot reconstruct or consult a durable mirror."
     (cl-remf copy :origin)
     (cl-remf copy :board-output-sequence)
     (cl-remf copy e-context-evidence-sources-key)
-    (when-let ((metadata (plist-get copy :metadata)))
+    (when-let* ((metadata (plist-get copy :metadata)))
       (setq metadata (copy-sequence metadata))
       (cl-remf metadata :input-origin)
       (if metadata
@@ -285,7 +285,7 @@ a session store and therefore cannot reconstruct or consult a durable mirror."
   (let ((ids (make-hash-table :test 'equal)))
     (dolist (message messages)
       (when (eq (plist-get message :role) 'tool)
-        (when-let ((id (plist-get (plist-get message :content) :tool-call-id)))
+        (when-let* ((id (plist-get (plist-get message :content) :tool-call-id)))
           (puthash id t ids))))
     ids))
 
@@ -314,7 +314,7 @@ drop the unpaired tool-call so the transcript stays valid."
 
 (defun e-context--compacted-messages (sessions session-id)
   "Return backend messages for SESSION-ID honoring latest compaction."
-  (if-let ((compaction (e-session-local-latest-valid-compaction sessions session-id)))
+  (if-let* ((compaction (e-session-local-latest-valid-compaction sessions session-id)))
       (let* ((summary (list :role 'compaction-summary
                             :content (plist-get compaction :summary)
                             :id (plist-get compaction :id)

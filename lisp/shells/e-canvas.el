@@ -121,9 +121,9 @@ later Board participants inherit an unrelated working directory."
   "Return the live canvas buffer described by detached METADATA, or nil.
 Prefer an existing buffer; otherwise visit a file-backed canvas on
 demand."
-  (when-let ((attachment (e-canvas--session-canvas-attachment metadata)))
+  (when-let* ((attachment (e-canvas--session-canvas-attachment metadata)))
     (or (e-chat-session-attachment-live-buffer attachment)
-        (when-let ((file (plist-get attachment :file)))
+        (when-let* ((file (plist-get attachment :file)))
           (and (file-readable-p file)
                (find-file-noselect file))))))
 
@@ -476,7 +476,7 @@ atomically; callers must not issue a dependent session mutation before then."
                      (e-canvas--target-session
                       harness (plist-get status :result)))
                     (session-id (plist-get target :session-id)))
-               (if-let ((creation-work (plist-get target :creation-work)))
+               (if-let* ((creation-work (plist-get target :creation-work)))
                    (e-work-on-settle
                     creation-work
                     (lambda (created)

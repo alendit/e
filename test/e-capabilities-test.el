@@ -198,7 +198,7 @@
                    e-capability-prompts
                    e-capability-readiness)))
     (dolist (symbol symbols)
-      (put symbol 'compiler-macro 'stale)
+      (put symbol 'compiler-macro (lambda (form &rest _) form))
       (put symbol 'side-effect-free 'stale)
       (put symbol 'gv-expander 'stale))
     (load-file (locate-library "e-capabilities.el"))

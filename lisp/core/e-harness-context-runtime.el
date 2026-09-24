@@ -1330,7 +1330,7 @@ provided the carrier option itself."
            :compaction-boundary
            (plist-get context :provider-anchor-compaction-boundary)
            :lifetime-generation
-           (when-let ((generation (plist-get context :lifetime-generation)))
+           (when-let* ((generation (plist-get context :lifetime-generation)))
              (list :id (e-context-lifetime-generation-id generation)
                    :covered-session-boundary
                    (e-context-lifetime-generation-covered-session-boundary
@@ -1399,7 +1399,7 @@ refresh changes the projection that produced it."
 
 (defun e-harness-context-runtime--provider-anchor-compaction-boundary (harness session-id)
   "Return provider-anchor compatibility data for latest compaction boundary."
-  (when-let ((compaction
+  (when-let* ((compaction
               (e-session-local-latest-valid-compaction
                (e-harness-sessions harness)
                session-id)))
@@ -1574,7 +1574,7 @@ otherwise interpreted here."
 Entries after this identity are scanned separately when the candidate is
 consumed, and only their portable durable message projection may become the
 provider delta."
-  (when-let ((entry (car (last (e-session-local-current-path
+  (when-let* ((entry (car (last (e-session-local-current-path
                                (e-harness-sessions harness) session-id)))))
     (plist-get entry :id)))
 
@@ -1591,7 +1591,7 @@ opaque candidate cannot create an orphaned provider tool bundle."
     (dolist (entry (e-session-local-current-path
                     (e-harness-sessions harness) session-id))
       (if after
-          (when-let ((message
+          (when-let* ((message
                       (e-session-context-lifetime-durable-message entry)))
             (push (e-context-lifetime-portable-message message) result))
         (when (equal (plist-get entry :id) source-entry-id)
@@ -1882,7 +1882,7 @@ request emits no candidate at all."
 (defun e-harness-context-persist-provider-anchor-candidates
     (harness session-id turn-id context candidates final-request-ordinal)
   "Persist provider anchor CANDIDATES for completed TURN-ID."
-  (when-let ((assistant-message
+  (when-let* ((assistant-message
               (e-harness-context-runtime--turn-assistant-message harness session-id turn-id)))
     (dolist (candidate
              (e-harness-context-runtime--latest-provider-anchor-candidates

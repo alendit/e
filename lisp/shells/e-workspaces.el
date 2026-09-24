@@ -408,7 +408,7 @@ policy; the workspace service itself keeps displays frame-scoped."
                          (and buffer (e-buffer-workspace buffer))))))
     (unless buffer
       (user-error "No such buffer"))
-    (if-let ((window (e-workspace-visible-window buffer workspace)))
+    (if-let* ((window (e-workspace-visible-window buffer workspace)))
         (progn
           (when select
             (select-window window))
@@ -430,7 +430,7 @@ policy; the workspace service itself keeps displays frame-scoped."
 
 (cl-defun e-workspace-pop-to-buffer (buffer &key workspace)
   "Pop to BUFFER in WORKSPACE and return BUFFER."
-  (when-let ((window (e-workspace-display-buffer
+  (when-let* ((window (e-workspace-display-buffer
                      buffer
                      :workspace workspace
                      :select t)))
@@ -439,7 +439,7 @@ policy; the workspace service itself keeps displays frame-scoped."
 
 (cl-defun e-workspace-switch-to-buffer (buffer &key workspace)
   "Switch to BUFFER in WORKSPACE and return BUFFER."
-  (when-let ((window (e-workspace-display-buffer
+  (when-let* ((window (e-workspace-display-buffer
                      buffer
                      :workspace workspace
                      :action '(display-buffer-same-window

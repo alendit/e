@@ -161,7 +161,7 @@ Expected keys are `:canonical-uri', `:subject-uri', `:views', and optional
   "Signal when GROUP has dirty linked views.
 SUBJECT-URI is omitted from dirty-view consideration.  ACTION is a verb used in
 error text, defaulting to the edit action."
-  (when-let ((dirty (e-resource-coherence-dirty-views group subject-uri)))
+  (when-let* ((dirty (e-resource-coherence-dirty-views group subject-uri)))
     (signal 'e-resource-coherence-conflict
             (list (format "Cannot %s %s directly because linked resource(s) %s have unsaved changes. Target the dirty resource explicitly or ask the user how to resolve the conflict."
                           (or action "edit")

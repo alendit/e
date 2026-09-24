@@ -106,6 +106,7 @@
       (e-org-canvas-test--await e-chat--session-query-work))
     (when (e-work-handle-p e-chat--session-readiness-work)
       (e-org-canvas-test--await e-chat--session-readiness-work))
+    (e-org-canvas-test--await-session-idle store e-chat-session-id)
     (plist-get
      (e-org-canvas-test--await
      (e-session-async-session-metadata store e-chat-session-id))
@@ -429,9 +430,8 @@
                 (e-buffer-set-workspace source target-workspace))
               (e-org-canvas-test--create-sql-session
                harness "session-1"
-               (list :context-references
-                     (list :org-canvas-ref
-                           (e-org-canvas--metadata-for-buffer source))))
+               (list :org-canvas-ref
+                     (e-org-canvas--metadata-for-buffer source)))
               (e-org-canvas--bind-canvas-session
                harness "session-1" source nil)
               (set-window-buffer (selected-window) source)
@@ -637,9 +637,8 @@
               (setq source (find-file-noselect file))
               (e-org-canvas-test--create-sql-session
                harness "broken-reference"
-               (list :context-references
-                     (list :org-canvas-ref
-                           (e-org-canvas--metadata-for-buffer source))))
+               (list :org-canvas-ref
+                     (e-org-canvas--metadata-for-buffer source)))
               (e-org-canvas--bind-canvas-session
                harness "broken-reference" source nil)
               (with-current-buffer source
@@ -2217,7 +2216,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
                                        (plist-get org-canvas :uri)))
               (should (equal (plist-get attachment :uri)
                              (plist-get org-canvas :uri))))))
-      (when-let ((buffer (find-buffer-visiting
+      (when-let* ((buffer (find-buffer-visiting
                           (expand-file-name "project-notes.org" directory))))
         (kill-buffer buffer))
       (delete-directory directory t))))
@@ -2257,7 +2256,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (should (equal (file-name-nondirectory buffer-file-name)
                          "org-canvas.org"))
           (should-not backend-called))
-      (when-let ((buffer (find-buffer-visiting
+      (when-let* ((buffer (find-buffer-visiting
                           (expand-file-name
                            "org-canvas.org"
                            directory))))
@@ -2285,7 +2284,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
            "Let's design a knowledge and agenda management system for the repo")
           (should (equal (file-name-nondirectory buffer-file-name)
                          "org-canvas.org")))
-      (when-let ((buffer (find-buffer-visiting
+      (when-let* ((buffer (find-buffer-visiting
                           (expand-file-name "org-canvas.org" directory))))
         (kill-buffer buffer))
       (delete-directory directory t))))
@@ -2329,7 +2328,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
           (should (equal (file-name-nondirectory buffer-file-name)
                          "org-canvas.org"))
           (should-not backend-called))
-      (when-let ((buffer (find-buffer-visiting
+      (when-let* ((buffer (find-buffer-visiting
                           (expand-file-name "org-canvas.org" directory))))
         (kill-buffer buffer))
       (delete-directory directory t))))
@@ -2479,7 +2478,7 @@ relies on the activity owner's post-redraw hook to follow the bottom."
                    "session-1" file)))
             (e-org-canvas-test--create-sql-session
              harness "session-1" (plist-get summary :metadata))
-            (when-let ((buffer (find-buffer-visiting file)))
+            (when-let* ((buffer (find-buffer-visiting file)))
               (kill-buffer buffer))
             (e-org-canvas-test--await
              (e-org-canvas-resume-session harness "session-1"))

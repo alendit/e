@@ -105,7 +105,7 @@ than retained as a connection-local response graph."
 
 (defun e-openai-websocket--cancel-idle-close (session)
   "Cancel SESSION's pending idle close timer."
-  (when-let ((timer (e-openai-websocket--session-idle-timer session)))
+  (when-let* ((timer (e-openai-websocket--session-idle-timer session)))
     (when (timerp timer)
       (cancel-timer timer))
     (setf (e-openai-websocket--session-idle-timer session) nil)))
@@ -179,7 +179,7 @@ integration fixtures; callers do not need to inspect the session record."
                   session)
                  (setf (e-openai-websocket--session-active-request session)
                        nil)
-                 (when-let ((handler (plist-get active :on-close)))
+                 (when-let* ((handler (plist-get active :on-close)))
                    (funcall handler candidate)))))
            :on-error
            (lambda (candidate &rest args)

@@ -575,7 +575,7 @@ providers."
           :kind (plist-get fragment :segment-kind)
           :id (plist-get fragment :segment-id)
           :messages (list (plist-get fragment :message)))))
-    (when-let ((sources (plist-get fragment :sources)))
+    (when-let* ((sources (plist-get fragment :sources)))
       (plist-put segment e-context-evidence-sources-key sources))
     segment))
 

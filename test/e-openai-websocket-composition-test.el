@@ -80,15 +80,13 @@
                      :role "user"
                      :content [(:type "input_text" :text "new prompt")])]))))
 
-(ert-deftest e-openai-test-default-harness-uses-codex-websocket-continuation ()
-  "The built-in Codex profile uses connection-local WebSocket continuation."
+(ert-deftest e-openai-test-default-harness-uses-codex-without-sql-anchor ()
+  "The built-in Codex profile omits unsupported SQLite provider anchors."
   (should (equal (e-harness-default-options
                   (e-openai-create-harness :request-function #'ignore))
-                 '(:model "gpt-5.5"
+                 '(:model "gpt-6-sol"
                    :reasoning-effort "high"
-                   :reasoning-summary "auto"
-                   :provider-continuation t
-                   :provider-anchor-provider-id openai))))
+                   :reasoning-summary "auto"))))
 
 (ert-deftest e-openai-test-request-context-rejects-negative-websocket-idle-policy-before-request ()
   "A negative explicit policy fails before opening a WebSocket."

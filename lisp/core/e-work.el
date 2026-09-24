@@ -216,7 +216,7 @@ Tear the process down first with its exit query disabled, then kill with
 purpose: even if the process outlives `delete-process' for a moment, the
 prompt can never fire."
   (when (buffer-live-p buffer)
-    (when-let ((process (get-buffer-process buffer)))
+    (when-let* ((process (get-buffer-process buffer)))
       (when (process-live-p process)
         (set-process-query-on-exit-flag process nil)
         (delete-process process)))
@@ -274,7 +274,7 @@ Every spec must declare explicit :execution and :interactive-policy values."
 
 (defun e-work--shape-result (handle raw arguments context)
   "Return RAW shaped through HANDLE's classified result shaper when present."
-  (if-let ((shaper (e-work-spec-result-shaper (e-work-handle-spec handle))))
+  (if-let* ((shaper (e-work-spec-result-shaper (e-work-handle-spec handle))))
       (if (e-work-handle-hook-dispatcher handle)
           (e-work--dispatch-hook handle :result-shaper shaper raw arguments context)
         (funcall shaper raw arguments context))
@@ -305,7 +305,7 @@ hard-bounded hooks execute under a small fixed count, while deferred hooks are
 handed to that owner scheduler with a stable receipt and can never re-enter the
 carrier's settlement stack."
   (when function
-    (if-let ((dispatcher (e-work-handle-hook-dispatcher handle)))
+    (if-let* ((dispatcher (e-work-handle-hook-dispatcher handle)))
         (let ((policy (e-work--hook-policy handle key)))
           (unless (memq policy e-work-hook-execution-policies)
             (signal 'e-work-unclassified-hook
@@ -336,12 +336,12 @@ carrier's settlement stack."
 
 (defun e-work--callback (handle key &rest args)
   "Call HANDLE callback KEY with ARGS through its hook policy when present."
-  (when-let ((callback (plist-get (e-work-handle-callbacks handle) key)))
+  (when-let* ((callback (plist-get (e-work-handle-callbacks handle) key)))
     (apply #'e-work--dispatch-hook handle key callback args)))
 
 (defun e-work--cleanup (handle)
   "Run HANDLE cleanup exactly once."
-  (when-let ((cleanup (e-work-handle-cleanup-function handle)))
+  (when-let* ((cleanup (e-work-handle-cleanup-function handle)))
     (setf (e-work-handle-cleanup-function handle) nil)
     (e-work--dispatch-hook handle :cleanup cleanup handle)))
 
@@ -365,7 +365,7 @@ carrier's settlement stack."
 
 (defun e-work--cancel-underlying (handle)
   "Cancel HANDLE's underlying carrier and return any cancellation error."
-  (when-let ((cancel (e-work-handle-cancel-function handle)))
+  (when-let* ((cancel (e-work-handle-cancel-function handle)))
     (if (e-work-handle-hook-dispatcher handle)
         (progn
           (e-work--dispatch-hook handle :cancel cancel handle)
@@ -408,7 +408,7 @@ carrier's settlement stack."
                         :work-id (e-work-handle-id handle)
                         :spec-id (e-work-spec-id spec)
                         :execution (e-work-spec-execution spec))))
-    (when-let ((cancel-error (plist-get (e-work-handle-metadata handle)
+    (when-let* ((cancel-error (plist-get (e-work-handle-metadata handle)
                                         :cancel-error)))
       (plist-put details :cancel-error cancel-error))
     (list 'e-work-deadline-exceeded
@@ -417,7 +417,7 @@ carrier's settlement stack."
 
 (defun e-work--install-deadline (handle arguments context)
   "Install HANDLE's effective deadline timer for ARGUMENTS and CONTEXT."
-  (when-let ((deadline
+  (when-let* ((deadline
               (e-work--effective-deadline
                (e-work-handle-spec handle) arguments context)))
     (let ((timer nil))
@@ -577,7 +577,7 @@ replacement dispatcher or a pre-existing owner remains authoritative."
 
 (defun e-work--activity-observer (handle payload)
   "Notify HANDLE's dedicated bounded progress observer before general hooks."
-  (when-let ((observer (e-work-handle-activity-observer handle)))
+  (when-let* ((observer (e-work-handle-activity-observer handle)))
     (condition-case err
         (funcall observer handle payload)
       (error (e-work--remember-hook-error handle :activity-observer err)))))
@@ -587,7 +587,7 @@ replacement dispatcher or a pre-existing owner remains authoritative."
 The observer is intentionally isolated from work settlement: a publication
 failure is recorded for its owner to reconcile but never changes the settled
 carrier result or suppresses ordinary cleanup/callbacks."
-  (when-let ((observer (e-work-handle-publication-observer handle)))
+  (when-let* ((observer (e-work-handle-publication-observer handle)))
     (condition-case err
         (funcall observer handle state payload)
       (error
@@ -908,7 +908,7 @@ with no tool-specific knowledge."
   (append
    (list :reference (format "%s:%s" scheme (e-work-handle-id child))
          :state "running")
-   (when-let ((uri (plist-get (e-work-handle-metadata child) :output-uri)))
+   (when-let* ((uri (plist-get (e-work-handle-metadata child) :output-uri)))
      (list :output_uri uri))
    extra))
 
@@ -952,7 +952,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                :on-progress (lambda (payload) (e-work-progress parent payload))))
         ;; The detachable wrapper is transitional, but its actual carrier must
         ;; still be visible to an injected board before it can run.
-        (when-let ((enroll (plist-get context :board-enroll-work)))
+        (when-let* ((enroll (plist-get context :board-enroll-work)))
           (funcall enroll child))
         (e-work-start-prepared child :arguments arguments :context context)
        ;; Surface the child's early metadata (streaming output uri, transport)
@@ -986,7 +986,7 @@ detach branch, and the child stays ignorant of detachment entirely."
 
 (defun e-work--setup (handle arguments context)
   "Run HANDLE setup and install cleanup/metadata."
-  (when-let ((setup (e-work-spec-setup (e-work-handle-spec handle))))
+  (when-let* ((setup (e-work-spec-setup (e-work-handle-spec handle))))
     (let ((state (funcall setup arguments context)))
       (when (plist-get state :cleanup)
         (e-work--add-cleanup handle (plist-get state :cleanup)))
@@ -1090,7 +1090,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                (when progress
                  (funcall progress handle process state)))
              (emit-progress ()
-               (when-let ((payload (progress-payload)))
+               (when-let* ((payload (progress-payload)))
                  (when (timerp progress-timer)
                    (cancel-timer progress-timer))
                  (setq progress-timer nil)
@@ -1276,7 +1276,7 @@ detach branch, and the child stays ignorant of detachment entirely."
       (setf (e-work-handle-cancel-function handle)
             (lambda (_handle)
               (when (buffer-live-p response-buffer)
-                (when-let ((process (get-buffer-process response-buffer)))
+                (when-let* ((process (get-buffer-process response-buffer)))
                   (when (process-live-p process)
                     (kill-process process)))))))
       (setf (e-work-handle-metadata handle)
@@ -1304,7 +1304,7 @@ detach branch, and the child stays ignorant of detachment entirely."
                       (e-work-handle-lifecycle handle))
                      (e-kill-buffer-quietly buffer)
                    (setq response-buffer buffer)
-                   (if-let ((err (plist-get status :error)))
+                   (if-let* ((err (plist-get status :error)))
                        (e-work-fail handle (if (consp err)
                                                err
                                              (list 'e-work-url-failed err)))

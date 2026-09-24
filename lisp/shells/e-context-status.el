@@ -236,7 +236,7 @@ snapshot builders and skip dynamic providers that have no snapshot path."
          (and snapshot-cache-only prefix)
          (e-context-status--store-snapshot-text
           snapshot-cache
-          (if-let ((status (e-context-budget-status
+          (if-let* ((status (e-context-budget-status
                             harness session-id
                             :prefer-token-usage prefer-token-usage
                             :estimate-cache estimate-cache

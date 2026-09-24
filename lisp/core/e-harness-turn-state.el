@@ -79,7 +79,7 @@ mutate the turn owner's retained list through it."
 (defun e-harness-turn-state-queue-item-metadata (item)
   "Return turn metadata for queued ITEM, including references."
   (append (copy-sequence (plist-get item :metadata))
-          (when-let ((references (plist-get item :references)))
+          (when-let* ((references (plist-get item :references)))
             (list :references references))))
 
 (defun e-harness-unsettled-state (harness)
@@ -138,7 +138,7 @@ transition or invoking its observers."
 (defun e-harness-turn-state--unsettled-changed (harness)
   "Record and publish one owner-local unsettled transition in HARNESS."
   (cl-incf (e-harness-unsettled-generation harness))
-  (when-let ((function (e-harness-unsettled-change-function harness)))
+  (when-let* ((function (e-harness-unsettled-change-function harness)))
     (funcall function (e-harness-unsettled-state harness))))
 
 (defun e-harness-turn-state-adjust-queued-input-count (harness delta)

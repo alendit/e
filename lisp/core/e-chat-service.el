@@ -713,7 +713,7 @@ the Board id as an address."
                                   :run-id run-id
                                   :publication-key publication-key))
                            children))))
-                    (if-let ((joined (e-chat-service--join-continuation-works
+                    (if-let* ((joined (e-chat-service--join-continuation-works
                                       children)))
                         (e-work-on-settle
                          joined
@@ -845,7 +845,7 @@ coordination."
 
 (defun e-chat-service--runtime-coordination-prune (registry runtime)
   "Remove RUNTIME's empty inner coordination table from REGISTRY."
-  (when-let ((table (gethash runtime registry)))
+  (when-let* ((table (gethash runtime registry)))
     (when (zerop (hash-table-count table))
       (remhash runtime registry))))
 
@@ -856,7 +856,7 @@ coordination."
 
 (defun e-chat-service--board-bindings-for (binding)
   "Return live bindings sharing BINDING's runtime and Board identity."
-  (when-let ((table
+  (when-let* ((table
               (e-chat-service--runtime-coordination-table
                e-chat-service--board-bindings
                (e-chat-service--binding-runtime binding))))
@@ -1398,7 +1398,7 @@ session owner and live binding.  Read failures remain request-local."
 The durable pickup remains SQLite-owned.  This releases request-owned producer
 callbacks immediately so closing a live controller cannot strand a task in
 `running'."
-  (when-let ((executing (e-chat-service-binding-executing-turns binding)))
+  (when-let* ((executing (e-chat-service-binding-executing-turns binding)))
     (let (delivery-ids)
       (maphash (lambda (delivery-id _turn-id)
                  (push delivery-id delivery-ids))
@@ -1439,11 +1439,11 @@ callbacks immediately so closing a live controller cannot strand a task in
               (e-chat-service-subscription-sqlite-rerun-p subscription) nil)
         (cl-incf
          (e-chat-service-subscription-lifecycle-generation subscription))
-        (when-let ((timer
+        (when-let* ((timer
                     (e-chat-service-subscription-drain-timer subscription)))
           (when (timerp timer) (cancel-timer timer))
           (setf (e-chat-service-subscription-drain-timer subscription) nil))
-        (when-let ((work
+        (when-let* ((work
                     (e-chat-service-subscription-sqlite-query-work
                      subscription)))
           (unless (memq (plist-get (e-work-status work) :state)
@@ -1469,24 +1469,24 @@ callbacks immediately so closing a live controller cannot strand a task in
                    (e-chat-service-binding-activity-subscription binding)))
         (e-harness-attached-turn-port-stop-observing port subscription)
         (setf (e-chat-service-binding-activity-subscription binding) nil))
-      (when-let ((subscription
+      (when-let* ((subscription
                   (e-chat-service-binding-pickup-subscription binding)))
         (e-board-sqlite-pickup-observation-cancel subscription)
         (setf (e-chat-service-binding-pickup-subscription binding) nil))
         (e-chat-service--cancel-executing-deliveries binding)
       (setf (e-chat-service-binding-readiness-work binding) nil
             (e-chat-service-binding-pickup-readiness-wakeup-p binding) nil)
-      (when-let ((continuations
+      (when-let* ((continuations
                   (e-chat-service-binding-continuation-deliveries binding)))
         (clrhash continuations))
-      (when-let ((continuations
+      (when-let* ((continuations
                   (e-chat-service-binding-continuation-turns binding)))
         (clrhash continuations))
-      (when-let ((continuations
+      (when-let* ((continuations
                   (e-chat-service-binding-continuation-outcome-inflight
                    binding)))
         (clrhash continuations))
-      (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+      (when-let* ((timer (e-chat-service-binding-idle-close-timer binding)))
         (when (timerp timer) (cancel-timer timer))
         (setf (e-chat-service-binding-idle-close-timer binding) nil))
       (setf (e-chat-service-binding-lifecycle-state binding) 'retired)
@@ -1539,8 +1539,8 @@ binding lease path.  Durable SQLite state is never removed."
 
 (defun e-chat-service-binding (harness session-id)
   "Return HARNESS SESSION-ID's live chat board binding, or nil."
-  (when-let ((bindings (gethash harness e-chat-service--bindings)))
-    (when-let ((binding (gethash session-id bindings)))
+  (when-let* ((bindings (gethash harness e-chat-service--bindings)))
+    (when-let* ((binding (gethash session-id bindings)))
       (if (and (e-chat-service--binding-live-p binding)
                (not (eq (e-chat-service--binding-readiness-state binding)
                         'unavailable)))
@@ -1565,7 +1565,7 @@ reconstructed for this process-local predicate."
 
 (defun e-chat-service--cancel-idle-close (binding)
   "Cancel BINDING's pending idle close, if any."
-  (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
+  (when-let* ((timer (e-chat-service-binding-idle-close-timer binding)))
     (when (timerp timer) (cancel-timer timer))
     (setf (e-chat-service-binding-idle-close-timer binding) nil)))
 
@@ -1737,10 +1737,10 @@ The SQLite Board itself has no application-owned close lifecycle."
     (setf (e-chat-service-subscription-active-p subscription) nil
           (e-chat-service-subscription-drain-scheduled subscription) nil)
     (cl-incf (e-chat-service-subscription-lifecycle-generation subscription))
-    (when-let ((timer (e-chat-service-subscription-drain-timer subscription)))
+    (when-let* ((timer (e-chat-service-subscription-drain-timer subscription)))
       (when (timerp timer) (cancel-timer timer))
       (setf (e-chat-service-subscription-drain-timer subscription) nil))
-    (when-let ((work
+    (when-let* ((work
                 (e-chat-service-subscription-sqlite-query-work subscription)))
       (unless (memq (plist-get (e-work-status work) :state)
                     '(finished failed cancelled))
@@ -1802,7 +1802,7 @@ semantic interpretation responsibility."
        (let ((copy (copy-tree record t)))
          (plist-put copy :journal-position position)
          (unless (plist-member copy :timestamp)
-           (when-let ((timestamp (or (plist-get copy :created-at)
+           (when-let* ((timestamp (or (plist-get copy :created-at)
                                      (plist-get copy :updated-at))))
              (plist-put copy :timestamp timestamp)))
          copy))
@@ -2141,7 +2141,7 @@ Board record."
                          binding))
                        (context (gethash delivery-id deliveries)))
              (remhash delivery-id deliveries)
-             (when-let ((turns
+             (when-let* ((turns
                         (e-chat-service-binding-continuation-turns binding)))
                (puthash turn-id
                         (append context (list :turn-id turn-id))
@@ -3617,7 +3617,7 @@ SOURCE-INPUT-KEY lets durable callers retry one queued input exactly once."
 
 (defun e-chat-service-abort-session (harness session-id)
   "Abort the current board-bound turn for HARNESS SESSION-ID."
-  (when-let ((binding (e-chat-service-binding harness session-id)))
+  (when-let* ((binding (e-chat-service-binding harness session-id)))
     (e-harness-attached-turn-port-abort
      (e-chat-service-binding-turn-port binding))))
 
@@ -3785,11 +3785,11 @@ need to know a block kind or capability policy."
 (defun e-chat-service-active-turns (harness)
   "Return HARNESS's board-derived active-turn index for shell diagnostics."
   (let ((result (make-hash-table :test 'equal)))
-    (when-let ((bindings (gethash harness e-chat-service--bindings)))
+    (when-let* ((bindings (gethash harness e-chat-service--bindings)))
       (maphash
        (lambda (session-id binding)
          (when (e-chat-service--binding-live-p binding)
-           (when-let ((active-turn
+           (when-let* ((active-turn
                        (e-chat-service--binding-active-turn binding)))
              (puthash session-id active-turn result))))
        bindings))

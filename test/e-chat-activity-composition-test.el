@@ -908,7 +908,7 @@ Once a tool completes, the left cell settles back to \"Thought for ...\"."
                             :turn-id "turn-1"
                             :created-at 0
                             :payload '(:status started)))
-            (when-let ((bounds (e-chat-surface-running-status-bounds)))
+            (when-let* ((bounds (e-chat-surface-running-status-bounds)))
               (goto-char (cdr bounds))
               (set-window-point window (point))))
             (cl-letf (((symbol-function 'recenter)

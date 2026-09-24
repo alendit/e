@@ -94,7 +94,7 @@ Replacing the factory does not replace any already cached harness instance."
 (defun e-harness-registry-invalidation-event (id)
   "Return ID's latest bounded replacement/clear invalidation event, if any."
   (e-harness-registry--validate-id id)
-  (when-let ((event (gethash id e-harness-registry--invalidation-events)))
+  (when-let* ((event (gethash id e-harness-registry--invalidation-events)))
     (copy-sequence event)))
 
 (defun e-harness-registry-get-or-create (id)

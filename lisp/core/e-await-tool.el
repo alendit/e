@@ -154,7 +154,7 @@ the explicitly textual bounded preview projector."
   (let (pairs errors)
     (dolist (ref (append refs nil))
       (let ((resolved (e-waitable-resolve ref)))
-        (if-let ((handle (plist-get resolved :handle)))
+        (if-let* ((handle (plist-get resolved :handle)))
             (push (cons ref handle) pairs)
           (push (list :ref ref :status 'error
                       :error (plist-get resolved :error))
@@ -236,7 +236,7 @@ the explicitly textual bounded preview projector."
                   (list "Await requires at least one resolved work handle")))
          (t
           (let ((cancel
-                 (if-let ((subscribe (plist-get context :board-subscribe-aggregation)))
+                 (if-let* ((subscribe (plist-get context :board-subscribe-aggregation)))
                      (funcall subscribe
                               handles mode timeout
                               (lambda (reason)

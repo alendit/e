@@ -527,7 +527,7 @@ When FUNCTION is nil, clear any existing callback."
 
 (defun e-harness-notify-layers-changed (harness)
   "Notify HARNESS that its enabled layer set changed."
-  (when-let ((function (e-harness-layer-change-function harness)))
+  (when-let* ((function (e-harness-layer-change-function harness)))
     (funcall function harness))
   harness)
 
@@ -616,7 +616,7 @@ after this accessor returns nil."
   (let ((store (e-harness-sessions harness)))
     (or
      (when session-id
-       (when-let ((session
+       (when-let* ((session
                    (or (e-harness-executing-session-state harness session-id)
                        ;; A query-backed session is never reconstructed merely
                        ;; to resolve capability scope at a lifecycle edge.
@@ -641,7 +641,7 @@ directory."
   "Return normalized, de-duplicated roots from `e-default-projects'."
   (let (roots)
     (dolist (project e-default-projects)
-      (when-let ((root (e-harness-normalize-project-root project)))
+      (when-let* ((root (e-harness-normalize-project-root project)))
         (unless (member root roots)
           (push root roots))))
     (nreverse roots)))
@@ -660,7 +660,7 @@ runs in the primary project root.  Configure it alongside
 
 (defun e-harness-capabilities--root-at-or-below-p (target root)
   "Return non-nil when normalized TARGET is at or below normalized ROOT."
-  (when-let ((target (e-harness-normalize-project-root target))
+  (when-let* ((target (e-harness-normalize-project-root target))
              (root (e-harness-normalize-project-root root)))
     (string-prefix-p (file-truename root) (file-truename target))))
 
@@ -669,12 +669,12 @@ runs in the primary project root.  Configure it alongside
 Collects EXTRA-ROOTS from `e-workspace-roots-alist' entries whose key is an
 ancestor of (or equal to) PRIMARY-ROOT, followed by `e-default-projects'.
 Returns a normalized, de-duplicated list, excluding PRIMARY-ROOT itself."
-  (when-let ((primary (e-harness-normalize-project-root primary-root)))
+  (when-let* ((primary (e-harness-normalize-project-root primary-root)))
     (let (roots)
       (dolist (entry e-workspace-roots-alist)
         (when (e-harness-capabilities--root-at-or-below-p primary (car entry))
           (dolist (extra (cdr entry))
-            (when-let ((extra (e-harness-normalize-project-root extra)))
+            (when-let* ((extra (e-harness-normalize-project-root extra)))
               (unless (or (equal extra primary) (member extra roots))
                 (push extra roots))))))
       (dolist (project (e-default-project-roots))
@@ -688,7 +688,7 @@ The first element is the primary project root (the base for relative paths and
 the bash working directory); the rest are configured extra roots from
 `e-workspace-roots-alist' followed by `e-default-projects'.  Returns nil when
 no primary root is resolvable."
-  (when-let ((primary (e-harness-normalize-project-root
+  (when-let* ((primary (e-harness-normalize-project-root
                        (e-harness-project-root harness session-id turn-id))))
     (cons primary (e-harness-configured-workspace-roots primary))))
 

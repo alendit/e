@@ -232,7 +232,7 @@ it."
 Falls back to the default `chat' instance when no explicit default is set."
   (or (e-task-queue-default-harness-instance-id queue)
       e-task-queue-default-harness-instance-id
-      (when-let ((instance (e-harness-instance-default :kind 'chat)))
+      (when-let* ((instance (e-harness-instance-default :kind 'chat)))
         (e-harness-instance-id instance))))
 
 ;; --- records ----------------------------------------------------------------
@@ -373,7 +373,7 @@ with the task transition."
 
 (defun e-task-queue-work-handle (queue task-id)
   "Return TASK-ID's live `e-work' handle, or nil when it is unknown."
-  (when-let ((record (gethash task-id (e-task-queue-records queue))))
+  (when-let* ((record (gethash task-id (e-task-queue-records queue))))
     (plist-get record :work-handle)))
 
 (defun e-task-queue--work-spec ()
@@ -412,7 +412,7 @@ with the task transition."
 
 (defun e-task-queue--settle-work-handle (record status)
   "Settle RECORD's work handle for terminal STATUS."
-  (when-let ((handle (plist-get record :work-handle)))
+  (when-let* ((handle (plist-get record :work-handle)))
     (pcase status
       ('done
        (e-work-finish handle
@@ -499,7 +499,7 @@ non-nil when a retry was armed.  The original prompt is preserved in
       (plist-put record :handle nil)
       ;; A bridged retry is a fresh durable attempt.  The group can still
       ;; select a different accepted attempt without changing queue policy.
-      (when-let ((run-id (plist-get (plist-get record :metadata) :board-run-id)))
+      (when-let* ((run-id (plist-get (plist-get record :metadata) :board-run-id)))
         (ignore run-id)
         (let ((metadata (copy-tree (plist-get record :metadata))))
           (plist-put metadata :board-attempt

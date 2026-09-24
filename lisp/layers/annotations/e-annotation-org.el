@@ -83,7 +83,7 @@ event shape keep working.")
   "Require an org-annotate backend or signal a user error."
   (unless (require 'org-annotate nil t)
     (user-error "Install org-annotate to use annotation actions"))
-  (when-let ((missing (e-annotation-org--missing-backend-functions)))
+  (when-let* ((missing (e-annotation-org--missing-backend-functions)))
     (user-error "Update org-annotate to use annotation actions: missing %S"
                 missing)))
 

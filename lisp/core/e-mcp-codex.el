@@ -70,7 +70,7 @@ or `point-max'.  Point is searched from `point-min'."
 
 (defun e-mcp-codex--section-pairs (section)
   "Return an alist of KEY . RAW-VALUE strings under TOML SECTION, or nil."
-  (when-let ((bounds (e-mcp-codex--section-bounds section)))
+  (when-let* ((bounds (e-mcp-codex--section-bounds section)))
     (let (pairs)
       (save-excursion
         (goto-char (car bounds))

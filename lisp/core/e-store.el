@@ -122,7 +122,7 @@ and optional range."
 (defun e-store-read-entry (entry &optional range)
   "Return ENTRY content, passing RANGE to dynamic readers."
   (let ((content
-         (if-let ((reader (e-store-entry-reader entry)))
+         (if-let* ((reader (e-store-entry-reader entry)))
              (funcall reader entry range)
            (e-store-entry-content entry))))
     (unless (stringp content)
@@ -193,7 +193,7 @@ and optional range."
    (list :uri (e-store-entry-uri entry)
          :name (e-store--entry-name entry root-address)
          :kind "resource")
-   (when-let ((metadata (e-store-entry-metadata entry)))
+   (when-let* ((metadata (e-store-entry-metadata entry)))
      (list :metadata (copy-sequence metadata)))))
 
 (defun e-store--query-field-functions ()

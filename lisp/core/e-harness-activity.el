@@ -426,7 +426,7 @@ board activity message unpublishable."
             (append fields
                     (e-harness-activity--activity-field
                      payload key #'stringp #'e-harness-activity--safe-activity-string))))
-    (when-let ((causes
+    (when-let* ((causes
                 (e-harness-activity--tool-causes-activity-projection
                  (plist-get payload :caused-by-tool-calls))))
       (setq fields (append fields (list :caused-by-tool-calls causes))))
@@ -470,7 +470,7 @@ board activity message unpublishable."
       (setq projected
             (append projected
                     (e-harness-activity--activity-field payload key #'numberp))))
-    (when-let ((diagnostics
+    (when-let* ((diagnostics
                 (e-harness-activity--provider-diagnostics-activity-projection
                  (plist-get payload :diagnostics))))
       (setq projected (append projected (list :diagnostics diagnostics))))
@@ -598,7 +598,7 @@ turn persistence admission."
 The event is intentionally separate from the live `reasoning-delta' event.
 Consumers that need durable identity can bridge it without sending a second
 activity event back through the selected chat presentation path."
-  (when-let ((activity-entry-id (plist-get activity-entry :id)))
+  (when-let* ((activity-entry-id (plist-get activity-entry :id)))
     (e-harness-activity--emit
      harness
      (e-events-make

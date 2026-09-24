@@ -436,7 +436,7 @@
         (kill-buffer board-buffer))
       (dolist (name (list e-board-activity-shell-detail-buffer-name
                           e-board-activity-shell-raw-buffer-name))
-        (when-let ((buffer (get-buffer name)))
+        (when-let* ((buffer (get-buffer name)))
           (kill-buffer buffer)))
       (when (and fixture
                  child-harness

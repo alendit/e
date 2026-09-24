@@ -76,7 +76,7 @@
       (add-to-list 'load-path egui))))
 
 (unless (e-e2e-current-config-p)
-  (when-let ((directory (getenv "E_GRAPHICAL_E2E_EMACS_DIR")))
+  (when-let* ((directory (getenv "E_GRAPHICAL_E2E_EMACS_DIR")))
     (setq user-emacs-directory (file-name-as-directory directory)))
   (load (expand-file-name
          "graphical/e-graphical-source-bootstrap.el"

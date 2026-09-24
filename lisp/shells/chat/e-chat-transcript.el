@@ -383,7 +383,7 @@ the `hidden' block kind.")
   "Return live block metadata for BLOCK-ID, or nil.
 Blocks whose display was hidden or whose markers no longer delimit text are
 not navigable and are therefore omitted from the live projection."
-  (when-let ((record (and block-id
+  (when-let* ((record (and block-id
                           (hash-table-p e-chat-transcript--block-registry)
                           (gethash block-id e-chat-transcript--block-registry))))
     (let* ((start-marker (plist-get record :start-marker))
@@ -401,12 +401,12 @@ not navigable and are therefore omitted from the live projection."
 The relation is one-to-one inside a chat buffer."
   (when (and message-id block-id)
     (puthash message-id block-id (e-chat-transcript--ensure-message-block-index))
-    (when-let ((record (gethash block-id (e-chat-transcript--ensure-block-registry))))
+    (when-let* ((record (gethash block-id (e-chat-transcript--ensure-block-registry))))
       (plist-put record :message-id message-id))))
 
 (defun e-chat-transcript--session-summary-preview (session)
   "Return SESSION summary bounded for metadata-only presentation."
-  (when-let ((summary (plist-get session :summary)))
+  (when-let* ((summary (plist-get session :summary)))
     (let ((limit e-chat-session-summary-preview-max-chars))
       (unless (and (integerp limit) (> limit 0))
         (user-error
@@ -581,10 +581,10 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
   (when block-id
     (let ((record (and (hash-table-p e-chat-transcript--block-registry)
                        (gethash block-id e-chat-transcript--block-registry))))
-      (when-let ((overlay (plist-get record :display-overlay)))
+      (when-let* ((overlay (plist-get record :display-overlay)))
         (when (overlayp overlay)
           (delete-overlay overlay)))
-      (when-let ((message-id (plist-get record :message-id)))
+      (when-let* ((message-id (plist-get record :message-id)))
         (when (and (hash-table-p e-chat-transcript--message-block-index)
                    (equal (gethash message-id e-chat-transcript--message-block-index)
                           block-id))
@@ -628,7 +628,7 @@ hiding a message cannot leave an orphaned response or turn separator."
   "Set rendered block RECORD's layout visibility to HIDDEN.
 Only visibility owned by the durable-message projection is changed; unrelated
 text invisibility in the chat buffer remains intact."
-  (when-let ((bounds (e-chat-transcript--block-layout-bounds record)))
+  (when-let* ((bounds (e-chat-transcript--block-layout-bounds record)))
     (let ((start (car bounds))
           (end (cdr bounds))
           (overlay (plist-get record :display-overlay)))
@@ -750,7 +750,7 @@ DETAILS-TEXT describe block actions."
     (move-overlay e-chat-transcript--focused-turn-overlay start end)
     (overlay-put e-chat-transcript--focused-turn-overlay 'face 'e-chat-focused-turn-face)
     (goto-char start)
-    (when-let ((window (get-buffer-window (current-buffer) t)))
+    (when-let* ((window (get-buffer-window (current-buffer) t)))
       (set-window-point window start))
     block-id))
 
@@ -1658,11 +1658,11 @@ implementation and owner-to-owner call path use the namespaced port above."
       ('activity-tool-batch
        (e-chat-transcript--open-tool-list block))
       ('system
-       (if-let ((details-text (plist-get block :details-text)))
+       (if-let* ((details-text (plist-get block :details-text)))
            (e-chat-transcript--toggle-block-details-text block details-text)
          (e-chat-transcript--enter-block-view block)))
       (_
-       (if-let ((details-text (plist-get block :details-text)))
+       (if-let* ((details-text (plist-get block :details-text)))
            (e-chat-transcript--toggle-block-details-text block details-text)
          (e-chat-transcript--enter-block-view block))))))
 
@@ -1717,7 +1717,7 @@ implementation and owner-to-owner call path use the namespaced port above."
   "Return the first live rendered block id whose record satisfies PREDICATE."
   (cl-find-if
    (lambda (block-id)
-     (when-let ((record (e-chat-transcript--live-block-record block-id)))
+     (when-let* ((record (e-chat-transcript--live-block-record block-id)))
        (funcall predicate record)))
    e-chat-transcript--block-order))
 
@@ -2304,7 +2304,7 @@ path deliberately avoids instantiating a major mode or running mode hooks."
          (property-end (or property-end (length text)))
          (property-buffer-start (+ start property-start))
          (property-buffer-end (+ start property-end)))
-    (when-let ((progress-range
+    (when-let* ((progress-range
                 (e-chat-transcript--activity-progress-range data text)))
       (setq e-chat-transcript--activity-progress-start-marker
             (copy-marker (+ start (car progress-range)) nil))
@@ -2321,7 +2321,7 @@ path deliberately avoids instantiating a major mode or running mode hooks."
          e-chat-transient-turn-id nil
          e-chat-turn-id nil
          e-chat-block-id nil))
-      (if-let ((data-text (plist-get data :display-text)))
+      (if-let* ((data-text (plist-get data :display-text)))
           (let* ((block-id (e-chat-transcript--activity-block-id turn-id))
                  (properties `(e-chat-transient-turn-id ,turn-id
                                e-chat-turn-id ,turn-id
@@ -2339,7 +2339,7 @@ path deliberately avoids instantiating a major mode or running mode hooks."
            e-chat-progress-turn-id ,turn-id))))
     ;; Block metadata describes the whole semantic projection, so refresh it
     ;; even when a redraw changed only activity details or display properties.
-    (when-let ((data-text (plist-get data :display-text)))
+    (when-let* ((data-text (plist-get data :display-text)))
       ;; Activity owns the source records.  Keep transcript block metadata
       ;; detached from the semantic descriptor lists so a later activity
       ;; update cannot mutate a transcript-owned projection by aliasing it.
@@ -2362,7 +2362,7 @@ path deliberately avoids instantiating a major mode or running mode hooks."
 
 (defun e-chat-transcript--delete-activity-projection ()
   "Delete the current transient activity projection and its metadata."
-  (when-let ((bounds (e-chat-transcript--activity-bounds)))
+  (when-let* ((bounds (e-chat-transcript--activity-bounds)))
     (let ((inhibit-read-only t))
       (delete-region (car bounds) (cdr bounds))))
   (when e-chat-transcript--activity-block-id
@@ -2480,7 +2480,7 @@ must not need to inspect its representation to schedule their own work."
 
 (defun e-chat-transcript-render-session-loading (session)
   "Render cheap loading state for unloaded indexed SESSION."
-  (when-let ((summary (e-chat-transcript--session-summary-preview session)))
+  (when-let* ((summary (e-chat-transcript--session-summary-preview session)))
     (unless (string-empty-p summary)
       (e-chat-transcript--insert-entry "You" summary nil)))
   (e-chat-transcript--insert-protected
@@ -2619,7 +2619,7 @@ The projection contains display text, kind, turn identity, detail visibility,
 and child kinds only.  Mutable block records, markers, and registries remain
 private to the transcript owner."
   (with-current-buffer (or buffer (current-buffer))
-    (when-let ((block
+    (when-let* ((block
                 (or (ignore-errors (e-chat-transcript--focused-block))
                     (and (e-chat-transcript--block-at-point)
                          (gethash (e-chat-transcript--block-at-point)
@@ -2643,7 +2643,7 @@ private to the transcript owner."
                 :child-kinds
                 (mapcar
                  (lambda (child-id)
-                   (when-let ((child (e-chat-transcript--live-block-record child-id)))
+                   (when-let* ((child (e-chat-transcript--live-block-record child-id)))
                      (list :kind (plist-get child :kind)
                            :action-text
                            (e-chat-transcript--block-action-text child)

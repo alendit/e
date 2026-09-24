@@ -228,7 +228,7 @@ boundary; ordinary Board reads require the current tagged wire format."
        (plist-put payload :tasks
                   (e-runtime-migration--legacy-board-object-array
                    (plist-get payload :tasks)))
-       (when-let ((deadline (plist-get payload :deadline)))
+       (when-let* ((deadline (plist-get payload :deadline)))
          (plist-put deadline :kind
                     (e-runtime-migration--legacy-board-enum
                      (plist-get deadline :kind)))))

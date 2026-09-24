@@ -96,7 +96,7 @@ Return nil when REQUEST was already terminal."
     (setf (e-request-lifecycle-state request) state)
     (setf (e-request-lifecycle-terminal-payload request) payload)
     (e-request--record-event request state payload)
-    (when-let ((cleanup (e-request-lifecycle-cleanup-trigger request)))
+    (when-let* ((cleanup (e-request-lifecycle-cleanup-trigger request)))
       (funcall cleanup request))
     request)))
 
@@ -143,7 +143,7 @@ Cancellation is best effort at the underlying handle level, but settlement is
 recorded exactly once at the lifecycle level."
   (when (and (e-request-lifecycle-p request)
              (not (e-request-terminal-p request)))
-    (when-let ((cancel (e-request-lifecycle-cancel-function request)))
+    (when-let* ((cancel (e-request-lifecycle-cancel-function request)))
       (funcall cancel request)))
   (e-request--settle request 'cancelled payload))
 
