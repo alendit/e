@@ -12,8 +12,14 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-async-control)
 (require 'e-await-tool)
+(require 'e-backend)
+(require 'e-base)
+(require 'e-harness)
+(require 'e-harness-base)
 (require 'e-json)
+(require 'e-session-tmp-resources)
 (require 'e-tools)
 (require 'e-waitable)
 (require 'e-work)
@@ -54,6 +60,15 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
 (defun e-await-tool-test--first-result (content)
   "Return the first canonical result entry from CONTENT."
   (aref (plist-get content :results) 0))
+
+(defun e-await-tool-test--wait-until (predicate timeout)
+  "Wait for PREDICATE to return non-nil for at most TIMEOUT seconds."
+  (let ((deadline (+ (float-time) timeout))
+        value)
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    value))
 
 (ert-deftest e-await-tool-test-registered-as-model-facing-tool ()
   "Await is a model-facing tool (unlike the subagents actions)."
@@ -268,6 +283,98 @@ BINDINGS is an alist of (LOCAL-ID . HANDLE) under the \"fake\" scheme."
               (should-not (string-match-p
                            (regexp-quote path) (prin1-to-string entry))))))
       (e-work-cancel handle))))
+
+(ert-deftest e-await-tool-test-structured-result-projects-envelope-once ()
+  "A structured tool result is bounded without recursively reclassifying it."
+  (let ((handle (e-await-tool-test--pending-handle))
+        (path "/private/opaque/detached-bash-output.txt"))
+    (unwind-protect
+        (e-await-tool-test--with-scheme (list (cons "bash" handle))
+          (let ((registry (e-tools-registry-create))
+                result)
+            (e-await-tool-register registry)
+            (e-tools-start
+             registry
+             '(:id "await-call" :name "await"
+               :arguments (:refs ["fake:bash"]))
+             :on-done (lambda (value) (setq result value)))
+            (e-work-finish
+             handle
+             (e-tools-result-create
+              '(:id "bash-call" :name "bash")
+              'ok
+              (e-tools-file-content-create
+               :path path :uri "tmp://tool-results/bash-call.txt"
+               :preview "done" :original-bytes 4 :original-lines 1
+               :preview-bytes 4 :preview-lines 1)))
+            (let* ((entry (e-await-tool-test--first-result
+                           (plist-get result :content)))
+                   (reported (plist-get entry :result))
+                   (content (plist-get reported :content)))
+              (should (equal (plist-get reported :tool-call-id) "bash-call"))
+              (should (equal (plist-get reported :name) "bash"))
+              (should (equal (plist-get reported :status) "ok"))
+              (should (plist-get content :omitted))
+              (should (equal (plist-get content :reason) "file-content"))
+              (should-not (string-match-p
+                           (regexp-quote path) (prin1-to-string entry))))))
+      (e-work-cancel handle))))
+
+(ert-deftest e-await-tool-test-detached-file-backed-bash-settles-naturally ()
+  "Await reports a naturally completed detached Bash file-backed result."
+  (let* ((directory (make-temp-file "e-await-detached-bash-" t))
+         (harness
+          (e-harness-create
+           :backend (e-backend-fake-create :items nil)
+           :intrinsic-capabilities
+           (append
+            (e-layer-capabilities (e-harness-base-layer-create))
+            (e-layer-capabilities (e-base-layer-create directory))
+            (e-layer-capabilities (e-async-control-layer-create)))))
+         bash-result
+         await-result
+         detached-handle)
+    (unwind-protect
+        (progn
+          (e-tool-lifecycle-start-call
+           (e-harness-tool-lifecycle harness "detached-session" "turn-1")
+           '(:id "bash-call" :name "bash"
+             :arguments (:command "sleep 0.05; printf '{\"ok\":true}\\n'"
+                         :wait_for 0))
+           :on-done (lambda (value) (setq bash-result value)))
+          (should (e-await-tool-test--wait-until
+                   (lambda () bash-result) 2.0))
+          (let* ((reference
+                  (plist-get (plist-get bash-result :content) :reference))
+                 (id (substring reference (length "work:"))))
+            (should (string-prefix-p "work:" reference))
+            (setq detached-handle (e-work-detached-handle id))
+            (should (e-work-handle-p detached-handle))
+            (e-tool-lifecycle-start-call
+             (e-harness-tool-lifecycle harness "detached-session" "turn-1")
+             (list :id "await-call" :name "await"
+                   :arguments (list :refs (vector reference)
+                                    :mode "all" :timeout 2))
+             :on-done (lambda (value) (setq await-result value))))
+          (should (e-await-tool-test--wait-until
+                   (lambda () await-result) 3.0))
+          (let* ((content (plist-get await-result :content))
+                 (entry (e-await-tool-test--first-result content))
+                 (reported (plist-get entry :result)))
+            (should (plist-get content :settled))
+            (should (equal (plist-get content :reason) "complete"))
+            (should (equal (plist-get entry :state) "finished"))
+            (should (equal (plist-get reported :tool-call-id) "bash-call"))
+            (should (equal (plist-get reported :status) "ok"))
+            (should (equal (plist-get
+                            (plist-get reported :content) :reason)
+                           "file-content"))))
+      (when (and (e-work-handle-p detached-handle)
+                 (not (e-request-terminal-p
+                       (e-work-handle-lifecycle detached-handle))))
+        (e-work-cancel detached-handle))
+      (e-session-tmp-cleanup-harness harness)
+      (delete-directory directory t))))
 
 (provide 'e-await-tool-test)
 

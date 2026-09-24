@@ -1,0 +1,98 @@
+#+title: Detached Bash Await Recursive Projection Investigation
+#+startup: overview
+
+* Finding
+
+The Bash process and its detached Work handle finished successfully.  The turn
+stuck while =await= projected that Work result into model-facing data.
+
+=e-await-tool--model-value= recognized the structured Bash result envelope,
+constructed a safe envelope with the same =:tool-call-id=, =:name=, =:status=,
+and =:content= discriminator keys, and passed that envelope back to itself.
+=e-tools-result-p= recognized every reconstructed envelope as another structured
+tool result, so projection recursed until Emacs signalled:
+
+#+begin_example
+Lisp nesting exceeds `max-lisp-eval-depth'
+#+end_example
+
+=e-work-await-set= had already marked its aggregation settled and cancelled the
+timeout before it invoked the failing callback.  The exception therefore
+prevented =e-work-finish= from settling the model-facing =await= Work, while the
+aggregation's timeout could no longer report a failure.  No tool result or
+provider continuation reached session or Board persistence.
+
+* Evidence
+
+- The root session was =ses_788c85c8dec166c7615b5db4b83f8199=.
+- Bash call =call_CbVT4ssoauNFxrP3i6wAXj7X= detached as =work:bash/1067= and
+  completed successfully at 16:34:45.
+- Await call =call_hwkbdK7BeVXBfUoQYQ2VJ6De= started at 16:33:23 and persisted no
+  terminal result.
+- The session journal stopped at the await start; the Board journal stopped at
+  the preceding reasoning summary.
+- An isolated real Bash reproduction produced a =finished= file-backed Bash
+  handle, a permanently =started= await handle, and the exact recursion error
+  when invoking =e-await-tool--report=.
+- The supported live symbol probe showed the running Emacs loaded the current
+  repository source through the Straight build symlink.  This was not stale
+  installed code.  No live state was mutated or reloaded.
+
+* Test gap
+
+The existing file-content test passed a naked =e-tools-file-content= carrier to
+=await=.  It did not wrap that carrier in the structured result envelope that
+real Bash Work returns.  The detached Bash test cancelled its handle and never
+awaited natural process completion.
+
+* Remediation
+
+Project structured tool-result content once, then apply the existing bounded
+inline check directly to the closed projected envelope.  Do not send the
+projected envelope back through the structured-result classifier.
+
+Regression coverage now includes both the focused structured-envelope boundary
+and a naturally completed detached, file-backed Bash command observed through
+the real model-facing =await= lifecycle.
+
+* Verification
+
+- =eldev test -B --file test/e-await-tool-test.el=: 16/16 passed, including
+  structured-envelope and natural detached-Bash regressions.
+- =eldev test -B --file test/e-work-test.el --file test/e-base-tools-test.el
+  --file test/e-tools-test.el=: 137/137 passed.
+- =eldev compile -F -f lisp/core/e-await-tool.el=: passed; only the file's
+  pre-existing obsolete =if-let= warnings remain.
+- The sandboxed full suite ran 2,712 tests with 2,705 expected results.  Its six
+  loopback-socket failures passed 6/6 when rerun with local socket permission.
+  The remaining =e-dev-test-reload-refreshes-defaults= failure reproduces alone
+  in untouched code: the production default includes the =board= layer while
+  that test's expected list omits it.
+- =git diff --check=: passed.
+
+The running Emacs remains unchanged.  The correction is core runtime behavior
+and requires a full Emacs restart before the live process can use it.
+
+* Design self-check
+
+1. The package is useful on its own: completed detached tools can now resume an
+   awaiting turn.
+2. It moves toward one bounded, generic Work-result projection boundary.
+3. The stable structured-result contract remains direct; no speculative
+   abstraction was added.
+4. =e-await-tool= continues to own model-facing await projection.
+5. Coupling is unchanged; the existing narrow result and file-content contracts
+   are reused.
+6. No dependency direction changed.
+7. No side effect was added; projection remains pure.
+8. No state was added or persisted.
+9. The change removes unbounded recursive work and performs one existing bounded
+   envelope traversal.
+10. The structured-result and file-content predicates retain their existing
+    semantics and substitutability.
+11. Existing report shapes and file-content opacity remain compatible.
+12. No legacy path became independently removable.
+13. Expected over-budget values still become tombstones; unexpected projection
+    errors continue to surface.
+14. A focused unit test proves the projection boundary, and a composed test
+    proves real detached Bash completion through model-facing =await=.

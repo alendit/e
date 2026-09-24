@@ -1,0 +1,21 @@
+#+title: Detached Bash Completion Leaves Await and Board Turn Stuck
+#+startup: overview
+
+* Report
+
+Board =brd_a922c137facd2723f23a8d527a011456= stopped after a detached =bash=
+call and never displayed the command's successful result.  The Bash process
+completed with:
+
+#+begin_example
+{"indexed": 9069, "added": 3635, "removed": 63}
+#+end_example
+
+The model-facing =await= call remained in =started= state, the session persisted
+no later tool result, and the Board did not continue.
+
+* Expected behavior
+
+When detached Bash work finishes, =await= should return a bounded report for its
+=work:= reference and allow the provider and Board turn to continue.  File-backed
+output must remain opaque and expose only its safe result reference.

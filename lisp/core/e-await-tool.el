@@ -127,7 +127,11 @@ canonical identity/status/content projection; arbitrary subsystem values use
 the explicitly textual bounded preview projector."
   (cond
    ((e-tools-result-p value)
-    (e-await-tool--model-value
+    ;; The projection itself retains the structured-result discriminator keys.
+    ;; Passing it back through this function would classify it as another tool
+    ;; result forever.  Project the nested content once, then budget the closed
+    ;; model-facing envelope directly.
+    (e-await-tool--inline-or-reference
      (list :tool-call-id (or (plist-get value :tool-call-id) e-json-null)
            :name (or (plist-get value :name) e-json-null)
            :status (if (symbolp (plist-get value :status))
