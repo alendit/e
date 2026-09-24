@@ -971,6 +971,197 @@
                   :error)
                  "provider failed"))))))
 
+(defun e-runtime-store-session-worker-test--append-continuation-record
+    (runtime session-id state position record)
+  "Append RECORD for continuation tests and return its updated STATE."
+  (let ((state (copy-tree state t)))
+    (plist-put state :journal-position position)
+    (plist-put state :updated-at (plist-get record :timestamp))
+    (plist-put state :current-head-id (plist-get record :id))
+    (when (equal (plist-get record :type) "message")
+      (plist-put state :message-count
+                 (1+ (plist-get state :message-count)))
+      (plist-put state :last-message-at (plist-get record :timestamp)))
+    (e-runtime-store-call
+     runtime 'write
+     (list :op 'session-append :session-id session-id
+           :record record :query-delta state))
+    state))
+
+(defun e-runtime-store-session-worker-test--continuation-message
+    (session-id id timestamp turn-id run-id publication-key)
+  "Return one durable user message for continuation reconciliation tests."
+  (list :type "message" :session-id session-id :id id
+        :timestamp timestamp
+        :message (list :id id :role 'user :content "opaque prompt"
+                       :turn-id turn-id
+                       :metadata (list :board-run-id run-id
+                                       :board-continuation-key
+                                       publication-key))))
+
+(defun e-runtime-store-session-worker-test--continuation-event
+    (session-id id timestamp turn-id event-type)
+  "Return one durable terminal activity event for continuation tests."
+  (list :type "activity-event" :session-id session-id :id id
+        :timestamp timestamp
+        :semantic-event (list :id id :turn-id turn-id
+                              :event-type event-type
+                              :created-at timestamp)))
+
+(ert-deftest e-runtime-store-session-worker-continuation-outcome-terminal-statuses ()
+  "Done, failed, and cancelled outcomes use exact durable turn evidence."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (dolist (status '(done failed cancelled))
+      (let* ((session-id (format "continuation-%s" status))
+             (run-id (format "run-%s" status))
+             (publication-key (format "key-%s" status))
+             (turn-id (format "turn-%s" status))
+             (event-type (pcase status
+                           ('done 'turn-finished)
+                           ('failed 'turn-failed)
+                           ('cancelled 'turn-cancelled)))
+             (state (e-runtime-store-session-worker-test--state session-id)))
+        (e-runtime-store-session-worker-test--append
+         runtime session-id 1)
+        (setq state
+              (e-runtime-store-session-worker-test--append-continuation-record
+               runtime session-id state 2
+               (e-runtime-store-session-worker-test--continuation-message
+                session-id (concat session-id "-message")
+                "2026-09-06T00:00:01Z" turn-id run-id publication-key)))
+        (setq state
+              (e-runtime-store-session-worker-test--append-continuation-record
+               runtime session-id state 3
+               (e-runtime-store-session-worker-test--continuation-event
+                session-id (concat session-id "-event")
+                "2026-09-06T00:00:02Z" turn-id event-type)))
+        (let ((result
+               (e-runtime-store-call
+                runtime 'read
+                (list :op 'session-continuation-outcome
+                      :session-id session-id :run-id run-id
+                      :publication-key publication-key))))
+          (should (plist-get result :known-p))
+          (should (eq (plist-get result :status) status))
+          (should (equal (plist-get result :turn-id) turn-id))
+          (should (equal (plist-get result :event-id)
+                         (concat session-id "-event")))
+          (should-not (plist-member result :content))
+          (should-not (plist-member result :message)))))))
+
+(ert-deftest e-runtime-store-session-worker-continuation-outcome-requires-exact-correlation ()
+  "Wrong run/key and unrelated terminal turns never prove an outcome."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let* ((session-id "continuation-correlation")
+           (state (e-runtime-store-session-worker-test--state session-id)))
+      (e-runtime-store-session-worker-test--append runtime session-id 1)
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 2
+             (e-runtime-store-session-worker-test--continuation-message
+              session-id "message" "2026-09-06T00:00:01Z" "turn-target"
+              "run-expected" "key-expected")))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 3
+             (e-runtime-store-session-worker-test--continuation-event
+              session-id "unrelated-event" "2026-09-06T00:00:02Z"
+              "turn-other" 'turn-finished)))
+      (dolist (identity '(("run-wrong" "key-expected")
+                          ("run-expected" "key-wrong")))
+        (let ((result
+               (e-runtime-store-call
+                runtime 'read
+                (list :op 'session-continuation-outcome
+                      :session-id session-id :run-id (car identity)
+                      :publication-key (cadr identity)))))
+          (should-not (plist-get result :known-p))
+          (should-not (plist-get result :status)))))))
+
+(ert-deftest e-runtime-store-session-worker-continuation-outcome-rejects-ambiguity-and-truncation ()
+  "Ambiguous or bounded evidence remains unknown instead of fresh-success."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let* ((session-id "continuation-ambiguous")
+           (state (e-runtime-store-session-worker-test--state session-id)))
+      (e-runtime-store-session-worker-test--append runtime session-id 1)
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 2
+             (e-runtime-store-session-worker-test--continuation-message
+              session-id "message-1" "2026-09-06T00:00:01Z" "turn-1"
+              "run" "key")))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 3
+             (e-runtime-store-session-worker-test--continuation-message
+              session-id "message-2" "2026-09-06T00:00:02Z" "turn-2"
+              "run" "key")))
+      (let ((result
+             (e-runtime-store-call
+              runtime 'read
+              '(:op session-continuation-outcome :session-id
+                "continuation-ambiguous" :run-id "run"
+                :publication-key "key"))))
+        (should-not (plist-get result :known-p))
+        (should (eq (plist-get result :reason) 'ambiguous-message))))
+    (let* ((session-id "continuation-truncated")
+           (state (e-runtime-store-session-worker-test--state session-id)))
+      (e-runtime-store-session-worker-test--append runtime session-id 1)
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 2
+             (e-runtime-store-session-worker-test--continuation-message
+              session-id "message" "2026-09-06T00:00:01Z" "turn"
+              "run" "key")))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 3
+             (e-runtime-store-session-worker-test--continuation-event
+              session-id "terminal" "2026-09-06T00:00:02Z" "turn"
+              'turn-finished)))
+      ;; Fill the fixed worker bound with unrelated activity.  The matching
+      ;; message/event are now outside the proof window, so a successful
+      ;; result would be a false fresh-run inference.
+      (dotimes (offset 511)
+        (setq state
+              (e-runtime-store-session-worker-test--append-continuation-record
+               runtime session-id state (+ 4 offset)
+               (e-runtime-store-session-worker-test--continuation-event
+                session-id (format "later-%d" offset)
+                (format "2026-09-06T00:%02d:%02dZ"
+                        (/ offset 60) (% offset 60))
+                "other" 'provider-request-started))))
+      (let ((result
+             (e-runtime-store-call
+              runtime 'read
+              '(:op session-continuation-outcome :session-id
+                "continuation-truncated" :run-id "run"
+                :publication-key "key"))))
+        (should-not (plist-get result :known-p))
+        (should (eq (plist-get result :reason) 'truncated))))))
+
+(ert-deftest e-runtime-store-session-worker-continuation-outcome-rejects-message-shape ()
+  "Malformed matching-message shape is unknown, never a successful outcome."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let* ((session-id "continuation-shape")
+           (state (e-runtime-store-session-worker-test--state session-id)))
+      (e-runtime-store-session-worker-test--append runtime session-id 1)
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 2
+             (list :type "message" :session-id session-id :id "message"
+                   :timestamp "2026-09-06T00:00:01Z"
+                   :message '(:id "message" :role user :turn-id "turn"
+                              :metadata "not-a-plist"))))
+      (let ((result
+             (e-runtime-store-call
+              runtime 'read
+              '(:op session-continuation-outcome :session-id
+                "continuation-shape" :run-id "run"
+                :publication-key "key"))))
+        (should-not (plist-get result :known-p))
+        (should (eq (plist-get result :reason) 'message-shape))))))
+
 (ert-deftest e-runtime-store-session-worker-content-uses-consumer-byte-bounds ()
   "Message content is bounded by its query, not the scalar-row ABI."
   (e-runtime-store-session-worker-test--with-runtime (runtime _directory)

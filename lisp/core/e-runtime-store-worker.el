@@ -1176,6 +1176,7 @@ acknowledgement prefix."
          'session-recent-page 'session-root-page
          'session-record-page 'session-history-page
          'session-recent-failures 'session-turn-inspection
+         'session-continuation-outcome
          'session-visible-message-page 'session-visible-messages
          'session-context-path
          'session-process-report-marker-page

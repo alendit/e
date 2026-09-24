@@ -681,7 +681,7 @@
       (should-not (string-match-p (regexp-quote retired) text)))))
 
 (ert-deftest e-chat-service-sqlite-continuation-owner-uses-bounded-sql-reconciliation ()
-  "Making a live SQL binding continuation owner starts one SQL reconciliation."
+  "Making a live SQL binding owner starts one reconciliation and backfill."
   (e-board-sqlite-service-test--with-fixture
       (store _service board-id session-id _participant-id)
     (let ((harness (e-harness-create :sessions store)) binding)
@@ -690,19 +690,24 @@
             (setq binding
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness session-id)))
-            (let ((reconciliations 0))
+            (let ((reconciliations 0)
+                  (backfills 0))
               (cl-letf (((symbol-function
                           'e-chat-service--reconcile-sqlite-continuation)
-                         (lambda (_binding) (cl-incf reconciliations))))
+                         (lambda (_binding) (cl-incf reconciliations)))
+                        ((symbol-function
+                          'e-chat-service--continuation-backfill-start)
+                         (lambda (_binding) (cl-incf backfills))))
                 (e-board-sqlite-service-test--await
                  (e-chat-service-binding-start harness session-id nil t)))
-              (should (= reconciliations 1)))
+              (should (= reconciliations 1))
+              (should (= backfills 1)))
             (should (equal (e-chat-service-binding-board-id binding) board-id))
             (should (e-chat-service-binding-continuation-owner-p binding)))
         (when binding (e-chat-service--retire-binding binding))))))
 
 (ert-deftest e-chat-service-sqlite-continuation-queues-detached-terminal-view ()
-  "One bounded run query supplies continuation evidence without recursive prompt."
+  "One ordinary bounded run query supplies terminal evidence without backfill."
   (e-board-sqlite-service-test--with-fixture
       (store _service _board-id session-id _participant-id)
     (let* ((harness (e-harness-create :sessions store))
@@ -741,17 +746,21 @@
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) '(:admitted t))))
            binding queued-session-id queued-input queued-metadata
-           (query-count 0) (publication-count 0))
+           (query-count 0) (publication-count 0) (backfill-count 0))
       (unwind-protect
           (progn
             (setq binding
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness session-id)))
-            (cl-letf (((symbol-function
-                        'e-board-sqlite-service-orchestration-runs-start)
+              (cl-letf (((symbol-function
+                          'e-board-sqlite-service-orchestration-runs-start)
                        (lambda (&rest _)
                          (cl-incf query-count)
                          (e-work-start query-spec nil)))
+                      ((symbol-function
+                        'e-chat-service--continuation-backfill-start)
+                       (lambda (&rest _)
+                         (cl-incf backfill-count)))
                       ((symbol-function 'e-chat-service-queue-session)
                        (lambda (_harness session-id input &rest arguments)
                          (setq queued-session-id session-id
@@ -764,6 +773,7 @@
                        (lambda (&rest _) (cl-incf publication-count))))
               (e-chat-service--reconcile-sqlite-continuation binding))
             (should (= query-count 1))
+            (should (= backfill-count 0))
             (should (= publication-count 1))
             (should (equal queued-session-id "coordinator-session"))
             (should (eq (plist-get queued-metadata :display) 'hidden))

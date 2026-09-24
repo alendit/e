@@ -103,6 +103,8 @@ The stable assignment key makes callback retries no-ops at the board boundary."
              :conflicts (plist-get conflicts :items)
              :deadline (copy-tree (plist-get projection :deadline))
              :continuation (copy-tree (plist-get projection :continuation))
+             :continuation-outcome
+             (copy-tree (plist-get projection :continuation-outcome) t)
              :terminal-status (plist-get projection :terminal-status))
        (when (plist-get tasks :truncated) (list :tasks-truncated t))
        (when (plist-get reports :truncated) (list :accepted-reports-truncated t))
@@ -197,16 +199,70 @@ The stable assignment key makes callback retries no-ops at the board boundary."
           (plist-get (plist-get latest :record) :created-at))))
      order)))
 
+(defconst e-board-orchestration-actions--run-list-after-reconciliation-spec
+  (e-work-spec-create
+   :id "board-orchestration-run-list-after-reconciliation"
+   :execution 'cooperative :interactive-policy 'async :owner 'board
+   :runner
+   (lambda (parent arguments _context)
+     (let* ((prerequisite (plist-get arguments :prerequisite))
+            (target (plist-get arguments :target))
+            (now (plist-get arguments :now))
+            query)
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when (and query
+                          (not (memq (plist-get (e-work-status query) :state)
+                                     '(finished failed cancelled))))
+                 (e-work-cancel query))
+               (when (and prerequisite
+                          (not (memq (plist-get (e-work-status prerequisite) :state)
+                                     '(finished failed cancelled))))
+                 (e-work-cancel prerequisite))))
+       (e-work-on-settle
+        prerequisite
+        (lambda (settled)
+          (pcase (plist-get (e-work-status settled) :state)
+            ('finished
+             (setq query
+                   (e-board-sqlite-publication-target-orchestration-runs-start
+                    target e-board-orchestration-actions-run-limit))
+             (e-work-on-settle
+              query
+              (lambda (query-settled)
+                (pcase (plist-get (e-work-status query-settled) :state)
+                  ('finished
+                   (condition-case query-error
+                       (e-work-finish
+                        parent
+                        (e-board-orchestration-actions--sql-run-list
+                         (e-work-handle-result query-settled) now))
+                     (error (e-work-fail parent query-error))))
+                  ('failed
+                   (e-work-fail parent
+                                (e-work-handle-error query-settled)))
+                  ('cancelled (e-work-cancel parent))))))
+            ('failed (e-work-fail parent (e-work-handle-error settled)))
+            ('cancelled (e-work-cancel parent))))))
+       :deferred))
+  "Work contract for a run-list query behind outcome reconciliation.")
+
 (defun e-board-orchestration-actions-list-runs (target &optional now)
   "Return request-scoped work for TARGET's bounded durable run list."
   (unless (e-board-orchestration-actions--sqlite-target-p target)
     (signal 'wrong-type-argument
             (list 'e-board-sqlite-publication-target-p target)))
-  (e-board-orchestration-actions--map-work
-   (e-board-sqlite-publication-target-orchestration-runs-start
-    target e-board-orchestration-actions-run-limit)
-     (lambda (page)
-     (e-board-orchestration-actions--sql-run-list page now))))
+  (let ((reconciliation
+         (e-chat-service-reconcile-sqlite-continuation-backfill-target target)))
+    (if reconciliation
+        (e-work-start
+         e-board-orchestration-actions--run-list-after-reconciliation-spec
+         (list :prerequisite reconciliation :target target :now now))
+      (e-board-orchestration-actions--map-work
+       (e-board-sqlite-publication-target-orchestration-runs-start
+        target e-board-orchestration-actions-run-limit)
+       (lambda (page)
+         (e-board-orchestration-actions--sql-run-list page now))))))
 
 (defun e-board-orchestration-actions--sql-run-set (page now)
   "Reduce SQL PAGE into the consumer-shaped Board run-set value at NOW."
@@ -379,7 +435,28 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                   :error
                   (e-board-orchestration-actions--canonical-string
                    (plist-get claim :error))))
-          (or (plist-get value :claims) nil)))))
+          (or (plist-get value :claims) nil)))
+        :execution-outcome
+        (if (plist-get value :execution-outcome)
+            (e-board-orchestration-actions--canonical-continuation-outcome
+             (plist-get value :execution-outcome))
+          e-json-null)))
+
+(defun e-board-orchestration-actions--canonical-continuation-outcome (value)
+  "Project one generic continuation execution OUTCOME into canonical JSON."
+  (list :run-id (e-board-orchestration-actions--canonical-string
+                 (plist-get value :run-id))
+        :publication-key
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :publication-key))
+        :status (e-board-orchestration-actions--canonical-string
+                 (plist-get value :status))
+        :turn-id (e-board-orchestration-actions--canonical-string
+                  (plist-get value :turn-id))
+        :error (e-board-orchestration-actions--canonical-string
+                (plist-get value :error))
+        :conflict (e-board-orchestration-actions--canonical-bool
+                   (plist-get value :conflict))))
 
 (defun e-board-orchestration-actions--canonical-manifest (value)
   "Project a durable orchestration MANIFEST into canonical JSON."
@@ -424,6 +501,11 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                           (e-board-orchestration-actions--canonical-continuation
                            (plist-get value :continuation))
                         e-json-null)
+        :continuation-outcome
+        (if (plist-get value :continuation-outcome)
+            (e-board-orchestration-actions--canonical-continuation-outcome
+             (plist-get value :continuation-outcome))
+          e-json-null)
         :terminal-status
         (e-board-orchestration-actions--canonical-string
          (plist-get value :terminal-status))
@@ -500,6 +582,14 @@ The stable assignment key makes callback retries no-ops at the board boundary."
         :completion-delivery-state
         (e-board-orchestration-actions--canonical-string
          (plist-get value :completion-delivery-state))
+        :completion-execution-state
+        (e-board-orchestration-actions--canonical-string
+         (plist-get value :completion-execution-state))
+        :continuation-outcome
+        (if (plist-get value :continuation-outcome)
+            (e-board-orchestration-actions--canonical-continuation-outcome
+             (plist-get value :continuation-outcome))
+          e-json-null)
         :continuation-state
         (e-board-orchestration-actions--canonical-string
          (plist-get value :continuation-state))))

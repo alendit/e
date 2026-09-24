@@ -208,6 +208,98 @@
       (should (eq (plist-get (plist-get projection :continuation) :state) 'published))
       (should (= (length (plist-get projection :reports)) 1))))
 
+(ert-deftest e-board-orchestration-test-continuation-outcome-is-separate-from-claim ()
+  "A published admission claim does not imply coordinator execution success."
+  (let* ((manifest
+          (e-board-orchestration-test--fact
+           'manifest "manifest-outcome"
+           '(:run-id "run-outcome"
+             :tasks ((:task-key "task" :required t :accepted-attempt 0))
+             :continuation (:session-id "coordinator" :prompt "reconcile"
+                            :publication-key "publication-outcome"))))
+         (report
+          (e-board-orchestration-test--fact
+           'terminal-report "report-outcome"
+           '(:run-id "run-outcome" :task-key "task" :attempt 0 :status done
+             :summary "done" :outputs [])))
+         (claim
+          (e-board-orchestration-test--fact
+           'continuation-claim "claim-outcome"
+           '(:run-id "run-outcome" :publication-key "publication-outcome"
+             :status published)))
+         (projection
+          (e-board-orchestration-reduce (list manifest report claim))))
+    (should (eq (plist-get (plist-get projection :continuation) :state)
+                'published))
+    (should-not (plist-get projection :continuation-outcome))
+    (should-not (plist-get (plist-get projection :continuation)
+                           :execution-outcome))))
+
+(ert-deftest e-board-orchestration-test-continuation-outcome-replays-idempotently ()
+  "One durable successful coordinator outcome survives duplicate replay."
+  (let* ((manifest
+          (e-board-orchestration-test--fact
+           'manifest "manifest-outcome-replay"
+           '(:run-id "run-outcome-replay"
+             :tasks ((:task-key "task" :required t :accepted-attempt 0))
+             :continuation (:session-id "coordinator" :prompt "reconcile"
+                            :publication-key "publication-outcome-replay"))))
+         (report
+          (e-board-orchestration-test--fact
+           'terminal-report "report-outcome-replay"
+           '(:run-id "run-outcome-replay" :task-key "task" :attempt 0
+             :status done :summary "done" :outputs [])))
+         (outcome
+          (e-board-orchestration-test--fact
+           'continuation-outcome
+           (e-board-orchestration-continuation-outcome-key
+            "run-outcome-replay" "publication-outcome-replay")
+           '(:run-id "run-outcome-replay"
+             :publication-key "publication-outcome-replay"
+             :status done :turn-id "turn-coordinator")))
+         (projection
+          (e-board-orchestration-reduce
+           (list manifest report outcome outcome))))
+    (should (equal
+             (plist-get (plist-get projection :continuation-outcome) :status)
+             'done))
+    (should (equal
+             (plist-get (plist-get projection :continuation-outcome) :turn-id)
+             "turn-coordinator"))
+    (should (= (length (plist-get projection :continuation-outcomes)) 1))))
+
+(ert-deftest e-board-orchestration-test-continuation-failure-stays-visible ()
+  "Failed or cancelled coordinator outcomes cannot look like success."
+  (dolist (status '(failed cancelled))
+    (let* ((manifest
+            (e-board-orchestration-test--fact
+             'manifest (format "manifest-outcome-%s" status)
+             (list :run-id (format "run-outcome-%s" status)
+                   :tasks '((:task-key "task" :required t :accepted-attempt 0))
+                   :continuation
+                   (list :session-id "coordinator" :prompt "reconcile"
+                         :publication-key (format "publication-outcome-%s" status)))))
+           (report
+            (e-board-orchestration-test--fact
+             'terminal-report (format "report-outcome-%s" status)
+             (list :run-id (format "run-outcome-%s" status)
+                   :task-key "task" :attempt 0 :status 'done
+                   :summary "done" :outputs [])))
+           (outcome
+            (e-board-orchestration-test--fact
+             'continuation-outcome
+             (e-board-orchestration-continuation-outcome-key
+              (format "run-outcome-%s" status)
+              (format "publication-outcome-%s" status))
+             (list :run-id (format "run-outcome-%s" status)
+                   :publication-key (format "publication-outcome-%s" status)
+                   :status status)))
+           (projection (e-board-orchestration-reduce
+                        (list manifest report outcome))))
+      (should (eq (plist-get (plist-get projection :continuation-outcome)
+                             :status)
+                  status)))))
+
 (ert-deftest e-board-orchestration-test-continuation-view-is-consumer-shaped ()
   "Continuation input carries terminal evidence without recursive manifest data."
   (let* ((manifest

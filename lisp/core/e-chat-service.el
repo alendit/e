@@ -283,7 +283,8 @@ by this projection boundary."
   sqlite-service board-id principal participant-id participant-name
   endpoint-token endpoint-generation
   turn-port activity-subscription pickup-subscription
-  pickup-readiness-wakeup-p executing-turns)
+  pickup-readiness-wakeup-p executing-turns
+  continuation-deliveries continuation-turns continuation-outcome-inflight)
 
 (defvar e-chat-service--binding-open-hooks nil
   "Application-owned hooks invoked after a live Board binding is installed.
@@ -560,6 +561,176 @@ the Board id as an address."
      (e-chat-service--start-legacy-resolve-operation operation)
      :deferred)))
 
+(defconst e-chat-service--continuation-join-spec
+  (e-work-spec-create
+   :id "chat-continuation-join" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (parent arguments _context)
+     (let* ((children (plist-get arguments :children))
+            (cancel
+             (e-work-await-set
+              children
+              :mode 'all
+              :on-settle
+              (lambda (settled)
+                (let* ((done (plist-get settled :done))
+                       (failed
+                        (seq-find
+                         (lambda (child)
+                           (eq (plist-get (e-work-status child) :state)
+                               'failed))
+                         done))
+                       (cancelled
+                        (seq-find
+                         (lambda (child)
+                           (eq (plist-get (e-work-status child) :state)
+                               'cancelled))
+                         done)))
+                  (cond
+                   (failed
+                    (e-work-fail parent
+                                 (plist-get (e-work-status failed) :error)))
+                   (cancelled (e-work-cancel parent))
+                   (t (e-work-finish parent nil))))))))
+       (setf (e-work-handle-cancel-function parent)
+             (lambda (_handle)
+               (when cancel (funcall cancel))
+               (dolist (child children)
+                 (when (and (e-work-handle-p child)
+                            (not (memq (plist-get (e-work-status child) :state)
+                                       '(finished failed cancelled))))
+                   (e-work-cancel child)))))
+       :deferred)))
+  "Work contract for joining bounded continuation reconciliation children.")
+
+(defun e-chat-service--join-continuation-works (works)
+  "Return WORK that settles after every continuation child in WORKS settles."
+  (cond
+   ((null works) nil)
+   ((null (cdr works)) (car works))
+   (t (e-work-start e-chat-service--continuation-join-spec
+                   (list :children (nreverse works))))))
+
+(defconst e-chat-service--continuation-backfill-item-spec
+  (e-work-spec-create
+   :id "chat-continuation-backfill-item" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (parent arguments _context)
+     (let* ((binding (plist-get arguments :binding))
+            (store (e-harness-sessions
+                    (e-chat-service-binding-harness binding)))
+            (session-id (plist-get arguments :session-id))
+            (run-id (plist-get arguments :run-id))
+            (publication-key (plist-get arguments :publication-key))
+            (read
+             (e-session-async-continuation-outcome
+              store session-id run-id publication-key)))
+       (e-work-on-settle
+        read
+        (lambda (settled)
+          (let ((status (e-work-status settled)))
+            (pcase (plist-get status :state)
+              ('finished
+               (let ((outcome (plist-get status :result)))
+                 (if (not (plist-get outcome :known-p))
+                     ;; No proof is a normal active-run result.
+                     (e-work-finish parent nil)
+                   (let ((publication
+                          (condition-case error
+                              (e-chat-service--publish-sqlite-continuation-outcome
+                               binding
+                               (list :run-id run-id
+                                     :publication-key publication-key
+                                     :turn-id (plist-get outcome :turn-id))
+                               (plist-get outcome :status))
+                            (error
+                             (e-work-fail parent error)
+                             nil))))
+                     (when publication
+                       (if (not (e-work-handle-p publication))
+                           (e-work-fail
+                            parent
+                            (list 'e-chat-service-error
+                                  "Continuation outcome backfill did not return work"))
+                         (e-work-on-settle
+                          publication
+                          (lambda (published)
+                            (let ((published-status
+                                   (e-work-status published)))
+                              (if (eq (plist-get published-status :state)
+                                      'finished)
+                                  (e-work-finish parent nil)
+                                (e-work-fail
+                                 parent
+                                 (plist-get published-status :error))))))))))))
+              ('cancelled (e-work-cancel parent))
+              (_ (e-work-fail parent (plist-get status :error)))))))
+       :deferred)))
+  "Work contract for one exact durable continuation outcome backfill.")
+
+(defconst e-chat-service--continuation-backfill-spec
+  (e-work-spec-create
+   :id "chat-continuation-backfill" :execution 'cooperative
+   :interactive-policy 'async :owner 'e-chat-service
+   :runner
+   (lambda (parent binding _context)
+     (let ((query
+            (e-board-sqlite-service-orchestration-runs-start
+             (e-chat-service-binding-sqlite-service binding)
+             (e-chat-service-binding-board-id binding) 32)))
+       (e-work-on-settle
+        query
+        (lambda (settled)
+          (let ((status (e-work-status settled)))
+            (if (not (eq (plist-get status :state) 'finished))
+                (if (eq (plist-get status :state) 'cancelled)
+                    (e-work-cancel parent)
+                  (e-work-fail parent (plist-get status :error)))
+              (condition-case error
+                  (let (children)
+                    (dolist (projection
+                             (e-chat-service--sqlite-orchestration-projections
+                              (e-work-handle-result settled)))
+                      (let* ((continuation (plist-get projection :continuation))
+                             (outcome (plist-get projection :continuation-outcome))
+                             (run-id (plist-get projection :run-id))
+                             (session-id (and continuation
+                                              (plist-get continuation :session-id)))
+                             (publication-key
+                              (and continuation
+                                   (plist-get continuation :publication-key))))
+                        (when (and (eq (plist-get continuation :state) 'published)
+                                   (null outcome)
+                                   (stringp run-id)
+                                   (stringp session-id)
+                                   (stringp publication-key))
+                          (push
+                           (e-work-start
+                            e-chat-service--continuation-backfill-item-spec
+                            (list :binding binding :session-id session-id
+                                  :run-id run-id
+                                  :publication-key publication-key))
+                           children))))
+                    (if-let ((joined (e-chat-service--join-continuation-works
+                                      children)))
+                        (e-work-on-settle
+                         joined
+                         (lambda (joined-settled)
+                           (let ((joined-status
+                                  (e-work-status joined-settled)))
+                             (pcase (plist-get joined-status :state)
+                               ('finished (e-work-finish parent nil))
+                               ('cancelled (e-work-cancel parent))
+                               (_ (e-work-fail
+                                   parent
+                                   (plist-get joined-status :error)))))))
+                      (e-work-finish parent nil)))
+                (error (e-work-fail parent error)))))))
+       :deferred)))
+  "Work contract for one bounded Board continuation backfill scan.")
+
 (defun e-chat-service-owner-admission-identities (creation-key)
   "Return deterministic owner identities derived from CREATION-KEY.
 
@@ -652,6 +823,10 @@ presentation subscribers, executing turns, or any Board aggregate."
   (make-hash-table :test 'eq :weakness 'key)
   "Reconciliation markers by runtime identity, then durable Board id.")
 
+(defvar e-chat-service--continuation-backfills
+  (make-hash-table :test 'eq :weakness 'key)
+  "In-flight generic session-outcome backfills by runtime and Board id.")
+
 (defvar e-chat-service--continuation-admissions
   (make-hash-table :test 'eq :weakness 'key)
   "Continuation admission works by runtime identity, Board id, and key.")
@@ -727,6 +902,118 @@ coordination."
          (append (list :run-id run-id :publication-key publication-key
                        :status status)
                  (when error (list :error error))))))
+
+(defun e-chat-service--publish-sqlite-continuation-outcome
+    (binding context status &optional error)
+  "Append one generic terminal outcome for continuation CONTEXT.
+
+CONTEXT is the detached run/publication identity captured at Board input
+submission time.  The harness terminal event is the authority for STATUS;
+this adapter merely persists that outcome through the ordinary Board fact
+service and does not infer completion from admission or input consumption."
+  (let* ((run-id (plist-get context :run-id))
+         (publication-key (plist-get context :publication-key))
+         (turn-id (plist-get context :turn-id))
+         (fact
+          (list :version e-board-orchestration-fact-version
+                :type 'continuation-outcome
+                :idempotency-key
+                (e-board-orchestration-continuation-outcome-key
+                 run-id publication-key)
+                :payload
+                (append
+                 (list :run-id run-id :publication-key publication-key
+                       :status status)
+                 (when turn-id (list :turn-id turn-id))
+                 (when error (list :error error))))))
+    (e-board-sqlite-service-orchestration-fact-start
+     (e-chat-service-binding-sqlite-service binding)
+     (e-chat-service-binding-board-id binding)
+     fact)))
+
+(defun e-chat-service--continuation-context (metadata &optional turn-id)
+  "Return a detached continuation identity from harness METADATA, or nil.
+Only the generic run/publication fields are retained; Daily-specific metadata
+does not cross this adapter boundary."
+  (let ((run-id (plist-get metadata :board-run-id))
+        (publication-key (plist-get metadata :board-continuation-key)))
+    (when (and (stringp run-id) (not (string-empty-p run-id))
+               (stringp publication-key) (not (string-empty-p publication-key)))
+      (append (list :run-id (copy-sequence run-id)
+                    :publication-key (copy-sequence publication-key))
+              (when turn-id (list :turn-id (copy-tree turn-id t)))))))
+
+(defun e-chat-service--sql-publish-continuation-outcome
+    (binding event status)
+  "Persist terminal continuation STATUS for harness EVENT when applicable.
+The process-local correlation remains until the durable fact work finishes.
+While that work is in flight, duplicate terminal callbacks share the same
+publication.  A synchronous or asynchronous publication failure leaves the
+correlation available for a stable-key retry and is reported through the
+binding; it is never interpreted as success."
+  (let* ((turn-id (plist-get event :turn-id))
+         (turns (e-chat-service-binding-continuation-turns binding))
+         (context (and turns (gethash turn-id turns)))
+         (inflight
+          (e-chat-service-binding-continuation-outcome-inflight binding))
+         (deliveries
+          (e-chat-service-binding-continuation-deliveries binding))
+         (executing (e-chat-service-binding-executing-turns binding)))
+    ;; A synchronous input-admission failure can emit a terminal event before
+    ;; the attached submit returns its turn id.  In that narrow window the
+    ;; normal input-consumed edge has not transferred the delivery context;
+    ;; the sole submitting continuation is the bounded correlation available.
+    (when (and (not context) turn-id)
+      (let (candidates)
+        (when (and deliveries executing)
+          (maphash
+           (lambda (delivery value)
+             (when (eq (gethash delivery executing) 'submitting)
+               (push (cons delivery value) candidates)))
+           deliveries))
+        (when (= (length candidates) 1)
+          (let* ((candidate (car candidates))
+                 (delivery (car candidate)))
+            (setq context
+                  (append (copy-tree (cdr candidate) t)
+                          (when turn-id (list :turn-id turn-id))))
+            (remhash delivery deliveries)
+            (when (and turns turn-id)
+              (puthash turn-id context turns))))))
+    (when context
+      (or (and inflight (gethash turn-id inflight))
+          (let ((publication
+                 (condition-case error
+                     (e-chat-service--publish-sqlite-continuation-outcome
+                      binding context status
+                      (plist-get (plist-get event :payload) :error))
+                   (error
+                    (e-chat-service--sql-note-failure binding error t)
+                    nil))))
+            (cond
+             ((null publication) nil)
+             ((not (e-work-handle-p publication))
+              (let ((error
+                     (list 'e-chat-service-error
+                           "Continuation outcome publication did not return work")))
+                (e-chat-service--sql-note-failure binding error t)
+                nil))
+             (t
+              (when inflight (puthash turn-id publication inflight))
+              (e-work-on-settle
+               publication
+               (lambda (settled)
+                 (let ((state (plist-get (e-work-status settled) :state)))
+                   (when (and inflight
+                              (eq (gethash turn-id inflight) publication))
+                     (remhash turn-id inflight))
+                   (if (eq state 'finished)
+                       (when (and turns
+                                  (eq (gethash turn-id turns) context))
+                         (remhash turn-id turns))
+                     (e-chat-service--sql-note-failure
+                      binding (plist-get (e-work-status settled) :error) t)))))
+              publication)))))))
 
 (defun e-chat-service--watch-sqlite-continuation-admission
     (binding run-id publication-key work)
@@ -817,12 +1104,40 @@ coordination."
    prompt
    (e-board-orchestration-continuation-view projection)))
 
+(defun e-chat-service--continuation-backfill-start (binding)
+  "Start or reuse BINDING's exact durable continuation-outcome backfill.
+
+The backfill is a bounded startup/read child.  It consults only the generic
+session lifecycle API and publishes a normal idempotent Board outcome fact;
+unknown evidence finishes normally and leaves the current run active."
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (backfills
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--continuation-backfills runtime t))
+         (current (gethash board-id backfills)))
+    (if (and current
+             (not (memq (plist-get (e-work-status current) :state)
+                        '(finished failed cancelled))))
+        current
+      (let ((work (e-work-start
+                   e-chat-service--continuation-backfill-spec binding)))
+        (puthash board-id work backfills)
+        (e-work-on-settle
+         work
+         (lambda (settled)
+           (when (eq (gethash board-id backfills) settled)
+             (remhash board-id backfills)
+             (e-chat-service--runtime-coordination-prune
+              e-chat-service--continuation-backfills runtime))))
+        work))))
+
 (defun e-chat-service--reconcile-sqlite-continuation (binding)
   "Query terminal continuations through BINDING and route to their targets.
 
 BINDING owns the bounded Board query and its process-local admission fence;
 the manifest continuation's validated session id owns delivery of the
-resulting input."
+  resulting input."
   (let* ((runtime (e-chat-service--binding-runtime binding))
          (board-id (e-chat-service-binding-board-id binding))
          (reconciling
@@ -910,6 +1225,27 @@ runtime and durable Board id, then starts a bounded SQLite reconciliation."
       (when (and (e-chat-service--binding-live-p binding)
                  (e-chat-service-binding-continuation-owner-p binding))
         (e-chat-service--reconcile-binding-continuation binding)))))
+
+(defun e-chat-service-reconcile-sqlite-continuation-backfill-target (target)
+  "Backfill exact continuation outcomes for live owners of detached TARGET.
+
+This read barrier is deliberately separate from terminal-input reconciliation:
+Board observation callers need to wait for the generic durable outcome facts,
+but do not need to route another continuation input as a side effect."
+  (e-board-sqlite-publication-target--require target)
+  (let* ((service (e-board-sqlite-publication-target--service target))
+         (runtime (e-board-sqlite-service-runtime service))
+         (board-id (e-board-sqlite-publication-target--board-id target))
+         (table
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--board-bindings runtime)))
+    (let (backfills)
+      (dolist (binding (and table (copy-sequence (gethash board-id table))))
+        (when (and (e-chat-service--binding-live-p binding)
+                   (e-chat-service-binding-continuation-owner-p binding))
+          (push (e-chat-service--continuation-backfill-start binding)
+                backfills)))
+      (e-chat-service--join-continuation-works backfills))))
 
 (defun e-chat-service--harness-bindings (harness)
   "Return the session binding table owned by HARNESS."
@@ -1140,6 +1476,16 @@ callbacks immediately so closing a live controller cannot strand a task in
         (e-chat-service--cancel-executing-deliveries binding)
       (setf (e-chat-service-binding-readiness-work binding) nil
             (e-chat-service-binding-pickup-readiness-wakeup-p binding) nil)
+      (when-let ((continuations
+                  (e-chat-service-binding-continuation-deliveries binding)))
+        (clrhash continuations))
+      (when-let ((continuations
+                  (e-chat-service-binding-continuation-turns binding)))
+        (clrhash continuations))
+      (when-let ((continuations
+                  (e-chat-service-binding-continuation-outcome-inflight
+                   binding)))
+        (clrhash continuations))
       (when-let ((timer (e-chat-service-binding-idle-close-timer binding)))
         (when (timerp timer) (cancel-timer timer))
         (setf (e-chat-service-binding-idle-close-timer binding) nil))
@@ -1544,9 +1890,17 @@ semantic interpretation responsibility."
          (mode (or (plist-get pickup :mode) 'inject))
          (prompt (plist-get pickup :content))
          (metadata (e-chat-service--sql-delivery-metadata binding pickup))
-         (delivery-id (plist-get pickup :delivery-id)))
+         (delivery-id (plist-get pickup :delivery-id))
+         (continuation
+          (e-chat-service--continuation-context metadata)))
     (condition-case error
         (progn
+          ;; Capture the generic continuation identity before invoking the
+          ;; attached port.  A submit may emit `input-consumed' synchronously,
+          ;; while a queued input emits it only when its later turn begins.
+          (when continuation
+            (puthash (copy-tree delivery-id t) continuation
+                     (e-chat-service-binding-continuation-deliveries binding)))
           (puthash (copy-tree delivery-id t) 'submitting
                    (e-chat-service-binding-executing-turns binding))
           (let ((turn-id
@@ -1562,10 +1916,27 @@ semantic interpretation responsibility."
                     port prompt :metadata metadata)))))
             (when turn-id
               (puthash (copy-tree delivery-id t) turn-id
-                       (e-chat-service-binding-executing-turns binding)))
+                       (e-chat-service-binding-executing-turns binding))
+              ;; Direct/steered inputs return the current turn id.  Queued
+              ;; inputs return a queue id and are transferred by the later
+              ;; `input-consumed' edge instead.
+              (when (and continuation
+                         (not (eq mode 'queue))
+                         (e-chat-service-binding-continuation-deliveries
+                          binding)
+                         ;; A synchronous port may already have consumed
+                         ;; and terminalized this input before SUBMIT returns.
+                         (gethash delivery-id
+                                  (e-chat-service-binding-continuation-deliveries
+                                   binding)))
+                (puthash turn-id
+                         (append continuation (list :turn-id turn-id))
+                         (e-chat-service-binding-continuation-turns binding))))
             turn-id))
       (error
        (remhash delivery-id (e-chat-service-binding-executing-turns binding))
+       (remhash delivery-id
+                (e-chat-service-binding-continuation-deliveries binding))
        (e-board-sqlite-service-notify-delivery-outcome
         (e-chat-service-binding-sqlite-service binding)
         delivery-id 'failed
@@ -1684,9 +2055,25 @@ semantic interpretation responsibility."
          ;; consumed now, but consumption is not execution completion.
          (when-let* ((turn-id (plist-get event :turn-id)))
            (puthash (copy-tree delivery-id t) turn-id
-                    (e-chat-service-binding-executing-turns binding)))
+                    (e-chat-service-binding-executing-turns binding))
+           (when-let* ((deliveries
+                        (e-chat-service-binding-continuation-deliveries
+                         binding))
+                       (context (gethash delivery-id deliveries)))
+             (remhash delivery-id deliveries)
+             (when-let ((turns
+                        (e-chat-service-binding-continuation-turns binding)))
+               (puthash turn-id
+                        (append context (list :turn-id turn-id))
+                        turns))))
          (e-chat-service--sql-settle-pickup binding delivery-id 'consume)))
       ('turn-finished
+       ;; This event is emitted only after all ordinary `:turn-finished'
+       ;; hooks settle.  Persist the generic continuation outcome before the
+       ;; ancillary Board output row so an output-row publication failure
+       ;; cannot suppress the authoritative terminal outcome.
+       (e-chat-service--sql-publish-continuation-outcome
+        binding event 'done)
        (let* ((turn-id (plist-get event :turn-id))
               (output-message
                (e-harness-attached-turn-port-assistant-message
@@ -1726,6 +2113,8 @@ semantic interpretation responsibility."
                 (e-chat-service--sql-note-failure
                  binding (plist-get status :error) t)))))))
       ((or 'turn-failed 'turn-cancelled)
+       (e-chat-service--sql-publish-continuation-outcome
+        binding event (if (eq type 'turn-failed) 'failed 'cancelled))
        (e-chat-service--sql-notify-turn-deliveries
         binding event (if (eq type 'turn-failed) 'failed 'cancelled))
        (e-chat-service--sql-notify-event
@@ -1827,6 +2216,9 @@ does not acquire the owner-chat Board run-set readiness obligation."
                :subscribers nil
                :cleanup-callbacks nil
                :executing-turns (make-hash-table :test 'equal)
+               :continuation-deliveries (make-hash-table :test 'equal)
+               :continuation-turns (make-hash-table :test 'equal)
+               :continuation-outcome-inflight (make-hash-table :test 'equal)
                :pickup-readiness-wakeup-p nil
                :continuation-owner-p continuation-owner-p
                :lifecycle-generation 0 :lifecycle-state 'active))
@@ -1880,6 +2272,7 @@ does not acquire the owner-chat Board run-set readiness obligation."
         (setf (e-chat-service-binding-activity-subscription binding)
               subscription)
         (when continuation-owner-p
+          (e-chat-service--continuation-backfill-start binding)
           (e-chat-service--reconcile-binding-continuation binding))
         (if-let* ((readiness
                    (e-chat-service-binding-readiness-work binding)))
@@ -2154,6 +2547,7 @@ controller has been built."
         (progn
           (when continuation-owner-p
             (setf (e-chat-service-binding-continuation-owner-p binding) t)
+            (e-chat-service--continuation-backfill-start binding)
             (e-chat-service--reconcile-binding-continuation binding))
           (e-chat-service--binding-ready-work binding))
       ;; A failed readiness child may still be visible for the short interval

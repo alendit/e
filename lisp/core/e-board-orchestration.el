@@ -40,7 +40,7 @@
 
 (defconst e-board-orchestration--fact-types
   '(manifest attempt-selection task-attempt terminal-report conflict
-    continuation-claim)
+    continuation-claim continuation-outcome)
   "Fact types understood by the orchestration reducer.")
 
 (defun e-board-orchestration--invalid (field value)
@@ -199,6 +199,16 @@ interpret its fields."
   "Return the immutable durable claim key for PUBLICATION-KEY at STATUS."
   (format "continuation-claim:%s:%s" publication-key status))
 
+(defun e-board-orchestration-continuation-outcome-key (run-id publication-key)
+  "Return the immutable execution outcome key for RUN-ID and PUBLICATION-KEY.
+
+Unlike an admission claim, a continuation execution has one terminal fact
+identity.  A repeated harness terminal callback therefore reuses this source
+key and is idempotent at the Board storage boundary; a conflicting payload is
+surfaced as the ordinary Board source-key conflict rather than becoming a
+second outcome."
+  (format "continuation-outcome:%s:%s" run-id publication-key))
+
 (defun e-board-orchestration-validate-fact (fact)
   "Validate and normalize versioned orchestration FACT.
 FACT is a plist with `:type', `:payload', and an idempotency key.  The result is
@@ -251,6 +261,27 @@ safe to store in a board envelope and contains no runtime state."
                                 (truncate-string-to-width
                                  (format "%s" error)
                                  e-board-orchestration-error-limit nil nil "..."))))))
+        ('continuation-outcome
+         (let ((publication-key
+                (e-board-orchestration--string
+                 (plist-get payload :publication-key) :publication-key))
+               (status (plist-get payload :status))
+               (turn-id (plist-get payload :turn-id)))
+           (unless (memq status '(done failed cancelled))
+             (e-board-orchestration--invalid :continuation-outcome-status status))
+           (when turn-id
+             (e-board-orchestration--string turn-id :continuation-turn-id))
+           (list :version version :type type :idempotency-key key
+                 :payload
+                 (append
+                  (list :run-id run-id :publication-key publication-key
+                        :status status)
+                  (when turn-id (list :turn-id turn-id))
+                  (when-let ((error (plist-get payload :error)))
+                    (list :error
+                          (truncate-string-to-width
+                           (format "%s" error)
+                           e-board-orchestration-error-limit nil nil "...")))))))
         ((or 'attempt-selection 'task-attempt 'terminal-report 'conflict)
          (let* ((task-key (e-board-orchestration--string
                            (plist-get payload :task-key) :task-key))
@@ -384,13 +415,40 @@ or out-of-order facts cannot skip retry identities during replay."
        copy))
    tasks))
 
+(defun e-board-orchestration--continuation-outcome (outcomes)
+  "Reduce matching terminal continuation OUTCOMES to one bounded value.
+
+One ordinary terminal callback produces one status.  If a malformed or
+manually assembled fact stream contains incompatible statuses, retain that
+evidence and choose a non-success status so consumers cannot mistake the run
+for a durably completed coordinator turn."
+  (when outcomes
+    (let* ((statuses (delete-dups
+                      (mapcar (lambda (outcome)
+                                (plist-get outcome :status))
+                              outcomes)))
+           (first (copy-tree (car outcomes) t))
+           (status (cond
+                    ((memq 'failed statuses) 'failed)
+                    ((memq 'cancelled statuses) 'cancelled)
+                    (t 'done))))
+      (append first
+              (list :status status
+                    :conflict (> (length statuses) 1)
+                    :statuses statuses)))))
+
 (defun e-board-orchestration-reduce (facts &optional now)
   "Reduce valid durable FACTS into one idempotent run projection.
 FACTS may be normalized facts or detached record plists.  This pure reducer
 never performs a clock-driven cancellation; a passed deadline is only
 evidence."
-  (let ((manifests nil) (selections nil) (attempts nil) (reports nil)
-        (conflicts nil) (claims nil)
+  (let ((manifests nil)
+        (selections nil)
+        (attempts nil)
+        (reports nil)
+        (conflicts nil)
+        (claims nil)
+        (outcomes nil)
         (seen (make-hash-table :test 'equal)))
     (dolist (item facts)
       (let ((fact (cond
@@ -400,29 +458,56 @@ evidence."
                     (e-board-orchestration-fact-from-record item))
                    (t (e-board-orchestration-validate-fact item)))))
         (when fact
-          (let ((key (list (plist-get fact :type) (plist-get fact :idempotency-key))))
+          (let ((key (list (plist-get fact :type)
+                           (plist-get fact :idempotency-key))))
             (unless (gethash key seen)
               (puthash key t seen)
               (pcase (plist-get fact :type)
                 ('manifest (push fact manifests))
                 ('attempt-selection
                  (push (plist-get fact :payload) selections))
-                ('task-attempt (push (plist-get fact :payload) attempts))
-                ('terminal-report (push (plist-get fact :payload) reports))
-                ('conflict (push (plist-get fact :payload) conflicts))
-                ('continuation-claim (push (plist-get fact :payload) claims))))))))
+                ('task-attempt
+                 (push (plist-get fact :payload) attempts))
+                ('terminal-report
+                 (push (plist-get fact :payload) reports))
+                ('conflict
+                 (push (plist-get fact :payload) conflicts))
+                ('continuation-claim
+                 (push (plist-get fact :payload) claims))
+                ('continuation-outcome
+                 (push (plist-get fact :payload) outcomes))))))))
     (let* ((manifest-fact (car (nreverse manifests)))
-           (manifest (and manifest-fact (plist-get manifest-fact :payload)))
+           (manifest (and manifest-fact
+                          (plist-get manifest-fact :payload)))
            (run-id (and manifest (plist-get manifest :run-id))))
-      (unless manifest (e-board-orchestration--invalid :manifest 'missing))
-      (setq attempts (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) attempts)
-            selections (cl-remove-if-not
-                        (lambda (item) (equal (plist-get item :run-id) run-id))
-                        selections)
-            reports (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) reports)
-            conflicts (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) conflicts)
-            claims (cl-remove-if-not (lambda (item) (equal (plist-get item :run-id) run-id)) claims))
-      ;; Different reports for the same accepted task attempt are a visible conflict.
+      (unless manifest
+        (e-board-orchestration--invalid :manifest 'missing))
+      (setq attempts
+            (cl-remove-if-not
+             (lambda (item) (equal (plist-get item :run-id) run-id))
+             attempts)
+            selections
+            (cl-remove-if-not
+             (lambda (item) (equal (plist-get item :run-id) run-id))
+             selections)
+            reports
+            (cl-remove-if-not
+             (lambda (item) (equal (plist-get item :run-id) run-id))
+             reports)
+            conflicts
+            (cl-remove-if-not
+             (lambda (item) (equal (plist-get item :run-id) run-id))
+             conflicts)
+            claims
+            (cl-remove-if-not
+             (lambda (item) (equal (plist-get item :run-id) run-id))
+             claims)
+            outcomes
+            (cl-remove-if-not
+             (lambda (item) (equal (plist-get item :run-id) run-id))
+             outcomes))
+      ;; Different reports for the same accepted task attempt are a visible
+      ;; conflict.
       (let ((selected-tasks
              (e-board-orchestration--select-task-attempts
               (plist-get manifest :tasks) selections)))
@@ -437,50 +522,101 @@ evidence."
                    reports)))
             (when (> (length
                       (delete-dups
-                       (mapcar (lambda (report) (prin1-to-string report))
+                       (mapcar (lambda (report)
+                                 (prin1-to-string report))
                                matches)))
                      1)
               (push (list :run-id run-id :task-key key :attempt attempt
                           :reason "conflicting terminal reports")
                     conflicts))))
-        (let* ((tasks (mapcar (lambda (task)
-                                (e-board-orchestration--task-projection
-                                 task attempts reports))
-                              selected-tasks))
-             (required (cl-remove-if-not (lambda (task) (plist-get task :required)) tasks))
-             (all-terminal (cl-every (lambda (task)
-                                       (memq (plist-get task :state) '(done failed cancelled)))
-                                     required))
-             (successful (and all-terminal (null conflicts)
-                              (cl-every (lambda (task) (eq (plist-get task :state) 'done)) required)))
-             (deadline (plist-get manifest :deadline))
-             (deadline-state (and (eq (plist-get deadline :kind) 'at)
-                                  (<= (plist-get deadline :at) (or now (float-time)))))
-             (terminal-status (when all-terminal (if successful 'done 'failed))))
-        (list :run-id run-id :manifest (copy-tree manifest) :tasks tasks
-              :reports (copy-tree reports) :conflicts (nreverse conflicts)
-              :deadline (append (copy-tree deadline) (list :expired deadline-state))
-              :continuation
-              (when-let ((continuation (plist-get manifest :continuation)))
-                (let* ((publication-key (plist-get continuation :publication-key))
-                       (matching (cl-remove-if-not
-                                  (lambda (claim)
-                                    (and (equal (plist-get claim :run-id) run-id)
-                                         (equal (plist-get claim :publication-key)
-                                                publication-key)))
-                                  claims))
-                       (published (cl-find 'published matching
-                                           :key (lambda (claim) (plist-get claim :status))))
-                       (failed (car (last (cl-remove-if-not
-                                           (lambda (claim)
-                                             (eq (plist-get claim :status) 'failed))
-                                           matching)))))
-                  (append (copy-tree continuation)
-                          (list :state (cond (published 'published)
-                                             (failed 'failed)
-                                             (terminal-status 'pending)
-                                             (t 'waiting))
-                                :claims (copy-tree matching)))))
+        (let* ((tasks
+                (mapcar (lambda (task)
+                          (e-board-orchestration--task-projection
+                           task attempts reports))
+                        selected-tasks))
+               (required
+                (cl-remove-if-not
+                 (lambda (task) (plist-get task :required))
+                 tasks))
+               (all-terminal
+                (cl-every
+                 (lambda (task)
+                   (memq (plist-get task :state)
+                         '(done failed cancelled)))
+                 required))
+               (successful
+                (and all-terminal
+                     (null conflicts)
+                     (cl-every
+                      (lambda (task) (eq (plist-get task :state) 'done))
+                      required)))
+               (deadline (plist-get manifest :deadline))
+               (deadline-state
+                (and (eq (plist-get deadline :kind) 'at)
+                     (<= (plist-get deadline :at)
+                         (or now (float-time)))))
+               (terminal-status
+                (when all-terminal
+                  (if successful 'done 'failed)))
+               (manifest-continuation
+                (plist-get manifest :continuation))
+               continuation)
+          (when manifest-continuation
+            (let* ((publication-key
+                    (plist-get manifest-continuation :publication-key))
+                   (matching-outcomes
+                    (cl-remove-if-not
+                     (lambda (outcome)
+                       (equal (plist-get outcome :publication-key)
+                              publication-key))
+                     outcomes))
+                   (execution-outcome
+                    (e-board-orchestration--continuation-outcome
+                     matching-outcomes))
+                   ;; The claim and outcome streams intentionally remain
+                   ;; separate: `published' means admission settled, not
+                   ;; that the admitted coordinator turn completed.
+                   (matching-claims
+                    (cl-remove-if-not
+                     (lambda (claim)
+                       (and (equal (plist-get claim :publication-key)
+                                   publication-key)
+                            (memq (plist-get claim :status)
+                                  '(pending published failed))))
+                     claims))
+                   (published
+                    (cl-find 'published matching-claims
+                             :key (lambda (claim)
+                                    (plist-get claim :status))))
+                   (failed
+                    (car
+                     (last
+                      (cl-remove-if-not
+                       (lambda (claim)
+                         (eq (plist-get claim :status) 'failed))
+                       matching-claims)))))
+              (setq continuation
+                    (append
+                     (copy-tree manifest-continuation)
+                     (list :state
+                           (cond (published 'published)
+                                 (failed 'failed)
+                                 (terminal-status 'pending)
+                                 (t 'waiting))
+                           :claims (copy-tree matching-claims t)
+                           :execution-outcome
+                           (copy-tree execution-outcome t))))))
+          (list :run-id run-id
+                :manifest (copy-tree manifest)
+                :tasks tasks
+                :reports (copy-tree reports)
+                :conflicts (nreverse conflicts)
+                :deadline (append (copy-tree deadline)
+                                  (list :expired deadline-state))
+                :continuation continuation
+                :continuation-outcomes (copy-tree outcomes t)
+                :continuation-outcome
+                (copy-tree (plist-get continuation :execution-outcome) t)
                 :attempt-selections (copy-tree selections)
                 :continuation-claims (copy-tree claims)
                 :terminal-status terminal-status))))))
@@ -545,9 +681,19 @@ evidence."
          (terminal-status (plist-get projection :terminal-status))
          (continuation (plist-get projection :continuation))
          (continuation-state (plist-get continuation :state))
+         (continuation-outcome (plist-get projection :continuation-outcome))
+         (continuation-outcome-status
+          (plist-get continuation-outcome :status))
+         (continuation-outcome-conflict-p
+          (plist-get continuation-outcome :conflict))
          (terminal-unconsumed
           (and terminal-status continuation
-               (memq continuation-state '(pending waiting failed))))
+               ;; Admission/publication is not execution completion.  Keep a
+               ;; terminal run active until the generic harness outcome says
+               ;; the coordinator turn finished successfully.  In particular,
+               ;; `input-consumed' is still only an admission/start edge.
+               (not (and (eq continuation-outcome-status 'done)
+                         (not continuation-outcome-conflict-p)))))
          (active-p (or (not required-terminal)
                        terminal-unconsumed optional-active))
          (deadline (plist-get projection :deadline))
@@ -556,7 +702,9 @@ evidence."
          (failure (or (and (eq terminal-status 'failed) terminal-status)
                       (plist-get projection :failure)))
          (attention-p (or conflicts deadline-expired failure
-                          (eq continuation-state 'failed)))
+                          (eq continuation-state 'failed)
+                          (memq continuation-outcome-status '(failed cancelled))
+                          continuation-outcome-conflict-p))
          (lifecycle
           (cond
            ((not (eq restore-state 'ready)) 'restoring)
@@ -621,6 +769,8 @@ evidence."
           :attention-p attention-p
           :completion-state (or terminal-status 'active)
           :completion-delivery-state continuation-state
+          :completion-execution-state continuation-outcome-status
+          :continuation-outcome (copy-tree continuation-outcome t)
           :continuation-state continuation-state)))
 
 (defun e-board-orchestration--run-set-encoded-bytes (value)

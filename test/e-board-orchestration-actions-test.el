@@ -31,6 +31,17 @@
   (e-board-producer-test-await
    (e-board-orchestration-actions-run-projection target "run-1")))
 
+(defconst e-board-orchestration-actions-test--held-spec
+  (e-work-spec-create
+   :id "board-orchestration-actions-test-held"
+   :execution 'cooperative :interactive-policy 'async
+   :owner 'e-board-orchestration-actions-test
+   :runner (lambda (_handle _arguments _context) :deferred)))
+
+(defun e-board-orchestration-actions-test--held-work ()
+  "Return a test work handle held until the caller settles it."
+  (e-work-start e-board-orchestration-actions-test--held-spec nil))
+
 (ert-deftest e-board-orchestration-actions-test-terminal-publishes-one-sql-fact ()
   "Terminal publication commits exactly one canonical orchestration fact."
   (e-board-producer-test-with-target (target)
@@ -103,6 +114,30 @@
                       (plist-get list-dispatch :request))))
           (should (equal (plist-get run :run-id) "run-1"))
           (should (= (length runs) 1)))))))
+
+(ert-deftest e-board-orchestration-actions-test-list-waits-for-outcome-backfill ()
+  "A foreground run list cannot race its generic outcome reconciliation."
+  (e-board-producer-test-with-target (target)
+    (let ((reconciliation (e-board-orchestration-actions-test--held-work))
+          query-work query-started)
+      (cl-letf (((symbol-function
+                  'e-chat-service-reconcile-sqlite-continuation-backfill-target)
+                 (lambda (_target) reconciliation))
+                ((symbol-function
+                  'e-board-sqlite-publication-target-orchestration-runs-start)
+                 (lambda (&rest _arguments)
+                   (setq query-started t
+                         query-work
+                         (e-board-orchestration-actions-test--held-work))
+                   query-work)))
+        (let ((list-work (e-board-orchestration-actions-list-runs target)))
+          (should-not query-started)
+          (e-work-finish reconciliation nil)
+          (should query-started)
+          (should-not
+           (e-request-terminal-p (e-work-handle-lifecycle list-work)))
+          (e-work-finish query-work '(:records nil :truncated nil))
+          (should-not (e-board-producer-test-await list-work)))))))
 
 (ert-deftest e-board-orchestration-actions-test-report-before-manifest-reduces ()
   "A report may precede its manifest without losing the later SQL projection."

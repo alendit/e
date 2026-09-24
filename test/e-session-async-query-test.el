@@ -48,8 +48,11 @@
            (failures (e-session-async-recent-failures store :limit 2))
            (inspection
             (e-session-async-turn-inspection store "session" "turn-1"))
+           (outcome
+            (e-session-async-continuation-outcome
+             store "session" "run-1" "continuation-1"))
            (works (list query metadata association page context-path visible
-                        failures inspection)))
+                        failures inspection outcome)))
       (should (= (hash-table-count (e-session-store-sessions store)) 0))
       (should (= (length calls) (length works)))
       (dolist (work works)
@@ -74,6 +77,14 @@
                      'session-turn-inspection))
       (should (equal (plist-get (plist-get (nth 7 calls) :request) :turn-id)
                      "turn-1"))
+      (should (equal (plist-get (plist-get (nth 8 calls) :request) :op)
+                     'session-continuation-outcome))
+      (should (equal (plist-get (plist-get (nth 8 calls) :request) :run-id)
+                     "run-1"))
+      (should (equal
+               (plist-get (plist-get (nth 8 calls) :request)
+                          :publication-key)
+               "continuation-1"))
       (dolist (call calls)
         (funcall
          (plist-get call :on-settle)

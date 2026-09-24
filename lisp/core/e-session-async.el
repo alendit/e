@@ -367,6 +367,19 @@ an Emacs-owned transcript."
    store (list :op 'session-turn-inspection
                :session-id session-id :turn-id turn-id)))
 
+(defun e-session-async-continuation-outcome
+    (store session-id run-id publication-key)
+  "Return one bounded detached lifecycle outcome for a continuation.
+
+The storage worker correlates the exact durable user-message metadata and
+terminal activity event.  The result contains no transcript content; unknown
+or ambiguous evidence remains an unsettled/no-outcome result for callers."
+  (e-session-async--start-read
+   store (list :op 'session-continuation-outcome
+               :session-id session-id
+               :run-id run-id
+               :publication-key publication-key)))
+
 (defun e-session-async-header (store session-id)
   "Return immediately with SESSION-ID's bounded journal header work."
   (e-session-async--start-read

@@ -34,6 +34,12 @@
   "Maximum recent activity rows inspected for failure navigation.")
 (defconst e-runtime-store-session-worker-turn-inspection-row-limit 512
   "Maximum recent message/activity rows inspected for one failed turn.")
+(defconst e-runtime-store-session-worker-continuation-outcome-row-limit 512
+  "Maximum recent message/activity rows inspected for one continuation.
+
+The continuation reconciliation query is deliberately bounded.  A truncated
+window cannot prove that the matching user message and terminal event are
+unique, so callers must keep the run active when this bound is reached.")
 (defconst e-runtime-store-session-worker-visible-message-row-limit 64
   "Maximum messages returned by one visible chat window read.")
 (defconst e-runtime-store-session-worker-context-path-row-limit 4096
@@ -1673,6 +1679,148 @@ boundary; neither shape is installed as process-local session state."
      :truncated truncated
      :row-limit e-runtime-store-session-worker-turn-inspection-row-limit)))
 
+(defun e-runtime-store-session-worker--continuation-outcome-unknown
+    (reason)
+  "Return a detached unknown continuation outcome with REASON.
+
+The result intentionally contains no session transcript values.  Unknown is a
+normal reconciliation result: the caller must leave the Board continuation
+active and may try again on a later ordinary startup/read boundary."
+  (list :known-p nil :status nil :reason reason))
+
+(defun e-runtime-store-session-worker--continuation-terminal-status (event)
+  "Return EVENT's generic continuation status, or nil when non-terminal."
+  (pcase (plist-get event :event-type)
+    ('turn-finished 'done)
+    ('turn-failed 'failed)
+    ('turn-cancelled 'cancelled)
+    (_ nil)))
+
+(defun e-runtime-store-session-worker--continuation-outcome
+    (database body)
+  "Reconcile one exact Board continuation from durable session records.
+
+The query correlates a unique durable user message whose metadata contains the
+requested run id and publication key, then accepts only a unique terminal
+activity event for that message's turn.  It returns detached lifecycle facts
+only.  Missing, ambiguous, malformed, or truncated evidence is represented as
+unknown rather than inferred as success."
+  (condition-case error
+      (catch 'unknown
+        (let* ((session-id
+              (e-runtime-store-session-worker--session-id
+               (plist-get body :session-id)))
+             (run-id (plist-get body :run-id))
+             (publication-key (plist-get body :publication-key)))
+        (unless (and (stringp run-id) (not (string-empty-p run-id))
+                     (<= (string-bytes run-id)
+                         e-session-query-state-string-byte-limit)
+                     (stringp publication-key)
+                     (not (string-empty-p publication-key))
+                     (<= (string-bytes publication-key)
+                         e-session-query-state-string-byte-limit))
+          (e-runtime-store-session-worker--error
+           "Continuation identity is invalid" run-id publication-key))
+        (let* ((state (e-runtime-store-session-worker--query-state
+                       database (list :session-id session-id)))
+               (limit e-runtime-store-session-worker-continuation-outcome-row-limit)
+               (rows
+                (and state
+                     (sqlite-select
+                      database
+                      (concat
+                       "SELECT position,record_type,record_id,record_identity,"
+                       "parent_id,timestamp,LENGTH(payload),payload "
+                       "FROM session_records WHERE session_id=? "
+                       "AND record_type IN ('message','activity-event') "
+                       "ORDER BY position DESC LIMIT ?")
+                      (vector session-id (1+ limit)))))
+               (truncated (and rows (> (length rows) limit)))
+               (matching-messages nil)
+               (terminal-events nil))
+          (dolist (row (if truncated (cl-subseq rows 0 limit) rows))
+            (let* ((record
+                    (e-runtime-store-session-worker--decode-record-row row))
+                   (value (plist-get record :value))
+                   (record-type (plist-get record :record-type)))
+              (cond
+                ((equal record-type "message")
+                 (let ((message (and
+                                 (e-runtime-store-session-worker--proper-plist-p
+                                  value)
+                                 (plist-get value :message))))
+                   (unless (and (e-runtime-store-session-worker--proper-plist-p
+                                 message)
+                                (memq (plist-get message :role) '(user "user"))
+                                (stringp (plist-get message :turn-id))
+                                (e-runtime-store-session-worker--proper-plist-p
+                                 (plist-get message :metadata)))
+                     ;; A malformed message row is not evidence that this
+                     ;; continuation did not run; it is insufficient proof.
+                     (when message
+                       (throw 'unknown
+                              (e-runtime-store-session-worker--continuation-outcome-unknown
+                               'message-shape))))
+                   (let ((metadata (plist-get message :metadata)))
+                     (when (and (equal (plist-get metadata :board-run-id)
+                                       run-id)
+                                (equal (plist-get metadata
+                                                  :board-continuation-key)
+                                       publication-key))
+                       (push (list :turn-id (plist-get message :turn-id)
+                                   :position (plist-get record :position))
+                             matching-messages)))))
+                ((equal record-type "activity-event")
+                 (unless (e-runtime-store-session-worker--proper-plist-p value)
+                   (throw 'unknown
+                          (e-runtime-store-session-worker--continuation-outcome-unknown
+                           'activity-shape)))
+                 (when-let ((event
+                             (e-runtime-store-session-worker--activity-event
+                              value)))
+                   (let ((status
+                          (e-runtime-store-session-worker--continuation-terminal-status
+                           event)))
+                     (when status
+                       (unless (and (stringp (plist-get event :turn-id))
+                                    (stringp (plist-get event :id)))
+                         (throw 'unknown
+                                (e-runtime-store-session-worker--continuation-outcome-unknown
+                                 'activity-shape)))
+                       (push (list :status status
+                                   :turn-id (plist-get event :turn-id)
+                                   :event-id (plist-get event :id)
+                                   :position (plist-get record :position)
+                                   :created-at
+                                   (or (plist-get event :created-at)
+                                       (plist-get record :timestamp)))
+                             terminal-events))))))))
+          (cond
+           (truncated
+            (e-runtime-store-session-worker--continuation-outcome-unknown
+             'truncated))
+           ((not (= (length matching-messages) 1))
+            (e-runtime-store-session-worker--continuation-outcome-unknown
+             (if matching-messages 'ambiguous-message 'no-message)))
+           (t
+            (let* ((turn-id (plist-get (car matching-messages) :turn-id))
+                   (events
+                    (cl-remove-if-not
+                     (lambda (event)
+                       (equal (plist-get event :turn-id) turn-id))
+                     terminal-events)))
+              (if (/= (length events) 1)
+                  (e-runtime-store-session-worker--continuation-outcome-unknown
+                   (if events 'ambiguous-terminal 'no-terminal))
+                (append
+                 (list :known-p t :session-id session-id
+                       :run-id (copy-sequence run-id)
+                       :publication-key (copy-sequence publication-key))
+                 (copy-tree (car events) t)))))))))
+    (error
+     (e-runtime-store-session-worker--continuation-outcome-unknown
+      'decode-or-shape))))
+
 (defun e-runtime-store-session-worker--visible-message-page (database body)
   "Read the newest bounded message window for one chat session.
 
@@ -1999,6 +2147,8 @@ unselected branch rows and unrelated journal families are never returned."
        (e-runtime-store-session-worker--recent-failures database body))
       ('session-turn-inspection
        (e-runtime-store-session-worker--turn-inspection database body))
+      ('session-continuation-outcome
+       (e-runtime-store-session-worker--continuation-outcome database body))
       ((or 'session-visible-message-page 'session-visible-messages)
        (e-runtime-store-session-worker--visible-message-page database body))
       ('session-context-path

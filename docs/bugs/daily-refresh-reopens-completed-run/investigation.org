@@ -1,0 +1,101 @@
+#+title: Investigation: Daily refresh reopens a completed Board run
+#+date: 2026-09-24
+#+startup: overview
+
+* Live evidence
+
+Read-only inspection used =scripts/e-live-probe= and the running SQLite store;
+no Emacs state or Board records were changed.
+
+Board =brd_3057f14764b66960208a89866978b5ad= retained run
+=daily:2026-09-23:20260923T075602866508000=.  Its terminal worker records
+showed that Slack, Gmail, and GitHub had hit the pre-fix canonical JSON Unicode
+failure, while Calendar stopped without an accepted report.  The exact
+coordinator continuation has a durable =turn-failed= event, and its continuation
+claim was =published=.
+
+The generic =e= reconciliation now correlates that exact continuation message
+and terminal turn, then durably backfills a non-conflicting continuation outcome
+with status =failed=.  Grimoire treats that outcome as settled for successor
+selection, so the next explicit Daily update is eligible to allocate a fresh
+timestamped run and publication key.  The failed old run remains durable
+historical attention in =e=; it is not relabeled successful.
+
+The fragment-directory digest matched the original run id, proving that the
+visible partial Daily was recovery of the old run rather than a post-fix worker
+fan-out.
+
+* Source diagnosis
+
+=e-board-orchestration-actions-list-runs= returns historical run projections.
+Grimoire's =grimoire-daily-run--matching-projection= selected a projection by
+Daily date and path only.  =grimoire-daily-run--start-continue-stored= then
+reopened every matching terminal projection.
+
+The Board continuation =published= state is not coordinator completion.  It is
+written after the stable queued input is admitted.  =input-consumed= marks
+delivery into a turn and explicitly does not mean execution completion.  The
+ordinary =turn-finished= event is emitted only after turn-finished hooks, which
+include the exact Daily save and commit operation, have settled.
+
+The generic continuation outcome joins the admitted continuation to its
+ordinary terminal turn without exposing transcript content.  A later process
+can therefore distinguish no-outcome/admission/running or conflicting evidence,
+which remains an attention/reopen target, from any non-conflicting terminal
+status (=done=, =failed=, or =cancelled=), which permits the next refresh.
+
+* Ownership and repair direction
+
+The repair belongs at two existing boundaries:
+
+1. =e= owns a generic, idempotent, durable continuation execution outcome,
+   published from the ordinary terminal harness event after hooks settle and
+   reduced separately from input admission/delivery state.
+2. Grimoire owns Daily successor selection.  It reopens any matching run that
+   lacks a durable terminal outcome or has admission/running/conflicting
+   evidence, and starts the next refresh after any non-conflicting terminal
+   outcome (=done=, =failed=, or =cancelled=) is present.
+   Failed and cancelled heads remain historical attention in =e=.
+
+The repair must not add a Daily completion action or file stamp, inspect a
+coordinator transcript, delete =E_BOARD=, reset the Board, or discard previous
+run facts.  Focused acceptance must cover queued/running continuation state,
+successful completion and restart, failure/cancellation, duplicate terminal
+publication, and concurrent same-process starts.
+
+* Current status
+
+The generic =e= outcome publication and exact-session reconciliation are
+implemented, and the Grimoire successor-selection correction treats
+non-conflicting =turn-failed= and =turn-cancelled= outcomes as settled heads
+without relabeling them successful.  Focused E and Grimoire tests cover
+successful, failed, cancelled, admission, and conflicting outcomes.
+
+For the affected run, generic backfill of its durable =turn-failed= evidence
+makes the next Daily update fresh-eligible while preserving the old Board
+history and attention state.  Grimoire commit =42689b1= installs the two-file
+Daily correction on =main= without touching the pre-existing dirty Daily,
+archive, or raw-source files.
+
+Repository-side validation passed: the focused E suites passed 59/59 generic
+tests, 6/6 orchestration-action tests, 6/6 continuation-outcome tests, and
+25/25 Board SQLite service tests; the Grimoire Daily suite passed 22/22.  The
+current-configuration cold-start gate loaded Doom, =e=, and the configured
+Grimoire extension in a private daemon and passed 8/8 tests.  A full E run
+passed 2682/2697 before the final hot-path correction; its two related failures
+were then fixed and passed in the 25-test Board SQLite service suite.  The
+remaining 13 full-run failures were unrelated environment or pre-existing
+fixtures (localhost MCP/network processes, offline diagnostic warning volume,
+reload/canvas, and process-report cases).
+
+The running Emacs was not reloaded.  Because the =e= changes affect core
+runtime/session behavior, using the repair in that process requires a full
+Emacs restart; =e-dev-reload= is intentionally insufficient.
+
+* Remaining limitation
+
+Same-process foreground and cron starts coalesce on one admission.  Successor
+selection is not yet an atomic cross-process reservation, so two independent
+Emacs processes can still race to create separate fresh Daily manifests.  The
+stable run, publication, and fact keys keep each resulting run internally
+idempotent, but they do not collapse two separately allocated run ids.

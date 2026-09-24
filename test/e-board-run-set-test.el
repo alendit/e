@@ -55,8 +55,8 @@
     (should (= (plist-get value :omitted-count) 0))
     (should (<= (plist-get value :bytes) 4096))))
 
-(ert-deftest e-board-run-set-test-excludes-consumed-terminal-runs ()
-  "Only runs that remain active belong to the active run-set projection."
+(ert-deftest e-board-run-set-test-consumed-terminal-runs-stay-active-without-outcome ()
+  "An input-consumed terminal continuation remains active without outcome."
   (let* ((value
           (e-board-orchestration-run-set-projection
            (list
@@ -68,10 +68,51 @@
             (e-board-run-set-test--projection "running" 'running 3))
            :board-id "board-1"))
          (entries (plist-get value :runs)))
-    (should (= (plist-get value :active-count) 1))
+    (should (= (plist-get value :active-count) 2))
     (should (equal (mapcar (lambda (entry) (plist-get entry :run-id)) entries)
-                   '("running")))
+                   '("running" "consumed")))
     (should (eq (plist-get value :status) 'running))))
+
+(ert-deftest e-board-run-set-test-published-admission-without-outcome-stays-active ()
+  "A published claim remains active until the generic turn outcome arrives."
+  (let* ((projection
+          (e-board-run-set-test--projection
+           "admitted" 'done 4
+           '(:terminal-status done
+             :continuation (:state published))))
+         (value (e-board-orchestration-run-set-projection
+                 (list projection) :board-id "board-1")))
+    (should (= (plist-get value :active-count) 1))
+    (should (equal (plist-get (car (plist-get value :runs)) :run-id)
+                   "admitted"))))
+
+(ert-deftest e-board-run-set-test-successful-continuation-outcome-is-consumed ()
+  "A successful generic coordinator outcome removes the run from active state."
+  (let* ((projection
+          (e-board-run-set-test--projection
+           "completed" 'done 4
+           '(:terminal-status done
+             :continuation (:state published)
+             :continuation-outcome (:status done))))
+         (value (e-board-orchestration-run-set-projection
+                 (list projection) :board-id "board-1")))
+    (should (= (plist-get value :active-count) 0))
+    (should-not (plist-get value :runs))))
+
+(ert-deftest e-board-run-set-test-failed-continuation-outcome-needs-attention ()
+  "A failed coordinator outcome stays active and visible for recovery."
+  (let* ((projection
+          (e-board-run-set-test--projection
+           "failed-coordinator" 'done 4
+           '(:terminal-status done
+             :continuation (:state published)
+             :continuation-outcome (:status failed))))
+         (value (e-board-orchestration-run-set-projection
+                 (list projection) :board-id "board-1"))
+         (entry (car (plist-get value :runs))))
+    (should (= (plist-get value :active-count) 1))
+    (should (plist-get entry :attention-p))
+    (should (eq (plist-get entry :completion-execution-state) 'failed))))
 
 (ert-deftest e-board-run-set-test-active-definition-includes-optional-and-unconsumed ()
   "Optional work and unconsumed terminal continuation stay active."
