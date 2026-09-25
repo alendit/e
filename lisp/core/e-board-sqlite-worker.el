@@ -2662,7 +2662,7 @@ snapshot is resolved by the session owner after this Board-side check."
                         e-board-sqlite-worker--database
                         "SELECT generation FROM boards WHERE board_id=?"
                         (vector board-id)))))
-            (run-limit (min 32 (max 1 (or (plist-get body :limit) 32))))
+            (run-limit (min 256 (max 1 (or (plist-get body :limit) 32))))
             (row-limit 4096)
             (rows
              (sqlite-select
@@ -2680,9 +2680,10 @@ snapshot is resolved by the session owner after this Board-side check."
             (context (e-board-sqlite-worker--record-read-context
                       board-id generation rows))
             (selected-run-ids (make-hash-table :test 'equal))
-            selected (run-count 0))
+            selected (manifest-count 0) more-p)
        ;; Scan newest-first until the requested number of manifest boundaries
-       ;; is complete, then restore canonical order for the pure reducer.
+       ;; is complete.  One unreturned manifest proves that a larger query may
+       ;; have useful work without claiming it is active.
        (catch 'complete
          (dolist (row rows)
              (let* ((record
@@ -2701,20 +2702,23 @@ snapshot is resolved by the session owner after this Board-side check."
                   (run-id (plist-get attributes :orchestration-run-id))
                   (type (plist-get attributes :orchestration-type)))
              (when (or (gethash run-id selected-run-ids)
-                       (< run-count run-limit))
+                       (< manifest-count run-limit))
                (puthash run-id t selected-run-ids)
                (push (list :position
                            (e-board-sqlite-worker--column row 1)
                            :record record)
                      selected))
              (when (equal type "manifest")
-               (cl-incf run-count)
-               (when (>= run-count run-limit)
+               (if (>= manifest-count run-limit)
+                   (setq more-p t)
+                 (cl-incf manifest-count))
+               (when more-p
                  (throw 'complete nil))))))
        (list :records selected
-             :run-count run-count
+             :run-count manifest-count
+             :more-p (or more-p (= (length rows) row-limit))
              :truncated (and (= (length rows) row-limit)
-                             (< run-count run-limit)))))
+                             (< manifest-count run-limit)))))
     ('board-activity-page
      (e-board-sqlite-worker--activity-page body))
     ('board-activity-detail

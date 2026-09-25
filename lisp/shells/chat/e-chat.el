@@ -99,6 +99,10 @@
 (declare-function e-chat-surface-set-window-output-follow "e-chat-surface")
 (declare-function e-chat-surface-set-board-status "e-chat-surface")
 (declare-function e-chat-surface-clear-board-status "e-chat-surface")
+(declare-function e-chat-surface-board-status "e-chat-surface" (&optional buffer))
+(declare-function e-board-activity-visual-open-or-text
+                  "e-board-activity-visual-shell" (target binding run-id &optional live))
+(declare-function e-board-activity-list-buffer "e-board-activity-shell" (&rest args))
 (declare-function e-chat-surface-window-reaches-output-p "e-chat-surface")
 (declare-function e-chat-surface-without-recenter "e-chat-surface")
 (declare-function e-chat-composer-active-p "e-chat-composer")
@@ -1220,10 +1224,26 @@ context insertions from the chat buffer the user is looking at."
                      (action
                       (when (and link run-id)
                         (lambda ()
-                          (require 'e-board-activity-shell)
-                          (e-board-activity-list-buffer
-                           :target target :run-id run-id)))))
+                          (require 'e-board-activity-visual-shell)
+                          (e-board-activity-visual-open-or-text
+                           target binding run-id)))))
                 (e-chat-surface-set-board-status status action))))))))))
+
+;;;###autoload
+(defun e-chat-open-board-activity-text ()
+  "Open the current session's Board activity in the native text renderer."
+  (interactive)
+  (unless (and e-chat-harness e-chat-session-id)
+    (user-error "This buffer is not attached to an e chat session"))
+  (let* ((binding (e-chat-service-binding e-chat-harness e-chat-session-id))
+         (status (e-chat-surface-board-status))
+         (run-id (plist-get status :selected-run-id)))
+    (unless (e-chat-service-binding-p binding)
+      (user-error "The current chat has no ready Board activity binding"))
+    (require 'e-board-activity-shell)
+    (e-board-activity-list-buffer
+     :target (e-chat-service-publication-target binding)
+     :run-id run-id)))
 
 (defun e-chat--session-title ()
   "Return the current attached session title, or nil."
@@ -3009,6 +3029,12 @@ plain submit steers an active turn and prefix submit queues a follow-up."
      :summary "Show the current chat session context."
      :interactive 'e-chat-show-context
      :function 'e-chat-show-context
+     :scope 'session)
+    (e-shell-command-create
+     :id 'board-activity-text
+     :summary "Open Board activity in the native text renderer."
+     :interactive 'e-chat-open-board-activity-text
+     :function 'e-chat-open-board-activity-text
      :scope 'session)
     (e-shell-command-create
      :id 'compact-session

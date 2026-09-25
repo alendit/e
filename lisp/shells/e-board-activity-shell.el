@@ -424,10 +424,11 @@
       (intern (concat ":" (string-remove-prefix ":" role))))
      (t nil))))
 
-(defun e-board-activity-shell--harness (row)
-  "Return the configured harness for durable ROW, or signal when absent."
+(defun e-board-activity-shell--harness-for-row (row board-id live)
+  "Return the configured harness for durable ROW on BOARD-ID using LIVE."
   (let* ((participant-id (plist-get row :participant-id))
-         (live-entry (e-board-activity-shell--live-entry participant-id))
+         (live-entry (and live board-id participant-id
+                          (e-subagent-live-get live board-id participant-id)))
          (live-harness (and live-entry (plist-get live-entry :harness)))
          (instance-id (e-board-activity-shell--instance-id row)))
     (or live-harness
@@ -439,16 +440,29 @@
                            instance-id)))
           (e-chat-service-default-harness)))))
 
+(defun e-board-activity-shell--harness (row)
+  "Return the configured harness for durable ROW, or signal when absent."
+  (e-board-activity-shell--harness-for-row
+   row (e-board-activity-shell--target-id) e-board-activity-shell--live))
+
+(defun e-board-activity-shell-open-participant-chat (row board-id &optional live)
+  "Open the chat session for durable participant ROW on BOARD-ID using LIVE."
+  (let ((participant-id (plist-get row :participant-id)))
+    (unless (and (stringp participant-id) (not (string-empty-p participant-id)))
+      (user-error "The selected Board row has no durable participant"))
+    (unless (require 'e-chat nil t)
+      (user-error "e-chat is not available to open the participant"))
+    (e-chat-open-session
+     (e-board-activity-shell--harness-for-row row board-id live)
+     participant-id t (e-board-activity-shell--instance-id row))))
+
 (defun e-board-activity-shell-open-chat ()
   "Open the selected durable participant's chat session."
   (interactive)
-  (let* ((row (e-board-activity-shell--selected-row))
-         (participant-id (plist-get row :participant-id))
-         (instance-id (e-board-activity-shell--instance-id row))
-         (harness (e-board-activity-shell--harness row)))
-    (unless (require 'e-chat nil t)
-      (user-error "e-chat is not available to open the participant"))
-    (e-chat-open-session harness participant-id t instance-id)))
+  (e-board-activity-shell-open-participant-chat
+   (e-board-activity-shell--selected-row)
+   (e-board-activity-shell--target-id)
+   e-board-activity-shell--live))
 
 (defun e-board-activity-shell--show-buffer (name content)
   "Display CONTENT in bounded special buffer NAME."

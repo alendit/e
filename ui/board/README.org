@@ -1,0 +1,15 @@
+#+title: e Board Activity UI
+
+This is the Rust/WASM egui renderer for the bounded Board activity page.
+It shares the =emacs-egui= runtime with =ui/modernchat= and does not own Board
+state or task policy.
+
+Build from the repository root after initializing the submodule:
+
+#+begin_src sh
+git submodule update --init emacs-egui
+wasm-pack build --target web --release --out-dir pkg ui/board
+#+end_src
+
+The generated =ui/board/pkg/= directory is ignored by git. It must contain
+=e_board.js= and =e_board_bg.wasm= before the visual shell can launch.

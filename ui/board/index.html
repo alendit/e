@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>e-board</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    canvas { width: 100%; height: 100%; display: block; background: transparent; opacity: 0; transition: opacity 80ms ease-out; }
+    canvas.ready { opacity: 1; }
+  </style>
+</head>
+<body>
+  <canvas id="egui-canvas"></canvas>
+  <script type="module">
+    import init, { start_app, egui_push_state, egui_push_theme } from "./pkg/e_board.js";
+
+    function parseHashParams() {
+      const hash = window.location.hash.replace(/^#/, "");
+      if (!hash) return null;
+      const params = new URLSearchParams(hash);
+      return {
+        bg: params.get("bg"),
+        fg: params.get("fg"),
+        fontSize: params.get("font-size") ? Number(params.get("font-size")) : null,
+        surfaceBg: params.get("surface-bg") || null,
+      };
+    }
+
+    async function run() {
+      const canvas = document.getElementById("egui-canvas");
+      await init();
+      await start_app("egui-canvas");
+      const theme = parseHashParams();
+      if (theme && theme.bg && theme.fg) {
+        egui_push_theme(JSON.stringify({
+          bg: theme.bg,
+          fg: theme.fg,
+          "font-size": theme.fontSize,
+          "surface-bg": theme.surfaceBg,
+        }));
+      }
+      requestAnimationFrame(() => canvas.classList.add("ready"));
+      window.eguiPushState = (json) => egui_push_state(json);
+      window.eguiPushTheme = (json) => egui_push_theme(json);
+    }
+
+    run();
+  </script>
+</body>
+</html>

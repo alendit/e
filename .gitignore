@@ -3,6 +3,8 @@
 *.elc
 dist/
 ui/modernchat/pkg/
+ui/board/pkg/
+ui/board/target/
 .e/dev-profiles/
 .e/perf-runs/
 .e/perf-baselines/

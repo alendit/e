@@ -264,23 +264,45 @@ The stable assignment key makes callback retries no-ops at the board boundary."
        (lambda (page)
          (e-board-orchestration-actions--sql-run-list page now))))))
 
-(defun e-board-orchestration-actions--sql-run-set (page now)
+(defun e-board-orchestration-actions--sql-run-set
+    (page now &optional record-limit byte-limit)
   "Reduce SQL PAGE into the consumer-shaped Board run-set value at NOW."
   (let ((projections (e-board-orchestration-actions--sql-run-list page now)))
     (e-board-orchestration-run-set-projection
      projections
-     :board-id (plist-get page :board-id))))
+     :board-id (plist-get page :board-id)
+     :more-p (plist-get page :more-p)
+     :record-limit (or record-limit
+                       e-board-orchestration-run-set-default-record-limit)
+     :byte-limit (or byte-limit
+                     e-board-orchestration-run-set-default-byte-limit))))
 
-(defun e-board-orchestration-actions-run-set (target &optional now)
-  "Return request-scoped work for TARGET's bounded active run-set."
+(cl-defun e-board-orchestration-actions-run-set
+    (target &optional now &key
+            (limit e-board-orchestration-actions-run-limit)
+            (byte-limit e-board-orchestration-run-set-default-byte-limit))
+  "Return request-scoped work for TARGET's bounded active run-set.
+LIMIT bounds the durable run query and returned projection; BYTE-LIMIT bounds
+the detached result.  Neither may exceed the corresponding run-set maximum."
   (unless (e-board-orchestration-actions--sqlite-target-p target)
     (signal 'wrong-type-argument
             (list 'e-board-sqlite-publication-target-p target)))
+  (unless (and (integerp limit) (> limit 0)
+               (<= limit e-board-orchestration-run-set-max-record-limit))
+    (signal 'e-board-orchestration-error
+            (list "Run-set query limit is out of bounds"
+                  limit e-board-orchestration-run-set-max-record-limit)))
+  (unless (and (integerp byte-limit) (> byte-limit 0)
+               (<= byte-limit e-board-orchestration-run-set-max-byte-limit))
+    (signal 'e-board-orchestration-error
+            (list "Run-set byte limit is out of bounds"
+                  byte-limit e-board-orchestration-run-set-max-byte-limit)))
   (e-board-orchestration-actions--map-work
    (e-board-sqlite-publication-target-orchestration-runs-start
-    target e-board-orchestration-actions-run-limit)
+     target limit)
    (lambda (page)
-     (let ((value (e-board-orchestration-actions--sql-run-set page now)))
+     (let ((value (e-board-orchestration-actions--sql-run-set
+                   page now limit byte-limit)))
        (plist-put value :board-id
                   (e-board-sqlite-publication-target-board-id target))))))
 
@@ -609,6 +631,8 @@ The stable assignment key makes callback retries no-ops at the board boundary."
         :active-count (or (plist-get value :active-count) 0)
         :active-run-count (or (plist-get value :active-run-count) 0)
         :omitted-count (or (plist-get value :omitted-count) 0)
+        :more-p (e-board-orchestration-actions--canonical-bool
+                 (plist-get value :more-p))
         :bytes (or (plist-get value :bytes) 0)))
 
 (defun e-board-orchestration-actions--canonical-result (value)

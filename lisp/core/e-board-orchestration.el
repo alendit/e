@@ -626,8 +626,14 @@ evidence."
 (defconst e-board-orchestration-run-set-default-record-limit 32
   "Maximum number of run entries retained by one Board run-set value.")
 
+(defconst e-board-orchestration-run-set-max-record-limit 256
+  "Largest record limit accepted by a Board run-set projection query.")
+
 (defconst e-board-orchestration-run-set-default-byte-limit (* 32 1024)
   "Maximum encoded width of one detached Board run-set value.")
+
+(defconst e-board-orchestration-run-set-max-byte-limit (* 256 1024)
+  "Largest encoded width accepted by an explicitly expanded Board run-set query.")
 
 (defconst e-board-orchestration-run-set-label-limit 160
   "Maximum width of a run label in the consumer-shaped run-set value.")
@@ -789,7 +795,7 @@ evidence."
     candidate))
 
 (cl-defun e-board-orchestration-run-set-projection
-    (projections &key board-id
+    (projections &key board-id more-p
                  (record-limit e-board-orchestration-run-set-default-record-limit)
                  (byte-limit e-board-orchestration-run-set-default-byte-limit)
                  (restore-state 'ready))
@@ -797,13 +803,17 @@ evidence."
 
 PROJECTIONS are already detached reduced run projections; this function does
 not read SQLite or inspect live execution state.  The returned value contains
-only the largest fitting ordered prefix and an omitted count.  Ordering puts
-actionable attention first, then restoring/dispatching/running/finishing, and
-uses newest event position and run id as deterministic tie breakers."
-  (unless (and (integerp record-limit) (> record-limit 0) (<= record-limit 256))
+only the largest fitting ordered prefix and an omitted count.  MORE-P records
+that the bounded query found, or may have hidden, another manifest; it does
+not count active or omitted runs.  Ordering puts actionable attention first,
+then restoring/dispatching/running/finishing, and uses newest event position
+and run id as deterministic tie breakers."
+  (unless (and (integerp record-limit) (> record-limit 0)
+               (<= record-limit e-board-orchestration-run-set-max-record-limit))
     (signal 'e-board-orchestration-error
             (list "Run-set record limit is out of bounds" record-limit)))
-  (unless (and (integerp byte-limit) (> byte-limit 0) (<= byte-limit (* 256 1024)))
+  (unless (and (integerp byte-limit) (> byte-limit 0)
+               (<= byte-limit e-board-orchestration-run-set-max-byte-limit))
     (signal 'e-board-orchestration-error
             (list "Run-set byte limit is out of bounds" byte-limit)))
   (unless (memq restore-state '(ready restoring unavailable))
@@ -832,18 +842,20 @@ uses newest event position and run id as deterministic tie breakers."
          (omitted (max 0 (- (length entries) (length selected))))
          value)
     (setq value
-          (list :board-id board-id
-                :restore-state restore-state
-                :ready-p (eq restore-state 'ready)
-                :status (if (eq restore-state 'ready)
-                            (if (zerop active-count)
-                                'idle
-                              (or (plist-get (car selected) :lifecycle)
-                                  'running))
-                          'restoring)
-                :runs selected :active-count active-count
-                :active-run-count active-count
-                :omitted-count omitted))
+          (append
+           (list :board-id board-id
+                 :restore-state restore-state
+                 :ready-p (eq restore-state 'ready)
+                 :status (if (eq restore-state 'ready)
+                             (if (zerop active-count)
+                                 'idle
+                               (or (plist-get (car selected) :lifecycle)
+                                   'running))
+                           'restoring)
+                 :runs selected :active-count active-count
+                 :active-run-count active-count
+                 :omitted-count omitted)
+           (when more-p (list :more-p t))))
     ;; A byte budget applies to the final returned representation, including
     ;; its accounting fields.  Drop only from the end, preserving the ordered
     ;; actionable prefix, until the detached value fits.

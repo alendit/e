@@ -20,6 +20,28 @@
   (e-board-producer-test-await
    (e-board-sqlite-publication-target-orchestration-fact-start target fact)))
 
+(defun e-board-orchestration-actions-test--publish-run-facts
+    (target count &optional terminal-run-number)
+  "Publish COUNT task runs to TARGET, optionally finishing one run."
+  (dolist (number (number-sequence 1 count))
+    (let* ((run-id (format "run-%02d" number))
+           (key (format "manifest:%s" run-id)))
+      (e-board-orchestration-actions-test--publish
+       target
+       (list :version 1 :type 'manifest :idempotency-key key
+             :payload
+             (list :run-id run-id
+                   :tasks '((:task-key "task" :required t
+                             :accepted-attempt 0))
+                   :deadline '(:kind none)
+                   :descriptor (list :label run-id))))
+      (e-board-orchestration-actions-test--publish
+       target
+       (e-board-orchestration-actions-test--fact
+        'task-attempt (format "attempt:%s" run-id)
+        (list :run-id run-id :task-key "task" :attempt 0
+              :status (if (eql number terminal-run-number) 'done 'queued)))))))
+
 (defun e-board-orchestration-actions-test--manifest (tasks)
   "Return a manifest fixture with TASKS."
   (e-board-orchestration-actions-test--fact
@@ -85,6 +107,59 @@
         (should (= (length (plist-get (plist-get projection :manifest) :tasks))
                    1))
         (should (eq (plist-get projection :terminal-status) 'done))))))
+
+(ert-deftest e-board-orchestration-actions-test-show-more-queries-omitted-runs ()
+  "A manifest sentinel makes a 33rd active run available to Show more."
+  (e-board-producer-test-with-target (target)
+    (e-board-orchestration-actions-test--publish-run-facts target 33)
+    (let* ((default
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-set target)))
+           (expanded
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-set
+              target nil :limit e-board-orchestration-run-set-max-record-limit
+              :byte-limit e-board-orchestration-run-set-max-byte-limit)))
+           (default-run-ids
+            (mapcar (lambda (run) (plist-get run :run-id))
+                    (plist-get default :runs)))
+           (expanded-run-ids
+            (mapcar (lambda (run) (plist-get run :run-id))
+                    (plist-get expanded :runs))))
+      (should (= (length default-run-ids)
+                 e-board-orchestration-run-set-default-record-limit))
+      (should (eq (plist-get default :more-p) t))
+      (should (= (plist-get default :active-run-count) 32))
+      (should (= (plist-get default :omitted-count) 0))
+      (should-not (member "run-01" default-run-ids))
+      (should (= (length expanded-run-ids) 33))
+      (should-not (plist-get expanded :more-p))
+      (should (= (plist-get expanded :active-run-count) 33))
+      (should (= (plist-get expanded :omitted-count) 0))
+      (should (member "run-01" expanded-run-ids)))))
+
+(ert-deftest e-board-orchestration-actions-test-manifest-sentinel-is-not-an-active-count ()
+  "A terminal sentinel does not stand in for later active runs."
+  (e-board-producer-test-with-target (target)
+    ;; Query order is newest first: the 33rd manifest is terminal, while two
+    ;; additional active runs remain beyond that sentinel.
+    (e-board-orchestration-actions-test--publish-run-facts target 35 3)
+    (let* ((default
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-set target)))
+           (expanded
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-set
+              target nil :limit e-board-orchestration-run-set-max-record-limit
+              :byte-limit e-board-orchestration-run-set-max-byte-limit)))
+           (default-runs (plist-get default :runs)))
+      (should (= (length default-runs)
+                 e-board-orchestration-run-set-default-record-limit))
+      (should (eq (plist-get default :more-p) t))
+      (should (= (plist-get default :active-run-count) 32))
+      (should (= (plist-get default :omitted-count) 0))
+      (should (= (plist-get expanded :active-run-count) 34))
+      (should (= (plist-get expanded :omitted-count) 0)))))
 
 (ert-deftest e-board-orchestration-actions-test-actions-read-sql-context-target ()
   "The parent action surface returns request-scoped SQL run state."

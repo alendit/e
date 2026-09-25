@@ -556,6 +556,11 @@ the durable run-set and consumers read one detached snapshot."
   "Remove the detached Board status from the current chat surface."
   (e-chat-surface-set-board-status nil nil))
 
+(defun e-chat-surface-board-status (&optional buffer)
+  "Return a detached copy of BUFFER's compact Board run status."
+  (with-current-buffer (or buffer (current-buffer))
+    (copy-tree e-chat-surface--board-status t)))
+
 (defun e-chat-surface-refresh-ui-work-diagnostics ()
   "Refresh current chat header diagnostics from pending UI work."
   (e-chat-surface--refresh-ui-work-diagnostics))
