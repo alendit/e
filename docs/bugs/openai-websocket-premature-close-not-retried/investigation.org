@@ -1,0 +1,82 @@
+#+title: Responses WebSocket premature close retry investigation
+#+startup: overview
+
+* Investigation
+
+A bounded =scripts/e-live-probe chat= identified selected session
+=ses_86777958f6ebdfc10b273e4f57e9cde9= with status =error=.  The canonical
+SQLite session at =~/.config/emacs/.local/cache/e/store.sqlite3= records turn
+=01M3C7FJNTBZY0XCG5MAGFJSGE= starting at 2026-09-25T12:08:45Z.  Sixteen
+provider requests used connection =e-ws-34=; those are successive tool
+continuations, not retries.  The last request finished successfully at
+12:13:14Z after 90.703 seconds.  A =write= tool completed with status =ok=.
+At 12:13:17Z, the turn failed with =Responses WebSocket closed before
+completion= and =(:retryable nil)=.  No =turn-retrying= event was persisted.
+
+The connection was opened for this turn, then reused fifteen times.  Its
+configured local idle close was 300 seconds, while the failure occurred three
+seconds after the final completed request.  The failure was a close, not the
+configured 60-second request idle timeout.  Neither the durable activity nor
+the bounded macOS Emacs log window retained a close code or network error.
+The installed =emacs-websocket= library passes only the socket to its close
+callback and discards an incoming close frame.  The exact external cause of
+the close cannot be recovered from this run.
+
+The OpenAI adapter emitted a plain =error= condition for a close before a
+terminal event.  Its retry normalizer recognized transient timeouts,
+connection resets, and premature HTTP streams, but not this condition's
+message.  The harness requires explicit =:retryable t=; it therefore settled
+the turn failed without using its retry budget.
+
+* Fix
+
+The WebSocket adapter now emits a typed premature-close condition when an
+active response closes before a terminal event and has emitted no tool call.
+The OpenAI normalizer classifies that condition as retryable
+=premature-stream=.  The harness retains ownership of backoff and the bounded
+retry budget.  A retry opens a fresh WebSocket and rebuilds context from the
+session, which already contains completed earlier tool results.
+
+Responses WebSocket tool calls can start before =response.completed=.  After
+the current response has emitted one, an unexpected close retains the existing
+non-retryable error: automatically replaying it could duplicate a side effect.
+This guard is per request, so an earlier completed tool call does not prevent
+a safe retry of a later provider continuation.
+
+* Validation
+
+The classification regression failed before the fix with =:retryable nil=.
+The new composed regression simulates a preterminal close, verifies one retry
+over a fresh connection, and observes one successful turn with no failed-turn
+event.  A separate regression verifies that a close after a tool call was
+emitted stays non-retryable.  The surrounding OpenAI WebSocket and harness
+suites passed 98/98.  The running Emacs was not reloaded; a restart is required
+to activate the adapter change there.
+
+* Architecture self-check
+
+1. The slice makes a demonstrated transient failure recoverable without
+   replaying a request that may already have started a side effect.
+2. It advances provider-specific transport decisions behind the generic
+   harness retry contract.
+3. Unknown close causes stay local to the WebSocket adapter; the typed
+   preterminal condition is a precise, reversible classification boundary.
+4. The adapter owns transport completeness and tool emission knowledge; the
+   harness owns retry scheduling.
+5. One condition crosses the existing narrow error boundary; no new service
+   coupling or interface was added.
+6. Core retry policy does not depend on the OpenAI adapter or WebSocket client.
+7. Socket close and reconnection remain adapter side effects.
+8. One request-local boolean tracks whether a tool call was emitted.  It is
+   discarded when the request settles.
+9. There is no extra request work on the success path beyond setting that
+   boolean when a tool call is emitted.
+10. The typed condition names a real semantic event.  No shared interface or
+    substitutability claim was added.
+11. The user-visible error text and existing bounded retry policy remain
+    compatible.  No obsolete compatibility path was needed.
+12. The previous plain-error close path is removed for safe-to-retry closes.
+13. Expected preterminal closes reach the normalizer; unexpected callback
+    errors still surface through the existing error path.
+14. Adapter and harness ERT prove the classification, side-effect guard, and
+    same-turn recovery independently of graphical Emacs.

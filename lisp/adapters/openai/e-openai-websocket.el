@@ -362,7 +362,8 @@ list.  Return a cancellable `e-backend-request' handle."
         request
         request-token
         assistant-message-candidate
-        assistant-message-seen)
+        assistant-message-seen
+        tool-call-emitted)
     (when (e-openai-websocket--session-active-request session)
       (signal 'e-openai-websocket-busy (list url)))
     (e-openai-websocket--cancel-idle-close session)
@@ -460,6 +461,10 @@ list.  Return a cancellable `e-backend-request' handle."
                 (setq assistant-message-candidate
                       (list :type 'assistant-message
                             :content (plist-get item :content)))))
+             ('tool-call
+              (setq tool-call-emitted t)
+              (when on-item
+                (funcall on-item item)))
              ('done
               (unless assistant-message-seen
                 (when assistant-message-candidate
@@ -535,7 +540,12 @@ list.  Return a cancellable `e-backend-request' handle."
                 (settle-error err)))))
          (handle-close (&rest _args)
            (unless settled
-             (settle-error '(error "Responses WebSocket closed before completion"))))
+             ;; A tool emitted before the terminal event can already have run.
+             ;; Replaying that response could repeat its side effects.
+             (settle-error
+              (if tool-call-emitted
+                  '(error "Responses WebSocket closed before completion")
+                '(e-openai-websocket-premature-close)))))
          (handle-error (&rest args)
            (settle-error (list 'error
                                (format "Responses WebSocket error: %s"

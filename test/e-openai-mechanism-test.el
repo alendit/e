@@ -914,6 +914,141 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         :retryable)
        t)))
 
+(ert-deftest e-openai-test-websocket-premature-close-is-retryable ()
+  "An unexpected close before a terminal event permits a bounded retry."
+  (let* ((condition '(e-openai-websocket-premature-close))
+         (details
+          (e-openai-diagnostics-normalize-error-details
+           (error-message-string condition) nil condition)))
+    (should (equal (error-message-string condition)
+                   "Responses WebSocket closed before completion"))
+    (should (eq (plist-get details :retryable) t))
+    (should (eq (plist-get details :retry-reason) 'premature-stream)))
+  (let ((details
+         (e-openai-diagnostics-normalize-error-details
+          "Responses WebSocket closed before completion" nil
+          '(error "Responses WebSocket closed before completion"))))
+    (should-not (plist-get details :retryable))))
+
+(ert-deftest e-openai-test-websocket-premature-close-retries-turn ()
+  "A preterminal socket close reconnects and settles the same turn."
+  (let* ((process-environment
+          (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token"
+                process-environment))
+         (e-harness-retry-initial-backoff-seconds 0.01)
+         (e-harness-retry-backoff-multiplier 1.0)
+         (e-harness-retry-max-backoff-seconds 0.01)
+         (e-harness-retry-jitter-fraction 0)
+         (e-harness-retry-max-elapsed-seconds 1.0)
+         (e-openai-model-providers
+          '((close-retry-test
+             :name "WebSocket Close Retry Test"
+             :base-url "https://gateway.example.test/v1"
+             :env-key "OPENAI_GATEWAY_API_KEY"
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth nil)))
+         (harness (e-openai-create-harness
+                   :provider 'close-retry-test :model "gpt-test"))
+         (open-count 0)
+         (send-count 0)
+         handlers
+         events)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (let ((socket
+                        (intern (format "fake-websocket-%d"
+                                        (cl-incf open-count)))))
+                   (push (cons socket args) handlers)
+                   socket)))
+              ((symbol-function 'websocket-send-text)
+               (lambda (socket _text)
+                 (cl-incf send-count)
+                 (let ((args (cdr (assq socket handlers))))
+                   (if (= send-count 1)
+                       (run-at-time
+                        0 nil
+                        (lambda ()
+                          (funcall (plist-get args :on-close) socket)))
+                     (run-at-time
+                      0 nil
+                      (lambda ()
+                        (funcall
+                         (plist-get args :on-message) socket
+                         (e-json-serialize
+                          '(:type "response.output_text.delta"
+                            :delta "recovered")))
+                        (funcall
+                         (plist-get args :on-message) socket
+                         (e-json-serialize
+                          '(:type "response.completed"
+                            :response (:id "resp-recovered"
+                                       :status "completed"))))))))))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-harness-activity-subscribe harness
+                                    (lambda (event) (push event events)))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-test-prompt-async harness "session-1" "question")
+      (let ((settled (e-harness-wait-batch harness "session-1" 2.0)))
+        (should (eq (plist-get settled :status) 'done)))
+      (should (= open-count 2))
+      (should (= send-count 2))
+      (let ((retries
+             (seq-filter
+              (lambda (event)
+                (eq (plist-get event :type) 'turn-retrying))
+              events)))
+        (should (= (length retries) 1))
+        (should (eq (plist-get (plist-get
+                                (plist-get (car retries) :payload)
+                                :details)
+                               :retry-reason)
+                    'premature-stream)))
+      (should (equal
+               (plist-get (car (last (e-harness-messages
+                                     harness "session-1")))
+                          :content)
+               "recovered"))
+      (should-not (seq-find
+                   (lambda (event)
+                     (eq (plist-get event :type) 'turn-failed))
+                   events)))))
+
+(ert-deftest e-openai-test-websocket-close-after-tool-call-is-not-retried ()
+  "A close cannot replay a response that already dispatched a tool call."
+  (let (on-message on-close seen failure)
+    (cl-letf (((symbol-function 'websocket-open)
+               (lambda (_url &rest args)
+                 (setq on-message (plist-get args :on-message)
+                       on-close (plist-get args :on-close))
+                 'fake-websocket))
+              ((symbol-function 'websocket-send-text)
+               (lambda (socket _text)
+                 (funcall
+                  on-message socket
+                  (e-json-serialize
+                   '(:type "response.output_item.done"
+                     :item (:type "function_call"
+                            :call_id "call-write"
+                            :name "write"
+                            :arguments "{}"))))
+                 (funcall on-close socket)))
+              ((symbol-function 'websocket-close) (lambda (&rest _args) t)))
+      (e-openai-websocket-request-start
+       :url "wss://gateway.example.test/v1/responses"
+       :body-data '(:model "gpt-test" :input nil)
+       :on-item (lambda (item) (push item seen))
+       :on-error (lambda (err) (setq failure err)))
+      (should (eq (plist-get (car seen) :type) 'tool-call))
+      (should (eq (car failure) 'error))
+      (should (equal (error-message-string failure)
+                     "Responses WebSocket closed before completion"))
+      (should-not
+       (plist-get
+        (e-openai-diagnostics-normalize-error-details
+         (error-message-string failure) nil failure)
+        :retryable)))))
+
 
 (ert-deftest e-openai-test-websocket-retains-only-latest-response ()
   "Only the latest completed response can authorize immediate continuation."

@@ -29,6 +29,8 @@
 (define-error 'e-openai-context-projection-invalid
   "OpenAI context projection is ambiguous")
 (define-error 'e-openai-request-timeout "OpenAI/Codex request timed out")
+(define-error 'e-openai-websocket-premature-close
+  "Responses WebSocket closed before completion")
 
 (defconst e-openai-diagnostics--retryable-error-patterns
   '("rate limit" "rate_limit_error" "too many requests"
@@ -93,6 +95,8 @@ provider-neutral backend contract."
          (code (e-openai-diagnostics--error-code normalized))
          (code-text (downcase (format "%s" (or code ""))))
          (timeout-p (eq (car-safe condition) 'e-openai-request-timeout))
+         (premature-close-p
+          (eq (car-safe condition) 'e-openai-websocket-premature-close))
          (pattern (seq-find (lambda (candidate)
                               (string-match-p (regexp-quote candidate) text))
                             e-openai-diagnostics--retryable-error-patterns))
@@ -106,7 +110,8 @@ provider-neutral backend contract."
            ((or timeout-p (equal status 408)
                 (member pattern '("request timed out" "idle timed out")))
             'timeout)
-           ((equal pattern "premature") 'premature-stream)
+           ((or premature-close-p (equal pattern "premature"))
+            'premature-stream)
            ((equal status 409) 'conflict)
            ((or (e-openai-diagnostics--retryable-status-p status)
                 (string-match-p

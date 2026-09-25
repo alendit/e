@@ -1,0 +1,9 @@
+#+title: Responses WebSocket close before completion did not retry
+#+startup: overview
+
+* Report
+
+The user reported that an Org Canvas chat turn ended with =Responses WebSocket
+closed before completion= after 4 minutes 31 seconds and 20 tool calls.  The
+chat showed a failed turn and no retry.  The user asked why the available run
+evidence did not lead to an automatic retry.
