@@ -16,14 +16,37 @@ The Board activity shell already exposes participant, state, outcome, run,
 task, attempt, live availability, and progress.  The compact chat header links
 to it through the selected run.  That is the immediate inspection path, but it
 requires leaving the crowded transcript and does not resolve the ambiguity in
-the photographed view.
+the photographed view.  The remedy belongs in this Board-native path, not in a
+second chat-owned task inventory.
+
+* Fit with the Board-native chat features
+
+- Feature 66 makes chat a passive observer of canonical, ordered Board input,
+  activity, and output.  The UI may fold or label a message, but must preserve
+  its Board identity, order, and access to its complete content.
+- Feature 89 owns the persistent, compact owner-chat run indicator outside the
+  turn transcript.  It explicitly says to show the active-run count and a
+  bounded summary of the most actionable run, link to detailed Board activity,
+  and avoid rendering the full task graph inline.  It also expects the
+  initiating turn to be idle while its run continues.  Thus the two statuses
+  in the screenshot are compatible in state, but unclear in presentation.
+- Feature 82's completed one-participant-activity-model addendum makes the
+  Board activity shell the sole detailed participant view.  It supersedes
+  separate subagent and run shells.  Feature 93's accepted Board-first contract
+  keeps the compact status and participant/activity page as separate bounded
+  projections with different consumers.
+
+The earlier proposal for a per-task status section next to the chat header
+would violate Feature 89's compact-status boundary and duplicate Feature 82's
+Board activity surface.  Keep task-level inspection inside that one surface.
 
 * Repository evidence
 
 - =lisp/core/e-board-orchestration.el= derives an active run count from active
   projections.  A run's lifecycle is =dispatching= if any task is pending;
   =e-board-orchestration-run-set-compact-status= renders that as
-  =Board runs: dispatching (N active)=.
+  =Board runs: dispatching (N active)=.  The compact DTO already contains the
+  selected run's =:label= in =:summary=, but the rendered =:text= omits it.
 - =lisp/shells/chat/e-chat-surface.el= concatenates the chat status and Board
   run status in one header without naming their different scopes.
 - =lisp/core/e-chat-service.el= translates every Board =input= into a =user=
@@ -38,7 +61,11 @@ the photographed view.
 - =lisp/shells/e-board-activity-shell.el= already has a bounded per-participant
   table with =State=, =Outcome=, =Run=, =Task=, =Attempt=, =Live=, and
   =Progress= columns.  =e-chat--attach-board-run-set= wires the header action
-  to this surface.
+  to this surface.  The header action supplies =:run-id=, but the shell merely
+  moves to the first matching participant row in its all-participant page.
+  =lisp/core/e-board-sqlite-worker.el= builds that page starting from
+  =board_participants=, so a manifest task still awaiting participant admission
+  has no row there even though the run projection says =dispatching=.
 - =e-board-orchestration-actions-assignment-from-metadata= recognizes typed
   =:board-run-id=, =:board-task-key=, and =:board-attempt= metadata.  Assignment
   presentation should use these typed fields when present, rather than parse
@@ -56,28 +83,28 @@ still dispatching now.
 
 * Suggested remediation
 
-1. Make the header's scopes explicit: =Chat turn: idle= and =Board: 1 active
-   run, dispatching=.  Keep the link to Board activity visible and
-   label its action.  Avoid wording that suggests the active count is a worker
-   count.
-2. Show a compact, bounded run/task status section near the chat header.  Each
-   row should identify run, task, attempt, durable state/outcome, and the latest
-   available progress; it should link to the existing Board activity or task
-   transcript.  Derive this from Board observation, with optional exact live
-   decoration, rather than a second mutable status store or inferred prompt
-   text.
-3. Group observed worker traffic by task, or summarize it as task entries in
-   the parent view.  Render automated assignments as collapsed,
-   provenance-labeled entries such as =Assignment · slack · attempt 0=.
-   Keep complete durable prompts and participant responses available on
-   expansion or in the task transcript.  Ordinary human prompts should retain
-   their current =You= presentation.  Use typed Board metadata to decide the
-   distinction; if it is absent, retain normal message rendering rather than
-   guessing from content.
-4. Verify with a graphical scenario containing two long assignments, one
-   completed task and one pending/running task, and an idle owner chat.  Assert
-   that the active task and status scopes are apparent without reading prompt
-   bodies, that the full prompts remain accessible, and that terminal updates
-   remove any stale running indication.
+1. Complete Feature 89's compact status contract in the existing chat header:
+   distinguish =Chat turn: idle= from =Board: 1 active run, dispatching=,
+   include the bounded label of the selected run, and make =Open Board activity=
+   an obvious action.  The number must be named as runs, not workers.  Keep
+   the detailed task list out of the transcript/header.
+2. Improve the *existing* Feature 82 Board activity surface for the selected
+   run.  Show its durable run/task dispositions, including pending admission or
+   retry before a participant row exists, and its related participant rows in
+   one focused view.  Reuse Board-owned bounded run and observation projections;
+   only exact live-handle lookup may decorate a participant with current
+   progress or controls.  Do not add a second task inventory or derive status
+   from prompt prose.
+3. Within Feature 66 chat presentation, label and fold long automated
+   assignment inputs using typed Board assignment metadata where present.
+   Preserve canonical Board order and each message's full durable content on
+   expansion or task-chat navigation.  Ordinary human prompts retain =You=.
+   Missing metadata leaves the ordinary rendering rather than guessing from
+   content.
+4. Verify the existing header-to-Board-activity path with an idle owner chat,
+   two long assignments, one completed task, and one dispatch-pending task with
+   no participant row yet.  Assert the compact header identifies the run, the
+   Board surface identifies task dispositions and exact live progress, full
+   prompts remain accessible, and terminal updates clear stale running cues.
 
 No implementation or live reload was performed for this assessment.
