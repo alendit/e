@@ -10,6 +10,7 @@ In-progress.
 Make asynchronous board runs visible and understandable from the chat that owns them.
 The initiating turn may finish while the run continues, and the composer must become ready for more input.
 The chat must still show that work is active.
+Board activity must also offer a visual, run-focused view of the work behind that status.
 Every later model turn must receive a bounded projection of that work in context.
 When the run finishes, the same session must receive one durable completion input at a safe idle point.
 
@@ -25,6 +26,7 @@ A user asks the main chat to start work that expands into a board run.
 The main session publishes the run and ends its turn without waiting for the full graph.
 The composer becomes ready at once.
 A persistent status area shows that the run is active and provides a bounded summary.
+On an xwidget-capable graphical Emacs, opening that status shows the selected run's tasks and participants in a visual Board activity view, including tasks that have not admitted a participant yet.
 If the user sends another message, the model receives the same active-run summary in context and therefore knows that work is still pending.
 When the required work settles, the board queues one completion input for the same session.
 That input waits while a model turn is active and starts only after the session reaches an idle boundary.
@@ -42,6 +44,7 @@ The runtime already provides most of the underlying pieces:
 - [[file:../47-agent-task-queue/plan.org][Feature 47]] provides durable queued task execution.
 - [[file:../58-ui-work-substrate/plan.org][Feature 58]] provides the asynchronous presentation path used by the chat shell.
 - [[file:../87-sqlite-session-board-persistence/plan.org][Feature 87]] supplies restart-safe board facts and delivery receipts in one SQLite store.
+- [[file:../62-egui-modern-chat-shell/plan.org][Feature 62]] provides an optional =emacs-egui= chat shell and a narrow Elisp-to-WASM view-model pattern; Board activity can share its runtime without depending on its chat timeline.
 
 Feature 82 already describes durable run observation and direct-child
 supervision context.  This plan adds the owner chat's persistent status, model
@@ -158,6 +161,65 @@ and participant facts describe a coherent Board generation and revision.
 The shell owns only that detached page, focus, and presentation.  Opening the
 view does not block the composer.
 
+** Visual Board activity
+
+Board activity offers an =emacs-egui= visualization of the same Board-owned
+run-focused page as its native text view.  The chat status opens the selected
+run in this one activity surface.  The visual renderer occupies a normal
+Emacs xwidget buffer; a user can choose the text renderer on a build without
+xwidgets or when they prefer keyboard-oriented rows.
+Adding the repository-root =emacs-egui= submodule and building the Board WASM
+app are part of this feature's visual slice.  The submodule is shared with
+Feature 62 rather than copied into a second UI runtime.
+
+The visual view has a compact active-run selector, a selected-run workspace,
+and an inspector.  The selector shows the bounded run labels, lifecycle,
+required and optional counts, and omitted count from the shared projection.
+When runs are omitted, a =Show more= action invokes the bounded run query.
+The workspace groups selected tasks by required or optional policy.  Each task
+card shows its durable disposition, selected attempt, and an admitted
+participant when one exists.  A pending admission or failed dispatch remains
+a task card without a fabricated participant.  Completion delivery,
+conflicts, deadlines, and restore state have visible text labels as well as
+color or motion cues.  Selecting a task reveals its exact Board coordinates,
+latest bounded outcome or progress, and only the controls available for its
+current participant.  Board-wide participant navigation remains available so
+an ad-hoc child does not disappear behind the run-focused layout.
+
+#+begin_example
+Board activity                     Daily update  [dispatching]
+Runs: Daily update  2 required · 1 optional     Completion: waiting
+
+Required  Calendar  · admission pending · attempt 1
+          Slack     · running           · attempt 1 → participant
+Optional  Notes     · succeeded         · attempt 1 → participant
+
+Inspector: selected task, durable outcome, exact available actions
+#+end_example
+
+The layout takes the glanceable status and attention cues of
+[[https://github.com/nohzafk/emacs-workspace-hud][emacs-workspace-hud]], while using the
+larger activity view for task detail.  It draws only relationships recorded
+by the Board: run to task, task to selected attempt, and attempt to admitted
+participant.  The current manifest does not define dependency edges, so the
+view does not invent a directed task graph or offer graph editing.  The
+compact chat status stays outside the transcript and never covers its
+composer; a floating child frame is not needed for the detailed view.
+
+Board observation supplies a bounded, coherent page for the selected run;
+the visual adapter maps that detached page into a narrow JSON view model.
+The run selector can update ahead of that page; the workspace shows its own
+revision and loading state until its detail refresh completes rather
+than combining task and participant facts from different revisions.
+Rust owns only selection, expansion, layout, and rendering.  Elisp handles
+semantic events such as selecting a run, opening a participant chat, or
+requesting an available control through existing Board and subagent services.
+The handler validates the current Board identity and live control availability
+before acting on a possibly stale click.  Board notifications schedule
+bounded refreshes; neither renderer polls worker sessions or builds a second
+run or participant inventory.  Refresh preserves the selected run and task
+when their durable identities still exist.
+
 The owner chat remains a chronological observer of canonical Board messages.
 The dispatch path places its existing typed run, task, and attempt coordinates
 on each run-bound child input when it submits that canonical Board message.
@@ -248,7 +310,8 @@ focused tests use isolated SQLite state.
 - =e-board-runtime= owns participant FIFO delivery, busy-session deferral, and consumption receipts.
 - A session-scoped context provider emits the bounded run block for model input.
 - The chat shell renders the compact status from that projection and opens the one Board activity surface.
-- Board orchestration owns run/task dispositions.  Board observation maps one consumer-shaped run-focused activity page with those dispositions and related participant rows; the Board activity shell renders it and decorates exact participants with optional live controls.
+- Board orchestration owns run/task dispositions.  Board observation maps one consumer-shaped run-focused activity page with those dispositions and related participant rows; Board activity renders it as native text or through a narrow =emacs-egui= view model and decorates exact participants with optional live controls.
+- The Board activity presentation owns its WASM app, semantic UI event mapping, and rebuildable visual selection; neither =emacs-egui= nor the Feature 62 chat shell owns Board policy or durable state.
 - The chat transcript shell owns assignment labels and folding from typed Board message metadata; it does not change Board ordering or durable input content.
 - =e-session-storage= persists typed board facts and receipts but does not own run policy, context wording, or rendering.
 
@@ -284,6 +347,26 @@ focused tests use isolated SQLite state.
 - Composition gate: with an idle owner and mixed settled/pending tasks, the
   status opens the correct run detail, focus survives updates, and no shell
   polls worker sessions.
+
+** Slice 2b: visualize Board activity with emacs-egui
+
+- Add the repository-root =emacs-egui= submodule for both the Board app and
+  Feature 62, with a documented Board WASM build.  Keep Rust and xwidgets out
+  of core harness load and the native text renderer usable without them.
+- Map the bounded active-run projection and coherent selected-run activity
+  page to a Board-specific JSON view model.  Render the run selector, grouped
+  task cards, exact attempt/participant associations, and inspector described
+  above; keep selection and layout state local to the presentation.
+- Route semantic UI events through Elisp to the existing Board activity and
+  participant-control services.  Refresh from Board notifications, preserving
+  focus by durable identity and rejecting stale or unavailable controls.
+- Gate: a graphical Daily owner scenario opens the visual view from an idle
+  chat, shows a dispatch-pending task without a participant beside a running
+  task with one, and leaves the composer responsive.  A Board update changes
+  the task card without duplicating it or losing focus.  Focused view-model
+  and event tests prove bounded payloads, coherent task/participant mapping,
+  omitted-run access, restore/attention labels, and stale-click handling.  Build
+  the WASM app and verify the native view still opens without xwidgets.
 
 ** Slice 3: inject active-run context
 
@@ -342,6 +425,10 @@ in the same graphical proof leaves a selected task pending admission with no
 participant row; Board activity still identifies it.  The transcript keeps
 the ordered assignment inputs accessible without showing their full bodies by
 default.
+On a graphical build, the same status opens the =emacs-egui= Board view: the
+pending task has no participant card, the running task links to its admitted
+participant, and the selected task survives a Board notification.  The native
+text renderer shows the same durable dispositions when xwidgets are absent.
 A later headless trigger reuses the same session participant and board.
 No update session, private coordinator session, or shadow board is created.
 
@@ -367,6 +454,14 @@ The status and context never report no work while restore is incomplete.
 - Board activity exposes selected task dispositions even before participant
   admission and retains related participant outcomes and exact live controls
   in one coherent bounded page without a second durable inventory.
+- The =emacs-egui= Board renderer visualizes that page as grouped task cards
+  and an inspector, with active-run selection from the shared bounded
+  projection.  Its text labels distinguish task state, attempt, participant,
+  and completion delivery; it never infers unrecorded task dependencies.
+- The Board WASM app builds from the shared =emacs-egui= submodule.  Its
+  semantic actions validate current identities and control availability;
+  notification-driven refresh retains focus.  The native text renderer
+  remains usable on Emacs builds without xwidgets.
 - Metadata-identified automated assignments are labeled and initially folded
   in chat; their complete canonical Board messages remain accessible and
   ordered.  Dispatch supplies the typed coordinates on run-bound inputs;
@@ -389,7 +484,8 @@ The status and context never report no work while restore is incomplete.
 
 - A generic visual editor for arbitrary board topology.
 - Rendering the full task graph inside every chat transcript.
-- Creating a second run or subagent shell or a chat-owned task inventory.
+- Creating a second Board authority or a separately queried run, task, or
+  subagent inventory for the visual renderer.
 - Copying worker transcripts, prompts, tool results, or reasoning into the owner session.
 - Making process-local =e-work= handles the source of durable run status.
 - Creating a second coordinator session for background work.
@@ -402,35 +498,44 @@ The status and context never report no work while restore is incomplete.
    chat can identify its active run and reach truthful task detail while its
    turn is idle.
 2. What final direction does it serve?  One Board-native chat and one Board
-   activity surface, with durable Board facts as the authority.
-3. Which decisions may change?  Assignment fold length and wording are local
-   shell choices.  Run/task identity, status, and ordering use existing typed
-   Board contracts; no speculative extension seam is added.
+   activity surface with text and visual renderers, with durable Board facts
+   as the authority.
+3. Which decisions may change?  Assignment fold length, card layout, and
+   colors are local presentation choices.  Run/task identity, status, and
+   ordering use existing typed Board contracts; =emacs-egui= is the chosen
+   visual runtime and adds no speculative Board extension seam.
 4. Who owns each behavior?  Board orchestration owns task disposition, Board
-   observation maps the run-focused detail page, and the two presentation
-   shells own their respective views.
+   observation maps the run-focused detail page, and chat and Board activity
+   own their presentation.  The =emacs-egui= app renders Board activity only.
 5. Does coupling change?  Shells consume narrow detached Board projections;
    neither joins task state from worker sessions nor reads private SQL layout.
 6. Do dependencies point the right way?  Core run policy does not depend on
-   chat, Board activity, or transcript rendering.
+   chat, Board activity, =emacs-egui=, or transcript rendering.
 7. Can side effects move outward?  The coherent query stays behind Board
    application operations; opening, focusing, and folding stay in shells.
 8. What state is added?  Existing durable Board inputs gain bounded assignment
-   coordinates already known at dispatch.  Focus and fold state is rebuildable
-   and buffer-local; durable task and message facts remain in SQLite.
-9. What is the performance cost?  The header reuses its subscribed projection.
-   Each run-bound input adds only bounded coordinates.  Exact task detail uses
-   one bounded set read on view open or refresh, with no per-message,
-   per-participant, or polling read.
+   coordinates already known at dispatch.  Focus, fold, and visual layout are
+   rebuildable presentation state; durable task and message facts remain in
+   SQLite.
+9. What is the performance cost?  The header and run selector reuse the
+   subscribed projection.  Each run-bound input adds only bounded coordinates.
+   Both detail renderers use the same bounded set read on view open or
+   notification-driven refresh, with no per-message, per-participant, or
+   polling read.  The visual app adds local WASM rendering only when opened.
 10. Are interfaces semantically real?  The existing run projection and Board
     observation contracts have distinct consumers and do not require an
     unsupported operation from either.
 11. What compatibility applies?  Inputs without typed assignment metadata
-    keep ordinary message presentation; no legacy Board path is restored.
+    keep ordinary message presentation.  Emacs without xwidgets uses the
+    native Board renderer; no legacy Board path is restored.
 12. What legacy code can be removed?  No retired run or subagent shell returns,
-    and this correction adds no compatibility alias to remove later.
+    and the visual renderer adds no alternate Board query path or compatibility
+    alias to remove later.
 13. How do errors surface?  Expected bounded Board read failures appear in the
-    activity view; unexpected errors retain their normal top-level failure.
-14. What proves the behavior?  Focused status, Board-query, and transcript tests
-    prove each owner independently; the graphical idle-owner scenario proves
-    their public composition and composer responsiveness.
+    activity view, and missing xwidget or WASM support reports a clear
+    presentation error with the native view available.  Unexpected errors
+    retain their normal top-level failure.
+14. What proves the behavior?  Focused status, Board-query, transcript, visual
+    view-model, and semantic event tests prove each owner independently; the
+    graphical idle-owner scenario proves both renderers' public composition
+    and composer responsiveness.
