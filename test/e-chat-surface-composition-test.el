@@ -715,7 +715,7 @@ last normal window), so the no-normal-window condition is stubbed."
                                      (buffer-string)))
                    1.0))
           (should-not (string-match-p "✅ Done" (buffer-string)))
-          (should (string-match-p "E Chat: error" header-line-format)))
+          (should (string-match-p "Chat turn: error" header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

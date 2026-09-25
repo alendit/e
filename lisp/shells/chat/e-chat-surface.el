@@ -372,14 +372,14 @@ window callbacks loadable before the composition root is evaluated."
                     t))))
                (model (plist-get options :model))
                (effort (e-context-budget-options-effort options)))
-          (format "E Chat: %s - %s - %s/%s%s%s"
+          (format "Chat turn: %s - %s - %s/%s%s%s"
                   status title (or model "model unset")
                   (or effort "effort unset")
                   (if board-status-display
                       (format " - %s" board-status-display)
                     "")
                   diagnostics))
-      (format "E Chat: %s%s%s" status
+      (format "Chat turn: %s%s%s" status
               (if board-status-display
                   (format " - %s" board-status-display)
                 "")

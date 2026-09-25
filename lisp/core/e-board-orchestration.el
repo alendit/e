@@ -710,7 +710,9 @@ evidence."
            ((not (eq restore-state 'ready)) 'restoring)
            (attention-p 'attention)
            (terminal-status 'finishing)
-           ((cl-some (lambda (task) (eq (plist-get task :state) 'pending)) tasks)
+           ((cl-some (lambda (task)
+                       (memq (plist-get task :state) '(pending queued)))
+                     tasks)
             'dispatching)
            (t 'running)))
          (latest-at (e-board-orchestration--run-set-value
@@ -964,16 +966,24 @@ both consumers."
                              :label (plist-get selected :label)
                              :lifecycle (plist-get selected :lifecycle)
                              :attention-p (plist-get selected :attention-p))))
-         (text (pcase status
-                 ('restoring "Board runs: restoring")
-                 ('dispatching (format "Board runs: dispatching (%d active)"
-                                       active-count))
-                 ('running (format "Board runs: %d active" active-count))
-                 ('finishing (format "Board runs: finishing (%d active)"
-                                     active-count))
-                 ('attention (format "Board runs: attention (%d active)"
-                                     active-count))
-                 (_ "Board runs: idle"))))
+         (text
+          (concat
+           (pcase status
+             ('restoring (format "Board runs: restoring (%d active)"
+                                 active-count))
+             ('dispatching (format "Board runs: dispatching (%d active)"
+                                   active-count))
+             ('running (format "Board runs: running (%d active)"
+                               active-count))
+             ('finishing (format "Board runs: finishing (%d active)"
+                                 active-count))
+             ('attention (format "Board runs: attention (%d active)"
+                                 active-count))
+             (_ (format "Board runs: idle (%d active)" active-count)))
+           (when summary
+             (format " · %s (%s)"
+                     (plist-get summary :label)
+                     (plist-get summary :lifecycle))))))
     (list :text text :status status
           :active-run-count (plist-get value :active-run-count)
           :board-id (plist-get value :board-id)

@@ -1620,6 +1620,201 @@ inserting it is insufficient when the count changes its encoded width."
               (throw 'settled candidate)
             (setq candidate (plist-put candidate :bytes bytes))))))))
 
+(defun e-board-sqlite-worker--orchestration-run-page
+    (board-id generation run-id limit)
+  "Return BOARD-ID's bounded exact GENERATION facts for RUN-ID.
+The run id is selected through the normalized attribute index before any fact
+limit is applied."
+  (let* ((limit (min 1024 (max 1 (or limit 256))))
+         (rows
+          (sqlite-select
+           e-board-sqlite-worker--database
+           (concat
+            "SELECT r.record_id,r.position,r.record_kind,r.source_kind,r.source_key,"
+            "r.source_hash,r.created_at,r.author,r.subject_participant_id,r.payload "
+            "FROM board_records r JOIN board_record_attributes a "
+            "ON a.board_id=r.board_id AND a.generation=r.generation "
+            "AND a.position=r.position WHERE r.board_id=? AND r.generation=? "
+            "AND r.record_kind='fact' AND a.attribute_key=? "
+            "AND a.attribute_value=? ORDER BY r.position LIMIT ?")
+           (vector board-id generation
+                   (e-board-sqlite-worker--sql-value :orchestration-run-id)
+                   (e-board-sqlite-worker--sql-value run-id)
+                   (1+ limit))))
+         (context (e-board-sqlite-worker--record-read-context
+                   board-id generation rows))
+         (truncated (> (length rows) limit)))
+    (list :run-id run-id
+          :records
+          (mapcar
+           (lambda (row)
+             (list :position (e-board-sqlite-worker--column row 1)
+                   :record
+                   (e-board-sqlite-worker--record-dto
+                    board-id generation row
+                    (plist-get (e-board-sqlite-worker--record-child-values
+                                board-id generation
+                                (e-board-sqlite-worker--column row 1)
+                                context)
+                               :tags)
+                    (plist-get (e-board-sqlite-worker--record-child-values
+                                board-id generation
+                                (e-board-sqlite-worker--column row 1)
+                                context)
+                               :attributes)
+                    context)))
+           (if truncated (cl-subseq rows 0 limit) rows))
+          :truncated truncated)))
+
+(defun e-board-sqlite-worker--activity-run-projection
+    (board-id generation run-id)
+  "Reduce RUN-ID facts and return its bounded activity inputs.
+All facts are read from BOARD-ID GENERATION in this worker transaction."
+  (let* ((page (e-board-sqlite-worker--orchestration-run-page
+                board-id generation run-id 1024))
+         (records (mapcar (lambda (row) (plist-get row :record))
+                          (plist-get page :records))))
+    (when (plist-get page :truncated)
+      (signal 'e-runtime-store-worker-error
+              (list "Selected Board run exceeds bounded fact query" run-id)))
+    (when records
+      (e-board-orchestration-reduce records))))
+
+(defun e-board-sqlite-worker--activity-run-input-sessions
+    (board-id generation run-id tasks)
+  "Return exact selected task inputs for RUN-ID in one indexed set query.
+Each result maps the selected run/task/attempt to its decoded session author.
+The result is bounded by the activity page row limit."
+  (let ((clauses nil)
+         (parameters
+         (list (e-board-sqlite-worker--sql-value :board-run-id)
+               (e-board-sqlite-worker--sql-value run-id)
+               (e-board-sqlite-worker--sql-value :board-task-key)
+               (e-board-sqlite-worker--sql-value :board-attempt)
+               (e-board-sqlite-worker--sql-value :subagent-label)
+               board-id generation)))
+    (when (> (length tasks) e-board-sqlite-activity-page-count-limit)
+      (signal 'e-runtime-store-worker-error
+              (list "Selected Board run task count exceeds activity page bound"
+                    run-id e-board-sqlite-activity-page-count-limit)))
+    (dolist (task tasks)
+      (setq clauses
+            (append clauses
+                    (list "(task_attr.attribute_value=? AND attempt_attr.attribute_value=?)"))
+            parameters
+            (append parameters
+                    (list
+                     (e-board-sqlite-worker--sql-value
+                      (plist-get task :task-key))
+                     (e-board-sqlite-worker--sql-value
+                      (plist-get task :accepted-attempt))))))
+    (let ((rows
+           (sqlite-select
+            e-board-sqlite-worker--database
+            (concat
+             "SELECT task_attr.attribute_value,attempt_attr.attribute_value,r.author,"
+             "label_attr.attribute_value "
+             "FROM board_records r "
+             "JOIN board_record_attributes run_attr ON run_attr.board_id=r.board_id "
+             "AND run_attr.generation=r.generation AND run_attr.position=r.position "
+             "AND run_attr.attribute_key=? AND run_attr.attribute_value=? "
+             "JOIN board_record_attributes task_attr ON task_attr.board_id=r.board_id "
+             "AND task_attr.generation=r.generation AND task_attr.position=r.position "
+             "AND task_attr.attribute_key=? "
+             "JOIN board_record_attributes attempt_attr ON attempt_attr.board_id=r.board_id "
+             "AND attempt_attr.generation=r.generation AND attempt_attr.position=r.position "
+             "AND attempt_attr.attribute_key=? "
+             "LEFT JOIN board_record_attributes label_attr ON label_attr.board_id=r.board_id "
+             "AND label_attr.generation=r.generation AND label_attr.position=r.position "
+             "AND label_attr.attribute_key=? "
+             "WHERE r.board_id=? AND r.generation=? AND r.record_kind='input' AND ("
+             (if clauses (mapconcat #'identity clauses " OR ") "0")
+             ") ORDER BY r.position LIMIT ?")
+            (vconcat parameters
+                     (list (1+ e-board-sqlite-activity-page-count-limit))))))
+      (when (> (length rows) e-board-sqlite-activity-page-count-limit)
+        (signal 'e-runtime-store-worker-error
+                (list "Selected Board run has too many assignment inputs" run-id)))
+      (let ((by-assignment (make-hash-table :test 'equal))
+            result)
+        (dolist (row rows)
+          (let* ((task-key
+                  (e-board-sqlite-worker--value
+                   (e-board-sqlite-worker--column row 0)))
+                 (attempt
+                  (e-board-sqlite-worker--value
+                   (e-board-sqlite-worker--column row 1)))
+                 (author
+                 (e-board-sqlite-worker--value
+                   (e-board-sqlite-worker--column row 2)))
+                 (label
+                  (e-board-sqlite-worker--value
+                   (e-board-sqlite-worker--column row 3)))
+                 (session-id
+                  (and (stringp author)
+                       (string-prefix-p "session:" author)
+                       (substring author (length "session:"))))
+                 (assignment (list run-id task-key attempt)))
+            (when (gethash assignment by-assignment)
+              (signal 'e-runtime-store-worker-error
+                      (list "Selected Board task attempt has multiple inputs"
+                            run-id task-key attempt)))
+            (puthash assignment t by-assignment)
+            (push (append
+                   (list :run-id run-id :task-key task-key :attempt attempt
+                         :session-id (and (stringp session-id)
+                                          (not (string-empty-p session-id))
+                                          session-id))
+                   (when (and (stringp label) (not (string-empty-p label)))
+                     (list :label
+                           (substring label 0
+                                      (min (length label)
+                                           e-board-orchestration-run-set-label-limit)))))
+                  result)))
+        (nreverse result)))))
+
+(defun e-board-sqlite-worker--activity-run-participants
+    (board-id generation session-ids)
+  "Return participants admitted to BOARD-ID for exact SESSION-IDS.
+The session association and participant row must both belong to the selected
+Board generation."
+  (let ((by-session (make-hash-table :test 'equal))
+        values)
+    (when session-ids
+      (let* ((rows
+              (sqlite-select
+               e-board-sqlite-worker--database
+               (format
+                (concat
+                 "SELECT a.session_id,p.participant_id,p.principal,p.author,"
+                 "p.controller,p.role,p.state,p.name,p.subscription_id,"
+                 "p.publication_pending,p.revision,p.board_id,p.payload "
+                 "FROM board_session_associations a JOIN board_participants p "
+                 "ON p.board_id=a.board_id AND p.generation=a.generation "
+                 "AND p.participant_id=a.participant_id "
+                 "WHERE a.board_id=? AND a.generation=? AND a.session_id IN (%s) "
+                 "ORDER BY a.session_id LIMIT ?")
+                (mapconcat (lambda (_id) "?") session-ids ","))
+               (vconcat (append (list board-id generation) session-ids
+                                (list (1+ e-board-sqlite-activity-page-count-limit))))))
+             (more (> (length rows) e-board-sqlite-activity-page-count-limit)))
+        (when more
+          (signal 'e-runtime-store-worker-error
+                  (list "Selected Board run has too many participants"
+                        board-id e-board-sqlite-activity-page-count-limit)))
+        (dolist (row rows)
+          (let* ((session-id (e-board-sqlite-worker--column row 0))
+                 (participant-id (e-board-sqlite-worker--column row 1))
+                 (participant
+                  (e-board-sqlite-worker--participant-dto
+                   (cl-subseq row 1))))
+            (plist-put participant :session-id session-id)
+            (puthash session-id participant-id by-session)
+            (push (list :participant-id participant-id
+                        :participant participant)
+                  values)))))
+    (list :participants (nreverse values) :by-session by-session)))
+
 (defun e-board-sqlite-worker--activity-session-context
     (board-id participants)
   "Return bounded session context maps for BOARD-ID and PARTICIPANTS.
@@ -1726,9 +1921,10 @@ participant-specific session reads."
 
 (defun e-board-sqlite-worker--activity-page (body)
   "Return one bounded detached participant/activity page from BODY.
-Participant, current session, and newest fact relations are selected as sets
-inside this worker transaction.  The parent process receives only the reduced
-page and never reconstructs a Board aggregate or performs follow-up reads."
+Participant, selected run, assignment, current session, and newest fact
+relations are selected as sets inside this worker transaction.  The parent
+process receives only the reduced page and never reconstructs a Board
+aggregate or performs follow-up reads."
   (let* ((board-id (plist-get body :board-id))
          (board-row (e-board-sqlite-worker--board-row board-id))
          (generation (e-board-sqlite-worker--column board-row 1))
@@ -1736,7 +1932,8 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
          (after (or (plist-get body :after) ""))
          (limit (plist-get body :limit))
          (byte-limit (plist-get body :byte-limit))
-         (participant-id (plist-get body :participant-id)))
+         (participant-id (plist-get body :participant-id))
+         (run-id (plist-get body :run-id)))
     (unless (and (integerp limit) (> limit 0)
                  (<= limit e-board-sqlite-activity-page-count-limit))
       (signal 'e-runtime-store-worker-error
@@ -1753,6 +1950,10 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
       (signal 'e-runtime-store-worker-error
               (list "Board activity participant identity is invalid"
                     participant-id)))
+    (unless (or (null run-id)
+                (and (stringp run-id) (not (string-empty-p run-id))))
+      (signal 'e-runtime-store-worker-error
+              (list "Board activity run identity is invalid" run-id)))
     (let* ((participant-filter (if participant-id " AND participant_id=?" ""))
            (participant-parameters
             (if participant-id (list participant-id) nil))
@@ -1767,7 +1968,7 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                       participant-parameters (list (1+ limit)))))
            (more (> (length rows) limit))
            (selected-rows (if more (cl-subseq rows 0 limit) rows))
-           (participant-values
+           (page-participant-values
             (mapcar
              (lambda (row)
                (list :participant-id
@@ -1775,6 +1976,49 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                      :participant
                      (e-board-sqlite-worker--participant-dto row)))
              selected-rows))
+           (run-projection
+            (and run-id
+                 (e-board-sqlite-worker--activity-run-projection
+                  board-id generation run-id)))
+           (run-tasks (plist-get run-projection :tasks))
+           (run-inputs
+            (and run-id
+                 (e-board-sqlite-worker--activity-run-input-sessions
+                  board-id generation run-id run-tasks)))
+           (run-associations
+            (and run-id
+                 (e-board-sqlite-worker--activity-run-participants
+                  board-id generation
+                  (delete-dups
+                   (delq nil
+                         (mapcar (lambda (input)
+                                   (plist-get input :session-id))
+                                 run-inputs))))))
+           (run-participant-values
+            (plist-get run-associations :participants))
+           (assignment-input-by-key (make-hash-table :test 'equal))
+           (_ (dolist (input run-inputs)
+                (puthash
+                 (list (plist-get input :run-id)
+                       (plist-get input :task-key)
+                       (plist-get input :attempt))
+                 input
+                 assignment-input-by-key)))
+           (page-participant-id-set
+            (let ((ids (make-hash-table :test 'equal)))
+              (dolist (row selected-rows)
+                (puthash (e-board-sqlite-worker--column row 0) t ids))
+              ids))
+           (participant-values
+            (let ((seen (make-hash-table :test 'equal)))
+              (cl-remove-if
+               (lambda (entry)
+                 (let ((id (plist-get entry :participant-id)))
+                   (if (gethash id seen)
+                       t
+                     (puthash id t seen)
+                     nil)))
+               (append page-participant-values run-participant-values))))
            (contexts
             (e-board-sqlite-worker--activity-session-context
              board-id participant-values))
@@ -1928,8 +2172,79 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                                (plist-get outcome :finished-at)))))))
              participant-rows)))
         (setq participant-rows (nreverse participant-rows))
-        (let ((kept participant-rows)
-              page)
+        (let* ((participant-row-by-id (make-hash-table :test 'equal))
+               (page-participant-rows
+                (cl-remove-if-not
+                 (lambda (row)
+                   (gethash (plist-get row :participant-id)
+                            page-participant-id-set))
+                 participant-rows))
+               (run-task-rows nil)
+               (run-label
+                (when run-id
+                  (let* ((manifest (plist-get run-projection :manifest))
+                         (descriptor (plist-get manifest :descriptor))
+                         (value (or (plist-get descriptor :label)
+                                    (plist-get descriptor :name)
+                                    (plist-get manifest :label)
+                                    run-id)))
+                    (if (stringp value)
+                        (substring value 0
+                                   (min (length value)
+                                        e-board-orchestration-run-set-label-limit))
+                      (format "%s" value)))))
+               (kept page-participant-rows)
+               page)
+          (dolist (row participant-rows)
+            (puthash (plist-get row :participant-id) row participant-row-by-id))
+          (when run-id
+            (setq run-task-rows
+                  (mapcar
+                   (lambda (task)
+                     (let* ((assignment
+                             (list run-id
+                                   (plist-get task :task-key)
+                                   (plist-get task :accepted-attempt)))
+                            (input
+                             (gethash assignment assignment-input-by-key))
+                            (session-id
+                             (plist-get input :session-id))
+                            (participant-id
+                             (and session-id run-associations
+                                  (gethash
+                                   session-id
+                                   (plist-get run-associations :by-session))))
+                            (participant-row
+                             (and participant-id
+                                  (gethash participant-id participant-row-by-id)))
+                            (report (plist-get task :accepted-report))
+                            (result
+                             (append
+                              (list :task-key (plist-get task :task-key)
+                                    :required (plist-get task :required)
+                                    :accepted-attempt
+                                    (plist-get task :accepted-attempt)
+                                    :state (plist-get task :state))
+                              (when (plist-get input :label)
+                                (list :label (plist-get input :label)))
+                              (when report
+                                (list :outcome
+                                      (append
+                                       (list :status (plist-get report :status))
+                                       (when (plist-get report :summary)
+                                         (list :summary
+                                               (plist-get report :summary)))
+                                       (when (plist-get report :error)
+                                         (list :error
+                                               (plist-get report :error)))))))))
+                       (when (and participant-id participant-row)
+                         (setq result
+                               (append result
+                                       (list :participant-id participant-id
+                                             :participant-row
+                                             (copy-tree participant-row t)))))
+                       result))
+                   run-tasks)))
           ;; Build the largest prefix that satisfies the exact transport codec
           ;; bound.  If a single detached row cannot fit, fail this request
           ;; locally instead of returning an unbounded or silently empty page.
@@ -1939,15 +2254,26 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                      (last-id (plist-get last :participant-id))
                      (truncated-prefix-p
                       (or more
-                          (< (length kept) (length participant-rows)))))
+                          (< (length kept) (length page-participant-rows))))
+                     (base (list :board-id board-id
+                                 :generation generation
+                                 :revision revision
+                                 :after after)))
+                (when run-id
+                  (setq base
+                        (append base
+                                (list :run
+                                      (list :run-id run-id
+                                            :label run-label
+                                            :terminal-status
+                                            (plist-get run-projection
+                                                       :terminal-status))
+                      :tasks run-task-rows))))
                 (setq page
-                      (list :board-id board-id
-                            :generation generation
-                            :revision revision
-                            :after after
-                            :participants kept
-                            :next (and truncated-prefix-p last-id)
-                            :cursor (or last-id after))))
+                      (append base
+                              (list :participants kept
+                                    :next (and truncated-prefix-p last-id)
+                                    :cursor (or last-id after)))))
               (condition-case _error
                   (throw 'page
                          (e-board-sqlite-worker--activity-page-finalize
@@ -1956,9 +2282,8 @@ page and never reconstructs a Board aggregate or performs follow-up reads."
                  (if (cdr kept)
                      (setq kept (butlast kept))
                    (signal 'e-runtime-store-worker-error
-                           (list
-                            "One Board activity participant exceeds page byte bound"
-                            board-id byte-limit))))))))))))
+                           (list "Board activity page exceeds byte bound"
+                                 board-id byte-limit))))))))))))
 
 (defun e-board-sqlite-worker--board-owner-resolve (body)
   "Return bounded current owner candidates for BODY's Board id.
@@ -2326,46 +2651,9 @@ snapshot is resolved by the session owner after this Board-side check."
                         e-board-sqlite-worker--database
                         "SELECT generation FROM boards WHERE board_id=?"
                         (vector board-id)))))
-            (limit (min 1024 (max 1 (or (plist-get body :limit) 256))))
-            (rows
-             (sqlite-select
-              e-board-sqlite-worker--database
-              (concat
-               "SELECT r.record_id,r.position,r.record_kind,r.source_kind,r.source_key,r.source_hash,r.created_at,r.author,r.subject_participant_id,r.payload FROM board_records r "
-               "JOIN board_record_attributes a ON a.board_id=r.board_id "
-               "AND a.generation=r.generation AND a.position=r.position "
-               "WHERE r.board_id=? AND r.generation=(SELECT generation FROM boards WHERE board_id=?) "
-               "AND r.record_kind='fact' AND a.attribute_key=? AND a.attribute_value=? "
-               "ORDER BY r.position LIMIT ?")
-              (vector board-id board-id
-                      (e-board-sqlite-worker--sql-value
-                       :orchestration-run-id)
-                      (e-board-sqlite-worker--sql-value run-id)
-                      (1+ limit))))
-            (context (e-board-sqlite-worker--record-read-context
-                      board-id generation rows))
-            (truncated (> (length rows) limit)))
-       (list :run-id run-id
-             :records
-             (mapcar
-              (lambda (row)
-               (list :position
-                      (e-board-sqlite-worker--column row 1)
-                      :record
-                      (e-board-sqlite-worker--record-dto
-                       board-id generation
-                       row
-                       (plist-get (e-board-sqlite-worker--record-child-values
-                                   board-id generation
-                                  (e-board-sqlite-worker--column row 1)
-                                  context) :tags)
-                       (plist-get (e-board-sqlite-worker--record-child-values
-                                   board-id generation
-                                   (e-board-sqlite-worker--column row 1)
-                                   context) :attributes)
-                       context)))
-              (if truncated (cl-subseq rows 0 limit) rows))
-             :truncated truncated)))
+            (limit (plist-get body :limit)))
+       (e-board-sqlite-worker--orchestration-run-page
+        board-id generation run-id limit)))
     ('board-orchestration-runs
      (let* ((board-id (plist-get body :board-id))
             (generation

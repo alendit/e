@@ -83,6 +83,20 @@
                 :summary "accepted report" :outputs []
                 :participant-session-id "03-worker")))))
 
+(defun e-board-observation-test--append-assignment-input
+    (target run-id task-key attempt session-id label)
+  "Append one canonical assignment input with typed run coordinates."
+  (e-board-observation-test--await
+   (e-board-sqlite-publication-target-append-route-start
+    target (format "Assignment body for %s" task-key)
+    (list "assignment" run-id task-key attempt)
+    :author (format "session:%s" session-id)
+    :tags '(main)
+    :attributes (list :board-run-id run-id
+                      :board-task-key task-key
+                      :board-attempt attempt
+                      :subagent-label label))))
+
 (defun e-board-observation-test--insert-report
     (database board-id position run-id task-key attempt)
   "Insert one detached terminal report for adversarial history tests."
@@ -540,7 +554,7 @@
                          database
                          (list :op 'board-activity-page :board-id board-id
                                :after "" :limit 8
-                               :byte-limit
+                        :byte-limit
                                e-board-sqlite-activity-page-byte-limit)))
                        (row (car (plist-get page :participants)))
                        (outcome (plist-get row :outcome)))
@@ -655,16 +669,103 @@
                      (lambda (&rest arguments)
                        (cl-incf calls)
                        (apply original arguments))))
-            (let ((page
+                (let ((page
                    (e-board-sqlite-worker-read
                     database
                     (list :op 'board-activity-page :board-id board-id
                           :after "" :limit 8
                           :byte-limit e-board-sqlite-activity-page-byte-limit))))
-              (should (= (length (plist-get page :participants)) 3))
+                (should (= (length (plist-get page :participants)) 3))
               ;; Board root, participant set, current session, summary,
               ;; lifecycle, and report sets: no participant-specific reads.
               (should (= calls 6))))
+        (sqlite-close database)))))
+
+(ert-deftest e-board-observation-test-run-page-includes-pending-tasks-and-exact-participants ()
+  "Selected run tasks remain visible before exact participant admission."
+  (e-board-observation-test--with-fixture
+      (directory runtime service target board-id)
+    (ignore directory)
+    (e-board-observation-test--admit
+     service board-id "running-session" "running-participant"
+     '(:board-run-id "run-page" :board-task-key "running-task"
+       :board-attempt 0))
+    (e-board-observation-test--admit
+     service board-id "unrelated-session" "unrelated-participant")
+    (dolist
+        (fact
+         (list
+          '(:version 1 :type manifest :idempotency-key "manifest:run-page"
+            :payload (:run-id "run-page"
+                     :tasks ((:task-key "pending-task" :required t
+                              :accepted-attempt 0)
+                             (:task-key "running-task" :required t
+                              :accepted-attempt 0))
+                     :deadline (:kind none)
+                     :descriptor (:label "Morning planning")))
+          '(:version 1 :type task-attempt
+            :idempotency-key "attempt:pending-task:0"
+            :payload (:run-id "run-page" :task-key "pending-task"
+                     :attempt 0 :status queued))
+          '(:version 1 :type task-attempt
+            :idempotency-key "attempt:running-task:0"
+            :payload (:run-id "run-page" :task-key "running-task"
+                     :attempt 0 :status running))))
+      (e-board-observation-test--await
+       (e-board-sqlite-publication-target-orchestration-fact-start
+        target fact)))
+    (e-board-observation-test--append-assignment-input
+     target "run-page" "pending-task" 0 "pending-session" "Calendar")
+    (e-board-observation-test--append-assignment-input
+     target "run-page" "running-task" 0 "running-session" "Slack")
+    (let* ((board (e-board-observation-test--await
+                   (e-board-sqlite-service-board-get-start service board-id)))
+           (database (sqlite-open
+                      (e-runtime-store--database-file runtime) t))
+           (calls 0)
+           (original (symbol-function 'sqlite-select)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'sqlite-select)
+                     (lambda (&rest arguments)
+                       (cl-incf calls)
+                       (apply original arguments))))
+            (let* ((page
+                    (e-board-sqlite-worker-read
+                     database
+                     (list :op 'board-activity-page :board-id board-id
+                           :run-id "run-page" :after "" :limit 8
+                           :byte-limit e-board-sqlite-activity-page-byte-limit)))
+                   (tasks (plist-get page :tasks))
+                   (pending (cl-find "pending-task" tasks
+                                     :key (lambda (task)
+                                            (plist-get task :task-key))
+                                     :test #'equal))
+                   (running (cl-find "running-task" tasks
+                                     :key (lambda (task)
+                                            (plist-get task :task-key))
+                                     :test #'equal)))
+              (should (= (plist-get page :generation) 1))
+              (should (= (plist-get page :revision)
+                         (plist-get board :revision)))
+              (should (equal (plist-get (plist-get page :run) :label)
+                             "Morning planning"))
+              (should (= (length tasks) 2))
+              (should (eq (plist-get pending :state) 'queued))
+              (should (= (plist-get pending :accepted-attempt) 0))
+              (should (equal (plist-get pending :label) "Calendar"))
+              (should-not (plist-member pending :participant-id))
+              (should-not (plist-member pending :participant-row))
+              (should (eq (plist-get running :state) 'running))
+              (should (equal (plist-get running :label) "Slack"))
+              (should (equal (plist-get running :participant-id)
+                             "running-participant"))
+              (should (equal
+                       (plist-get (plist-get running :participant-row)
+                                  :participant-id)
+                       "running-participant"))
+              ;; One bounded set read handles each Board relation, independent
+              ;; of the number of tasks and admitted participants.
+              (should (= calls 11))))
         (sqlite-close database)))))
 
 (ert-deftest e-board-observation-test-authorized-summary-detail-is-detached-and-private-safe ()

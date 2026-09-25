@@ -58,6 +58,9 @@ concealment are scheduled for a later timer tick."
   :type 'integer
   :group 'e-chat)
 
+(defconst e-chat-transcript-run-assignment-preview-limit 256
+  "Maximum characters shown before a run-bound assignment folds its body.")
+
 (defcustom e-chat-running-status-diff-max-chars 20000
   "Region size above which running-activity updates use a bounded diff."
   :type 'integer
@@ -488,7 +491,10 @@ FACE is applied when non-nil.  PROPERTIES are added with text properties."
 
 (defun e-chat-transcript--entry-side (title)
   "Return the prompt/agent side represented by entry TITLE."
-  (if (equal title "You") 'user 'agent))
+  (if (or (equal title "You")
+          (string-prefix-p "Assignment ·" title))
+      'user
+    'agent))
 
 (defun e-chat-transcript--insert-horizontal-separator (text face)
   "Insert protected separator TEXT with FACE at point."
@@ -792,7 +798,9 @@ DETAILS-TEXT describe block actions."
   "Return block kind for rendered entry TITLE."
   (cond
    ((e-chat-transcript--hidden-entry-title-p title) 'hidden)
-   ((equal title "You") 'user)
+   ((or (equal title "You")
+        (string-prefix-p "Assignment ·" title))
+    'user)
    ((equal title "Assistant") 'final)
    ((equal title "System") 'system)
    (t 'system)))
@@ -1062,7 +1070,9 @@ activity state."
   "Return face for chat entry TITLE."
   (cond
    ((e-chat-transcript--hidden-entry-title-p title) 'e-chat-hidden-face)
-   ((equal title "You") 'e-chat-user-face)
+   ((or (equal title "You")
+        (string-prefix-p "Assignment ·" title))
+    'e-chat-user-face)
    ((equal title "Assistant") 'e-chat-final-assistant-face)
    (t 'e-chat-system-face)))
 
@@ -1070,7 +1080,9 @@ activity state."
   "Return glyph for chat entry TITLE."
   (cond
    ((e-chat-transcript--hidden-entry-title-p title) e-chat-transcript--hidden-glyph)
-   ((equal title "You") e-chat-transcript--user-glyph)
+   ((or (equal title "You")
+        (string-prefix-p "Assignment ·" title))
+    e-chat-transcript--user-glyph)
    ((equal title "Assistant") e-chat-transcript--assistant-glyph)
    (t e-chat-transcript--system-glyph)))
 
@@ -2017,6 +2029,41 @@ revealed block when revealing, or on the block that was focused when hiding."
       ('tool (cons "Tool" (format "%S" content)))
       (_ (cons (format "%s" role) (format "%S" content))))))
 
+(defun e-chat-transcript--run-assignment-presentation (message)
+  "Return the label, preview, and expansion for run-bound user MESSAGE."
+  (let* ((metadata (plist-get message :metadata))
+         (run-id (plist-get metadata :board-run-id))
+         (task-key (plist-get metadata :board-task-key))
+         (attempt (plist-get metadata :board-attempt))
+         (content (plist-get message :content))
+         (candidate (plist-get metadata :subagent-label))
+         (label (if (and (stringp candidate)
+                         (not (string-empty-p candidate)))
+                    candidate
+                  task-key)))
+    (when (and (memq (plist-get message :role) '(user "user"))
+               (stringp run-id) (not (string-empty-p run-id))
+               (stringp task-key) (not (string-empty-p task-key))
+               (integerp attempt) (>= attempt 0)
+               (stringp content))
+      (let* ((display-label (truncate-string-to-width label 48 nil nil "..."))
+             (display-run (truncate-string-to-width run-id 12 nil nil "…"))
+             (display-task (truncate-string-to-width task-key 24 nil nil "..."))
+             (folded (> (length content)
+                        e-chat-transcript-run-assignment-preview-limit)))
+        (list :title (format "Assignment · %s [%s/%s#%d]"
+                             display-label display-run display-task attempt)
+              :content (if folded
+                           (concat
+                            (substring content 0
+                                       e-chat-transcript-run-assignment-preview-limit)
+                            "…")
+                         content)
+              :details
+              (when folded
+                (format "Assignment: %s\nRun: %s\nTask: %s\nAttempt: %d\n\n%s"
+                        label run-id task-key attempt content)))))))
+
 (defun e-chat-transcript--hidden-message-entry (message)
   "Return a dimmed audit entry for hidden durable MESSAGE."
   (let ((role (plist-get message :role))
@@ -2053,6 +2100,9 @@ separate dimmed representation instead."
                (not hidden)
                (e-chat-service-message-presentation
                 e-chat-harness e-chat-session-id message)))
+         (assignment
+          (and (not hidden)
+               (e-chat-transcript--run-assignment-presentation message)))
          (entry
           (e-chat-transcript--participant-prefixed-entry
            message
@@ -2060,10 +2110,13 @@ separate dimmed representation instead."
                (e-chat-transcript--hidden-message-entry message)
              (if presentation
                  (cons "Assistant" (plist-get presentation :content))
-               (e-chat-transcript--message-entry message))))))
+               (if assignment
+               (cons (plist-get assignment :title)
+                     (plist-get assignment :content))
+                 (e-chat-transcript--message-entry message)))))))
     (e-chat-transcript--insert-entry
      (car entry) (cdr entry) ensure-composer turn-id
-     details-text
+     (or (plist-get assignment :details) details-text)
      (plist-get message :id)
      (and hidden (not e-chat-transcript--reveal-hidden))
      (and presentation t))
@@ -2531,12 +2584,19 @@ model context and audit but are excluded from the clean transcript."
         (setq turn-index (1+ turn-index)))
       (unless (or (eq (plist-get message :role) 'tool)
                   (e-harness-message-hidden-p message))
-        (let* ((entry (e-chat-transcript--message-entry message))
+        (let* ((assignment
+                (e-chat-transcript--run-assignment-presentation message))
+               (entry
+                (if assignment
+                    (cons (plist-get assignment :title)
+                          (plist-get assignment :content))
+                  (e-chat-transcript--message-entry message)))
                (content (cdr entry)))
           (e-chat-transcript--insert-entry
            (car entry)
            (if (stringp content) content (format "%S" content))
-           nil turn-id nil (plist-get message :id) nil t))))))
+           nil turn-id (plist-get assignment :details)
+           (plist-get message :id) nil t))))))
 
 (defun e-chat-transcript-rerender ()
   "Request a bounded refresh from the current transcript's presentation."

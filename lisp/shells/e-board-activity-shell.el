@@ -68,7 +68,10 @@
   "Request-local observation error displayed by this buffer.")
 
 (defvar-local e-board-activity-shell--focus-run-id nil
-  "Durable run id whose participant row should receive initial focus.")
+  "Durable run id whose task row should receive initial focus.")
+
+(defvar-local e-board-activity-shell--focus-entry-id nil
+  "Last selected durable activity entry id, preserved across page refreshes.")
 
 (defun e-board-activity-shell--target-id ()
   "Return the current durable Board id."
@@ -78,6 +81,26 @@
 (defun e-board-activity-shell--participants ()
   "Return the detached page participants, or nil on an empty/error page."
   (plist-get e-board-activity-shell--page :participants))
+
+(defun e-board-activity-shell--tasks ()
+  "Return the selected run's detached task rows, or nil without a run."
+  (plist-get e-board-activity-shell--page :tasks))
+
+(defun e-board-activity-shell--task-id (task)
+  "Return TASK's stable activity row identity."
+  (list :run-task
+        (plist-get (plist-get e-board-activity-shell--page :run) :run-id)
+        (plist-get task :task-key)
+        (plist-get task :accepted-attempt)))
+
+(defun e-board-activity-shell--task (entry-id)
+  "Return the selected run task matching activity row ENTRY-ID."
+  (and (consp entry-id)
+       (eq (car entry-id) :run-task)
+       (cl-find-if
+        (lambda (task)
+          (equal entry-id (e-board-activity-shell--task-id task)))
+        (e-board-activity-shell--tasks))))
 
 (defun e-board-activity-shell--row (participant-id)
   "Return durable PARTICIPANT-ID's row from the detached page."
@@ -131,6 +154,83 @@
                           (or (plist-get row :reasoning-summary-preview) "-"))
                   (e-board-activity-shell--progress-label entry)))))
 
+(defun e-board-activity-shell--task-entry (task)
+  "Return one tabulated activity entry for durable run TASK."
+  (let* ((participant (plist-get task :participant-row))
+         (participant-id (plist-get task :participant-id))
+         (live (and participant-id
+                    (e-board-activity-shell--live-entry participant-id)))
+         (outcome (plist-get task :outcome))
+         (run (plist-get e-board-activity-shell--page :run))
+         (label (or (plist-get task :label)
+                    (plist-get task :task-key)))
+         (summary (or (plist-get outcome :summary)
+                      (plist-get outcome :error)
+                      "-")))
+    (list (e-board-activity-shell--task-id task)
+          (vector (format "Task: %s" label)
+                  (or (and participant
+                           (or (plist-get participant :name) participant-id))
+                      "unassigned")
+                  (format "%s" (or (plist-get task :state) '-))
+                  (if (plist-get outcome :status)
+                      (format "report/%s" (plist-get outcome :status))
+                    "-")
+                  (or (plist-get run :label)
+                      (plist-get run :run-id) "-")
+                  (or (plist-get task :task-key) "-")
+                  (if (integerp (plist-get task :accepted-attempt))
+                      (number-to-string
+                       (plist-get task :accepted-attempt))
+                    "-")
+                  (cond (live "available")
+                        (participant-id "unavailable")
+                        (t "unassigned"))
+                  (format "%s" summary)
+                  (format "%s"
+                          (or (plist-get participant
+                                         :reasoning-summary-preview)
+                              "-"))
+                  (e-board-activity-shell--progress-label live)))))
+
+(defun e-board-activity-shell--entry-ids (entries)
+  "Return activity row ids from tabulated ENTRIES."
+  (mapcar #'car entries))
+
+(defun e-board-activity-shell--initial-focus-id (entries)
+  "Return the first selected-run task or participant id in ENTRIES."
+  (or (and e-board-activity-shell--focus-run-id
+           (car (e-board-activity-shell--entry-ids
+                 (cl-remove-if-not
+                  (lambda (entry)
+                    (and (consp (car entry))
+                         (eq (caar entry) :run-task)))
+                  entries))))
+      (and e-board-activity-shell--focus-run-id
+           (car (e-board-activity-shell--entry-ids
+                 (cl-remove-if-not
+                  (lambda (entry)
+                    (and (stringp (car entry))
+                         (equal e-board-activity-shell--focus-run-id
+                                (plist-get
+                                 (e-board-activity-shell--row (car entry))
+                                 :run-id))))
+                  entries))))
+      (car (e-board-activity-shell--entry-ids entries))))
+
+(defun e-board-activity-shell--goto-entry-id (entry-id)
+  "Move point to activity row ENTRY-ID, or the first row when absent."
+  (goto-char (point-min))
+  (forward-line 1)
+  (let ((found nil))
+    (while (and (not found) (not (eobp)))
+      (if (equal entry-id (tabulated-list-get-id))
+          (setq found t)
+        (forward-line 1)))
+    (unless found
+      (goto-char (point-min))
+      (forward-line 1))))
+
 (defconst e-board-activity-shell--hint-bindings
   '(("RET" . "open chat")
     ("d" . "durable details")
@@ -148,30 +248,40 @@
 (defun e-board-activity-shell--render ()
   "Render the detached page and request-local error in this buffer."
   (when (derived-mode-p 'e-board-activity-shell-mode)
-    (setq tabulated-list-entries
-          (mapcar #'e-board-activity-shell--entry
-                  (e-board-activity-shell--participants)))
-    (let ((inhibit-read-only t))
+    (let* ((current-id (or (tabulated-list-get-id)
+                           e-board-activity-shell--focus-entry-id))
+           (entries
+            (append
+             (mapcar #'e-board-activity-shell--task-entry
+                     (e-board-activity-shell--tasks))
+             (mapcar #'e-board-activity-shell--entry
+                     (e-board-activity-shell--participants))))
+           (focus-id
+            (if (member current-id (e-board-activity-shell--entry-ids entries))
+                current-id
+              (or (e-board-activity-shell--initial-focus-id entries)
+                  (and (null entries) current-id))))
+           (inhibit-read-only t))
+      (setq tabulated-list-entries entries)
       ;; Rebuild the bounded presentation region so repeated refreshes do not
       ;; retain prior footers or stale rows in the buffer.
       (erase-buffer)
       (tabulated-list-init-header)
       (tabulated-list-print t)
-      (when e-board-activity-shell--focus-run-id
-        (goto-char (point-min))
-        (forward-line 1)
-        (while (and (not (eobp))
-                    (not (equal
-                          e-board-activity-shell--focus-run-id
-                          (plist-get
-                           (e-board-activity-shell--row
-                            (tabulated-list-get-id))
-                           :run-id))))
-          (forward-line 1)))
+      (e-board-activity-shell--goto-entry-id focus-id)
+      (setq e-board-activity-shell--focus-entry-id focus-id)
       (save-excursion
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
         (insert "\n")
+        (when-let* ((run (plist-get e-board-activity-shell--page :run)))
+          (insert (format "Run: %s [%s]  Status: %s\n"
+                          (or (plist-get run :label)
+                              (plist-get run :run-id) "-")
+                          (or (plist-get run :run-id) "-")
+                          (or (plist-get run :terminal-status) "active")))
+          (insert (format "Tasks: %d\n"
+                          (length (e-board-activity-shell--tasks)))))
         (when e-board-activity-shell--error
           (insert (format "Board activity unavailable: %s\n"
                           e-board-activity-shell--error)))
@@ -245,6 +355,7 @@
                (target e-board-activity-shell--target)
                (work (e-board-observation-activity-page-start
                       target :after e-board-activity-shell--after
+                      :run-id e-board-activity-shell--focus-run-id
                       :limit e-board-observation-default-page-limit)))
           (setq e-board-activity-shell--request work)
           (e-work-on-settle
@@ -271,14 +382,31 @@
 
 (defun e-board-activity-shell--participant-id-at-point ()
   "Return the durable participant id at point, or signal."
-  (or (tabulated-list-get-id)
-      (user-error "No Board participant on this line")))
+  (let* ((entry-id (tabulated-list-get-id))
+         (task (e-board-activity-shell--task entry-id))
+         (row (and (stringp entry-id)
+                   (e-board-activity-shell--row entry-id))))
+    (or (and task (plist-get task :participant-id))
+        (and row (plist-get row :participant-id))
+        (user-error "No participant is associated with this Board activity row"))))
+
+(defun e-board-activity-shell--selected-entry ()
+  "Return the durable activity row selected at point, or signal."
+  (let* ((entry-id (tabulated-list-get-id))
+         (task (e-board-activity-shell--task entry-id)))
+    (or task
+        (and (stringp entry-id) (e-board-activity-shell--row entry-id))
+        (user-error "No Board activity entry on this line"))))
 
 (defun e-board-activity-shell--selected-row ()
   "Return the durable row selected at point, or signal."
-  (or (e-board-activity-shell--row
-       (e-board-activity-shell--participant-id-at-point))
-      (user-error "Selected participant is not in the detached Board page")))
+  (let* ((entry-id (tabulated-list-get-id))
+         (task (e-board-activity-shell--task entry-id)))
+    (or (if task
+            (plist-get task :participant-row)
+          (and (stringp entry-id)
+               (e-board-activity-shell--row entry-id)))
+        (user-error "Selected activity row has no detached participant"))))
 
 (defun e-board-activity-shell--require-live (participant-id)
   "Return exact live state for PARTICIPANT-ID or signal unavailable."
@@ -334,11 +462,11 @@
     buffer))
 
 (defun e-board-activity-shell-show-details ()
-  "Show the selected detached durable participant projection."
+  "Show the selected detached durable activity projection."
   (interactive)
   (e-board-activity-shell--show-buffer
    e-board-activity-shell-detail-buffer-name
-   (pp-to-string (e-board-activity-shell--selected-row))))
+   (pp-to-string (e-board-activity-shell--selected-entry))))
 
 (defun e-board-activity-shell-show-progress ()
   "Show the selected participant's latest bounded live progress."
@@ -495,7 +623,7 @@
   "e-Board-Activity"
   "Major mode displaying one bounded mixed Board participant activity page."
   (setq tabulated-list-format
-        [("Participant" 26 t)
+        [("Participant / task" 32 t)
          ("Name" 24 t)
          ("State" 12 t)
          ("Outcome" 18 t)
@@ -521,8 +649,8 @@
   "Open TARGET's bounded Board activity buffer and return immediately.
 TARGET is an explicit SQLite publication address.  LIVE is optional private
 execution state used only to add current controls and bounded progress to
-matching durable rows.  RUN-ID, when supplied, selects a participant row
-belonging to that durable run after the page settles."
+matching durable rows.  RUN-ID, when supplied, selects that run's task
+dispositions and keeps the Board participant inventory available."
   (interactive)
   (unless (e-board-sqlite-publication-target-valid-p target)
     (signal 'wrong-type-argument
@@ -542,6 +670,7 @@ belonging to that durable run after the page settles."
             e-board-activity-shell--next nil
             e-board-activity-shell--cursor ""
             e-board-activity-shell--focus-run-id run-id
+            e-board-activity-shell--focus-entry-id nil
             e-board-activity-shell--page nil
             e-board-activity-shell--request nil
             e-board-activity-shell--error nil)

@@ -204,6 +204,23 @@ Inherit the parent's project root so repository AGENTS.md files and
              :board-task-key (plist-get assignment :task-key)
              :board-attempt (plist-get assignment :attempt))))))
 
+(defun e-subagent--assignment-input-metadata (record)
+  "Return RECORD's bounded durable assignment metadata for its first input."
+  (let ((run-id (plist-get record :run-id))
+        (task-key (plist-get record :task-key))
+        (attempt (plist-get record :attempt))
+        (label (plist-get record :label)))
+    (when (and (stringp run-id) (stringp task-key) (integerp attempt))
+      (append
+       (list :board-run-id run-id
+             :board-task-key task-key
+             :board-attempt attempt)
+       (when (and (stringp label) (not (string-empty-p label)))
+         (list :subagent-label
+               (substring label 0
+                          (min (length label)
+                               e-board-orchestration-run-set-label-limit))))))))
+
 (defun e-subagent--seed-child (child-harness child-session-id seed-messages)
   "Append SEED-MESSAGES to CHILD-SESSION-ID's own store in CHILD-HARNESS.
 Each seed is a backend-neutral message plist; the parent chooses exactly what to
@@ -406,7 +423,8 @@ receives EVENT and the original condition for a bounded owner diagnostic."
          (e-subagent--display-progress-diagnostic event error))))))
 
 (defun e-subagent-direct-runner (child-harness child-session-id prompt
-                                               seed-messages on-settle &optional on-progress)
+                                               seed-messages on-settle
+                                               &optional on-progress input-metadata)
   "Prepare capabilities, seed, and start one non-blocking child turn.
 Capability readiness is awaited through callbacks before the first provider
 request, so a fresh child sees any eagerly prepared resources on that turn.
@@ -440,8 +458,12 @@ active turn.  ON-SETTLE is called as (STATUS &key summary outputs error)."
             (setq turn-started t)
             (condition-case err
                 (let ((admission
-                       (e-chat-service-submit-session
-                        child-harness child-session-id prompt)))
+                       (if input-metadata
+                           (e-chat-service-submit-session
+                            child-harness child-session-id prompt
+                            :metadata input-metadata)
+                         (e-chat-service-submit-session
+                          child-harness child-session-id prompt))))
                   (e-work-on-settle
                    admission
                    (lambda (settled-admission)
@@ -1156,7 +1178,8 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
                             (lambda (status &rest args)
                               (e-subagent--settle-runner
                                record report-state work-handle status args))
-                            record-progress)
+                            record-progress
+                            (e-subagent--assignment-input-metadata record))
                  (funcall runner
                           child-harness session-id prompt seed-messages
                           (lambda (status &rest args)

@@ -206,6 +206,7 @@ state or a live transcript cache."
   (e-board-observation-activity-page-start
    (e-board-observation--context-target context)
    :after (plist-get arguments :after)
+   :run-id (plist-get arguments :run-id)
    :limit (or (plist-get arguments :limit)
               e-board-observation-default-page-limit)))
 
@@ -324,22 +325,75 @@ state or a live transcript cache."
                       (plist-get value :outcome))
                    e-json-null)))
 
+(defun e-board-observation--canonical-run (value)
+  "Project selected-run VALUE into canonical JSON."
+  (list :run-id (e-board-observation--canonical-string
+                 (plist-get value :run-id))
+        :label (e-board-observation--canonical-string
+                (plist-get value :label))
+        :terminal-status
+        (e-board-observation--canonical-string
+         (plist-get value :terminal-status))))
+
+(defun e-board-observation--canonical-run-outcome (value)
+  "Project selected task OUTCOME VALUE into canonical JSON."
+  (list :status (e-board-observation--canonical-string
+                 (plist-get value :status))
+        :summary (e-board-observation--canonical-string
+                  (plist-get value :summary))
+        :error (e-board-observation--canonical-string
+                (plist-get value :error))))
+
+(defun e-board-observation--canonical-task (value)
+  "Project selected run TASK VALUE into canonical JSON."
+  (list :task-key (e-board-observation--canonical-string
+                   (plist-get value :task-key))
+        :required (if (eq (plist-get value :required) t) t e-json-false)
+        :accepted-attempt
+        (e-board-observation--canonical-number
+         (plist-get value :accepted-attempt))
+        :state (e-board-observation--canonical-string (plist-get value :state))
+        :label (e-board-observation--canonical-string (plist-get value :label))
+        :participant-id
+        (e-board-observation--canonical-string
+         (plist-get value :participant-id))
+        :participant
+        (if (plist-member value :participant-row)
+            (e-board-observation--canonical-row
+             (plist-get value :participant-row))
+          e-json-null)
+        :outcome
+        (if (plist-member value :outcome)
+            (e-board-observation--canonical-run-outcome
+             (plist-get value :outcome))
+          e-json-null)))
+
 (defun e-board-observation--canonical-page (value)
   "Project an activity PAGE into canonical JSON."
-  (list :board-id (e-board-observation--canonical-string
-                   (plist-get value :board-id))
-        :generation (e-board-observation--canonical-number
-                     (plist-get value :generation))
-        :revision (e-board-observation--canonical-number
-                   (plist-get value :revision))
-        :after (e-board-observation--canonical-string (plist-get value :after))
-        :participants
-        (vconcat (mapcar #'e-board-observation--canonical-row
-                         (or (plist-get value :participants) nil)))
-        :next (e-board-observation--canonical-string (plist-get value :next))
-        :cursor (e-board-observation--canonical-string
-                 (plist-get value :cursor))
-        :bytes (e-board-observation--canonical-number (plist-get value :bytes))))
+  (append
+   (list :board-id (e-board-observation--canonical-string
+                    (plist-get value :board-id))
+         :generation (e-board-observation--canonical-number
+                      (plist-get value :generation))
+         :revision (e-board-observation--canonical-number
+                    (plist-get value :revision))
+         :after (e-board-observation--canonical-string
+                 (plist-get value :after)))
+   (when (plist-member value :run)
+     (list :run (e-board-observation--canonical-run
+                 (plist-get value :run))))
+   (when (plist-member value :tasks)
+     (list :tasks
+           (vconcat (mapcar #'e-board-observation--canonical-task
+                            (plist-get value :tasks)))))
+   (list :participants
+         (vconcat (mapcar #'e-board-observation--canonical-row
+                          (or (plist-get value :participants) nil)))
+         :next (e-board-observation--canonical-string (plist-get value :next))
+         :cursor (e-board-observation--canonical-string
+                  (plist-get value :cursor))
+         :bytes (e-board-observation--canonical-number
+                 (plist-get value :bytes)))))
 
 (defun e-board-observation--canonical-message (value)
   "Project one durable transcript MESSAGE into canonical JSON."
@@ -433,7 +487,10 @@ state or a live transcript cache."
 (defconst e-board-observation--list-parameters
   '(:type "object"
     :properties
-    (:after (:type "string" :description "Opaque Board activity cursor.")
+    (:run-id
+     (:type "string"
+      :description "Optional durable run whose task dispositions should be included.")
+     :after (:type "string" :description "Opaque Board activity cursor.")
      :limit (:type "integer" :description "Maximum participant rows."))
     :required []
     :additionalProperties :json-false)
@@ -478,7 +535,7 @@ private live execution owner."
   (list :list
         (e-board-observation--action
          #'e-board-observation--list e-board-observation--list-parameters
-         "List the current Board participant/activity page.")
+         "List the current Board participant/activity page, optionally with one selected run's task dispositions.")
         :status
         (e-board-observation--action
          #'e-board-observation--status

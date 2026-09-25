@@ -99,6 +99,116 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-run-bound-assignments-fold-and-expand-live-and-reopened ()
+  "Typed run assignments stay ordered, folded, and fully expandable."
+  (let* ((calendar-body
+          (concat "Calendar assignment begins\n"
+                  (make-string 320 ?C)
+                  "\nCALENDAR-ASSIGNMENT-FULL-END"))
+         (slack-body
+          (concat "Slack assignment begins\n"
+                  (make-string 320 ?S)
+                  "\nSLACK-ASSIGNMENT-FULL-END"))
+         (human-body "Assignment · Calendar is an ordinary human request.")
+         (calendar-message
+          (list :id "calendar-assignment" :role 'user :turn-id "run-turn"
+                :content calendar-body
+                :metadata '(:board-run-id "run-night"
+                            :board-task-key "calendar" :board-attempt 1
+                            :subagent-label "Calendar")))
+         (slack-message
+          (list :id "slack-assignment" :role 'user :turn-id "run-turn"
+                :content slack-body
+                :metadata '(:board-run-id "run-night"
+                            :board-task-key "slack" :board-attempt 2
+                            :subagent-label "Slack")))
+         (human-message
+          (list :id "human-prompt" :role 'user :turn-id "run-turn"
+                :content human-body))
+         (messages (list calendar-message slack-message human-message))
+         (calendar-entry
+          (e-chat-transcript--run-assignment-presentation calendar-message))
+         (slack-entry
+          (e-chat-transcript--run-assignment-presentation slack-message))
+         (buffer (e-chat-test--buffer nil "chat-run-assignment-fold")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (cl-labels
+              ((render-live ()
+                 (dolist (message messages)
+                   (e-chat-transcript--render-durable-message
+                    message "run-turn")))
+               (render-reopened ()
+                 (e-chat-transcript-render-visible-message-window messages))
+               (check-view ()
+                 (let* ((text (buffer-substring-no-properties
+                               (point-min) (point-max)))
+                        (calendar-title (plist-get calendar-entry :title))
+                        (slack-title (plist-get slack-entry :title))
+                        (calendar-position
+                         (string-match (regexp-quote calendar-title) text))
+                        (slack-position
+                         (string-match (regexp-quote slack-title) text))
+                        (human-entry
+                         (e-chat-transcript--message-entry human-message)))
+                   (should calendar-position)
+                   (should slack-position)
+                   (should (< calendar-position slack-position))
+                   (should (string-match-p
+                            (regexp-quote (plist-get calendar-entry :content))
+                            text))
+                   (should (string-match-p
+                            (regexp-quote (plist-get slack-entry :content))
+                            text))
+                   (should-not (string-match-p "CALENDAR-ASSIGNMENT-FULL-END"
+                                               text))
+                   (should-not (string-match-p "SLACK-ASSIGNMENT-FULL-END"
+                                               text))
+                   (should (equal human-entry (cons "You" human-body)))
+                   (should-not
+                    (e-chat-transcript--run-assignment-presentation human-message))
+                   (should (string-match-p (regexp-quote human-body) text))
+                   (should (e-chat-transcript--message-block-id
+                            "calendar-assignment"))
+                   (should (e-chat-transcript--message-block-id
+                            "slack-assignment"))))
+               (check-expanded ()
+                   (dolist (entry (list (cons calendar-entry calendar-message)
+                                        (cons slack-entry slack-message)))
+                     (let* ((presentation (car entry))
+                            (message (cdr entry))
+                            (message-id (plist-get message :id))
+                            (block-id
+                             (e-chat-transcript--message-block-id message-id))
+                            (title (plist-get presentation :title)))
+                       (should block-id)
+                       (e-chat-test--focus-block-containing title)
+                       (let ((block (e-chat-transcript-focused-block)))
+                         (should (eq (plist-get block :kind) 'user))
+                         (should (equal (plist-get block :block-id) block-id)))
+                       (e-chat-response-navigation-activate)
+                       (should (plist-get
+                                (e-chat-transcript-focused-block)
+                                :details-visible-p))
+                       (should
+                        (string-match-p
+                         (if (equal message-id "calendar-assignment")
+                             "CALENDAR-ASSIGNMENT-FULL-END"
+                             "SLACK-ASSIGNMENT-FULL-END")
+                         (buffer-string)))
+                       (e-chat-transcript-leave-navigation)))))
+            (render-live)
+            (check-view)
+            (check-expanded)
+            (e-chat-transcript-reset)
+            (let ((inhibit-read-only t))
+              (erase-buffer))
+            (render-reopened)
+            (check-view)
+            (check-expanded)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 
 
 

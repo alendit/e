@@ -77,6 +77,29 @@
       (e-graphical-test-capture-transition label function)
     (list :value (funcall function))))
 
+(defun e-board-activity-behavior-test--publish-fact (target fact)
+  "Publish orchestration FACT to TARGET and await its commit."
+  (e-work-with-batch-await
+    (e-work-await-batch
+     (e-board-sqlite-publication-target-orchestration-fact-start target fact)
+     :timeout 5.0)))
+
+(defun e-board-activity-behavior-test--append-assignment-input
+    (target run-id task-key attempt session-id label)
+  "Append the canonical Board assignment input for TASK-KEY."
+  (e-work-with-batch-await
+    (e-work-await-batch
+     (e-board-sqlite-publication-target-append-route-start
+      target (format "Graphical assignment body for %s" task-key)
+      (list "graphical-run-assignment" run-id task-key attempt)
+      :author (format "session:%s" session-id)
+      :tags '(main)
+      :attributes (list :board-run-id run-id
+                        :board-task-key task-key
+                        :board-attempt attempt
+                        :subagent-label label))
+     :timeout 5.0)))
+
 (defun e-board-activity-behavior-test--runner (capture)
   "Return a real runner seam that keeps CAPTURE's child live until settled."
   (lambda (child-harness child-session-id prompt seed-messages on-settle)
@@ -92,27 +115,31 @@
     (e-subagent--seed-child child-harness child-session-id seed-messages)
     (list :cancel (lambda () nil))))
 
-(defun e-board-activity-behavior-test--select-row (buffer participant-id)
-  "Select PARTICIPANT-ID's rendered row in BUFFER."
+(defun e-board-activity-behavior-test--select-entry (buffer entry-id)
+  "Select ENTRY-ID's rendered row in BUFFER."
   (with-current-buffer buffer
     (goto-char (point-min))
     (let ((found nil))
       (while (and (not found) (not (eobp)))
-        (when (equal (tabulated-list-get-id) participant-id)
+        (when (equal (tabulated-list-get-id) entry-id)
           (setq found t))
         (unless found
           (forward-line 1)))
       (unless found
-        (ert-fail (format "No rendered participant row for %s" participant-id))))))
+        (ert-fail (format "No rendered Board activity entry for %S" entry-id))))))
+
+(defun e-board-activity-behavior-test--select-row (buffer participant-id)
+  "Select PARTICIPANT-ID's rendered row in BUFFER."
+  (e-board-activity-behavior-test--select-entry buffer participant-id))
 
 (defun e-board-activity-behavior-test--rows (buffer)
   "Return BUFFER's detached tabulated rows."
   (with-current-buffer buffer
     (copy-tree tabulated-list-entries t)))
 
-(defun e-board-activity-behavior-test--row (buffer participant-id)
-  "Return BUFFER's rendered cells for PARTICIPANT-ID."
-  (cadr (assoc participant-id (e-board-activity-behavior-test--rows buffer))))
+(defun e-board-activity-behavior-test--row (buffer entry-id)
+  "Return BUFFER's rendered cells for ENTRY-ID."
+  (cadr (assoc entry-id (e-board-activity-behavior-test--rows buffer))))
 
 (defun e-board-activity-behavior-test--ids (buffer)
   "Return BUFFER's rendered participant ids."
@@ -181,9 +208,9 @@
                    :source-turn-id "graphical-parent-turn"
                    :type :graphical-reviewer
                    :prompt "Hold a run-bound graphical child turn."
-                   :label "run-bound graphical child"
+                   :label "Slack"
                    :run-id "graphical-run"
-                   :task-key "review"
+                   :task-key "slack"
                    :attempt 0
                    :report-admission
                    (lambda (_assignment proposed)
@@ -197,6 +224,8 @@
                             run-capture)))
                  (ad-hoc-id (plist-get ad-hoc :participant-id))
                  (run-id (plist-get run-bound :participant-id))
+                 (pending-task-id '(:run-task "graphical-run" "calendar" 0))
+                 (running-task-id '(:run-task "graphical-run" "slack" 0))
                  (open-transition nil)
                  (started-at (float-time)))
             (setq child-ids (list ad-hoc-id run-id))
@@ -217,15 +246,36 @@
                 '(:version 1 :type manifest
                   :idempotency-key "manifest:graphical-run"
                   :payload (:run-id "graphical-run"
-                            :tasks ((:task-key "review" :required t
+                            :tasks ((:task-key "calendar" :required t
+                                      :accepted-attempt 0)
+                                    (:task-key "slack" :required t
                                       :accepted-attempt 0))
-                            :deadline (:kind none))))
+                            :deadline (:kind none)
+                            :descriptor (:label "Daily update"))))
                :timeout 5.0))
+            (e-board-activity-behavior-test--publish-fact
+             target
+             '(:version 1 :type task-attempt
+               :idempotency-key "attempt:graphical-run:calendar:0:queued"
+               :payload (:run-id "graphical-run" :task-key "calendar"
+                        :attempt 0 :status queued)))
+            (e-board-activity-behavior-test--publish-fact
+             target
+             '(:version 1 :type task-attempt
+               :idempotency-key "attempt:graphical-run:slack:0:running"
+               :payload (:run-id "graphical-run" :task-key "slack"
+                        :attempt 0 :status running)))
             (e-graphical-test-wait-until
              (lambda ()
                (with-current-buffer (plist-get fixture :transcript)
                  (let ((status e-chat-surface--board-status))
                    (and (eq (plist-get status :status) 'dispatching)
+                        (string-match-p "Chat turn: idle"
+                                        header-line-format)
+                        (string-match-p "Board runs: dispatching"
+                                        header-line-format)
+                        (string-match-p "Daily update"
+                                        header-line-format)
                         (= (plist-get status :active-run-count) 1)
                         (equal (plist-get status :selected-run-id)
                                "graphical-run")
@@ -246,6 +296,11 @@
                (lambda ()
                  (e-subagent-live-get live board-id participant-id))
                5.0 (format "live admission %s" participant-id)))
+            (e-board-activity-behavior-test--append-assignment-input
+             target "graphical-run" "calendar" 0
+             "pending-calendar-session" "Calendar")
+            (e-board-activity-behavior-test--append-assignment-input
+             target "graphical-run" "slack" 0 run-id "Slack")
             (should child-harness)
             (e-board-activity-behavior-test--arm-stall
              stall-directory 'board-activity-page)
@@ -255,7 +310,8 @@
                    (lambda ()
                      (let ((buffer
                             (e-board-activity-list-buffer
-                             :target target :live live)))
+                             :target target :live live
+                             :run-id "graphical-run")))
                        ;; The public shell function returns the detached
                        ;; buffer; displaying it is the graphical composition
                        ;; step, while the parent chat remains a real surface.
@@ -277,10 +333,16 @@
                    (run-at-time 0.03 nil (lambda () (cl-incf heartbeat-count)))))
             (select-window
              (cdr (e-chat-behavior-test--fixture-windows fixture)))
+            (with-current-buffer
+                (window-buffer
+                 (cdr (e-chat-behavior-test--fixture-windows fixture)))
+              (should (derived-mode-p 'e-chat-composer-mode))
+              (should (e-chat-composer-active-p)))
             (e-graphical-test-type-text "draft while Board activity is held")
             (with-current-buffer
                 (window-buffer
                  (cdr (e-chat-behavior-test--fixture-windows fixture)))
+              (should (e-chat-composer-active-p))
               (should (string-suffix-p
                        "draft while Board activity is held"
                        (buffer-substring-no-properties (point-min) (point-max)))))
@@ -297,20 +359,91 @@
             (e-graphical-test-wait-until
              (lambda ()
                (let ((ids (e-board-activity-behavior-test--ids board-buffer)))
-                 (and (= (length ids) 3)
-                      (= (length (delete-dups (copy-sequence ids))) 3)
+                 (and (= (length ids) 5)
+                      (= (length (delete-dups (copy-sequence ids))) 5)
+                      (member pending-task-id ids)
+                      (member running-task-id ids)
                       (member ad-hoc-id ids)
                       (member run-id ids))))
-             5.0 "mixed durable Board participant page")
+             5.0 "mixed durable Board task and participant page")
             (let ((ids (e-board-activity-behavior-test--ids board-buffer)))
-              ;; Owner, ad-hoc, and run-bound participants each have exactly
-              ;; one durable row in the one public activity surface.
-              (should (= (length ids) 3))
+              ;; Two selected-run task rows coexist with exactly the durable
+              ;; owner, ad-hoc, and run-bound participant rows.
+              (should (= (length ids) 5))
               (dolist (participant-id ids)
-                ;; Count detached row identities rather than raw buffer text:
-                ;; the owner participant may also be the Board id in the
-                ;; footer, which is not a duplicate activity row.
                 (should (= 1 (cl-count participant-id ids :test #'equal)))))
+            (with-current-buffer board-buffer
+              (should (integerp
+                       (plist-get e-board-activity-shell--page :revision)))
+              (should (= (plist-get e-board-activity-shell--page :generation)
+                         1))
+              (should (member e-board-activity-shell--focus-entry-id
+                              (list pending-task-id running-task-id)))
+              (should (member (tabulated-list-get-id)
+                              (list pending-task-id running-task-id)))
+              (should (string-match-p
+                       "Run: Daily update \\[graphical-run\\]"
+                       (buffer-string))))
+            (let* ((tasks (with-current-buffer board-buffer
+                            (plist-get e-board-activity-shell--page :tasks)))
+                   (pending (cl-find "calendar" tasks
+                                     :key (lambda (task)
+                                            (plist-get task :task-key))
+                                     :test #'equal))
+                   (running (cl-find "slack" tasks
+                                     :key (lambda (task)
+                                            (plist-get task :task-key))
+                                     :test #'equal)))
+              (should pending)
+              (should running)
+              (should (eq (plist-get pending :state) 'queued))
+              (should-not (plist-get pending :participant-id))
+              (should-not (plist-get pending :participant-row))
+              (should (equal (plist-get pending :label) "Calendar"))
+              (should (eq (plist-get running :state) 'running))
+              (should (equal (plist-get running :label) "Slack"))
+              (should (equal (plist-get running :participant-id) run-id))
+              (should (equal (plist-get
+                              (plist-get running :participant-row)
+                              :participant-id)
+                             run-id)))
+            (should-not (member "pending-calendar-session"
+                                (e-board-activity-behavior-test--ids board-buffer)))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer pending-task-id)
+                            0)
+                           "Task: Calendar"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer pending-task-id)
+                            1)
+                           "unassigned"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer pending-task-id)
+                            7)
+                           "unassigned"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer running-task-id)
+                            1)
+                           "Slack"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer running-task-id)
+                            2)
+                           "running"))
+            (should (equal (aref
+                            (e-board-activity-behavior-test--row
+                             board-buffer running-task-id)
+                            7)
+                           "available"))
+            (e-board-activity-behavior-test--select-entry
+             board-buffer pending-task-id)
+            (with-current-buffer board-buffer
+              (should-error (e-board-activity-shell-show-progress)
+                            :type 'user-error))
             (should (equal (aref
                             (e-board-activity-behavior-test--row
                              board-buffer ad-hoc-id)
@@ -325,7 +458,7 @@
                             (e-board-activity-behavior-test--row
                              board-buffer run-id)
                             5)
-                           "review"))
+                           "slack"))
             (should (equal (aref
                             (e-board-activity-behavior-test--row
                              board-buffer run-id)
@@ -333,6 +466,24 @@
                            "0"))
             (e-board-activity-behavior-test--capture
              "board-activity-mixed-rendered")
+            ;; A local live-progress update retains the selected task identity;
+            ;; the task exposes controls only through its exact participant.
+            (e-board-activity-behavior-test--select-entry
+             board-buffer running-task-id)
+            (e-subagent-live-record-progress
+             live board-id run-id
+             (list :participant-id run-id :sequence 1
+                   :summary "Slack assignment running"))
+            (with-current-buffer board-buffer
+              (e-board-activity-shell--render)
+              (should (equal (tabulated-list-get-id) running-task-id)))
+            (with-current-buffer board-buffer
+              (e-board-activity-shell-show-progress))
+            (with-current-buffer e-board-activity-shell-detail-buffer-name
+              (goto-char (point-min))
+              (should (search-forward run-id nil t))
+              (should (search-forward "Slack assignment running" nil t)))
+            (e-workspace-pop-to-buffer board-buffer)
             ;; Exercise a live command from the selected durable row.  The
             ;; command consumes only the exact Board/participant live handle.
             (e-subagent-live-record-progress
@@ -402,13 +553,13 @@
               (setq live nil)
               (setq fresh-live (e-subagent-live-create))
               (e-board-activity-list-buffer
-               :target target :live fresh-live)
+               :target target :live fresh-live :run-id "graphical-run")
               (e-workspace-pop-to-buffer board-buffer)
               (e-graphical-test-wait-until
                (lambda ()
                  (= (length (e-board-activity-behavior-test--ids
                              board-buffer))
-                    3))
+                    5))
                5.0 "reopened durable Board activity page")
               (should (equal durable-before-restart
                              (e-board-activity-behavior-test--rows

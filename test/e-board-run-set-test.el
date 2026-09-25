@@ -223,6 +223,18 @@
                 state (symbol-name (car case)))))
           (should (eq (plist-get status :status) (car case))))))))
 
+(ert-deftest e-board-run-set-test-queued-assignment-remains-dispatching ()
+  "A queued task keeps an unadmitted run dispatching beside running work."
+  (let* ((value
+          (e-board-orchestration-run-set-projection
+           '((:run-id "daily-update"
+              :tasks ((:task-key "calendar" :required t :state queued)
+                      (:task-key "slack" :required t :state running))))
+           :board-id "board-1"))
+         (run (car (plist-get value :runs))))
+    (should (eq (plist-get value :status) 'dispatching))
+    (should (eq (plist-get run :lifecycle) 'dispatching))))
+
 (provide 'e-board-run-set-test)
 
 ;;; e-board-run-set-test.el ends here

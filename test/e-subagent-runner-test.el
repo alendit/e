@@ -763,7 +763,7 @@ terminal Board publications are held and after their acknowledgement."
              work participant-id child-work)
         (cl-letf (((symbol-function 'e-subagent-direct-runner)
                    (lambda (_child-harness _child-session-id _prompt _seed
-                            on-settle _on-progress)
+                            on-settle _on-progress &optional _input-metadata)
                      (setq settle-provider on-settle)
                      (list :cancel #'ignore)))
                   ((symbol-function 'e-subagent--publish-lifecycle)
@@ -881,7 +881,7 @@ terminal Board publications are held and after their acknowledgement."
              work child-work participant-id)
         (cl-letf (((symbol-function 'e-subagent-direct-runner)
                    (lambda (_child-harness _child-session-id _prompt _seed
-                            on-settle _on-progress)
+                            on-settle _on-progress &optional _input-metadata)
                      (setq settle-provider on-settle)
                      (list :cancel
                            (lambda ()
@@ -2148,6 +2148,36 @@ child Work normally."
       (should (equal (nreverse progress-events)
                      '(tool-started tool-finished turn-finished))))))
 
+(ert-deftest e-subagent-runner-test-direct-runner-submits-assignment-metadata ()
+  "Run-bound identity reaches the child's canonical input as typed metadata."
+  (let* ((input-metadata
+          (e-subagent--assignment-input-metadata
+           '(:run-id "run-1" :task-key "calendar" :attempt 2
+             :label "Calendar")))
+         (submitted-options nil))
+    (cl-letf (((symbol-function 'e-subagent--seed-child) #'ignore)
+              ((symbol-function 'e-chat-service-subscribe)
+               (lambda (&rest _arguments) 'subscription))
+              ((symbol-function 'e-chat-service-unsubscribe) #'ignore)
+              ((symbol-function 'e-chat-service-submit-session)
+               (lambda (_harness _session-id _prompt &rest options)
+                 (setq submitted-options options)
+                 (let ((admission
+                        (e-subagent-runner-test--deferred-work
+                         "assignment-admission")))
+                   (e-work-finish admission '(:status posted))
+                   admission)))
+              ((symbol-function 'e-chat-service-abort-session) #'ignore))
+      (e-subagent-direct-runner
+       nil "child" "Calendar assignment body" nil
+       (lambda (&rest _arguments) nil) nil input-metadata))
+    (should
+     (equal input-metadata
+            '(:board-run-id "run-1" :board-task-key "calendar"
+              :board-attempt 2 :subagent-label "Calendar")))
+    (should (equal (plist-get submitted-options :metadata)
+                   input-metadata))))
+
 (ert-deftest e-subagent-runner-test-progress-projection-errors-do-not-block-settlement ()
   "Throwing progress projections leave both nonterminal and terminal events safe."
   (let (subscriber settlements warnings)
@@ -2443,19 +2473,26 @@ child Work normally."
              (target (e-subagent-runner-test--publication-target
                       parent "parent-1"))
              (assignment '(:run-id "run-1" :task-key "review" :attempt 0))
-             work result state)
+             work result state direct-metadata)
         (cl-letf (((symbol-function 'e-subagent-direct-runner)
-                   (lambda (&rest _arguments) (list :cancel #'ignore))))
+                   (lambda (&rest arguments)
+                     (setq direct-metadata (nth 6 arguments))
+                     (list :cancel #'ignore))))
           (setq work
                  (e-subagent-runner-dispatch-start
                    target parent "parent-1"
                  :source-turn-id "parent-turn" :type :reviewer
                  :prompt "Review the Board task."
+                 :label "Calendar"
                  :run-id "run-1" :task-key "review" :attempt 0))
           (should (e-work-handle-p work))
           (setq result (e-board-producer-test-await work))
           (should (eq (plist-get result :status) 'admitted))
           (should (equal (plist-get result :board-id) board-id))
+          (should
+           (equal direct-metadata
+                  '(:board-run-id "run-1" :board-task-key "review"
+                    :board-attempt 0 :subagent-label "Calendar")))
           (setq state
                 (e-subagent-runner-assignment-state
                  board-id "run-1" "review" 0))
@@ -2496,7 +2533,7 @@ child Work normally."
              result child-work)
         (cl-letf (((symbol-function 'e-subagent-direct-runner)
                    (lambda (_child-harness _child-session-id _prompt _seed
-                            on-settle _on-progress)
+                            on-settle _on-progress &optional _input-metadata)
                      (setq settle on-settle)
                      (list :cancel
                            (lambda ()

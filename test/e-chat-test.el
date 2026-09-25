@@ -1428,7 +1428,7 @@ test covers only the chat presentation subscription's redundant callbacks."
             (e-chat-surface-set-status "waiting for provider")
             (e-chat-surface-set-status "done"))
           (should (= context-calls 0))
-          (should (string-match-p "E Chat: done" header-line-format)))
+          (should (string-match-p "Chat turn: done" header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1454,7 +1454,7 @@ test covers only the chat presentation subscription's redundant callbacks."
                        (apply original-session-title args))))
             (e-chat-surface-set-status "waiting for provider"))
           (should (= session-title-calls 0))
-          (should (string-match-p "E Chat: waiting for provider"
+          (should (string-match-p "Chat turn: waiting for provider"
                                   header-line-format)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
