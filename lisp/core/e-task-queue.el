@@ -482,9 +482,11 @@ resuming the original task."
   "Auto-retry a just-failed RECORD in QUEUE when retries remain.
 Rewrites the failed RECORD in place into a fresh `queued' attempt: its prompt
 becomes an analyze-the-failure-and-continue prompt that references the failed
-session, the retry counter increments, and lifecycle stamps reset.  Returns
-non-nil when a retry was armed.  The original prompt is preserved in
-`:origin-prompt' so successive retries always reference the true task."
+session, the retry counter increments, and lifecycle stamps reset.  Assignment
+metadata remains opaque provenance; queue retry identity lives in its own
+counter and attempt history.  Returns non-nil when a retry was armed.  The
+original prompt is preserved in `:origin-prompt' so retries always reference
+the true task."
   (when (and (< (or (plist-get record :retries) 0)
                 (e-task-queue--max-retries queue))
              ;; A retry needs a failed session to reference and analyze.
@@ -497,14 +499,6 @@ non-nil when a retry was armed.  The original prompt is preserved in
       (plist-put record :started-at nil)
       (plist-put record :finished-at nil)
       (plist-put record :handle nil)
-      ;; A bridged retry is a fresh durable attempt.  The group can still
-      ;; select a different accepted attempt without changing queue policy.
-      (when-let* ((run-id (plist-get (plist-get record :metadata) :board-run-id)))
-        (ignore run-id)
-        (let ((metadata (copy-tree (plist-get record :metadata))))
-          (plist-put metadata :board-attempt
-                     (1+ (or (plist-get metadata :board-attempt) 0)))
-          (plist-put record :metadata metadata)))
       ;; Keep the failing error visible until the retry starts; the display
       ;; still shows the last failure reason while the task waits to re-run.
       t)))
@@ -739,31 +733,49 @@ any task the settle frees."
 
 ;; --- public mutations -------------------------------------------------------
 
-(cl-defun e-task-queue-enqueue (queue &key prompt summary metadata harness-instance-id)
+(cl-defun e-task-queue-enqueue
+    (queue &key prompt summary metadata harness-instance-id task-id on-settle)
   "Enqueue PROMPT on QUEUE and return its normalized record.
 SUMMARY is an optional short, human-worded stub describing the task, the way a
 new topic is auto-titled; when nil, a truncated prefix of PROMPT is used for
 display.  METADATA is an opaque plist the enqueuer owns.  HARNESS-INSTANCE-ID
 selects the configured harness instance the task runs on; nil uses the queue
 default, resolved at dispatch time.  Dispatch runs before returning, so a task
-may already be running when this returns."
+may already be running when this returns.  TASK-ID is an optional caller-owned
+idempotency key and is valid only for a storage-backed queue.  ON-SETTLE, also
+storage-only, is called once with the canonical storage RESULT and ERROR after
+the write settles and before a newly created task is dispatched.  Errors from
+ON-SETTLE surface after queue cleanup and dispatch have had a chance to run."
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
     (signal 'wrong-type-argument (list 'stringp :prompt)))
+  (when (and task-id
+             (not (and (stringp task-id) (not (string-empty-p task-id)))))
+    (signal 'wrong-type-argument (list 'stringp :task-id)))
+  (when (and (or task-id on-settle)
+             (not (e-task-queue-storage-backed-p queue)))
+    (signal 'e-task-queue-error
+            (list "Stable task ids and settlement observers require durable storage")))
+  (when (and on-settle (not (functionp on-settle)))
+    (signal 'wrong-type-argument (list 'functionp :on-settle)))
   (unless (e-task-queue--value-within-budget-p
-           (list prompt summary metadata)
+           (list task-id prompt summary metadata)
            e-task-queue-record-node-limit e-task-queue-record-byte-limit)
     (signal 'e-task-queue-error (list "Task record exceeds retention budget")))
-  (when (>= (hash-table-count (e-task-queue-records queue))
-            e-task-queue-max-records)
+  (when (and (>= (hash-table-count (e-task-queue-records queue))
+                e-task-queue-max-records)
+             (not (and task-id
+                       (gethash task-id (e-task-queue-records queue)))))
     (signal 'e-task-queue-error (list "Task queue record limit reached")))
   (when (and (null (e-task-queue-runner queue))
              (not (e-board-sqlite-publication-target-valid-p
                    (e-task-queue-publication-target queue))))
     (signal 'e-task-queue-error
             (list "Default runner requires a SQLite publication target")))
-  (let* ((task-id (if (e-task-queue-storage-backed-p queue)
-                      (make-temp-name "tsk_")
-                    (e-task-queue--next-id queue)))
+  (let* ((stable-task-id task-id)
+         (task-id (or task-id
+                      (if (e-task-queue-storage-backed-p queue)
+                          (make-temp-name "tsk_")
+                        (e-task-queue--next-id queue))))
          (record (list :task-id task-id
                        :status 'queued
                        :prompt prompt
@@ -785,7 +797,9 @@ may already be running when this returns."
                        :attempt-number 0
                        :revision 0
                        :handle nil
-                       :work-handle nil)))
+                       :work-handle nil))
+         (tracked-p (not (gethash task-id (e-task-queue-records queue))))
+         (settled-p nil))
     (if (e-task-queue-storage-backed-p queue)
         ;; A durable queued task is SQLite state, not executing Emacs work.
         ;; Keep this optimistic record only until enqueue settlement; the
@@ -793,41 +807,57 @@ may already be running when this returns."
         (plist-put record :persistence-pending t)
       (plist-put record :work-handle
                  (e-task-queue--work-handle-for-status record)))
-    (puthash task-id record (e-task-queue-records queue))
-    (setf (e-task-queue-order queue)
-          (append (e-task-queue-order queue) (list task-id)))
-    (e-task-queue--notify queue)
+    (when tracked-p
+      (puthash task-id record (e-task-queue-records queue))
+      (setf (e-task-queue-order queue)
+            (append (e-task-queue-order queue) (list task-id)))
+      (e-task-queue--notify queue))
     (let ((public (e-task-queue--normalize queue record)))
       (if (not (e-task-queue-storage-backed-p queue))
           (e-task-queue--dispatch queue)
-        (condition-case err
-            (e-task-storage-submit
-             (e-task-queue-storage queue) 'write 'enqueue
-             (list (e-task-queue-id queue)
-                   (e-task-queue--durable-record record))
-             (lambda (result error)
-               (plist-put record :persistence-pending nil)
-               (if error
-                   (unless (e-task-queue-persistence-suspect queue)
-                     (setf (e-task-queue-persistence-suspect queue)
-                           (copy-tree error t)))
-                 (setf (e-task-queue-revision queue)
-                       (or (plist-get result :revision)
-                           (e-task-queue-revision queue))))
-               ;; Queued durability belongs only to SQLite.  The scheduler
-               ;; reintroduces this task into Emacs iff an atomic claim makes
-               ;; it executing work.
-               (remhash task-id (e-task-queue-records queue))
-               (setf (e-task-queue-order queue)
-                     (delete task-id (e-task-queue-order queue)))
-               (unless error (e-task-queue--dispatch queue))
-               (e-task-queue--notify queue)))
-          (error
-           (plist-put record :persistence-pending nil)
-           (setf (e-task-queue-persistence-suspect queue) (copy-tree err t))
-           (remhash task-id (e-task-queue-records queue))
-           (setf (e-task-queue-order queue)
-                 (delete task-id (e-task-queue-order queue))))))
+        (cl-labels
+            ((settle
+              (result error)
+              (unless settled-p
+                (setq settled-p t)
+                (plist-put record :persistence-pending nil)
+                (if error
+                    (unless (and stable-task-id
+                                 (memq (car-safe error)
+                                       '(e-runtime-store-task-conflict
+                                         e-task-storage-conflict)))
+                      (unless (e-task-queue-persistence-suspect queue)
+                        (setf (e-task-queue-persistence-suspect queue)
+                              (copy-tree error t))))
+                  (setf (e-task-queue-revision queue)
+                        (or (plist-get result :revision)
+                            (e-task-queue-revision queue))))
+                ;; Remove only this request's optimistic copy; another live
+                ;; task with the same stable id may already own the key.
+                (when (eq (gethash task-id (e-task-queue-records queue))
+                          record)
+                  (remhash task-id (e-task-queue-records queue))
+                  (setf (e-task-queue-order queue)
+                        (delete task-id (e-task-queue-order queue))))
+                (unwind-protect
+                    (when on-settle
+                      (funcall on-settle
+                               (copy-tree result t) (copy-tree error t)))
+                  ;; Only the write that created the assignment owns its first
+                  ;; dispatch; exact retries observe the stored result above.
+                  (when (and (not error) (plist-get result :created-p))
+                    (e-task-queue--dispatch queue))
+                  (e-task-queue--notify queue)))))
+          (condition-case err
+              (e-task-storage-submit
+               (e-task-queue-storage queue) 'write 'enqueue
+               (list (e-task-queue-id queue)
+                     (e-task-queue--durable-record record))
+               #'settle)
+            (error
+             (if settled-p
+                 (signal (car err) (cdr err))
+               (settle nil err))))))
       (if (e-task-queue-storage-backed-p queue)
           public
         (e-task-queue--normalize

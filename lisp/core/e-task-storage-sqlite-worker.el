@@ -46,6 +46,16 @@
             :harness-selector :session-id :retries :retry-count
             :latest-attempt-id :attempt-id :attempt-number :outputs :error)))
 
+(defun e-task-storage-sqlite-worker--assignment-content (content)
+  "Return CONTENT with mutable retry prompt restored to its original value."
+  (let ((content (copy-tree content t)))
+    (when (plist-member content :prompt)
+      (setq content
+            (plist-put content :prompt
+                       (or (plist-get content :origin-prompt)
+                           (plist-get content :prompt)))))
+    content))
+
 (defun e-task-storage-sqlite-worker--attempt-dto (row)
   "Reconstruct one attempt DTO from normalized ROW."
   (list :task-id (e-task-storage-sqlite-worker--column row 1)
@@ -67,6 +77,10 @@
   "Reconstruct one public task DTO from task ROW and latest ATTEMPT-ROW."
   (let* ((content (e-task-storage-sqlite-worker--unpack
                    (e-task-storage-sqlite-worker--column row 9)))
+         (requested-harness-instance-id
+          (and (e-task-storage-sqlite-worker--column row 6)
+               (e-task-storage-sqlite-worker--unpack
+                (e-task-storage-sqlite-worker--column row 6))))
          (attempt (and attempt-row
                        (e-task-storage-sqlite-worker--attempt-dto attempt-row))))
     (append
@@ -74,12 +88,11 @@
            :status (intern (e-task-storage-sqlite-worker--column row 3))
            :revision (e-task-storage-sqlite-worker--column row 4)
            :enqueued-at (e-task-storage-sqlite-worker--column row 5)
+           :requested-harness-instance-id requested-harness-instance-id
            :harness-instance-id
            (if attempt
                (plist-get attempt :harness-instance-id)
-             (and (e-task-storage-sqlite-worker--column row 6)
-                  (e-task-storage-sqlite-worker--unpack
-                   (e-task-storage-sqlite-worker--column row 6))))
+             requested-harness-instance-id)
            :retries (e-task-storage-sqlite-worker--column row 7)
            :attempt-id (e-task-storage-sqlite-worker--column row 8)
            :attempt-number (and attempt (plist-get attempt :attempt-number))
@@ -142,7 +155,7 @@
             :paused-p (= (e-task-storage-sqlite-worker--column row 2) 1)))))
 
 (defun e-task-storage-sqlite-worker--enqueue (body)
-  "Append one queued task from BODY."
+  "Append one queued task from BODY or return its exact existing assignment."
   (let* ((queue-id (plist-get body :queue-id))
          (_root (e-task-storage-sqlite-worker--open body))
          (row (e-task-storage-sqlite-worker--queue queue-id))
@@ -151,32 +164,73 @@
          ;; SQLite owns durable ordering.  A caller may optimistically name a
          ;; task, but it never reserves or reconstructs the queue sequence.
          (position (1+ (e-task-storage-sqlite-worker--column row 1)))
-         (revision (1+ (e-task-storage-sqlite-worker--column row 0))))
-    (sqlite-execute
-     e-task-storage-sqlite-worker--database
-     "INSERT INTO task_records(queue_id,task_id,position,status,revision,enqueued_at,harness_selector,retry_count,latest_attempt_id,payload) VALUES(?,?,?,?,1,?,?,?,?,?)"
-     (vector queue-id task-id position "queued"
-             (plist-get record :enqueued-at)
-             (e-task-storage-sqlite-worker--pack
-              (plist-get record :harness-instance-id))
-             (or (plist-get record :retries) 0) nil
-             (e-task-storage-sqlite-worker--pack
-              (e-task-storage-sqlite-worker--task-content record))))
-    (e-task-storage-sqlite-worker--set-root
-     queue-id revision (max position
-                            (e-task-storage-sqlite-worker--column row 1))
-     (= (e-task-storage-sqlite-worker--column row 2) 1))
-    (list :queue-id queue-id :task-id task-id :revision revision
-          :sequence position :task-revision 1
-          :record (e-task-storage-sqlite-worker--task-dto
-                   (vector queue-id task-id position "queued" 1
-                           (plist-get record :enqueued-at)
-                           (e-task-storage-sqlite-worker--pack
-                            (plist-get record :harness-instance-id))
-                           (or (plist-get record :retries) 0) nil
-                           (e-task-storage-sqlite-worker--pack
-                            (e-task-storage-sqlite-worker--task-content record)))
-                   nil))))
+         (revision (1+ (e-task-storage-sqlite-worker--column row 0)))
+         (inserted
+          (sqlite-execute
+           e-task-storage-sqlite-worker--database
+           (concat
+            "INSERT INTO task_records(queue_id,task_id,position,status,revision,"
+            "enqueued_at,harness_selector,retry_count,latest_attempt_id,payload) "
+            "VALUES(?,?,?,?,1,?,?,?,?,?) "
+            "ON CONFLICT(queue_id,task_id) DO NOTHING")
+           (vector queue-id task-id position "queued"
+                   (plist-get record :enqueued-at)
+                   (e-task-storage-sqlite-worker--pack
+                    (plist-get record :harness-instance-id))
+                   (or (plist-get record :retries) 0) nil
+                   (e-task-storage-sqlite-worker--pack
+                    (e-task-storage-sqlite-worker--task-content record))))))
+    (if (= inserted 0)
+        (let* ((existing-row
+                (e-task-storage-sqlite-worker--task-row queue-id task-id))
+               (existing-content
+                (e-task-storage-sqlite-worker--unpack
+                 (e-task-storage-sqlite-worker--column existing-row 9)))
+               (existing-selector
+                (and (e-task-storage-sqlite-worker--column existing-row 6)
+                     (e-task-storage-sqlite-worker--unpack
+                      (e-task-storage-sqlite-worker--column existing-row 6))))
+               (requested-content
+                (e-task-storage-sqlite-worker--assignment-content
+                 (e-task-storage-sqlite-worker--task-content record)))
+               (task-revision
+                (e-task-storage-sqlite-worker--column existing-row 4)))
+          (unless (and
+                   (equal requested-content
+                          (e-task-storage-sqlite-worker--assignment-content
+                           existing-content))
+                   (equal (plist-get record :harness-instance-id)
+                          existing-selector))
+            (signal 'e-runtime-store-task-conflict
+                    (list "Task id conflicts with an existing assignment"
+                          queue-id task-id)))
+          (list :queue-id queue-id :task-id task-id
+                :revision (e-task-storage-sqlite-worker--column row 0)
+                :sequence
+                (e-task-storage-sqlite-worker--column existing-row 2)
+                :task-revision task-revision :created-p nil
+                :record
+                (e-task-storage-sqlite-worker--task-dto
+                 existing-row
+                 (e-task-storage-sqlite-worker--attempt-row
+                  queue-id (e-task-storage-sqlite-worker--column
+                            existing-row 8)))))
+      (e-task-storage-sqlite-worker--set-root
+       queue-id revision (max position
+                              (e-task-storage-sqlite-worker--column row 1))
+       (= (e-task-storage-sqlite-worker--column row 2) 1))
+      (list :queue-id queue-id :task-id task-id :revision revision
+            :sequence position :task-revision 1 :created-p t
+            :record (e-task-storage-sqlite-worker--task-dto
+                     (vector queue-id task-id position "queued" 1
+                             (plist-get record :enqueued-at)
+                             (e-task-storage-sqlite-worker--pack
+                              (plist-get record :harness-instance-id))
+                             (or (plist-get record :retries) 0) nil
+                             (e-task-storage-sqlite-worker--pack
+                              (e-task-storage-sqlite-worker--task-content
+                               record)))
+                     nil)))))
 
 (defun e-task-storage-sqlite-worker--task-row (queue-id task-id)
   "Return QUEUE-ID TASK-ID row or signal."

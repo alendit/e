@@ -724,6 +724,16 @@ corruption retain their existing typed protocol cause."
             data (list "Unknown worker error" response)))
     (signal symbol data)))
 
+(defun e-runtime-store--task-enqueue-conflict-p (request error)
+  "Return non-nil for a caller conflict on an owned task-enqueue request."
+  (let ((owner-key (e-runtime-store-request--owner-key request)))
+    (and (eq (e-runtime-store-request--kind request) 'write)
+         (eq (car-safe error) 'e-runtime-store-task-conflict)
+         (eq (e-runtime-store--request-operation request) 'task-enqueue)
+         (consp owner-key)
+         (eq (car owner-key) 'task)
+         (stringp (cdr owner-key)))))
+
 (defun e-runtime-store--settle (store request response)
   "Settle REQUEST on STORE from decoded RESPONSE."
   (remhash (e-runtime-store-request--id request)
@@ -742,13 +752,18 @@ corruption retain their existing typed protocol cause."
     (let ((err (condition-case caught
                    (e-runtime-store--signal-response-error response)
                  (error caught))))
-      (if (and (eq (e-runtime-store-request--kind request) 'write)
-               (e-runtime-store-request--owner-key request))
-          ;; A valid, correlated negative response is a domain failure, not a
-          ;; transport incident.  Partition this optimistic owner while keeping
-          ;; the healthy process and unrelated FIFO entries in place.
-          (e-runtime-store--partition-owner-failure store request err t)
-        (e-runtime-store--fail-request store request err))))
+      (cond
+       ((e-runtime-store--task-enqueue-conflict-p request err)
+        ;; A stable-id mismatch is a caller conflict, so it does not make the
+        ;; already committed queue owner suspect.
+        (e-runtime-store--fail-request store request err))
+       ((and (eq (e-runtime-store-request--kind request) 'write)
+             (e-runtime-store-request--owner-key request))
+        ;; A valid, correlated negative response is a domain failure, not a
+        ;; transport incident.  Partition this optimistic owner while keeping
+        ;; the healthy process and unrelated FIFO entries in place.
+        (e-runtime-store--partition-owner-failure store request err t))
+       (t (e-runtime-store--fail-request store request err)))))
   (unless (eq (e-runtime-store-request--kind request) 'close)
     (setf (e-runtime-store-request--frame request) nil
           (e-runtime-store-request--frame-bytes request) nil))

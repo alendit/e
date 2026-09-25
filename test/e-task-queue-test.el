@@ -656,7 +656,7 @@ tests need a runner whose handle carries one."
              (setq calls (append calls (list (list kind operation arguments))))
              (funcall on-settle
                       (if (eq operation 'enqueue)
-                          '(:revision 1)
+                          '(:revision 1 :created-p t)
                         '(:claimed-p nil :paused-p nil))
                       nil)
              :request)))
@@ -672,11 +672,136 @@ tests need a runner whose handle carries one."
                  queue (plist-get record :task-id)))
     (should (equal (mapcar #'cadr calls) '(enqueue claim-runnable)))))
 
+(ert-deftest e-task-queue-test-stable-id-settlement-precedes-dispatch ()
+  "Durable enqueue observers receive the canonical result before dispatch."
+  (let* ((events nil)
+         (settlement-count 0)
+         (storage
+          (e-task-storage--create
+           :runtime :test-runtime
+           :call-operation
+           (lambda (&rest arguments)
+             (error "Unexpected blocking task storage operation: %S"
+                    arguments))
+           :submit-operation
+           (lambda (_kind operation _arguments on-settle)
+             (setq events (append events (list (list :submit operation))))
+             (let ((result
+                    (if (eq operation 'enqueue)
+                        '(:created-p t :revision 1
+                          :record (:task-id "board-task" :status queued))
+                      '(:claimed-p nil :paused-p nil))))
+               (funcall on-settle result nil)
+               (when (eq operation 'enqueue)
+                 (funcall on-settle result nil)))
+             :request)))
+         (queue (e-task-queue-create
+                 :storage storage :id "settlement-order"
+                 :runner (lambda (&rest _) (ert-fail "No task was claimed"))))
+         settlement
+         (record
+          (e-task-queue-enqueue
+           queue :task-id "board-task" :prompt "do work"
+           :on-settle
+           (lambda (result error)
+             (cl-incf settlement-count)
+             (setq settlement (list result error))
+             (setq events (append events (list (list :settled result))))))))
+    (should (eq (plist-get record :status) 'queued))
+    (should (= settlement-count 1))
+    (should (plist-get (car settlement) :created-p))
+    (should-not (cadr settlement))
+    (should (equal (mapcar #'car events)
+                   '(:submit :settled :submit)))
+    (should (eq (cadar (last events)) 'claim-runnable))))
+
+(ert-deftest e-task-queue-test-stable-id-duplicate-uses-existing-result ()
+  "An exact durable duplicate observes the stored record and does not dispatch."
+  (let* ((calls nil)
+         (existing '(:task-id "board-task" :status done :prompt "do work"
+                     :origin-prompt "do work" :metadata (:board-attempt 3)))
+         (storage
+          (e-task-storage--create
+           :runtime :test-runtime
+           :call-operation
+           (lambda (&rest arguments)
+             (error "Unexpected blocking task storage operation: %S"
+                    arguments))
+           :submit-operation
+           (lambda (_kind operation _arguments on-settle)
+             (push operation calls)
+             (funcall on-settle
+                      (if (eq operation 'enqueue)
+                          (list :created-p nil :revision 9 :record existing)
+                        (ert-fail "Duplicate enqueue must not dispatch"))
+                      nil)
+             :request)))
+         (runner-calls 0)
+         (queue (e-task-queue-create
+                 :storage storage :id "duplicate-result"
+                 :runner (lambda (&rest _) (cl-incf runner-calls))))
+         settlement
+         (optimistic
+          (e-task-queue-enqueue
+           queue :task-id "board-task" :prompt "do work"
+           :metadata '(:board-attempt 3)
+           :on-settle (lambda (result error)
+                        (setq settlement (list result error))))))
+    (should (eq (plist-get optimistic :status) 'queued))
+    (should-not (plist-get optimistic :revision))
+    (should-not (cadr settlement))
+    (should-not (plist-get (car settlement) :created-p))
+    (should (eq (plist-get (plist-get (car settlement) :record) :status)
+                'done))
+    (should (equal calls '(enqueue)))
+    (should (= runner-calls 0))
+    (should (= (hash-table-count (e-task-queue-records queue)) 0))))
+
+(ert-deftest e-task-queue-test-settlement-error-does-not-strand-dispatch ()
+  "An observer error surfaces after the committed new task can be dispatched."
+  (let* ((calls nil)
+         (storage
+          (e-task-storage--create
+           :runtime :test-runtime
+           :call-operation
+           (lambda (&rest arguments)
+             (error "Unexpected blocking task storage operation: %S"
+                    arguments))
+           :submit-operation
+           (lambda (_kind operation _arguments on-settle)
+             (push operation calls)
+             (funcall on-settle
+                      (if (eq operation 'enqueue)
+                          '(:created-p t :revision 1)
+                        '(:claimed-p nil :paused-p nil))
+                      nil)
+             :request)))
+         (queue (e-task-queue-create
+                 :storage storage :id "observer-error"
+                 :runner (lambda (&rest _) (ert-fail "No task was claimed")))))
+    (should-error
+     (e-task-queue-enqueue
+      queue :task-id "board-task" :prompt "do work"
+      :on-settle (lambda (_result _error) (error "observer failed")))
+     :type 'error)
+    (should (memq 'claim-runnable calls))
+    (should-not (e-task-queue-persistence-suspect queue))))
+
+(ert-deftest e-task-queue-test-stable-id-requires-durable-queue ()
+  "Caller-stable ids and settlement observers are durable-only."
+  (let ((queue (e-task-queue-create :runner #'ignore)))
+    (should-error (e-task-queue-enqueue queue :prompt "do work"
+                                        :task-id "board-task")
+                  :type 'e-task-queue-error)
+    (should-error (e-task-queue-enqueue queue :prompt "do work"
+                                        :on-settle #'ignore)
+                  :type 'e-task-queue-error)))
+
 (ert-deftest e-task-queue-test-failed-task-auto-retries ()
   "A failed task with retries left is re-armed as a fresh queued attempt.
 The retry references the failed session, carries an analyze-and-continue
 prompt, preserves the original prompt in `:origin-prompt', and bumps the retry
-counter."
+counter without mutating opaque assignment metadata."
   (e-task-queue-test--with-instances
     (e-task-queue-test--register-instance :chat-a t)
     (let* ((recorder (make-e-task-queue-test--recorder))
@@ -684,7 +809,10 @@ counter."
                    :max-retries 1
                    :runner (e-task-queue-test--fake-runner-with-session
                             recorder)))
-           (task (e-task-queue-enqueue queue :prompt "do the thing"))
+           (metadata '(:board-run-id "run-1" :board-task-key "task-a"
+                       :board-attempt 2))
+           (task (e-task-queue-enqueue queue :prompt "do the thing"
+                                       :metadata metadata))
            (task-id (plist-get task :task-id))
            (settle (plist-get (car (e-task-queue-test--recorder-calls recorder))
                               :settle)))
@@ -694,12 +822,18 @@ counter."
         (should (eq (plist-get record :status) 'running))
         (should (= (plist-get record :retries) 1))
         (should (equal (plist-get record :origin-prompt) "do the thing"))
+        (should (equal (plist-get record :metadata) metadata))
         ;; The retry prompt references the failed session and original task.
         (should (string-match-p "sess-1" (plist-get record :prompt)))
         (should (string-match-p "do the thing" (plist-get record :prompt)))
         (should (string-match-p "boom" (plist-get record :prompt))))
       ;; The retry was actually dispatched: the runner ran a second time.
-      (should (= (length (e-task-queue-test--recorder-calls recorder)) 2)))))
+      (should (= (length (e-task-queue-test--recorder-calls recorder)) 2))
+      (should (equal (plist-get (plist-get
+                                 (car (e-task-queue-test--recorder-calls recorder))
+                                 :task)
+                                :metadata)
+                     metadata)))))
 
 (ert-deftest e-task-queue-test-retries-exhaust-to-failed ()
   "Once retries are exhausted, a further failure lands terminal `failed'."

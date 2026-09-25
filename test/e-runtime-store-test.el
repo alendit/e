@@ -3311,6 +3311,151 @@ tests can present a raw frame that production would refuse to create."
       (should (equal (plist-get (plist-get first :record) :status)
                      'running)))))
 
+(ert-deftest e-runtime-store-task-enqueue-conflicts-on-assignment-changes ()
+  "A stable task id conflicts when immutable assignment content changes."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (let* ((queue-id "assignment-identity")
+           (record '(:task-id "stable-task" :status queued
+                     :prompt "work" :origin-prompt "work"
+                     :summary "Original task"
+                     :metadata (:board-run-id "run-1" :board-attempt 2)
+                     :harness-instance-id :chat-a
+                     :enqueued-at "2026-09-25T10:00:00Z"))
+           (base (list :op 'task-enqueue :queue-id queue-id
+                       :record record)))
+      (e-runtime-store-call store 'write base)
+      (dolist (changes
+               '((:prompt "changed" :origin-prompt "changed")
+                 (:metadata (:board-run-id "run-1" :board-attempt 3))
+                 (:harness-instance-id :chat-b)))
+        (let ((candidate (copy-tree record t)))
+          (while changes
+            (setq candidate
+                  (plist-put candidate (pop changes) (pop changes))))
+          (should-error
+           (e-runtime-store-call
+            store 'write
+            (list :op 'task-enqueue :queue-id queue-id :record candidate))
+           :type 'e-runtime-store-task-conflict)))
+      (let ((snapshot
+             (e-runtime-store-call
+              store 'read
+              (list :op 'task-snapshot :queue-id queue-id :limit 8))))
+        (should (= (plist-get snapshot :sequence) 1))
+        (should (= (plist-get snapshot :revision) 1))
+        (should (= (length (plist-get snapshot :records)) 1))
+        (should (equal (plist-get (car (plist-get snapshot :records)) :metadata)
+                       (plist-get record :metadata)))))))
+
+(ert-deftest e-runtime-store-task-enqueue-deduplicates-concurrent-writes ()
+  "Concurrent exact retries return one canonical assignment without revisions."
+  (e-runtime-store-test--with-store (store directory)
+    (let* ((queue-id "concurrent-idempotency")
+           (storage (e-task-storage-sqlite-create store))
+           (record '(:task-id "stable-task" :status queued
+                     :prompt "work" :origin-prompt "work"
+                     :summary "Original task" :prompt-summary "work"
+                     :metadata (:board-run-id "run-1" :board-attempt 2)
+                     :harness-instance-id :chat-a :retries 0
+                     :enqueued-at "2026-09-25T10:00:00Z"))
+           (settlements nil))
+      (dotimes (_ 2)
+        (e-task-storage-submit
+         storage 'write 'enqueue (list queue-id record)
+         (lambda (result error)
+           (push (list result error) settlements))))
+      (e-runtime-store-test--wait-until
+       (lambda () (= (length settlements) 2)))
+      (setq settlements (nreverse settlements))
+      (let* ((results (mapcar #'car settlements))
+             (created (cl-count t (mapcar (lambda (result)
+                                           (plist-get result :created-p))
+                                         results))))
+        (should (= created 1))
+        (should-not (seq-some #'cadr settlements))
+        (should (equal (mapcar (lambda (result)
+                                 (list (plist-get result :revision)
+                                       (plist-get result :sequence)
+                                       (plist-get result :task-revision)))
+                               results)
+                       '((1 1 1) (1 1 1))))
+        (should
+         (seq-every-p
+          (lambda (result)
+            (equal (plist-get (plist-get result :record) :metadata)
+                   (plist-get record :metadata)))
+          results)))
+      (e-runtime-store-close store)
+      (setq store (e-runtime-store-open directory))
+      (e-runtime-store-test--wait-ready store)
+      (let* ((snapshot
+              (e-runtime-store-call
+               store 'read
+               (list :op 'task-snapshot :queue-id queue-id :limit 8)))
+             (stored (car (plist-get snapshot :records))))
+        (should (= (plist-get snapshot :sequence) 1))
+        (should (= (plist-get snapshot :revision) 1))
+        (should (equal (plist-get stored :task-id) "stable-task"))
+        (should (equal (plist-get stored :metadata)
+                       (plist-get record :metadata)))
+        (let ((settled nil)
+              (replay (plist-put (copy-tree record t) :enqueued-at
+                                 "2026-09-25T10:01:00Z")))
+          (setq storage (e-task-storage-sqlite-create store))
+          (e-task-storage-submit
+           storage 'write 'enqueue (list queue-id replay)
+           (lambda (result error) (setq settled (list result error))))
+          (e-runtime-store-test--wait-until (lambda () settled))
+          (should-not (cadr settled))
+          (should-not (plist-get (car settled) :created-p))
+          (should (equal (plist-get (plist-get (car settled) :record)
+                                    :enqueued-at)
+                         "2026-09-25T10:00:00Z")))))))
+
+(ert-deftest e-runtime-store-task-enqueue-conflict-does-not-fence-owner ()
+  "An assignment conflict fails alone and allows the same queue to write again."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (let* ((queue-id "owned-idempotency")
+           (owner-key (cons 'task queue-id))
+           (record '(:task-id "stable-task" :status queued
+                     :prompt "work" :origin-prompt "work"
+                     :metadata (:board-run-id "run-1" :board-attempt 2)))
+           (body (list :op 'task-enqueue :queue-id queue-id :record record))
+           (first-request
+            (e-runtime-store--submit-owned
+             store 'write body owner-key)))
+      (should (plist-get (e-runtime-store-await store first-request) :created-p))
+      (let* ((conflict-record (copy-tree record t))
+             (_ (setq conflict-record
+                      (plist-put conflict-record :metadata
+                                 '(:board-run-id "run-1" :board-attempt 3))))
+             (conflict-request
+              (e-runtime-store--submit-owned
+               store 'write
+               (list :op 'task-enqueue :queue-id queue-id
+                     :record conflict-record)
+               owner-key)))
+        (should-error (e-runtime-store-await store conflict-request)
+                      :type 'e-runtime-store-task-conflict)
+        (should-not
+         (and (hash-table-p (e-runtime-store--suspect-owners store))
+              (gethash owner-key (e-runtime-store--suspect-owners store))))
+        (let* ((next-record (plist-put (copy-tree record t)
+                                       :task-id "next-task"))
+               (next-request
+                (e-runtime-store--submit-owned
+                 store 'write
+                 (list :op 'task-enqueue :queue-id queue-id
+                       :record next-record)
+                 owner-key)))
+          (should (plist-get (e-runtime-store-await store next-request)
+                             :created-p))
+          (should-not
+           (and (hash-table-p (e-runtime-store--suspect-owners store))
+                (gethash owner-key (e-runtime-store--suspect-owners store)))))))))
+
 (ert-deftest e-runtime-store-task-snapshot-query-count-is-constant ()
   "A snapshot reads queue, task/latest-attempt rows, and history as sets."
   (let* ((database-file (make-temp-file "e-task-snapshot-"))
@@ -3405,26 +3550,34 @@ tests can present a raw frame that production would refuse to create."
           (should-not (plist-get attempt :error)))))))
 
 (ert-deftest e-runtime-store-task-retry-settles-prior-attempt-before-reclaim ()
-  "Auto-retry records a failed attempt before a fresh claim, including reopen."
+  "Auto-retry preserves assignment metadata and deduplicates after retry."
   (e-runtime-store-test--with-store (store directory)
     (let* ((storage (e-task-storage-sqlite-create store))
            (settlers nil)
            (calls 0)
+           (runs nil)
+           (metadata '(:board-run-id "run-1" :board-task-key "task-a"
+                       :board-attempt 2))
            (queue
             (e-task-queue-create
              :id "retry-history" :storage storage :max-retries 1
              :default-harness-instance-id "test"
              :runner
-             (lambda (_task _harness on-settle)
+             (lambda (task _harness on-settle)
                (cl-incf calls)
+               (push (copy-tree task t) runs)
                (setq settlers (append settlers (list on-settle)))
                (list :session-id (format "session-%d" calls)
                      :cancel #'ignore))))
-           task-id)
+           task-id
+           conflict-settlement
+           retry-settlement)
       (cl-letf (((symbol-function 'e-harness-instance-get-or-create)
                  (lambda (_instance-id) :test-harness)))
         (setq task-id
-              (plist-get (e-task-queue-enqueue queue :prompt "retry me")
+              (plist-get (e-task-queue-enqueue
+                          queue :task-id "stable-task" :prompt "retry me"
+                          :metadata metadata)
                          :task-id))
         (e-runtime-store-test--wait-until (lambda () (= calls 1)))
         (funcall (nth 0 settlers) :status 'failed :error "first failed")
@@ -3439,7 +3592,46 @@ tests can present a raw frame that production would refuse to create."
                                  attempts)
                          '(failed claimed)))
           (should (plist-get (car attempts) :finished-at))
-          (should (equal (plist-get (car attempts) :error) "first failed")))
+          (should (equal (plist-get (car attempts) :error) "first failed"))
+          (should (equal (plist-get (car (plist-get snapshot :records))
+                                    :metadata)
+                         metadata)))
+        (should (equal (mapcar (lambda (task) (plist-get task :metadata))
+                               (nreverse runs))
+                       (list metadata metadata)))
+        (e-task-queue-enqueue
+         queue :task-id task-id :prompt "retry me"
+         :metadata '(:board-run-id "run-1" :board-task-key "task-a"
+                     :board-attempt 3)
+         :on-settle
+         (lambda (result error)
+           (setq conflict-settlement (list result error))))
+        (e-runtime-store-test--wait-until
+         (lambda () conflict-settlement))
+        (should-not (car conflict-settlement))
+        (should (eq (car (cadr conflict-settlement))
+                    'e-runtime-store-task-conflict))
+        (should-not (e-task-queue-persistence-suspect queue))
+        (should-not
+         (and (hash-table-p (e-runtime-store--suspect-owners store))
+              (gethash (cons 'task "retry-history")
+                       (e-runtime-store--suspect-owners store))))
+        (e-task-queue-enqueue
+         queue :task-id task-id :prompt "retry me" :metadata metadata
+         :on-settle
+         (lambda (result error)
+           (setq retry-settlement (list result error))))
+        (e-runtime-store-test--wait-until
+         (lambda () retry-settlement))
+        (should-not (cadr retry-settlement))
+        (should-not (plist-get (car retry-settlement) :created-p))
+        (should (= (plist-get
+                    (plist-get (car retry-settlement) :record) :retries)
+                   1))
+        (should (eq (plist-get (plist-get (car retry-settlement) :record)
+                               :status)
+                    'running))
+        (should (= calls 2))
         (funcall (nth 1 settlers) :status 'done :outputs '("done"))
         (e-runtime-store-test--wait-until
          (lambda ()
@@ -3451,11 +3643,13 @@ tests can present a raw frame that production would refuse to create."
                 (e-runtime-store-call
                  store 'read
                  '(:op task-snapshot :queue-id "retry-history" :limit 8)))
-               (attempts (plist-get snapshot :attempts)))
+               (attempts (plist-get snapshot :attempts))
+               (task (car (plist-get snapshot :records))))
           (should (equal (mapcar (lambda (attempt)
                                    (plist-get attempt :state))
                                  attempts)
-                         '(failed done))))))))
+                         '(failed done)))
+          (should (equal (plist-get task :metadata) metadata)))))))
 
 (ert-deftest e-runtime-store-task-legacy-import-returns-whole-result ()
   "Legacy import completes after all records and stores content only once."

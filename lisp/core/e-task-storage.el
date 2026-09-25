@@ -55,7 +55,10 @@ ordinary task policy does not wait for or inspect it."
 
 (defun e-task-storage-enqueue
     (storage queue-id position record)
-  "Append RECORD at POSITION."
+  "Request RECORD at POSITION in QUEUE-ID.
+Storage owns durable ordering.  Repeating the same task id with the same
+immutable assignment returns its canonical record; changed assignment content
+signals `e-task-storage-conflict'."
   (e-task-storage--call storage 'enqueue queue-id position record))
 
 (defun e-task-storage-claim
