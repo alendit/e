@@ -1025,12 +1025,13 @@ binding; it is never interpreted as success."
            e-chat-service--continuation-admissions runtime t))
          (admission-key (cons board-id publication-key)))
     (when (eq (gethash admission-key admissions) expected)
-      (let ((claim
+      (let (claim-error
+            (claim
              (condition-case publish-error
                  (e-chat-service--publish-sqlite-continuation-claim
                   binding run-id publication-key state error)
                (error
-                (e-chat-service--sql-note-failure binding publish-error)
+                (setq claim-error publish-error)
                 nil))))
         (if (e-work-handle-p claim)
             (progn
@@ -1057,11 +1058,14 @@ binding; it is never interpreted as success."
                      (e-chat-service--runtime-coordination-prune
                       e-chat-service--continuation-admissions runtime))))))
           (progn
-            (when claim
-              (e-chat-service--sql-note-failure
-               binding
-               '(e-chat-service-error
-                 "Continuation claim publication did not return work")))
+            (e-chat-service--sql-note-failure
+             binding
+             (or claim-error
+                 (if claim
+                     '(e-chat-service-error
+                       "Continuation claim publication did not return work")
+                   '(e-chat-service-error
+                     "Continuation claim publication returned no work"))))
             (if (eq state 'published)
                 ;; The input may already exist even when its final claim write
                 ;; cannot be observed.  Keep this process from publishing it
