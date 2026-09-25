@@ -41,13 +41,16 @@ The runtime already provides most of the underlying pieces:
 - [[file:../82-board-native-subagent-supervision/plan.org][Feature 82]] defines durable run manifests, task attempts, reports, required and optional work, terminal reduction, continuation claims, and a bounded run projection.
 - [[file:../47-agent-task-queue/plan.org][Feature 47]] provides durable queued task execution.
 - [[file:../58-ui-work-substrate/plan.org][Feature 58]] provides the asynchronous presentation path used by the chat shell.
-- [[file:../87-sqlite-session-board-persistence/plan.org][Feature 87]] will make the board facts and delivery receipts restart-safe in one SQLite store.
+- [[file:../87-sqlite-session-board-persistence/plan.org][Feature 87]] supplies restart-safe board facts and delivery receipts in one SQLite store.
 
 Feature 82 already describes durable run observation and direct-child
 supervision context.  This plan adds the owner chat's persistent status, model
 context, and completion handoff.  The separate run and subagent shells are
 superseded by Feature 82's [[file:../82-board-native-subagent-supervision/addendum.org][one-participant-activity-model addendum]]; the owner-chat status remains a
 bounded presentation of the same durable Board facts.
+The [[file:../../bugs/board-assignments-obscure-chat-status/investigation.org][Grimoire Daily presentation investigation]] supplies a direct counterexample:
+an idle chat shows one dispatching run beside long Calendar and Slack
+assignments, but does not identify the run or show which task is pending.
 
 * Terms
 
@@ -122,9 +125,15 @@ The chat shell and context provider subscribe to those notifications instead of 
 The chat shows a persistent active-run indicator outside the turn transcript.
 The indicator remains visible while the composer accepts input.
 It is derived from the shared run projection rather than from process-local work handles.
+Chat-turn status and Board-run status name different scopes: the initiating
+turn can be idle while its run remains active.  The display labels those scopes
+explicitly, and =active= counts runs rather than executing workers.
 
-The compact state shows the number of active runs and a bounded summary of the most actionable run.
-A user can open the existing detailed run surface from the indicator.
+The compact state shows the number of active runs, the lifecycle and bounded
+label of the most actionable run, and an obvious action to open Board activity.
+It uses the selected run already present in the shared projection and stays
+bounded when more runs exist.  A user can open the one Feature 82 Board
+activity surface focused on that run from the indicator.
 The chat does not render the full task graph inline.
 
 The indicator distinguishes at least these states:
@@ -137,6 +146,42 @@ The indicator distinguishes at least these states:
 
 The presentation must not report no active work from incomplete restore evidence.
 It must not disappear merely because the turn that dispatched the run ended.
+
+Board activity is the detailed surface for the selected run.  It shows the
+durable disposition of each selected task and its attempt, including admission
+pending, retry scheduled, or terminal dispatch failure before any participant
+has been admitted.  Related participant rows expose committed outcomes and
+optional exact live progress and controls.  A task without a participant is
+not represented by a fabricated participant row.  The Board-owned run and
+observation services supply one run-focused, bounded activity page whose task
+and participant facts describe a coherent Board generation and revision.
+The shell owns only that detached page, focus, and presentation.  Opening the
+view does not block the composer.
+
+The owner chat remains a chronological observer of canonical Board messages.
+The dispatch path places its existing typed run, task, and attempt coordinates
+on each run-bound child input when it submits that canonical Board message.
+Child session metadata alone is insufficient for the Board observer: the
+current =e-subagent-direct-runner= calls =e-chat-service-submit-session= without
+=:metadata=.  For inputs carrying those coordinates, the transcript labels
+long automated assignments and initially folds their bodies.  The complete
+input remains available on expansion or in the participant chat,
+with its Board message identity and order intact.  Ordinary human prompts
+retain their =You= presentation; missing assignment metadata is not inferred
+from prompt prose.  Activity such as =Context curated= remains chronological
+activity, not a source of task status.
+
+Direct scenario (Feature 89, operator authority): a Daily owner turn has ended,
+one run is dispatching, and long Calendar and Slack assignments appear in the
+chat.  The idle chat visibly names the separate turn and run states, identifies
+the selected run, and opens Board activity to show each task's disposition and
+any admitted participant.  Full assignment text remains accessible without
+dominating the default transcript.  A separate admission-boundary case keeps a
+selected task visible there even before it has a participant row.  The
+observed screenshot and current source establish only partial behavior: the
+run indicator exists, but its text omits the selected label and the
+participant-based activity page cannot show an unadmitted task.  Run-bound
+child input also lacks the typed assignment metadata needed for labeling.
 
 ** Model context
 
@@ -190,17 +235,21 @@ The shared reducer projection is rebuilt before the chat status or model context
 
 Feature 87 supplies the durable storage path for these records.
 This feature owns their run semantics, projection, presentation, and delivery behavior.
-An in-memory store remains valid for focused tests and ephemeral harnesses.
+Feature 92's [[file:../92-runtime-store-failure-isolation/addendum2.org][SQLite-only Board cutover]] removed the alternate in-memory Board;
+focused tests use isolated SQLite state.
 
 * Ownership
 
 - =e-board-orchestration= owns manifests, run reduction, required and optional terminal policy, conflicts, continuation intent, and continuation claims.
 - The dispatching capability owns run-specific task policy, the bounded label, and the bounded reconciliation prompt stored in the manifest.
 - The task-queue bridge owns durable run, task, and attempt assignment plus idempotent dispatch reconciliation.
+- The subagent dispatch path passes its already-known assignment coordinates into child input submission; =e-chat-service= carries them as typed Board input attributes without interpreting the prompt.
 - =e-chat-service= owns the one session and board association plus generic keyed publication to the owner participant.
 - =e-board-runtime= owns participant FIFO delivery, busy-session deferral, and consumption receipts.
 - A session-scoped context provider emits the bounded run block for model input.
-- The chat shell renders the status from the same projection and opens the detailed run surface.
+- The chat shell renders the compact status from that projection and opens the one Board activity surface.
+- Board orchestration owns run/task dispositions.  Board observation maps one consumer-shaped run-focused activity page with those dispositions and related participant rows; the Board activity shell renders it and decorates exact participants with optional live controls.
+- The chat transcript shell owns assignment labels and folding from typed Board message metadata; it does not change Board ordering or durable input content.
 - =e-session-storage= persists typed board facts and receipts but does not own run policy, context wording, or rendering.
 
 * Implementation slices
@@ -214,11 +263,27 @@ An in-memory store remains valid for focused tests and ephemeral harnesses.
 
 ** Slice 2: show board runs in chat
 
-- Add the persistent status area to the chat shell through =e-ui-work=.
-- Render compact =dispatching=, =running=, =finishing=, =attention=, and =restoring= states.
-- Link the compact status to the existing detailed run surface.
-- Keep composer readiness independent from run lifetime.
-- Gate: chat and graphical tests show the indicator after the initiating turn ends, preserve focus, and update without polling.
+- Status, owned by the chat shell after Slice 1: use =e-ui-work= to show
+  separate chat-turn and Board-run scopes, the active-run count, the selected
+  run label, and compact =dispatching=, =running=, =finishing=, =attention=,
+  and =restoring= states.  Link to Board activity and keep the composer ready
+  independently of the run.  Gate: an idle initiating turn still shows its
+  named active run and a working Board activity link.
+- Detail, owned by Board orchestration, observation, and the one activity
+  shell: extend the bounded Board activity request for a selected run with
+  durable task dispositions before admission and related participant rows
+  from one coherent Board revision.  Add no second task inventory or N+1
+  participant reads.  Gate: a selected pending task with no participant
+  remains visible; held reads do not block composer input or other UI work,
+  and a concurrent Board update cannot produce a mixed-revision display.
+- Assignment presentation, owned by dispatch and the chat transcript shell:
+  carry run, task, and attempt identity into each canonical run-bound child
+  input, then label and fold those inputs without changing Board order or full
+  content.  Gate: two long assignments remain distinct and expandable in
+  live and reopened views; unmarked human inputs keep normal presentation.
+- Composition gate: with an idle owner and mixed settled/pending tasks, the
+  status opens the correct run detail, focus survives updates, and no shell
+  polls worker sessions.
 
 ** Slice 3: inject active-run context
 
@@ -270,6 +335,13 @@ binding, owner id, Board, and window-safe headless dispatch.
 One scenario dispatches required and optional tasks from a main chat turn.
 The turn ends while the run continues.
 The composer is ready, the status is visible, and the next unrelated user turn receives active-run context.
+Long Calendar and Slack assignment inputs coexist in the owner chat while the
+run is dispatching.  The idle-chat indicator names the active run and opens
+Board activity, where the task dispositions are visible.  A separate boundary
+in the same graphical proof leaves a selected task pending admission with no
+participant row; Board activity still identifies it.  The transcript keeps
+the ordered assignment inputs accessible without showing their full bodies by
+default.
 A later headless trigger reuses the same session participant and board.
 No update session, private coordinator session, or shadow board is created.
 
@@ -289,6 +361,16 @@ The status and context never report no work while restore is incomplete.
 
 - The initiating turn can end while its board run continues and the composer is ready for more input.
 - The owner chat shows a persistent board-run indicator derived from durable board state.
+- The indicator distinguishes chat-turn idleness from an active Board run,
+  names the most actionable run, counts runs rather than workers, and opens
+  the one Board activity surface focused on that run.
+- Board activity exposes selected task dispositions even before participant
+  admission and retains related participant outcomes and exact live controls
+  in one coherent bounded page without a second durable inventory.
+- Metadata-identified automated assignments are labeled and initially folded
+  in chat; their complete canonical Board messages remain accessible and
+  ordered.  Dispatch supplies the typed coordinates on run-bound inputs;
+  ordinary human prompts retain their normal presentation.
 - Every later model turn receives the bounded run projection while required work, optional work, or completion delivery remains active.
 - The visual status and model context use the same reducer projection.
 - Interactive and headless dispatch use the same canonical session participant and board.
@@ -299,16 +381,56 @@ The status and context never report no work while restore is incomplete.
 - Completion does not interrupt an active turn and is consumed at an idle boundary.
 - Dispatch, publication, consumption, and restart boundaries cannot lose or duplicate the completion input.
 - Incomplete restore is visible as =restoring= or =dispatching= rather than an empty state.
-- Detailed run inspection remains bounded and available from the chat status.
+- Detailed run inspection remains bounded and available through Board activity
+  from the chat status, including a dispatch-pending task with no participant.
 - Graphical and current-config tests prove the user-visible behavior without touching the live user store.
 
 * Non-goals
 
 - A generic visual editor for arbitrary board topology.
 - Rendering the full task graph inside every chat transcript.
-- Replacing the detailed run shell, subagent shell, task-queue shell, or activity log.
+- Creating a second run or subagent shell or a chat-owned task inventory.
 - Copying worker transcripts, prompts, tool results, or reasoning into the owner session.
 - Making process-local =e-work= handles the source of durable run status.
 - Creating a second coordinator session for background work.
 - Making feature 87 own run policy or presentation.
 - Guaranteeing success of the provider turn triggered by the completion input.
+
+* Design self-check for the presentation correction
+
+1. If work stops after Slice 2, is the project better off?  Yes: the owner
+   chat can identify its active run and reach truthful task detail while its
+   turn is idle.
+2. What final direction does it serve?  One Board-native chat and one Board
+   activity surface, with durable Board facts as the authority.
+3. Which decisions may change?  Assignment fold length and wording are local
+   shell choices.  Run/task identity, status, and ordering use existing typed
+   Board contracts; no speculative extension seam is added.
+4. Who owns each behavior?  Board orchestration owns task disposition, Board
+   observation maps the run-focused detail page, and the two presentation
+   shells own their respective views.
+5. Does coupling change?  Shells consume narrow detached Board projections;
+   neither joins task state from worker sessions nor reads private SQL layout.
+6. Do dependencies point the right way?  Core run policy does not depend on
+   chat, Board activity, or transcript rendering.
+7. Can side effects move outward?  The coherent query stays behind Board
+   application operations; opening, focusing, and folding stay in shells.
+8. What state is added?  Existing durable Board inputs gain bounded assignment
+   coordinates already known at dispatch.  Focus and fold state is rebuildable
+   and buffer-local; durable task and message facts remain in SQLite.
+9. What is the performance cost?  The header reuses its subscribed projection.
+   Each run-bound input adds only bounded coordinates.  Exact task detail uses
+   one bounded set read on view open or refresh, with no per-message,
+   per-participant, or polling read.
+10. Are interfaces semantically real?  The existing run projection and Board
+    observation contracts have distinct consumers and do not require an
+    unsupported operation from either.
+11. What compatibility applies?  Inputs without typed assignment metadata
+    keep ordinary message presentation; no legacy Board path is restored.
+12. What legacy code can be removed?  No retired run or subagent shell returns,
+    and this correction adds no compatibility alias to remove later.
+13. How do errors surface?  Expected bounded Board read failures appear in the
+    activity view; unexpected errors retain their normal top-level failure.
+14. What proves the behavior?  Focused status, Board-query, and transcript tests
+    prove each owner independently; the graphical idle-owner scenario proves
+    their public composition and composer responsiveness.
