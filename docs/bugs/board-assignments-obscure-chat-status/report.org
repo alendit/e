@@ -1,0 +1,12 @@
+#+title: Board Assignments Obscure Chat and Run Status
+#+startup: overview
+
+* Report
+
+The user reported that a Grimoire Daily chat shows long Calendar and Slack
+assignment messages as consecutive, similarly highlighted blocks.  The header
+says the chat is idle while also saying =Board runs: dispatching (1 active)=.
+From this view, the user cannot tell which task is running, which has finished,
+or whether the displayed assignments represent current work.  The screenshot
+shows =Context curated= activity after the assignments, adding to the visual
+mix of task instructions and execution activity.

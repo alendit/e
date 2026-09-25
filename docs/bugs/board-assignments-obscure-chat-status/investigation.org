@@ -1,0 +1,83 @@
+#+title: Board Assignment and Status Presentation Investigation
+#+startup: overview
+
+* Conclusion
+
+The screenshot establishes a presentation and status-scope problem, not a
+failed or stuck worker.  =Chat: idle= describes the selected chat turn.
+=Board runs: dispatching (1 active)= describes one active orchestration *run*;
+=dispatching= means that run has a pending task.  It does not identify a live
+worker or say which Calendar or Slack assignment is executing.  The full
+assignment bodies are ordinary Board input messages in the chat transcript,
+where all =user= messages receive the same =You= heading and highlighted face.
+Their long, similar prompts crowd out the state needed to interpret them.
+
+The Board activity shell already exposes participant, state, outcome, run,
+task, attempt, live availability, and progress.  The compact chat header links
+to it through the selected run.  That is the immediate inspection path, but it
+requires leaving the crowded transcript and does not resolve the ambiguity in
+the photographed view.
+
+* Repository evidence
+
+- =lisp/core/e-board-orchestration.el= derives an active run count from active
+  projections.  A run's lifecycle is =dispatching= if any task is pending;
+  =e-board-orchestration-run-set-compact-status= renders that as
+  =Board runs: dispatching (N active)=.
+- =lisp/shells/chat/e-chat-surface.el= concatenates the chat status and Board
+  run status in one header without naming their different scopes.
+- =lisp/core/e-chat-service.el= translates every Board =input= into a =user=
+  message.  It retains the input's attributes as metadata, but the resulting
+  chat row does not present assignment provenance or task state.
+- =lisp/shells/chat/e-chat-transcript.el= renders =user= as =You= and inserts
+  the entire content.  =lisp/shells/chat/e-chat.el= gives =You= entries the
+  theme's =highlight= face across the whole block.  There is only a thin turn
+  separator between the large Calendar and Slack prompts in the screenshot.
+  Nonselected assistant output receives a participant-name prefix within its
+  body, but the transcript remains a single chronological stream.
+- =lisp/shells/e-board-activity-shell.el= already has a bounded per-participant
+  table with =State=, =Outcome=, =Run=, =Task=, =Attempt=, =Live=, and
+  =Progress= columns.  =e-chat--attach-board-run-set= wires the header action
+  to this surface.
+- =e-board-orchestration-actions-assignment-from-metadata= recognizes typed
+  =:board-run-id=, =:board-task-key=, and =:board-attempt= metadata.  Assignment
+  presentation should use these typed fields when present, rather than parse
+  the prompt text.
+
+* Live evidence and limit
+
+On 2026-09-25, the fixed read-only =scripts/e-live-probe windows= reported the
+Grimoire chat transcript and its composer still visible below the selected
+=2026-09-25.org= buffer.  The fixed =chat= probe described that selected Org
+buffer, so it did not reveal the transcript's current chat status.  No live
+Emacs state was changed.  The screenshot is the evidence for the displayed
+header and message sequence; this investigation does not claim that the run is
+still dispatching now.
+
+* Suggested remediation
+
+1. Make the header's scopes explicit: =Chat turn: idle= and =Board: 1 active
+   run, dispatching=.  Keep the link to Board activity visible and
+   label its action.  Avoid wording that suggests the active count is a worker
+   count.
+2. Show a compact, bounded run/task status section near the chat header.  Each
+   row should identify run, task, attempt, durable state/outcome, and the latest
+   available progress; it should link to the existing Board activity or task
+   transcript.  Derive this from Board observation, with optional exact live
+   decoration, rather than a second mutable status store or inferred prompt
+   text.
+3. Group observed worker traffic by task, or summarize it as task entries in
+   the parent view.  Render automated assignments as collapsed,
+   provenance-labeled entries such as =Assignment · slack · attempt 0=.
+   Keep complete durable prompts and participant responses available on
+   expansion or in the task transcript.  Ordinary human prompts should retain
+   their current =You= presentation.  Use typed Board metadata to decide the
+   distinction; if it is absent, retain normal message rendering rather than
+   guessing from content.
+4. Verify with a graphical scenario containing two long assignments, one
+   completed task and one pending/running task, and an idle owner chat.  Assert
+   that the active task and status scopes are apparent without reading prompt
+   bodies, that the full prompts remain accessible, and that terminal updates
+   remove any stale running indication.
+
+No implementation or live reload was performed for this assessment.
