@@ -179,6 +179,93 @@
          (runSetEpoch . 4)))
       (should started))))
 
+(ert-deftest e-board-activity-visual-test-expanded-notification-refreshes-detail ()
+  "An expanded run-set notification refreshes the selected page safely."
+  (let* ((target 'target)
+         (binding (e-chat-service--binding-create
+                   :lifecycle-state 'ready :board-id "board-1"))
+         (selected-task '(:run-task "run-1" "task" 2))
+         request-args settle expanded-started cancelled)
+    (with-temp-buffer
+      (setq-local e-board-activity-visual--target target
+                  e-board-activity-visual--binding binding
+                  e-board-activity-visual--run-set-epoch 4
+                  e-board-activity-visual--run-set-expanded t
+                  e-board-activity-visual--run-set-work 'stale-run-set
+                  e-board-activity-visual--detail-request 'stale-detail
+                  e-board-activity-visual--selected-run-id "run-1"
+                  e-board-activity-visual--selected-task selected-task
+                  e-board-activity-visual--detail-state 'ready
+                  e-board-activity-visual--detail-page
+                  '(:board-id "board-1" :generation 2 :revision 11
+                    :run (:run-id "run-1")
+                    :tasks ((:task-key "task" :accepted-attempt 2))))
+      (cl-letf (((symbol-function
+                  'e-board-sqlite-publication-target-valid-p)
+                 (lambda (_target) t))
+                ((symbol-function
+                  'e-board-sqlite-publication-target-board-id)
+                 (lambda (_target) "board-1"))
+                ((symbol-function 'e-board-activity-visual--target-id)
+                 (lambda () "board-1"))
+                ((symbol-function 'e-board-activity-visual--cancel-work)
+                 (lambda (work)
+                   (when work (push work cancelled))))
+                ((symbol-function 'e-board-observation-activity-page-start)
+                 (lambda (actual-target &rest args)
+                   (setq request-args (cons actual-target args))
+                   'fresh-detail))
+                ((symbol-function 'e-work-on-settle)
+                 (lambda (work callback)
+                   (should (eq work 'fresh-detail))
+                   (setq settle callback)))
+                ((symbol-function
+                  'e-board-activity-visual--start-expanded-run-set)
+                 (lambda () (setq expanded-started t)))
+                ((symbol-function 'e-board-activity-visual--schedule-push)
+                 #'ignore))
+        (e-board-activity-visual--run-set-updated
+         (current-buffer) target binding
+         '(:projection (:board-id "board-1"
+                       :runs ((:run-id "run-1")))))
+        (should expanded-started)
+        (should (equal (car request-args) target))
+        (should (equal (plist-get (cdr request-args) :run-id) "run-1"))
+        (should (member 'stale-detail cancelled))
+        (should (= e-board-activity-visual--run-set-epoch 5))
+        (should (eq e-board-activity-visual--detail-request 'fresh-detail))
+        (should (eq e-board-activity-visual--detail-state 'loading))
+        (should (equal e-board-activity-visual--selected-run-id "run-1"))
+        (should (equal e-board-activity-visual--selected-task selected-task))
+        ;; A superseded expanded query cannot replace the newer run-set.
+        (e-board-activity-visual--run-set-query-settled
+         (current-buffer) target binding 4 'stale-run-set nil)
+        (should (equal (plist-get e-board-activity-visual--run-set-projection
+                                  :board-id)
+                       "board-1"))
+        ;; A cancelled request cannot replace the newly requested page.
+        (e-board-activity-visual--detail-page-settled
+         (current-buffer) target "run-1" nil 'stale-detail nil)
+        (should (eq e-board-activity-visual--detail-request 'fresh-detail))
+        (should (eq e-board-activity-visual--detail-state 'loading))
+        (let ((fresh-settlement
+               (e-work-start
+                (e-work-spec-create
+                 :id "board-visual-detail-test"
+                 :execution 'cheap
+                 :interactive-policy 'cheap
+                 :runner
+                 (lambda (_arguments _context)
+                   '(:board-id "board-1" :generation 2 :revision 12
+                     :run (:run-id "run-1")
+                     :tasks ((:task-key "task" :accepted-attempt 2)))))
+                nil)))
+          (funcall settle fresh-settlement))
+        (should (eq e-board-activity-visual--detail-state 'ready))
+        (should (= (plist-get e-board-activity-visual--detail-page :revision)
+                   12))
+        (should (equal e-board-activity-visual--selected-task selected-task))))))
+
 (ert-deftest e-board-activity-visual-test-fallback-names-native-command ()
   "Unavailable WASM views open text and tell the user the explicit command."
   (let (message-text arguments)
@@ -195,6 +282,35 @@
                    'target 'binding "run-1")
                   'native-buffer))
       (should (equal (plist-get arguments :run-id) "run-1"))
+      (should (string-match-p "e-chat-open-board-activity-text"
+                              message-text)))))
+
+(ert-deftest e-board-activity-visual-test-open-error-falls-back-to-text ()
+  "A visual runtime error opens the native renderer with a concise reason."
+  (let (message-text fallback-arguments visual-arguments)
+    (cl-letf (((symbol-function 'e-board-sqlite-publication-target-valid-p)
+               (lambda (_target) t))
+              ((symbol-function 'e-board-activity-visual-unavailable-reason)
+               (lambda () nil))
+              ((symbol-function 'e-board-activity-visual-open-buffer)
+               (lambda (&rest arguments)
+                 (setq visual-arguments arguments)
+                 (error "egui registration failed")))
+              ((symbol-function 'message)
+               (lambda (format-string &rest values)
+                 (setq message-text (apply #'format format-string values))))
+              ((symbol-function 'e-board-activity-list-buffer)
+               (lambda (&rest values)
+                 (setq fallback-arguments values)
+                 'native-buffer)))
+      (should (eq (e-board-activity-visual-open-or-text
+                   'target 'binding "run-1" 'live-state)
+                  'native-buffer))
+      (should (equal (plist-get visual-arguments :binding) 'binding))
+      (should (equal (plist-get fallback-arguments :target) 'target))
+      (should (equal (plist-get fallback-arguments :run-id) "run-1"))
+      (should (eq (plist-get fallback-arguments :live) 'live-state))
+      (should (string-match-p "egui registration failed" message-text))
       (should (string-match-p "e-chat-open-board-activity-text"
                               message-text)))))
 

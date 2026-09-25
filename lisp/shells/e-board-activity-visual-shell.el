@@ -419,8 +419,8 @@
                 (e-board-activity-visual--selected-run-from-projection)
                 (if e-board-activity-visual--run-set-expanded
                     (e-board-activity-visual--start-expanded-run-set)
-                  (setq e-board-activity-visual--run-set-loading nil)
-                  (e-board-activity-visual--refresh-detail-page)))
+                  (setq e-board-activity-visual--run-set-loading nil))
+                (e-board-activity-visual--refresh-detail-page))
             (setq e-board-activity-visual--run-set-error
                   "Run-set update did not match this Board"))
           (e-board-activity-visual--schedule-push buffer))))))
@@ -624,23 +624,34 @@ Board run-set observer."
     (e-workspace-pop-to-buffer buffer)
     buffer))
 
+(defun e-board-activity-visual--open-text-fallback
+    (target run-id live reason)
+  "Open the native text view for TARGET and RUN-ID after REASON."
+  (message (concat "Visual Board activity unavailable: %s. Open the "
+                   "native text view with M-x "
+                   "e-chat-open-board-activity-text.")
+           reason)
+  (e-board-activity-list-buffer :target target :live live
+                                :run-id run-id))
+
 (defun e-board-activity-visual-open-or-text
     (target binding run-id &optional live)
-  "Open the visual view when available, otherwise the native text renderer."
+  "Open the visual view when available, falling back to native text on failure."
   (unless (e-board-sqlite-publication-target-valid-p target)
     (signal 'wrong-type-argument
             (list 'e-board-sqlite-publication-target-p target)))
   (setq live (or live e-subagent-actions-default-live))
   (if-let* ((reason (e-board-activity-visual-unavailable-reason)))
-      (progn
-        (message (concat "Visual Board activity unavailable: %s. Open the "
-                         "native text view with M-x "
-                         "e-chat-open-board-activity-text.")
-                reason)
-        (e-board-activity-list-buffer :target target :live live
-                                      :run-id run-id))
-    (e-board-activity-visual-open-buffer
-     :target target :binding binding :live live :run-id run-id)))
+      (e-board-activity-visual--open-text-fallback
+       target run-id live reason)
+    (condition-case error
+        (e-board-activity-visual-open-buffer
+         :target target :binding binding :live live :run-id run-id)
+      (error
+       (e-board-activity-visual--open-text-fallback
+        target run-id live
+        (format "visual renderer failed to open: %s"
+                (error-message-string error)))))))
 
 (provide 'e-board-activity-visual-shell)
 
