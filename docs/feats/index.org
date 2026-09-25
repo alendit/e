@@ -402,7 +402,7 @@ and excludes raw/private reasoning from Board publication and detail lookup.
 | 86 | In-review   | 86-current-emacs-config-e2e/                | Current Emacs Configuration E2E Mode                 |
 | 87 | Done        | 87-sqlite-session-board-persistence/         | SQLite Session and Board Persistence                 |
 | 88 | In-review   | 88-generational-context-ephemeral-frames/    | Generational Context with Ephemeral Frames — Addenda 3/4/5/6/7/8/9 |
-| 89 | In-progress | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
+| 89 | In-review   | 89-board-run-visibility-and-handoff/          | Board Run Visibility and Completion Handoff          |
 | 90 | In-progress | 90-tool-invocation-receipts/                   | Tool Invocation Receipts and Temporary Details       |
 | 91 | Done        | 91-improve-modularization/                      | Improve Modularization                               |
 | 92 | In-review   | 92-runtime-store-failure-isolation/              | Runtime-Store Failure Isolation and Bounded Projections |

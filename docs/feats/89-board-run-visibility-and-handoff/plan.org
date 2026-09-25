@@ -3,7 +3,7 @@
 
 * Status
 
-In-progress.
+In-review.
 
 * Goal
 
@@ -226,8 +226,8 @@ The owner chat remains a chronological observer of canonical Board messages.
 The dispatch path places its existing typed run, task, and attempt coordinates
 on each run-bound child input when it submits that canonical Board message.
 Child session metadata alone is insufficient for the Board observer: the
-current =e-subagent-direct-runner= calls =e-chat-service-submit-session= without
-=:metadata=.  For inputs carrying those coordinates, the transcript labels
+former =e-subagent-direct-runner= call to =e-chat-service-submit-session= did
+not pass =:metadata=.  For inputs carrying those coordinates, the transcript labels
 long automated assignments and initially folds their bodies.  The complete
 input remains available on expansion or in the participant chat,
 with its Board message identity and order intact.  Ordinary human prompts
@@ -268,7 +268,8 @@ The first terminal transition advances one continuation under the stable publica
 
 Completion publication state is explicit:
 
-- =waiting= before terminal policy is satisfied;
+- =waiting= until the terminal run's publication claim commits, including the
+  brief terminal transition before that claim;
 - =pending= after the board records the publication claim;
 - =published= after the board accepts the keyed completion input;
 - =failed= when publication cannot complete and requires attention.
@@ -387,6 +388,20 @@ reopened durable activity page.
   omitted-run access, restore/attention labels, and stale-click handling.  Build
   the WASM app and verify the native view still opens without xwidgets.
 
+Implemented on 2026-09-25 in commits =3247bb7f=, =3b68f5ef=, and
+=d7cc2381=.  The visual shell maps the shared bounded run set and one coherent
+run page into the Board WASM app, retains selection by durable identity, and
+revalidates current task/participant coordinates and live capability before
+participant controls act.  =Show more= expands the explicit query to at most
+256 runs and 256 KiB; ordinary status and context retain their 32-run and
+32 KiB bounds.  A manifest sentinel signals that more runs may exist without
+inflating the count of materialized active runs.  The native text view remains
+available when visual startup fails.  Focused Board and visual ERT, Rust tests,
+the WASM build, and web binding generation passed.  The isolated graphical
+Board scenario passed through the native fallback; this Emacs build rejects
+xwidget creation, so the visual graphical path still needs an xwidget-capable
+build for direct verification.
+
 ** Slice 3: inject active-run context
 
 - Add the session-scoped context provider backed by the same projection.
@@ -434,6 +449,14 @@ binding, owner id, Board, and window-safe headless dispatch.
 - Exercise restart before task persistence, before completion publication, after publication but before consumption, and after consumption.
 - Run focused orchestration, task-queue, board-runtime, chat-service, context, shell, persistence, and daily tests together.
 - Run isolated graphical tests for indicator visibility, composer readiness, focus, and idle completion delivery.
+
+The e-side bridge foundation is implemented in commits =02b00767=,
+=204e01f6=, and =c120b637=.  Stable task identity is arbitrated by SQLite;
+the Board bridge classifies the canonical enqueue result and distinguishes a
+live queue claim from an orphan after restart.  The Grimoire Daily producer
+still needs to call the bridge and own its dedicated queue lifecycle.  The
+independent review in =review.org= records the remaining run-selection and
+native activity findings.
 
 * End-to-end proof
 

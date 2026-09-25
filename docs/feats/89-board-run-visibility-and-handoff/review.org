@@ -1,0 +1,103 @@
+#+title: Review: Board Run Visibility and Completion Handoff
+#+startup: overview
+
+* Status
+
+In-review.  Three findings are open, and Daily's production queue integration
+is still in progress.
+
+* Review summary
+
+The owner chat now presents durable run status, bounded context, task detail,
+and one idle-delivered completion input.  The e-side queue bridge has a tested
+stable assignment identity.  The first independent pass at =c120b637= found
+two visibility failures and one native refresh gap.  The visual xwidget path
+cannot be exercised directly on this Emacs build.
+
+* Scope reviewed
+
+The review compared the plan's chat, Board activity, visual, completion, and
+restart contracts with the e source through =c120b637=.  It inspected the
+run-set SQL and reducer, native and visual Board shells, chat status action,
+continuation reconciliation, queue bridge, and focused tests.  Grimoire's
+production consumer remains outside this pass.
+
+* Verification performed during this review pass
+
+- Focused run-set and visual ERT: 23 passed.
+- Focused queue bridge, orchestration actions, and native shell ERT: 20 passed.
+- Restart/FIFO ERT: 2 passed.
+- A reducer witness with 32 completed projections and =more-p= returned
+  =status=idle=, =active-count=0=, and no selected run.
+- A native window witness returned the Board buffer while the chat remained
+  selected and no window displayed that buffer.
+- =git diff --check HEAD~13..HEAD= passed at =c120b637=.
+
+The passing suites do not cover the failure partitions below.
+
+* Findings
+
+** TODO High: Older active run disappears behind completed run history
+
+The plan requires every nonterminal run in the shared projection.  The
+=board-orchestration-runs= SQL read chooses the newest 32 manifests before
+=e-board-orchestration-run-set= filters completed runs.  With 32 newer
+completed runs and one older active run, the default chat status and model
+context report idle with zero active and omitted runs.  The same window can
+hide an older published run from continuation reconciliation and outcome
+backfill.  Select actionable runs before applying the presentation budget,
+and never report idle from an incomplete scan.  Add a durable-history test for
+status, context, and continuation backfill.
+
+** TODO High: Native Board activity is not displayed from chat
+
+On a build without xwidgets, the chat status action falls back to
+=e-board-activity-list-buffer=.  The explicit
+=e-chat-open-board-activity-text= command calls the same function.  It pops a
+window only when the native function itself was called interactively; both
+callers are programmatic.  The Board buffer is created but remains hidden.
+Display it from both public routes and assert the selected window after the
+header action in the isolated graphical scenario, without a test-side pop.
+
+** TODO Medium: Open native Board activity does not follow Board updates
+
+The plan requires notification-driven refresh in both renderers.  The native
+shell refreshes on open, =g=, paging, and local controls, but it has no Board
+subscription.  Task rows therefore remain stale after another actor changes
+the Board until the user presses =g=.  Subscribe the native buffer to Board
+commits, coalesce bounded refreshes, preserve its selected run and row, and
+unsubscribe on rebind or kill.
+
+* Plan coverage
+
+Slices 1-5 and the e-side part of Slice 7 have focused implementation evidence.
+Slice 6's single-owner Grimoire path was delivered previously.  Slice 7's
+production queue consumer and whole-scenario restart proof remain open.
+The xwidget visual renderer builds, but its graphical interaction still needs
+an xwidget-capable Emacs.
+
+* Architecture review
+
+The Board owns run reduction, the task queue owns durable assignment rows,
+and the bridge maps exact identities without putting Board policy into the
+generic queue.  The run-set SQL's newest-manifest window currently contradicts
+the Board-owned active-run contract.  The native shell needs a presentation-owned
+subscription; it should not poll workers or duplicate the run inventory.
+
+* UX and performance playthrough
+
+The isolated native graphical scenario exercised an idle owner chat, pending
+task detail, an editable composer during a held Board read, and a reopened
+activity page.  The review's window witness shows why the default no-xwidget
+route fails to display that page.  Per-Board-write run-set query cost and
+visual detail refresh cost still need measurement after corrections.
+
+* Live reload
+
+The user's running Emacs was left unchanged.  Core storage and record behavior
+requires a full restart before the new behavior is available there.
+
+* Unresolved
+
+The three findings above, Daily production queue integration, whole-scenario
+gates, and direct xwidget graphical verification remain open.
