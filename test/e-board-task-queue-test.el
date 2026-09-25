@@ -199,7 +199,6 @@
              :runner
              (e-board-task-queue-test--real-subagent-runner
               target parent "parent-1" dispatch-count)))
-           (assignment '(:run-id "run-1" :task-key "review" :attempt 0))
            (prompt "Review the durable Board assignment.")
            (task-id (e-board-task-queue-task-id
                      target "run-1" "review" 0))
@@ -207,9 +206,6 @@
            (real-submit (symbol-function 'e-task-storage-submit))
            provider-settle task child-work)
       (e-board-task-queue-test--manifest target "run-1" "review" 0)
-      (e-task-storage-open-queue storage queue-id)
-      (should-not (plist-get (e-task-storage-snapshot storage queue-id 16)
-                             :records))
       (should (equal task-id
                      (e-board-task-queue-task-id target "run-1" "review" 0)))
       (should (= (length task-id) 70))
@@ -242,9 +238,9 @@
                 queue target "run-1" "review" 0
                 :prompt prompt :summary "Review" :harness-instance-id :reviewer)))
         (should (eq (plist-get task :status) 'created))
-        (should (equal (seq-take operations 4)
-                       '((write open-queue) (read snapshot) (write enqueue)
-                         (write claim-runnable))))
+        (should (equal (seq-take operations 2)
+                       '((write enqueue) (write claim-runnable))))
+        (should-not (memq 'snapshot (mapcar #'cadr operations)))
         (setq task-id (plist-get task :task-id))
         (should
          (e-board-task-queue-test--wait-until
@@ -277,6 +273,22 @@
                  :harness-instance-id :reviewer))))
           (should (eq (plist-get existing :status) 'existing))
           (should (eq (plist-get (plist-get existing :record) :status) 'running))
+          (should (= (car dispatch-count) 1)))
+        (let* ((observer-queue
+                (e-task-queue-create
+                 :storage storage :id queue-id :max-retries 0
+                 :runner (lambda (&rest _)
+                           (ert-fail "An exact assignment must not dispatch"))))
+               (existing-assignment
+                (e-board-task-queue-test--await
+                 (e-board-task-queue-reconcile
+                  observer-queue target "run-1" "review" 0
+                  :prompt prompt :summary "Review"
+                  :harness-instance-id :reviewer)))
+               (observer-task-id (plist-get existing-assignment :task-id)))
+          (should (eq (plist-get existing-assignment :status) 'existing))
+          (should (equal observer-task-id task-id))
+          (should-not (e-task-queue-work-handle observer-queue task-id))
           (should (= (car dispatch-count) 1)))
         (should-error
          (e-board-task-queue-test--await
@@ -343,53 +355,92 @@
           (should (eq (plist-get (plist-get (car reports) :payload) :status)
                       'done)))))))
 
-(ert-deftest e-board-task-queue-test-fails-closed-on-truncated-snapshot ()
-  "A possibly truncated task snapshot is never used to create or classify work."
+(ert-deftest e-board-task-queue-test-live-handle-covers-claim-runner-window ()
+  "A claimed task is existing before its runner registers a Board assignment."
   (e-board-task-queue-test--with-runtime (target _parent storage _runtime)
-    (let* ((queue-id "truncated-board-assignment-queue")
-           (assignment '(:run-id "run-1" :task-key "review" :attempt 0))
-           (task-id (e-board-task-queue-task-id target "run-1" "review" 0))
-           (metadata
-            (e-board-task-queue--metadata
-             nil (e-board-sqlite-publication-target-board-id target) assignment))
-           (queue (e-task-queue-create
-                   :storage storage :id queue-id :max-retries 0
-                   :runner (lambda (&rest _) (ert-fail "Must not dispatch"))))
-           (enqueues 0))
-      (should-error
-       (e-board-task-queue-reconcile
-        (e-task-queue-create :storage storage :id "retries-enabled")
-        target "run-1" "review" 0 :prompt "Review." )
-       :type 'e-board-task-queue-error)
-      (e-task-storage-open-queue storage queue-id)
-      (e-task-storage-enqueue
-       storage queue-id 1
-       (list :task-id task-id :status 'queued :prompt "Review."
-             :origin-prompt "Review." :summary "Review."
-             :metadata metadata :harness-instance-id :reviewer
-             :enqueued-at "2026-09-25T00:00:00+0000" :retries 0))
-      (let ((e-board-task-queue-snapshot-limit 1)
-            (real-submit (symbol-function 'e-task-storage-submit)))
-        (cl-letf (((symbol-function 'e-task-storage-submit)
-                   (lambda (candidate kind operation arguments on-settle)
-                     (when (eq operation 'enqueue)
-                     (cl-incf enqueues))
-                     (funcall real-submit candidate kind operation arguments
-                              on-settle))))
-          (should-error
-           (e-board-task-queue-test--await
-            (e-board-task-queue-reconcile
-             queue target "run-1" "review" 0 :prompt "Review."
-             :summary "Review." :harness-instance-id :reviewer))
-           :type 'e-board-task-queue-error)))
-      (should (= enqueues 0)))))
+    (let* ((queue-id "board-claim-window-queue")
+           (task-id (e-board-task-queue-task-id
+                     target "run-window" "review" 0))
+           (board-id (e-board-sqlite-publication-target-board-id target))
+           (runner-entered nil)
+           (work-handle-before-run nil)
+           (assignment-state-before-run nil)
+           (duplicate-work nil)
+           (runner-settle nil)
+           (operations nil)
+           (real-submit (symbol-function 'e-task-storage-submit))
+           (queue nil))
+      (setq queue
+            (e-task-queue-create
+             :storage storage :id queue-id :max-retries 0
+             :runner
+             (lambda (_task _harness on-settle)
+               (setq runner-entered t
+                     runner-settle on-settle
+                     work-handle-before-run
+                     (e-task-queue-work-handle queue task-id)
+                     assignment-state-before-run
+                     (e-subagent-runner-assignment-state
+                      board-id "run-window" "review" 0)
+                     duplicate-work
+                     (e-board-task-queue-reconcile
+                      queue target "run-window" "review" 0
+                      :prompt "Review transient claim." :summary "Window"
+                      :harness-instance-id :reviewer))
+               (list :cancel #'ignore))))
+      (e-board-task-queue-test--manifest target "run-window" "review" 0)
+      (cl-letf (((symbol-function 'e-task-storage-submit)
+                 (lambda (candidate kind operation arguments on-settle)
+                   (setq operations
+                         (append operations (list (list kind operation))))
+                   (funcall real-submit candidate kind operation arguments
+                            on-settle))))
+        (let ((created
+               (e-board-task-queue-test--await
+                (e-board-task-queue-reconcile
+                 queue target "run-window" "review" 0
+                 :prompt "Review transient claim." :summary "Window"
+                 :harness-instance-id :reviewer))))
+          (should (eq (plist-get created :status) 'created))
+          (should (e-board-task-queue-test--wait-until
+                   (lambda () runner-entered)))
+          (should (e-work-handle-p work-handle-before-run))
+          (should-not assignment-state-before-run)
+          (should (e-work-handle-p duplicate-work))
+          (let ((existing
+                 (e-board-task-queue-test--await duplicate-work)))
+            (should (eq (plist-get existing :status) 'existing))
+            (should (eq (plist-get (plist-get existing :record) :status)
+                        'running))
+            (should-not assignment-state-before-run)
+            (should (equal (seq-take operations 3)
+                           '((write enqueue)
+                             (write claim-runnable)
+                             (write enqueue))))
+            (should-not (memq 'snapshot (mapcar #'cadr operations))))
+          (funcall runner-settle :status 'done
+                   :outputs (vector (list :kind 'text :value "Complete")))
+          (should
+           (e-board-task-queue-test--wait-until
+            (lambda ()
+              (not (gethash task-id (e-task-queue-records queue)))))))))))
+
+(ert-deftest e-board-task-queue-test-rejects-automatic-retries ()
+  "Board assignments require retries to advance the Board attempt first."
+  (e-board-task-queue-test--with-runtime (target _parent storage _runtime)
+    (should-error
+     (e-board-task-queue-reconcile
+      (e-task-queue-create :storage storage :id "retries-enabled"
+                           :max-retries 1)
+      target "run-1" "review" 0 :prompt "Review.")
+     :type 'e-board-task-queue-error)))
 
 (ert-deftest e-board-task-queue-test-rejects-mismatched-canonical-task-id ()
   "A canonical enqueue result must retain the requested stable task id."
   (e-board-task-queue-test--with-runtime (target _parent _storage _runtime)
     (should-error
      (e-board-task-queue--classify
-      target '(:run-id "run-1" :task-key "review" :attempt 0)
+      nil target '(:run-id "run-1" :task-key "review" :attempt 0)
       "expected-task-id"
       '(:task-id "other-task-id" :created-p t
         :record (:task-id "other-task-id" :status queued)))
