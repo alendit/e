@@ -357,6 +357,16 @@ focused tests use isolated SQLite state.
   status opens the correct run detail, focus survives updates, and no shell
   polls worker sessions.
 
+Implemented on 2026-09-25 as package =F89-S2-NATIVE=.  The chat header names
+the separate turn and run states and opens the selected run in the one native
+Board activity shell.  Its bounded Board read returns task dispositions,
+including tasks without participants, and related participant rows at one
+generation and revision.  Run-bound child inputs carry typed assignment
+coordinates; long assignments are labeled and folded while retaining their
+complete Board messages.  Focused owner tests and the isolated graphical Daily
+scenario passed, including a held Board read with an editable composer and a
+reopened durable activity page.
+
 ** Slice 2b: visualize Board activity with emacs-egui
 
 - Add the repository-root =emacs-egui= submodule for both the Board app and
