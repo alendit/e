@@ -8,6 +8,18 @@
 (require 'ert)
 (require 'e-board-activity-visual-shell)
 
+(defun e-board-activity-visual-test--control-payload
+    (action &optional revision attempt participant-id &rest fields)
+  "Return a task control payload for ACTION and optional coordinates."
+  (append
+   `((action . ,action)
+     (boardId . "board-1") (runSetEpoch . 4)
+     (generation . 3) (revision . ,(or revision 10))
+     (runId . "run-1") (taskKey . "task")
+     (attempt . ,(or attempt 2))
+     (participantId . ,(or participant-id "worker-1")))
+   fields))
+
 (ert-deftest e-board-activity-visual-test-run-selector-keeps-bounded-status ()
   "The selector exposes counts, restore state, attention, and omitted runs."
   (let* ((projection
@@ -90,6 +102,169 @@
                      "ad-hoc"))
       (should (equal (alist-get 'taskKey (alist-get 'selectedTask snapshot))
                      "calendar")))))
+
+(ert-deftest e-board-activity-visual-test-task-controls-follow-exact-live-capability ()
+  "Task controls require its exact admitted row and active live capability."
+  (let* ((row '(:participant-id "worker-1" :run-id "run-1"
+                :task-key "task" :attempt 2))
+         (task (list :task-key "task" :accepted-attempt 2
+                     :participant-id "worker-1" :participant-row row))
+         (record '(:board-id "board-1" :participant-id "worker-1"
+                   :session-id "worker-1" :run-id "run-1"
+                   :task-key "task" :attempt 2))
+         (work
+          (e-work-prepare
+           (e-work-spec-create
+            :id "board-visual-controls"
+            :execution 'cheap :interactive-policy 'cheap
+            :runner (lambda (_arguments _context) nil))
+           nil))
+         (entry (list :board-id "board-1" :participant-id "worker-1"
+                      :harness 'worker-harness :work-handle work
+                      :callbacks (list :record (lambda () record))))
+         (live-entry entry))
+    (cl-letf (((symbol-function 'e-subagent-live-get)
+               (lambda (owner board-id participant-id)
+                 (when (and (eq owner 'live)
+                            (equal board-id "board-1")
+                            (equal participant-id "worker-1"))
+                   live-entry)))
+              )
+      (let ((controls
+             (e-board-activity-visual-view-model-task-controls
+              "board-1" "run-1" task 'live)))
+        (dolist (name '(canOpenChat canSteer canSend canInterrupt canShutdown))
+          (should (eq (alist-get name controls) t))))
+      (setq live-entry nil)
+      (let ((controls
+             (e-board-activity-visual-view-model-task-controls
+              "board-1" "run-1" task 'live)))
+        (should (eq (alist-get 'canOpenChat controls) t))
+        (dolist (name '(canSteer canSend canInterrupt canShutdown))
+          (should (eq (alist-get name controls) :json-false))))
+      (setq live-entry entry
+            record (plist-put record :attempt 1))
+      (let ((controls
+             (e-board-activity-visual-view-model-task-controls
+              "board-1" "run-1" task 'live)))
+        (should (eq (alist-get 'canOpenChat controls) t))
+        (dolist (name '(canSteer canSend canInterrupt canShutdown))
+          (should (eq (alist-get name controls) :json-false))))
+      (setq record (plist-put record :attempt 2))
+      (e-work-finish work 'done)
+      (let ((controls
+             (e-board-activity-visual-view-model-task-controls
+              "board-1" "run-1" task 'live)))
+        (should (eq (alist-get 'canOpenChat controls) t))
+        (dolist (name '(canSteer canSend canInterrupt canShutdown))
+          (should (eq (alist-get name controls) :json-false)))))))
+
+(ert-deftest e-board-activity-visual-test-task-actions-revalidate-before-dispatch ()
+  "Stale and unavailable clicks do nothing; current task actions route once."
+  (let* ((target 'target)
+         (binding (e-chat-service--binding-create
+                   :lifecycle-state 'ready :board-id "board-1"))
+         (row '(:participant-id "worker-1" :run-id "run-1"
+                :task-key "task" :attempt 2))
+         (record '(:board-id "board-1" :participant-id "worker-1"
+                   :session-id "worker-1" :run-id "run-1"
+                   :task-key "task" :attempt 2))
+         (work
+          (e-work-prepare
+           (e-work-spec-create
+            :id "board-visual-task-action"
+            :execution 'cheap :interactive-policy 'cheap
+            :runner (lambda (_arguments _context) nil))
+           nil))
+         (entry (list :board-id "board-1" :participant-id "worker-1"
+                      :harness 'worker-harness :work-handle work
+                      :callbacks (list :record (lambda () record))))
+         (live-entry entry)
+         (calls nil)
+         (messages nil))
+    (with-temp-buffer
+      (setq-local e-board-activity-visual--target target
+                  e-board-activity-visual--binding binding
+                  e-board-activity-visual--live 'live
+                  e-board-activity-visual--run-set-epoch 4
+                  e-board-activity-visual--selected-run-id "run-1"
+                  e-board-activity-visual--selected-task
+                  '(:run-task "run-1" "task" 2)
+                  e-board-activity-visual--detail-state 'ready
+                  e-board-activity-visual--detail-page
+                  (list :board-id "board-1" :generation 3 :revision 10
+                        :run '(:run-id "run-1")
+                        :tasks (list
+                                (list :task-key "task"
+                                      :accepted-attempt 2
+                                      :participant-id "worker-1"
+                                      :participant-row row))))
+      (cl-letf (((symbol-function 'e-board-activity-visual--target-id)
+                 (lambda () "board-1"))
+                ((symbol-function 'e-board-activity-visual--schedule-push)
+                 #'ignore)
+                ((symbol-function 'message)
+                 (lambda (format-string &rest values)
+                   (push (apply #'format format-string values) messages)))
+                ((symbol-function 'e-subagent-live-get)
+                 (lambda (owner board-id participant-id)
+                   (when (and (eq owner 'live)
+                              (equal board-id "board-1")
+                              (equal participant-id "worker-1"))
+                     live-entry)))
+                ((symbol-function 'e-board-activity-shell-open-participant-chat)
+                 (lambda (actual-row board-id live)
+                   (push (list 'open-chat actual-row board-id live) calls)))
+                ((symbol-function 'e-subagent-steer)
+                 (lambda (&rest arguments)
+                   (push (cons 'steer arguments) calls)))
+                ((symbol-function 'e-subagent-send)
+                 (lambda (&rest arguments)
+                   (push (cons 'send arguments) calls)))
+                ((symbol-function 'e-subagent-interrupt)
+                 (lambda (&rest arguments)
+                   (push (cons 'interrupt arguments) calls)))
+                ((symbol-function 'e-subagent-shutdown)
+                 (lambda (&rest arguments)
+                   (push (cons 'shutdown arguments) calls)))
+                )
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload
+          "steer-participant" 9))
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload
+          "send-participant" 10 1))
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload
+          "interrupt-participant" 10 2 "other-worker"))
+        (should-not calls)
+        (setq live-entry nil)
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload "shutdown-participant"))
+        (should-not calls)
+        ;; Durable admitted participants remain chat-accessible without a
+        ;; process-local live control owner.
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload "open-task-participant"))
+        (setq live-entry entry)
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload
+          "steer-participant" nil nil nil '(prompt . "direct") '(reason . "why")))
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload
+          "send-participant" nil nil nil '(prompt . "follow up")))
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload "interrupt-participant"))
+        (e-board-activity-visual--handle-ui-action
+         (e-board-activity-visual-test--control-payload "shutdown-participant"))
+        (should
+         (equal (nreverse calls)
+                `((open-chat ,row "board-1" live)
+                  (steer live "board-1" target "worker-1" "direct" "why")
+                  (send live "board-1" "worker-1" "follow up")
+                  (interrupt live "board-1" target "worker-1")
+                  (shutdown live "board-1" target "worker-1"))))
+        (should messages)))))
 
 (ert-deftest e-board-activity-visual-test-loading-and-mismatched-pages-hide-rows ()
   "Detail rows stay hidden while loading or when page identities disagree."

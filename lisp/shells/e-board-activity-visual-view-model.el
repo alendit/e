@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'e-subagent-live)
+(require 'e-work)
 (require 'cl-lib)
 (require 'subr-x)
 
@@ -153,6 +154,68 @@ request-local query error."
       (progressSequence . ,(plist-get progress :sequence))
       (progressSummary . ,(plist-get progress :summary)))))
 
+(defun e-board-activity-visual-view-model--task-participant-row
+    (board-id run-id task)
+  "Return TASK's participant row when its admitted coordinates match.
+BOARD-ID and RUN-ID are the identities for the coherent activity page."
+  (let* ((row (plist-get task :participant-row))
+         (participant-id (plist-get task :participant-id))
+         (task-key (plist-get task :task-key))
+         (attempt (plist-get task :accepted-attempt)))
+    (when (and (stringp board-id)
+               (stringp run-id)
+               (stringp task-key)
+               (integerp attempt)
+               (stringp participant-id)
+               (not (string-empty-p participant-id))
+               (listp row)
+               (equal participant-id (plist-get row :participant-id))
+               (equal run-id (plist-get row :run-id))
+               (equal task-key (plist-get row :task-key))
+               (equal attempt (plist-get row :attempt)))
+      row)))
+
+(defun e-board-activity-visual-view-model-task-controls
+    (board-id run-id task live)
+  "Return controls available for TASK's exact participant, if admitted.
+Only the detached task assignment and LIVE's exact process-local capability
+can make an operation available."
+  (let* ((row (e-board-activity-visual-view-model--task-participant-row
+               board-id run-id task))
+         (participant-id (plist-get row :participant-id))
+         (entry (and row live
+                     (e-subagent-live-get live board-id participant-id)))
+         (callbacks (plist-get entry :callbacks))
+         (record-getter (plist-get callbacks :record))
+         (record (and (functionp record-getter)
+                      (funcall record-getter)))
+         (work-handle (plist-get entry :work-handle))
+         (work-state
+          (and (e-work-handle-p work-handle)
+               (plist-get (e-work-status work-handle) :state)))
+         (live-entry-p
+          (and row
+               (equal (plist-get entry :board-id) board-id)
+               (equal (plist-get entry :participant-id) participant-id)
+               record
+               (equal (plist-get record :board-id) board-id)
+               (equal (plist-get record :participant-id) participant-id)
+               (equal (plist-get record :session-id) participant-id)
+               (equal (plist-get record :run-id) run-id)
+               (equal (plist-get record :task-key)
+                      (plist-get task :task-key))
+               (equal (plist-get record :attempt)
+                      (plist-get task :accepted-attempt))
+               (plist-get entry :harness)
+               (e-work-handle-p work-handle)
+               (not (memq work-state '(finished failed cancelled)))))
+         (bool (lambda (value) (if value t :json-false))))
+    `((canOpenChat . ,(funcall bool row))
+      (canSteer . ,(funcall bool live-entry-p))
+      (canSend . ,(funcall bool live-entry-p))
+      (canInterrupt . ,(funcall bool live-entry-p))
+      (canShutdown . ,(funcall bool live-entry-p)))))
+
 (defun e-board-activity-visual-view-model--task
     (run-id task board-id live)
   "Return detached visual task DTO for TASK in RUN-ID."
@@ -186,7 +249,9 @@ request-local query error."
       (outcomeError . ,(e-board-activity-visual-view-model--string
                         (plist-get outcome :error)))
       (progressSequence . ,(plist-get progress :sequence))
-      (progressSummary . ,(plist-get progress :summary)))))
+      (progressSummary . ,(plist-get progress :summary))
+      (controls . ,(e-board-activity-visual-view-model-task-controls
+                    board-id run-id task live)))))
 
 (defun e-board-activity-visual-view-model-page
     (page board-id run-id selected-task live)

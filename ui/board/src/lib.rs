@@ -128,6 +128,33 @@ pub struct TaskCard {
     pub outcome_error: Option<String>,
     pub progress_sequence: Option<i64>,
     pub progress_summary: Option<String>,
+    #[serde(default)]
+    pub controls: TaskControls,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskControls {
+    #[serde(default)]
+    pub can_open_chat: bool,
+    #[serde(default)]
+    pub can_steer: bool,
+    #[serde(default)]
+    pub can_send: bool,
+    #[serde(default)]
+    pub can_interrupt: bool,
+    #[serde(default)]
+    pub can_shutdown: bool,
+}
+
+impl TaskControls {
+    fn any_available(&self) -> bool {
+        self.can_open_chat
+            || self.can_steer
+            || self.can_send
+            || self.can_interrupt
+            || self.can_shutdown
+    }
 }
 
 impl TaskCard {
@@ -159,6 +186,9 @@ pub struct ParticipantCard {
 pub struct BoardApp {
     state: BoardState,
     selected_task: Option<TaskIdentity>,
+    steer_prompt: String,
+    steer_reason: String,
+    send_prompt: String,
     readable_fonts_applied: bool,
 }
 
@@ -167,6 +197,9 @@ impl BoardApp {
         Self {
             state: BoardState::default(),
             selected_task: None,
+            steer_prompt: String::new(),
+            steer_reason: String::new(),
+            send_prompt: String::new(),
             readable_fonts_applied: false,
         }
     }
@@ -232,18 +265,81 @@ impl BoardApp {
         Value::Object(payload)
     }
 
+    fn task_action_payload(&self, action: &str, task: &TaskCard, values: Value) -> Value {
+        let mut fields = Map::new();
+        fields.insert(
+            "runId".to_string(),
+            task.run_id
+                .as_ref()
+                .map(|value| Value::String(value.clone()))
+                .unwrap_or(Value::Null),
+        );
+        fields.insert(
+            "taskKey".to_string(),
+            task.task_key
+                .as_ref()
+                .map(|value| Value::String(value.clone()))
+                .unwrap_or(Value::Null),
+        );
+        fields.insert(
+            "attempt".to_string(),
+            task.attempt.map(Value::from).unwrap_or(Value::Null),
+        );
+        fields.insert(
+            "participantId".to_string(),
+            task.participant_id
+                .as_ref()
+                .map(|value| Value::String(value.clone()))
+                .unwrap_or(Value::Null),
+        );
+        fields.insert(
+            "generation".to_string(),
+            self.state
+                .detail
+                .generation
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        );
+        fields.insert(
+            "revision".to_string(),
+            self.state
+                .detail
+                .revision
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        );
+        if let Value::Object(extra) = values {
+            fields.extend(extra);
+        }
+        self.action_payload(action, Value::Object(fields))
+    }
+
     fn send_action(&self, action: &str, values: Value) {
         emacs_post_message("ui-action", self.action_payload(action, values));
+    }
+
+    fn send_task_action(&self, action: &str, task: &TaskCard, values: Value) {
+        emacs_post_message("ui-action", self.task_action_payload(action, task, values));
+    }
+
+    fn clear_control_inputs(&mut self) {
+        self.steer_prompt.clear();
+        self.steer_reason.clear();
+        self.send_prompt.clear();
     }
 
     fn select_run(&mut self, run_id: &str) {
         self.state.selected_run_id = Some(run_id.to_string());
         self.selected_task = None;
+        self.clear_control_inputs();
         self.send_action("select-run", json!({ "runId": run_id }));
     }
 
     fn select_task(&mut self, task: &TaskCard) {
         let identity = task.identity();
+        if self.selected_task.as_ref() != Some(&identity) {
+            self.clear_control_inputs();
+        }
         self.selected_task = Some(identity.clone());
         self.send_action(
             "select-task",
@@ -441,9 +537,9 @@ impl BoardApp {
         }
     }
 
-    fn render_inspector(&self, ui: &mut egui::Ui) {
+    fn render_inspector(&mut self, ui: &mut egui::Ui) {
         ui.heading("Task inspector");
-        let Some(task) = self.selected_task() else {
+        let Some(task) = self.selected_task().cloned() else {
             ui.label("Select a task card to inspect its Board coordinates.");
             return;
         };
@@ -489,6 +585,60 @@ impl BoardApp {
                 ui.small(format!("Board generation: {generation}"));
             }
         }
+
+        let controls = &task.controls;
+        if controls.any_available() {
+            ui.separator();
+            ui.heading("Participant controls");
+            if controls.can_open_chat && ui.button("Open participant chat").clicked() {
+                self.send_task_action("open-task-participant", &task, json!({}));
+            }
+            if controls.can_steer {
+                ui.label("Steer prompt");
+                ui.text_edit_multiline(&mut self.steer_prompt);
+                ui.label("Reason (optional)");
+                ui.text_edit_singleline(&mut self.steer_reason);
+                if ui
+                    .add_enabled(
+                        !self.steer_prompt.trim().is_empty(),
+                        egui::Button::new("Steer"),
+                    )
+                    .clicked()
+                {
+                    let prompt = std::mem::take(&mut self.steer_prompt);
+                    let reason = std::mem::take(&mut self.steer_reason);
+                    self.send_task_action(
+                        "steer-participant",
+                        &task,
+                        json!({ "prompt": prompt, "reason": reason }),
+                    );
+                }
+            }
+            if controls.can_send {
+                ui.label("Follow-up prompt");
+                ui.text_edit_multiline(&mut self.send_prompt);
+                if ui
+                    .add_enabled(
+                        !self.send_prompt.trim().is_empty(),
+                        egui::Button::new("Send"),
+                    )
+                    .clicked()
+                {
+                    let prompt = std::mem::take(&mut self.send_prompt);
+                    self.send_task_action(
+                        "send-participant",
+                        &task,
+                        json!({ "prompt": prompt }),
+                    );
+                }
+            }
+            if controls.can_interrupt && ui.button("Interrupt").clicked() {
+                self.send_task_action("interrupt-participant", &task, json!({}));
+            }
+            if controls.can_shutdown && ui.button("Shut down").clicked() {
+                self.send_task_action("shutdown-participant", &task, json!({}));
+            }
+        }
     }
 }
 
@@ -504,7 +654,8 @@ impl EguiEmacsApp for BoardApp {
     fn on_state_update(&mut self, state: Self::State) {
         let previous = self.selected_task.take();
         self.state = state;
-        self.selected_task = previous
+        let selected_task = previous
+            .clone()
             .filter(|selected| self.detail_contains_task(selected))
             .or_else(|| {
                 self.state
@@ -512,6 +663,10 @@ impl EguiEmacsApp for BoardApp {
                     .clone()
                     .filter(|selected| self.detail_contains_task(selected))
             });
+        if selected_task != previous {
+            self.clear_control_inputs();
+        }
+        self.selected_task = selected_task;
     }
 
     fn on_theme_update(&mut self, _theme: ThemeColors) {
@@ -710,6 +865,68 @@ mod tests {
             BoardApp::task_admission_label(&task),
             "Attempt 1 · admission pending · no participant"
         );
+        assert!(!task.controls.any_available());
+    }
+
+    #[test]
+    fn task_action_payload_carries_all_current_assignment_coordinates() {
+        let mut app = BoardApp::new();
+        app.state = ready_state(7);
+        let task: TaskCard = serde_json::from_value(json!({
+            "runId": "run-1",
+            "taskKey": "calendar",
+            "attempt": 2,
+            "participantId": "worker-1",
+            "controls": {
+                "canOpenChat": true,
+                "canSteer": true,
+                "canSend": true,
+                "canInterrupt": true,
+                "canShutdown": true
+            }
+        }))
+        .unwrap();
+
+        assert!(task.controls.any_available());
+        let payload = app.task_action_payload(
+            "send-participant",
+            &task,
+            json!({ "prompt": "follow up" }),
+        );
+
+        assert_eq!(payload["action"], "send-participant");
+        assert_eq!(payload["boardId"], "board-1");
+        assert_eq!(payload["runSetEpoch"], 4);
+        assert_eq!(payload["runId"], "run-1");
+        assert_eq!(payload["taskKey"], "calendar");
+        assert_eq!(payload["attempt"], 2);
+        assert_eq!(payload["participantId"], "worker-1");
+        assert_eq!(payload["generation"], 2);
+        assert_eq!(payload["revision"], 7);
+        assert_eq!(payload["prompt"], "follow up");
+    }
+
+    #[test]
+    fn task_change_clears_local_control_input() {
+        let mut app = BoardApp::new();
+        app.on_state_update(ready_state(7));
+        app.selected_task = Some(TaskIdentity {
+            run_id: Some("run-1".to_string()),
+            task_key: Some("calendar".to_string()),
+            attempt: Some(0),
+        });
+        app.steer_prompt = "private prompt".to_string();
+        app.steer_reason = "private reason".to_string();
+        app.send_prompt = "follow up".to_string();
+        let mut changed = ready_state(8);
+        changed.detail.required_tasks[0].attempt = Some(1);
+
+        app.on_state_update(changed);
+
+        assert!(app.steer_prompt.is_empty());
+        assert!(app.steer_reason.is_empty());
+        assert!(app.send_prompt.is_empty());
+        assert!(app.selected_task.is_none());
     }
 
     #[test]
@@ -721,11 +938,13 @@ mod tests {
             task_key: Some("calendar".to_string()),
             attempt: Some(0),
         });
+        app.steer_prompt = "keep this for the same task".to_string();
 
         app.on_state_update(ready_state(8));
 
         assert_eq!(app.state.detail.revision, Some(8));
         assert_eq!(app.selected_task.unwrap().attempt, Some(0));
+        assert_eq!(app.steer_prompt, "keep this for the same task");
     }
 
     #[test]

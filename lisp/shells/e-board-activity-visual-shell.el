@@ -469,6 +469,58 @@
          (= generation (plist-get page :generation))
          (= revision (plist-get page :revision)))))
 
+(defun e-board-activity-visual--task-action-context (payload)
+  "Return the current selected task and exact participant for PAYLOAD."
+  (let* ((run-id
+          (e-board-activity-visual--payload-field payload 'runId))
+         (task-key
+          (e-board-activity-visual--payload-field payload 'taskKey))
+         (attempt
+          (e-board-activity-visual--payload-field payload 'attempt))
+         (participant-id
+          (e-board-activity-visual--payload-field payload 'participantId))
+         (identity (list :run-task run-id task-key attempt))
+         (page e-board-activity-visual--detail-page)
+         (task
+          (and (stringp run-id) (stringp task-key)
+               (integerp attempt) (>= attempt 0)
+               (cl-find-if
+                (lambda (candidate)
+                  (equal identity
+                         (e-board-activity-visual--page-task-id
+                          run-id candidate)))
+                (plist-get page :tasks))))
+         (row (and task (plist-get task :participant-row)))
+         (expected-task e-board-activity-visual--selected-task))
+    (when (and (e-board-activity-visual--page-current-p payload run-id)
+               (equal identity expected-task)
+               task
+               (e-board-activity-visual--page-has-task-p page identity)
+               (stringp participant-id)
+               (equal participant-id (plist-get task :participant-id))
+               (equal participant-id (plist-get row :participant-id))
+               (equal run-id (plist-get row :run-id))
+               (equal task-key (plist-get row :task-key))
+               (equal attempt (plist-get row :attempt)))
+      (list :task task :participant-row row
+            :participant-id participant-id
+            :controls
+            (e-board-activity-visual-view-model-task-controls
+             (e-board-activity-visual--target-id) run-id task
+             e-board-activity-visual--live)))))
+
+(defun e-board-activity-visual--with-task-control
+    (payload control function)
+  "Call FUNCTION with PAYLOAD's task context when CONTROL is still valid."
+  (let* ((context (e-board-activity-visual--task-action-context payload))
+         (controls (plist-get context :controls)))
+    (cond
+     ((null context)
+      (message "The selected Board task or participant is no longer current."))
+     ((not (eq (alist-get control controls) t))
+      (message "This Board participant control is no longer available."))
+     (t (funcall function context)))))
+
 (defun e-board-activity-visual--run-present-p (run-id)
   "Return non-nil when RUN-ID is in the current bounded selector value."
   (and (stringp run-id)
@@ -544,6 +596,65 @@
              (e-board-activity-shell-open-participant-chat
               row (e-board-activity-visual--target-id)
               e-board-activity-visual--live))))
+        ('open-task-participant
+         (e-board-activity-visual--with-task-control
+          payload 'canOpenChat
+          (lambda (context)
+            (e-board-activity-shell-open-participant-chat
+             (plist-get context :participant-row)
+             (e-board-activity-visual--target-id)
+             e-board-activity-visual--live))))
+        ('steer-participant
+         (e-board-activity-visual--with-task-control
+          payload 'canSteer
+          (lambda (context)
+            (let ((prompt
+                   (e-board-activity-visual--payload-field payload 'prompt))
+                  (reason
+                   (e-board-activity-visual--payload-field payload 'reason)))
+              (unless (and (stringp prompt)
+                           (not (string-empty-p (string-trim prompt))))
+                (user-error "Steer prompt cannot be empty"))
+              (e-subagent-steer
+               e-board-activity-visual--live
+               (e-board-activity-visual--target-id)
+               e-board-activity-visual--target
+               (plist-get context :participant-id)
+               prompt
+               (and (stringp reason)
+                    (not (string-empty-p (string-trim reason)))
+                    reason))))))
+        ('send-participant
+         (e-board-activity-visual--with-task-control
+          payload 'canSend
+          (lambda (context)
+            (let ((prompt
+                   (e-board-activity-visual--payload-field payload 'prompt)))
+              (unless (and (stringp prompt)
+                           (not (string-empty-p (string-trim prompt))))
+                (user-error "Send prompt cannot be empty"))
+              (e-subagent-send
+               e-board-activity-visual--live
+               (e-board-activity-visual--target-id)
+               (plist-get context :participant-id) prompt)))))
+        ('interrupt-participant
+         (e-board-activity-visual--with-task-control
+          payload 'canInterrupt
+          (lambda (context)
+            (e-subagent-interrupt
+             e-board-activity-visual--live
+             (e-board-activity-visual--target-id)
+             e-board-activity-visual--target
+             (plist-get context :participant-id)))))
+        ('shutdown-participant
+         (e-board-activity-visual--with-task-control
+          payload 'canShutdown
+          (lambda (context)
+            (e-subagent-shutdown
+             e-board-activity-visual--live
+             (e-board-activity-visual--target-id)
+             e-board-activity-visual--target
+             (plist-get context :participant-id)))))
         (_ nil)))
     (e-board-activity-visual--schedule-push)))
 
