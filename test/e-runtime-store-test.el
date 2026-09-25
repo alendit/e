@@ -3311,6 +3311,74 @@ tests can present a raw frame that production would refuse to create."
       (should (equal (plist-get (plist-get first :record) :status)
                      'running)))))
 
+(ert-deftest e-runtime-store-task-claim-preserves-harness-instance-id-types ()
+  "Task attempt reads preserve symbol ids and legacy string ids."
+  (e-runtime-store-test--with-store (store directory)
+    (let ((queue-id "typed-harness-instance-ids"))
+      (dolist (task-id '("runnable" "explicit" "string"))
+        (e-runtime-store-call
+         store 'write
+         (list :op 'task-enqueue :queue-id queue-id
+               :record (list :task-id task-id :status 'queued :prompt "work"))))
+      (let* ((runnable
+              (e-runtime-store-call
+               store 'write
+               (list :op 'task-runnable-claim :queue-id queue-id
+                     :started-at "2026-09-25T00:00:00Z"
+                     :harness-instance-id :reviewer)))
+             (running (plist-get runnable :record))
+             (finished (copy-tree running t)))
+        (should (eq (plist-get running :harness-instance-id) :reviewer))
+        (setq finished (plist-put finished :status 'done)
+              finished (plist-put finished :finished-at
+                                  "2026-09-25T00:01:00Z"))
+        (setq finished
+              (plist-get
+               (e-runtime-store-call
+                store 'write
+                (list :op 'task-transition :queue-id queue-id
+                      :task-id "runnable" :expected-status 'running
+                      :record finished))
+               :record))
+        (should (eq (plist-get finished :harness-instance-id) :reviewer)))
+      (e-runtime-store-call
+       store 'write
+       (list :op 'task-claim :queue-id queue-id :task-id "explicit"
+             :attempt-id "explicit-attempt"
+             :started-at "2026-09-25T00:02:00Z"
+             :harness-instance-id 'reviewer))
+      (e-runtime-store-call
+       store 'write
+       (list :op 'task-claim :queue-id queue-id :task-id "string"
+             :attempt-id "string-attempt"
+             :started-at "2026-09-25T00:03:00Z"
+             :harness-instance-id "chat-project-e"))
+      (dolist (reopen '(nil t))
+        (when reopen
+          (e-runtime-store-close store)
+          (setq store (e-runtime-store-open directory))
+          (e-runtime-store-test--wait-ready store))
+        (let* ((snapshot
+                (e-runtime-store-call
+                 store 'read
+                 (list :op 'task-snapshot :queue-id queue-id :limit 8)))
+               (records (plist-get snapshot :records))
+               (attempts (plist-get snapshot :attempts)))
+          (should (= (length records) 3))
+          (should (= (length attempts) 3))
+          (should (eq (plist-get (nth 0 records) :harness-instance-id)
+                      :reviewer))
+          (should (eq (plist-get (nth 0 attempts) :harness-instance-id)
+                      :reviewer))
+          (should (eq (plist-get (nth 1 records) :harness-instance-id)
+                      'reviewer))
+          (should (eq (plist-get (nth 1 attempts) :harness-instance-id)
+                      'reviewer))
+          (should (equal (plist-get (nth 2 records) :harness-instance-id)
+                         "chat-project-e"))
+          (should (equal (plist-get (nth 2 attempts) :harness-instance-id)
+                         "chat-project-e")))))))
+
 (ert-deftest e-runtime-store-task-enqueue-conflicts-on-assignment-changes ()
   "A stable task id conflicts when immutable assignment content changes."
   (e-runtime-store-test--with-store (store directory)
@@ -3673,6 +3741,7 @@ tests can present a raw frame that production would refuse to create."
                        :harness-instance-id "requested" :retries 2
                        :prompt "one")
                       (:task-id "second" :status done :revision 8
+                       :harness-instance-id :legacy-reviewer
                        :outputs ("done") :prompt "two")))))))
             (should (= (plist-get result :records) 2))
             (should (= (plist-get result :sequence) 9))
@@ -3686,7 +3755,14 @@ tests can present a raw frame that production would refuse to create."
                    (e-task-storage-sqlite-worker--column row 0))))
             (should (equal payload '(:prompt "one")))
             (should-not (plist-member payload :task-id))
-            (should-not (plist-member payload :harness-instance-id))))
+            (should-not (plist-member payload :harness-instance-id)))
+          (let* ((snapshot
+                  (e-task-storage-sqlite-worker-read
+                   database
+                   '(:op task-snapshot :queue-id "legacy-import" :limit 8)))
+                 (attempt (car (plist-get snapshot :attempts))))
+            (should (eq (plist-get attempt :harness-instance-id)
+                        :legacy-reviewer))))
       (setq e-task-storage-sqlite-worker--database nil)
       (sqlite-close database)
       (delete-file database-file))))

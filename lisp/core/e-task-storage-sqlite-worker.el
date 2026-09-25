@@ -29,6 +29,43 @@
   "Decode task payload VALUE."
   (e-runtime-store-codec-decode (base64-decode-string value)))
 
+(defconst e-task-storage-sqlite-worker--symbol-id-prefix
+  "e-task-symbol-v1:"
+  "Prefix for symbol-valued identifiers stored in SQLite text columns.")
+
+(defun e-task-storage-sqlite-worker--encode-harness-instance-id (value)
+  "Return harness instance ID VALUE as a SQLite-bindable value."
+  (if (and value (symbolp value))
+      (concat e-task-storage-sqlite-worker--symbol-id-prefix
+              (if (keywordp value) "keyword:" "symbol:")
+              (base64-encode-string
+               (encode-coding-string (symbol-name value) 'utf-8 t) t))
+    value))
+
+(defun e-task-storage-sqlite-worker--decode-harness-instance-id (value)
+  "Restore a symbol-valued harness instance ID from SQLite VALUE."
+  (if (and (stringp value)
+           (string-prefix-p
+            e-task-storage-sqlite-worker--symbol-id-prefix value))
+      (let* ((encoded
+              (substring value
+                         (length e-task-storage-sqlite-worker--symbol-id-prefix)))
+             (kind (cond ((string-prefix-p "keyword:" encoded) 'keyword)
+                         ((string-prefix-p "symbol:" encoded) 'symbol)))
+             (payload (and kind
+                           (substring encoded
+                                      (if (eq kind 'keyword) 8 7)))))
+        (if (not kind)
+            value
+          (condition-case nil
+              (let* ((bytes (base64-decode-string payload))
+                     (name (decode-coding-string bytes 'utf-8)))
+                (if (not (equal payload (base64-encode-string bytes t)))
+                    value
+                  (intern name)))
+            (error value))))
+    value))
+
 (defun e-task-storage-sqlite-worker--without-keys (value keys)
   "Return detached VALUE without relational task authority KEYS."
   (let ((tail (copy-tree value t)) result)
@@ -62,7 +99,9 @@
         :attempt-id (e-task-storage-sqlite-worker--column row 2)
         :attempt-number (e-task-storage-sqlite-worker--column row 3)
         :state (intern (e-task-storage-sqlite-worker--column row 4))
-        :harness-instance-id (e-task-storage-sqlite-worker--column row 5)
+        :harness-instance-id
+        (e-task-storage-sqlite-worker--decode-harness-instance-id
+         (e-task-storage-sqlite-worker--column row 5))
         :session-id (e-task-storage-sqlite-worker--column row 6)
         :started-at (e-task-storage-sqlite-worker--column row 7)
         :finished-at (e-task-storage-sqlite-worker--column row 8)
@@ -277,7 +316,9 @@
      e-task-storage-sqlite-worker--database
      "INSERT INTO task_attempts(queue_id,task_id,attempt_id,attempt_number,state,harness_instance_id,session_id,started_at,settled_at,outputs,error) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
      (vector queue-id task-id attempt-id number "claimed"
-             (plist-get body :harness-instance-id) nil
+             (e-task-storage-sqlite-worker--encode-harness-instance-id
+              (plist-get body :harness-instance-id))
+             nil
              (plist-get body :started-at) nil nil nil))
     (sqlite-execute
      e-task-storage-sqlite-worker--database
@@ -339,7 +380,9 @@ selection, state transition, and attempt creation have one commit boundary."
               "INSERT INTO task_attempts(queue_id,task_id,attempt_id,"
               "attempt_number,state,harness_instance_id,session_id,started_at,settled_at,outputs,error) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
              (vector queue-id task-id attempt-id number "claimed"
-                     instance-id nil started-at nil nil nil))
+                     (e-task-storage-sqlite-worker--encode-harness-instance-id
+                      instance-id)
+                     nil started-at nil nil nil))
             (sqlite-execute
              e-task-storage-sqlite-worker--database
              (concat
@@ -396,7 +439,8 @@ selection, state transition, and attempt creation have one commit boundary."
          e-task-storage-sqlite-worker--database
          "UPDATE task_attempts SET state=?,harness_instance_id=?,session_id=?,settled_at=?,outputs=?,error=? WHERE queue_id=? AND attempt_id=?"
          (vector (symbol-name attempt-state)
-                 (plist-get record :harness-instance-id)
+                 (e-task-storage-sqlite-worker--encode-harness-instance-id
+                  (plist-get record :harness-instance-id))
                  (plist-get record :session-id)
                  (or (plist-get attempt-transition :settled-at)
                      (plist-get record :finished-at))
@@ -528,7 +572,8 @@ selection, state transition, and attempt creation have one commit boundary."
              "INSERT INTO task_attempts(queue_id,task_id,attempt_id,attempt_number,state,harness_instance_id,session_id,started_at,settled_at,outputs,error) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
              (vector queue-id task-id attempt-id attempt-number
                      (symbol-name status)
-                     (plist-get record :harness-instance-id)
+                     (e-task-storage-sqlite-worker--encode-harness-instance-id
+                      (plist-get record :harness-instance-id))
                      (plist-get record :session-id)
                      (plist-get record :started-at)
                      (or (plist-get record :finished-at)

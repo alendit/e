@@ -18,6 +18,9 @@
   (pcase operation
     ('open-queue
      (list :op 'task-queue-open :queue-id (car arguments)))
+    ('snapshot
+     (pcase-let ((`(,queue-id ,limit) arguments))
+       (list :op 'task-snapshot :queue-id queue-id :limit limit)))
     ('enqueue
      (pcase-let ((`(,queue-id ,record) arguments))
        (list :op 'task-enqueue :queue-id queue-id :record record)))
