@@ -1015,6 +1015,63 @@ binding; it is never interpreted as success."
                       binding (plist-get (e-work-status settled) :error) t)))))
               publication)))))))
 
+(defun e-chat-service--finish-sqlite-continuation-admission
+    (binding run-id publication-key expected state &optional error)
+  "Record STATE after EXPECTED continuation admission work settles."
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (admissions
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--continuation-admissions runtime t))
+         (admission-key (cons board-id publication-key)))
+    (when (eq (gethash admission-key admissions) expected)
+      (let ((claim
+             (condition-case publish-error
+                 (e-chat-service--publish-sqlite-continuation-claim
+                  binding run-id publication-key state error)
+               (error
+                (e-chat-service--sql-note-failure binding publish-error)
+                nil))))
+        (if (e-work-handle-p claim)
+            (progn
+              ;; Keep the admission key occupied through the durable claim
+              ;; write.  A coalesced query must not requeue while it settles.
+              (puthash admission-key claim admissions)
+              (e-work-on-settle
+               claim
+               (lambda (claim-settled)
+                 (when (eq (gethash admission-key admissions) claim)
+                   (if (eq state 'published)
+                       ;; The durable input key handles retries after process
+                       ;; restart.  In this process, wait for a bounded read to
+                       ;; observe the published claim before releasing the
+                       ;; race sentinel.
+                       (puthash
+                        admission-key
+                        (if (eq (plist-get (e-work-status claim-settled) :state)
+                                'finished)
+                            'published-awaiting-observation
+                          'publication-failed-awaiting-observation)
+                        admissions)
+                     (remhash admission-key admissions)
+                     (e-chat-service--runtime-coordination-prune
+                      e-chat-service--continuation-admissions runtime))))))
+          (progn
+            (when claim
+              (e-chat-service--sql-note-failure
+               binding
+               '(e-chat-service-error
+                 "Continuation claim publication did not return work")))
+            (if (eq state 'published)
+                ;; The input may already exist even when its final claim write
+                ;; cannot be observed.  Keep this process from publishing it
+                ;; again; the stable source key settles the same race later.
+                (puthash admission-key
+                         'publication-failed-awaiting-observation admissions)
+              (remhash admission-key admissions)
+              (e-chat-service--runtime-coordination-prune
+               e-chat-service--continuation-admissions runtime))))))))
+
 (defun e-chat-service--watch-sqlite-continuation-admission
     (binding run-id publication-key work)
   "Publish canonical settlement for continuation admission WORK."
@@ -1029,51 +1086,94 @@ binding; it is never interpreted as success."
      work
      (lambda (settled)
        (let* ((status (e-work-status settled))
-              (state (plist-get status :state))
-              (claim
-               (condition-case error
-                   (e-chat-service--publish-sqlite-continuation-claim
-                    binding run-id publication-key
-                    (if (eq state 'finished) 'published 'failed)
-                    (pcase state
-                      ('cancelled "Continuation admission cancelled")
-                      ('failed (e-work-error-message
-                               (plist-get status :error)))))
-                 (error
-                  (e-chat-service--sql-note-failure binding error)
-                  nil))))
-         ;; Keep the admission key occupied through the durable claim write.
-         ;; Removing it before that write settles lets a coalesced Board event
-         ;; enqueue the same continuation a second time.
-         (if (and (e-work-handle-p claim)
-                  (eq (gethash admission-key admissions) settled))
-             (progn
-               (puthash admission-key claim admissions)
-               (e-work-on-settle
-                claim
-                (lambda (claim-settled)
-                  (when (eq (gethash admission-key admissions) claim)
-                    (if (eq state 'finished)
-                        ;; Once the continuation ran, neither a stale read nor
-                        ;; a failed claim write may enqueue it again in this
-                        ;; process.  A later durable published observation can
-                        ;; release either bounded sentinel; process restart
-                        ;; falls back to the session input idempotency key.
-                        (puthash
-                         admission-key
-                         (if (eq (plist-get (e-work-status claim-settled) :state)
-                                 'finished)
-                             'published-awaiting-observation
-                           'publication-failed-awaiting-observation)
-                         admissions)
-                      (remhash admission-key admissions)
-                      (e-chat-service--runtime-coordination-prune
-                       e-chat-service--continuation-admissions runtime))))))
-           (when (eq (gethash admission-key admissions) settled)
-             (remhash admission-key admissions)
-             (e-chat-service--runtime-coordination-prune
-              e-chat-service--continuation-admissions runtime))))))
+              (state (plist-get status :state)))
+         (e-chat-service--finish-sqlite-continuation-admission
+          binding run-id publication-key settled
+          (if (eq state 'finished) 'published 'failed)
+          (pcase state
+            ('cancelled "Continuation admission cancelled")
+            ('failed (e-work-error-message (plist-get status :error))))))))
     work))
+
+(defun e-chat-service--start-sqlite-continuation-admission
+    (binding projection)
+  "Persist a pending claim before queueing terminal PROJECTION for BINDING."
+  (let* ((runtime (e-chat-service--binding-runtime binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (admissions
+          (e-chat-service--runtime-coordination-table
+           e-chat-service--continuation-admissions runtime t))
+         (continuation (plist-get projection :continuation))
+         (run-id (plist-get projection :run-id))
+         (publication-key (plist-get continuation :publication-key))
+         (admission-key (cons board-id publication-key))
+         (fence (list 'pending-claim-writing))
+         pending pending-error)
+    ;; Reserve before starting SQLite work so another terminal query cannot
+    ;; enqueue the same input while the durable pending claim is being written.
+    (puthash admission-key fence admissions)
+    (setq pending
+          (condition-case error
+              (e-chat-service--publish-sqlite-continuation-claim
+               binding run-id publication-key 'pending)
+            (error
+             (setq pending-error error)
+             nil)))
+    (if (e-work-handle-p pending)
+        (progn
+          (puthash admission-key pending admissions)
+          (e-work-on-settle
+           pending
+           (lambda (settled)
+             (let ((status (e-work-status settled)))
+               (if (not (eq (plist-get status :state) 'finished))
+                   (progn
+                     ;; Without a durable pending claim, publication must not
+                     ;; proceed.  Surface the persistence failure and release
+                     ;; the local fence so a later reconciliation can retry.
+                     (e-chat-service--sql-note-failure
+                      binding (plist-get status :error) t)
+                     (when (eq (gethash admission-key admissions) settled)
+                       (remhash admission-key admissions)
+                       (e-chat-service--runtime-coordination-prune
+                        e-chat-service--continuation-admissions runtime)))
+                 (when (eq (gethash admission-key admissions) settled)
+                   (condition-case error
+                       (let ((admission
+                              (e-chat-service-queue-session
+                               (e-chat-service-binding-harness binding)
+                               (plist-get continuation :session-id)
+                               (e-chat-service--continuation-input
+                                (plist-get continuation :prompt) projection)
+                               :metadata
+                               (list :display 'hidden
+                                     :board-run-id run-id
+                                     :board-continuation-key publication-key)
+                               :source-input-key
+                               (list "orchestration-continuation"
+                                     publication-key 0))))
+                         (if (e-work-handle-p admission)
+                             (e-chat-service--watch-sqlite-continuation-admission
+                              binding run-id publication-key admission)
+                           (e-chat-service--finish-sqlite-continuation-admission
+                            binding run-id publication-key settled 'failed
+                            "Continuation queue admission did not return work")))
+                    (error
+                     (e-chat-service--finish-sqlite-continuation-admission
+                       binding run-id publication-key settled 'failed
+                       (e-work-error-message error)))))))))
+          pending)
+      (when (eq (gethash admission-key admissions) fence)
+        (remhash admission-key admissions)
+        (e-chat-service--runtime-coordination-prune
+         e-chat-service--continuation-admissions runtime))
+      (e-chat-service--sql-note-failure
+       binding
+       (or pending-error
+           '(e-chat-service-error
+             "Continuation pending claim did not return work"))
+       t)
+      nil)))
 
 (defun e-chat-service--sqlite-orchestration-projections (page)
   "Reduce detached orchestration records in PAGE by run id."
@@ -1185,20 +1285,8 @@ the manifest continuation's validated session id owns delivery of the
                                     continuation
                                     (not (and admissions
                                               (gethash admission-key admissions))))
-                           (e-chat-service--watch-sqlite-continuation-admission
-                            binding (plist-get projection :run-id) key
-                            (e-chat-service-queue-session
-                             (e-chat-service-binding-harness binding)
-                             (plist-get continuation :session-id)
-                             (e-chat-service--continuation-input
-                              (plist-get continuation :prompt)
-                              projection)
-                             :metadata
-                             (list :display 'hidden
-                                   :board-run-id (plist-get projection :run-id)
-                                   :board-continuation-key key)
-                             :source-input-key
-                             (list "orchestration-continuation" key 0)))))))
+                           (e-chat-service--start-sqlite-continuation-admission
+                            binding projection)))))
                  (error
                   (e-chat-service--sql-note-failure binding error))))
              (when (and rerun-p (e-chat-service--binding-live-p binding))
@@ -2217,42 +2305,90 @@ Board record."
           binding (append (e-chat-service--public-live-harness-event event)
                           (list :selected-participant-p t))))))))
 
+(defun e-chat-service--sql-delivery-executing-p (binding delivery-id)
+  "Return non-nil when a live same-Board binding owns DELIVERY-ID."
+  (cl-some
+   (lambda (candidate)
+     (and (e-chat-service--binding-live-p candidate)
+          (equal (e-chat-service-binding-participant-id binding)
+                 (e-chat-service-binding-participant-id candidate))
+          (gethash delivery-id
+                   (e-chat-service-binding-executing-turns candidate))))
+   (e-chat-service--board-bindings-for binding)))
+
+(defun e-chat-service--sql-retry-restored-pickup
+    (binding generation pickup)
+  "Return a stale claimed PICKUP to ready before BINDING resumes its FIFO."
+  (let* ((delivery-id (plist-get pickup :delivery-id))
+         (participant-id (plist-get pickup :participant-id))
+         (work
+          (e-board-sqlite-service-transition-pickup-start
+           (e-chat-service-binding-sqlite-service binding)
+           (e-chat-service-binding-board-id binding) delivery-id 'retry
+           (list :expected-generation generation
+                 :expected-participant-id participant-id))))
+    (e-work-on-settle
+     work
+     (lambda (settled)
+       (let ((status (e-work-status settled)))
+         (if (eq (plist-get status :state) 'finished)
+             (e-chat-service--sql-resume-ready-scan binding)
+           (e-chat-service--sql-note-failure
+            binding (plist-get status :error) t)))))
+    work))
+
+(defun e-chat-service--sql-resume-ready-scan (binding)
+  "Deliver the oldest ready pickup for BINDING after its restore checks."
+  (let ((board-work
+         (e-board-sqlite-service-board-get-start
+          (e-chat-service-binding-sqlite-service binding)
+          (e-chat-service-binding-board-id binding))))
+    (e-work-on-settle
+     board-work
+     (lambda (settled)
+       (if (not (eq (plist-get (e-work-status settled) :state) 'finished))
+           (e-chat-service--sql-note-failure
+            binding (plist-get (e-work-status settled) :error))
+         (let* ((board (plist-get (e-work-status settled) :result))
+                (generation (plist-get board :generation))
+                (pickup-work
+                 (e-board-sqlite-service-pickup-page-start
+                  (e-chat-service-binding-sqlite-service binding)
+                  (e-chat-service-binding-board-id binding) generation
+                  (e-chat-service-binding-participant-id binding) 16)))
+           (e-work-on-settle
+            pickup-work
+            (lambda (pickups-settled)
+              (if (not (eq (plist-get (e-work-status pickups-settled) :state)
+                           'finished))
+                  (e-chat-service--sql-note-failure
+                   binding (plist-get (e-work-status pickups-settled) :error))
+                (let* ((pickups (plist-get (e-work-status pickups-settled)
+                                           :result))
+                       (head (car pickups))
+                       (delivery-id (plist-get head :delivery-id)))
+                  (cond
+                   ((and (e-chat-service-binding-continuation-owner-p binding)
+                         (eq (plist-get head :state) 'claimed))
+                    ;; A claim with no process-local submit correlation can only
+                    ;; be an interrupted handoff.  Retry only the FIFO head;
+                    ;; worker-side coordinates fence a stale page or generation.
+                    (unless (e-chat-service--sql-delivery-executing-p
+                             binding delivery-id)
+                      (e-chat-service--sql-retry-restored-pickup
+                       binding generation head)))
+                   ((eq (plist-get head :state) 'ready)
+                    (unless (e-chat-service--sql-delivery-executing-p
+                             binding delivery-id)
+                      (e-chat-service--sql-deliver-pickup binding head))))))))))))))
+
 (defun e-chat-service--sql-resume-ready (binding)
-  "Request and run BINDING's exact bounded ready pickup after restart."
+  "Request and run BINDING's bounded pickup restore and resume path."
   (pcase (e-chat-service--binding-readiness-state binding)
     ('waiting
      (setf (e-chat-service-binding-pickup-readiness-wakeup-p binding) t))
     ('ready
-     (let ((board-work
-            (e-board-sqlite-service-board-get-start
-             (e-chat-service-binding-sqlite-service binding)
-             (e-chat-service-binding-board-id binding))))
-       (e-work-on-settle
-        board-work
-        (lambda (settled)
-          (when (eq (plist-get (e-work-status settled) :state) 'finished)
-            (let* ((board (plist-get (e-work-status settled) :result))
-                   (generation (plist-get board :generation))
-                   (pickup-work
-                    (e-board-sqlite-service-pickup-page-start
-                     (e-chat-service-binding-sqlite-service binding)
-                     (e-chat-service-binding-board-id binding) generation
-                     (e-chat-service-binding-participant-id binding) 16)))
-              (e-work-on-settle
-               pickup-work
-               (lambda (pickups-settled)
-                 (if (eq (plist-get (e-work-status pickups-settled) :state)
-                         'finished)
-                     (when-let* ((ready
-                                  (seq-find
-                                   (lambda (pickup)
-                                     (eq (plist-get pickup :state) 'ready))
-                                   (plist-get (e-work-status pickups-settled)
-                                              :result))))
-                       (e-chat-service--sql-deliver-pickup binding ready))
-                   (e-chat-service--sql-note-failure
-                    binding (plist-get (e-work-status pickups-settled)
-                                       :error)))))))))))))
+     (e-chat-service--sql-resume-ready-scan binding))))
 
 (defun e-chat-service--sql-readiness-settled (binding settled)
   "Release BINDING pickup delivery after its readiness SETTLED.

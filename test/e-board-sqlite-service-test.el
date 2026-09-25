@@ -205,7 +205,7 @@
 (ert-deftest e-board-sqlite-service-existing-unresolved-pickup-stays-fifo ()
   "SQLite keeps a participant's unresolved delivery FIFO authoritative."
   (e-board-sqlite-service-test--with-fixture
-      (_store service board-id _session-id _participant-id)
+      (_store service board-id _session-id participant-id)
     (let* ((first
             (e-board-sqlite-service-test--await
              (e-board-sqlite-service-append-route-start
@@ -218,9 +218,24 @@
               :source-input-key '("fifo" 1 2))))
            (first-pickup (car (plist-get first :pickups)))
            (second-pickup (car (plist-get second :pickups)))
+           (generation
+            (plist-get
+             (e-board-sqlite-service-test--await
+              (e-board-sqlite-service-board-get-start service board-id))
+             :generation))
            (first-id (plist-get first-pickup :delivery-id)))
       (should (eq (plist-get first-pickup :state) 'ready))
       (should (eq (plist-get second-pickup :state) 'pending))
+      (e-board-sqlite-service-test--await
+       (e-board-sqlite-service-transition-pickup-start
+        service board-id first-id 'claim))
+      (let ((retried
+             (e-board-sqlite-service-test--await
+              (e-board-sqlite-service-transition-pickup-start
+               service board-id first-id 'retry
+               (list :expected-generation generation
+                     :expected-participant-id participant-id)))))
+        (should (eq (plist-get (plist-get retried :pickup) :state) 'ready)))
       (e-board-sqlite-service-test--await
        (e-board-sqlite-service-transition-pickup-start
         service board-id first-id 'claim))
@@ -230,9 +245,83 @@
                service board-id first-id 'consume))))
         (should (eq (plist-get (plist-get consumed :pickup) :state)
                     'consumed))
+        (should-not
+         (seq-some
+          (lambda (pickup)
+            (equal (plist-get pickup :delivery-id) first-id))
+          (e-board-sqlite-service-test--await
+           (e-board-sqlite-service-pickup-page-start
+            service board-id 1 participant-id 8))))
         (should (equal (plist-get (plist-get consumed :next) :delivery-id)
                        (plist-get second-pickup :delivery-id)))
         (should (eq (plist-get (plist-get consumed :next) :state) 'ready))))))
+
+(ert-deftest e-board-sqlite-service-retry-rejects-stale-pickup-coordinates ()
+  "A claimed pickup is not retried with stale generation or participant data."
+  (cl-labels
+      ((reject-retry (generation-value participant-value)
+         (e-board-sqlite-service-test--with-fixture
+             (_store service board-id _session-id participant-id)
+           (let* ((route
+                   (e-board-sqlite-service-test--await
+                    (e-board-sqlite-service-append-route-start
+                     service board-id :content "claimed" :tags '(main)
+                     :source-input-key '("stale-pickup" 1))))
+                  (pickup (car (plist-get route :pickups)))
+                  (delivery-id (plist-get pickup :delivery-id))
+                  (generation
+                   (plist-get
+                    (e-board-sqlite-service-test--await
+                     (e-board-sqlite-service-board-get-start service board-id))
+                    :generation)))
+             (e-board-sqlite-service-test--await
+              (e-board-sqlite-service-transition-pickup-start
+               service board-id delivery-id 'claim))
+             (should-error
+              (e-board-sqlite-service-test--await
+               (e-board-sqlite-service-transition-pickup-start
+                service board-id delivery-id 'retry
+                (list :expected-generation
+                      (funcall generation-value generation)
+                      :expected-participant-id
+                      (funcall participant-value participant-id)))))
+             (let ((current
+                    (car
+                     (e-board-sqlite-service-test--await
+                      (e-board-sqlite-service-pickup-page-start
+                       service board-id generation participant-id 16)))))
+               (should (eq (plist-get current :state) 'claimed)))))))
+    (reject-retry (lambda (generation) (1- generation)) #'identity)
+    (reject-retry #'identity (lambda (_participant-id) "stale-participant"))))
+
+(ert-deftest e-chat-service-sqlite-detects-live-in-flight-board-delivery ()
+  "A peer binding's in-flight delivery prevents owner restore from retrying it."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id participant-id)
+    (let* ((binding
+            (e-chat-service--binding-create
+             :sqlite-service service :board-id board-id
+             :participant-id participant-id :lifecycle-state 'active
+             :executing-turns (make-hash-table :test 'equal)))
+           (peer
+            (e-chat-service--binding-create
+             :sqlite-service service :board-id board-id
+             :participant-id participant-id :lifecycle-state 'active
+             :executing-turns (make-hash-table :test 'equal)))
+           (delivery-id "live-delivery"))
+      (unwind-protect
+          (progn
+            (e-chat-service--register-board-binding binding)
+            (e-chat-service--register-board-binding peer)
+            (puthash delivery-id "live-turn"
+                     (e-chat-service-binding-executing-turns peer))
+            (should (e-chat-service--sql-delivery-executing-p
+                     binding delivery-id))
+            (setf (e-chat-service-binding-lifecycle-state peer) 'retired)
+            (should-not (e-chat-service--sql-delivery-executing-p
+                         binding delivery-id)))
+        (e-chat-service--unregister-board-binding binding)
+        (e-chat-service--unregister-board-binding peer)))))
 
 (ert-deftest e-board-sqlite-service-page-cursor-crosses-commits-exactly-once ()
   "A SQLite page high-water, not callback timing, separates later commits."
@@ -746,6 +835,7 @@
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) '(:admitted t))))
            binding queued-session-id queued-input queued-metadata
+           queue-saw-pending-p claim-statuses
            (query-count 0) (publication-count 0) (backfill-count 0))
       (unwind-protect
           (progn
@@ -765,16 +855,24 @@
                        (lambda (_harness session-id input &rest arguments)
                          (setq queued-session-id session-id
                                queued-input input
+                               queue-saw-pending-p
+                               (eq (car claim-statuses) 'pending)
                                queued-metadata
                                (plist-get arguments :metadata))
                          (e-work-start admission-spec nil)))
                       ((symbol-function
                         'e-chat-service--publish-sqlite-continuation-claim)
-                       (lambda (&rest _) (cl-incf publication-count))))
+                       (lambda (_binding _run-id _publication-key status
+                                &optional _error)
+                         (cl-incf publication-count)
+                         (push status claim-statuses)
+                         (e-work-start admission-spec nil))))
               (e-chat-service--reconcile-sqlite-continuation binding))
             (should (= query-count 1))
             (should (= backfill-count 0))
-            (should (= publication-count 1))
+            (should (= publication-count 2))
+            (should (equal (nreverse claim-statuses) '(pending published)))
+            (should queue-saw-pending-p)
             (should (equal queued-session-id "coordinator-session"))
             (should (eq (plist-get queued-metadata :display) 'hidden))
             (should (equal (plist-get queued-metadata :board-run-id)
@@ -835,7 +933,7 @@
              :id "continuation-query" :execution 'cheap
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) (funcall page))))
-           binding admission claim-work (queue-count 0))
+           binding pending-work admission claim-work (queue-count 0))
       (unwind-protect
           (progn
             (setq binding
@@ -852,13 +950,24 @@
                                 "held-continuation-admission"))))
                       ((symbol-function
                         'e-chat-service--publish-sqlite-continuation-claim)
-                       (lambda (&rest _)
-                         (setq claim-work
-                               (e-board-sqlite-service-test--deferred-work
-                                "held-continuation-claim")))))
+                       (lambda (_binding _run-id _publication-key status
+                                &optional _error)
+                         (if (eq status 'pending)
+                             (setq pending-work
+                                   (e-board-sqlite-service-test--deferred-work
+                                    "held-pending-continuation-claim"))
+                           (setq claim-work
+                                 (e-board-sqlite-service-test--deferred-work
+                                  "held-published-continuation-claim"))))))
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 0))
+              ;; The pending claim owns the admission fence before the input
+              ;; publication starts.
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 0))
+              (e-work-finish pending-work '(:pending t))
               (should (= queue-count 1))
-              ;; An in-flight admission fences another stale terminal query.
+              ;; An in-flight input admission fences another stale query.
               (e-chat-service--reconcile-sqlite-continuation binding)
               (should (= queue-count 1))
               (e-work-finish admission '(:admitted t))
@@ -890,6 +999,315 @@
                  (and admissions
                       (gethash (cons board-id "continue:daily") admissions))))))
         (when binding (e-chat-service--retire-binding binding))))))
+
+(ert-deftest e-chat-service-sqlite-continuation-does-not-queue-without-pending-claim ()
+  "A failed durable pending claim keeps the continuation unpublished."
+  (e-board-sqlite-service-test--with-fixture
+      (store _service board-id session-id _participant-id)
+    (let* ((harness (e-harness-create :sessions store))
+           (manifest
+            `(:version 1 :type manifest :idempotency-key "manifest:daily"
+              :payload (:run-id "daily-run"
+                        :tasks [(:task-key "report" :required t
+                                 :accepted-attempt 0)]
+                        :deadline (:kind none)
+                        :continuation (:session-id ,session-id
+                                       :prompt "Finalize once."
+                                       :publication-key "continue:daily"))))
+           (report
+            '(:version 1 :type terminal-report :idempotency-key "report:daily"
+              :payload (:run-id "daily-run" :task-key "report" :attempt 0
+                        :status done :summary "ready" :outputs [])))
+           (record
+            (lambda (fact)
+              (append (list :record-kind 'fact)
+                      (e-board-orchestration-fact-record-fields fact))))
+           (page
+            (list :records
+                  (mapcar (lambda (fact) (list :record (funcall record fact)))
+                          (list manifest report))
+                  :truncated nil))
+           (query-spec
+            (e-work-spec-create
+             :id "continuation-query" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner (lambda (_arguments _context) page)))
+           binding pending-work (queue-count 0) failures)
+      (unwind-protect
+          (progn
+            (setq binding
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness session-id)))
+            (cl-letf (((symbol-function
+                        'e-board-sqlite-service-orchestration-runs-start)
+                       (lambda (&rest _) (e-work-start query-spec nil)))
+                      ((symbol-function
+                        'e-chat-service--publish-sqlite-continuation-claim)
+                       (lambda (_binding _run-id _publication-key status
+                                &optional _error)
+                         (should (eq status 'pending))
+                         (setq pending-work
+                               (e-board-sqlite-service-test--deferred-work
+                                "failed-pending-continuation-claim"))))
+                      ((symbol-function 'e-chat-service-queue-session)
+                       (lambda (&rest _arguments) (cl-incf queue-count)))
+                      ((symbol-function 'e-chat-service--sql-note-failure)
+                       (lambda (_binding error &optional owner-suspect-p)
+                         (push (list error owner-suspect-p) failures))))
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (e-work-handle-p pending-work))
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (should (= queue-count 0))
+              (e-work-fail
+               pending-work '(e-board-sqlite-error "pending claim failed"))
+              (should (= queue-count 0))
+              (should (cadar failures))
+              (let* ((runtime (e-chat-service--binding-runtime binding))
+                     (admissions
+                      (e-chat-service--runtime-coordination-table
+                       e-chat-service--continuation-admissions runtime)))
+                (should-not
+                 (and admissions
+                      (gethash (cons board-id "continue:daily") admissions)))))
+        (when binding (e-chat-service--retire-binding binding)))))))
+
+(ert-deftest e-chat-service-sqlite-continuation-restores-busy-queue-and-backfills-outcome ()
+  "A queued completion resumes after restart and backfills its terminal outcome."
+  (let* ((directory (make-temp-file "e-chat-continuation-restart-" t))
+         (session-id "continuation-restart-owner")
+         (board-id "continuation-restart-board")
+         (participant-id "continuation-restart-participant")
+         (principal (format "chat:%s" session-id))
+         (run-id "continuation-restart-run")
+         (publication-key "continue:restart")
+         (admission
+          (e-board-sqlite-service-test--admission
+           session-id board-id participant-id))
+         (store-1 (e-session-sqlite-store-create directory))
+         (service-1
+          (e-board-sqlite-service-create
+           (e-session-storage-runtime-store store-1)))
+         (busy-requests 0)
+         (busy-backend
+          (e-backend-create
+           :name "held-busy-turn"
+           :start
+           (cl-function
+            (lambda (&key on-request-start &allow-other-keys)
+              (cl-incf busy-requests)
+              (let ((request (e-backend-request-create :cancel (lambda () t))))
+                (when on-request-start (funcall on-request-start request))
+                request)))))
+         (harness-1 (e-harness-create :sessions store-1 :backend busy-backend))
+         (store-2 nil)
+         (service-2 nil)
+         (harness-2 nil)
+         (binding-1 nil)
+         (binding-2 nil)
+         (store-3 nil)
+         (service-3 nil)
+         (harness-3 nil)
+         (binding-3 nil)
+         (manifest
+          `(:version 1 :type manifest :idempotency-key "manifest:restart"
+            :payload (:run-id ,run-id
+                      :tasks ((:task-key "report" :required t
+                               :accepted-attempt 0))
+                      :deadline (:kind none)
+                      :continuation (:session-id ,session-id
+                                     :prompt "Finalize after the busy turn."
+                                     :publication-key ,publication-key))))
+         (report
+          `(:version 1 :type terminal-report :idempotency-key "report:restart"
+            :payload (:run-id ,run-id :task-key "report" :attempt 0
+                      :status done :summary "ready" :outputs []))))
+    (cl-labels
+        ((board-records (service)
+           (plist-get
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-record-page-start
+              service board-id :generation 1 :after 0 :limit 64))
+            :records))
+         (continuation-input-p (row)
+           (let ((record (plist-get row :record)))
+             (and (eq (plist-get record :record-kind) 'input)
+                  (equal (plist-get (plist-get record :attributes)
+                                    :board-continuation-key)
+                         publication-key))))
+         (continuation-inputs (service)
+           (seq-filter #'continuation-input-p (board-records service)))
+         (continuation-pickup-p (pickup)
+           (equal
+            (plist-get
+             (plist-get (plist-get pickup :cause-metadata) :input-attributes)
+             :board-continuation-key)
+            publication-key))
+         (continuation-pickup (service)
+           (seq-find
+            #'continuation-pickup-p
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-pickup-page-start
+              service board-id 1 participant-id 16))))
+         (wait-for-claimed-pickup (service)
+           (let ((deadline (+ (float-time) 5.0))
+                 pickup)
+             (while (and (not (eq (plist-get pickup :state) 'claimed))
+                         (< (float-time) deadline))
+               (setq pickup (continuation-pickup service))
+               (unless (eq (plist-get pickup :state) 'claimed)
+                 (accept-process-output nil 0.01)))
+             pickup))
+         (run-projection (service)
+           (let* ((page
+                   (e-board-sqlite-service-test--await
+                    (e-board-sqlite-service-orchestration-run-start
+                     service board-id run-id)))
+                  (records
+                   (mapcar (lambda (row) (plist-get row :record))
+                           (plist-get page :records))))
+             (e-board-orchestration-reduce records)))
+         (wait-for-session-outcome (store)
+           (let ((deadline (+ (float-time) 5.0))
+                 outcome)
+             (while (and (not (plist-get outcome :known-p))
+                         (< (float-time) deadline))
+               (setq outcome
+                     (e-board-sqlite-service-test--await
+                      (e-session-async-continuation-outcome
+                       store session-id run-id publication-key)))
+               (unless (plist-get outcome :known-p)
+                 (accept-process-output nil 0.01)))
+             outcome))
+         (wait-for-output-record (service)
+           (let ((deadline (+ (float-time) 5.0))
+                 output)
+             (while (and (not output) (< (float-time) deadline))
+               (setq output
+                     (seq-find
+                      (lambda (row)
+                        (let ((record (plist-get row :record)))
+                          (and (eq (plist-get record :record-kind) 'output)
+                               (equal (plist-get record :content)
+                                      "Coordinator complete."))))
+                      (board-records service)))
+               (unless output (accept-process-output nil 0.01)))
+             output)))
+      (unwind-protect
+          (progn
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-admit-session-owner-start
+              service-1 session-id board-id principal
+              (plist-get admission :records)
+              (plist-get admission :query-delta)
+              (list :id participant-id :author "e-chat"
+                    :principal principal :controller principal :role 'owner
+                    :state 'active :subscription-id "restart-owner-subscription"
+                    :publication-pending nil)))
+            (setq binding-1
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness-1 session-id)))
+            (e-board-sqlite-service-test--await
+             (e-chat-service-submit-session
+              harness-1 session-id "Keep this turn busy."))
+            (let ((deadline (+ (float-time) 5.0)))
+              (while (and (= busy-requests 0) (< (float-time) deadline))
+                (accept-process-output nil 0.01)))
+            (should (= busy-requests 1))
+            (should (e-chat-service-active-turn-p harness-1 session-id))
+            (dolist (fact (list manifest report))
+              (e-board-sqlite-service-test--await
+               (e-board-sqlite-service-orchestration-fact-start
+                service-1 board-id fact)))
+            (e-board-sqlite-service-test--await
+             (e-chat-service-binding-start harness-1 session-id nil t))
+            (let ((deadline (+ (float-time) 5.0))
+                  (pickup (wait-for-claimed-pickup service-1))
+                  queued)
+              (while (and (null queued) (< (float-time) deadline))
+                (setq queued (e-harness-queued-prompts harness-1 session-id))
+                (unless queued (accept-process-output nil 0.01)))
+              (should (eq (plist-get pickup :state) 'claimed))
+              (should (e-chat-service-active-turn-p harness-1 session-id))
+              (should (= (length queued) 1))
+              (should (equal
+                       (plist-get (plist-get (car queued) :metadata)
+                                  :board-continuation-key)
+                       publication-key)))
+            ;; The owner turn queue is process-local; the claimed pickup and
+            ;; keyed input are durable at this simulated restart boundary.
+            (should (= (length (continuation-inputs service-1)) 1))
+            (let ((projection (run-projection service-1)))
+              (should (eq (plist-get (plist-get projection :continuation)
+                                     :state)
+                          'published))
+              (should-not (plist-get projection :continuation-outcome)))
+            (e-chat-service--retire-binding binding-1)
+            (setq binding-1 nil)
+            (e-session-sqlite-store-close store-1)
+
+            (setq store-2 (e-session-sqlite-store-create directory)
+                  service-2
+                  (e-board-sqlite-service-create
+                   (e-session-storage-runtime-store store-2))
+                  harness-2
+                  (e-harness-create
+                   :sessions store-2
+                   :backend
+                   (e-backend-fake-create
+                    :items '((:type assistant-message
+                              :content "Coordinator complete.")
+                             (:type done :reason stop)))))
+            ;; Leave the already-durable session completion without its Board
+            ;; outcome fact, then prove the next owner can reconstruct it.
+            (cl-letf (((symbol-function
+                        'e-chat-service--publish-sqlite-continuation-outcome)
+                       (lambda (&rest _) nil)))
+              (setq binding-2
+                    (e-board-sqlite-service-test--await
+                     (e-chat-service-binding-start
+                      harness-2 session-id nil t)))
+              (let ((outcome (wait-for-session-outcome store-2)))
+                (should (plist-get outcome :known-p))
+                (should (eq (plist-get outcome :status) 'done)))
+              (should-not (e-chat-service-active-turn-p harness-2 session-id))
+              (should (wait-for-output-record service-2))
+              (should (= (length (continuation-inputs service-2)) 1))
+              (let ((projection (run-projection service-2)))
+                (should (eq (plist-get (plist-get projection :continuation)
+                                       :state)
+                            'published))
+                (should-not (plist-get projection :continuation-outcome))))
+            (e-chat-service--retire-binding binding-2)
+            (setq binding-2 nil)
+            (e-session-sqlite-store-close store-2)
+
+            (setq store-3 (e-session-sqlite-store-create directory)
+                  service-3
+                  (e-board-sqlite-service-create
+                   (e-session-storage-runtime-store store-3))
+                  harness-3 (e-harness-create :sessions store-3))
+            (setq binding-3
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness-3 session-id nil t)))
+            (e-board-sqlite-service-test--await
+             (e-chat-service--continuation-backfill-start binding-3))
+            (let* ((projection (run-projection service-3))
+                   (outcome (plist-get projection :continuation-outcome)))
+              (should (eq (plist-get outcome :status) 'done))
+              (should (= (length (plist-get projection :continuation-outcomes))
+                         1))
+              (should
+               (equal (plist-get outcome :publication-key) publication-key))
+              (should (eq (plist-get (plist-get projection :continuation)
+                                     :state)
+                          'published)))
+            (should (= (length (continuation-inputs service-3)) 1)))
+        (when binding-3 (e-chat-service--retire-binding binding-3))
+        (when binding-2 (e-chat-service--retire-binding binding-2))
+        (when binding-1 (e-chat-service--retire-binding binding-1))
+        (dolist (store (list store-3 store-2 store-1))
+          (when store (ignore-errors (e-session-sqlite-store-close store))))
+        (delete-directory directory t)))))
 
 (ert-deftest e-chat-service-sqlite-subscription-crosses-held-snapshot-once ()
   "A commit crossing the initial DB window is neither lost nor duplicated."

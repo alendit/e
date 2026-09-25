@@ -1794,27 +1794,30 @@ unknown rather than inferred as success."
                                  (e-runtime-store-session-worker--proper-plist-p
                                   value)
                                  (plist-get value :message))))
-                   (unless (and (e-runtime-store-session-worker--proper-plist-p
-                                 message)
-                                (memq (plist-get message :role) '(user "user"))
-                                (stringp (plist-get message :turn-id))
-                                (e-runtime-store-session-worker--proper-plist-p
-                                 (plist-get message :metadata)))
-                     ;; A malformed message row is not evidence that this
-                     ;; continuation did not run; it is insufficient proof.
-                     (when message
+                   (when message
+                     (unless (e-runtime-store-session-worker--proper-plist-p
+                              message)
                        (throw 'unknown
                               (e-runtime-store-session-worker--continuation-outcome-unknown
-                               'message-shape))))
-                   (let ((metadata (plist-get message :metadata)))
-                     (when (and (equal (plist-get metadata :board-run-id)
-                                       run-id)
-                                (equal (plist-get metadata
-                                                  :board-continuation-key)
-                                       publication-key))
-                       (push (list :turn-id (plist-get message :turn-id)
-                                   :position (plist-get record :position))
-                             matching-messages)))))
+                               'message-shape)))
+                     ;; Assistant transcript rows cannot represent a posted
+                     ;; continuation input, so only validate candidate users.
+                     (when (memq (plist-get message :role) '(user "user"))
+                       (unless (and (stringp (plist-get message :turn-id))
+                                    (e-runtime-store-session-worker--proper-plist-p
+                                     (plist-get message :metadata)))
+                         (throw 'unknown
+                                (e-runtime-store-session-worker--continuation-outcome-unknown
+                                 'message-shape)))
+                       (let ((metadata (plist-get message :metadata)))
+                         (when (and (equal (plist-get metadata :board-run-id)
+                                           run-id)
+                                    (equal (plist-get metadata
+                                                      :board-continuation-key)
+                                           publication-key))
+                           (push (list :turn-id (plist-get message :turn-id)
+                                       :position (plist-get record :position))
+                                 matching-messages)))))))
                 ((equal record-type "activity-event")
                  (unless (e-runtime-store-session-worker--proper-plist-p value)
                    (throw 'unknown

@@ -985,6 +985,15 @@ bound instead of silently truncating the eligible set."
                  (list "Pickup cannot be consumed" delivery-id state)))
        (setq next-state 'consumed terminal-p t))
       ('retry
+       (unless (and (integerp (plist-get data :expected-generation))
+                    (= (plist-get data :expected-generation) generation)
+                    (equal (plist-get data :expected-participant-id)
+                           participant-id))
+         (signal 'e-runtime-store-board-conflict
+                 (list "Pickup retry coordinates changed"
+                       board-id (plist-get data :expected-generation)
+                       delivery-id
+                       (plist-get data :expected-participant-id))))
        (unless (eq state 'claimed)
          (signal 'e-runtime-store-board-conflict
                  (list "Pickup cannot be retried" delivery-id state)))

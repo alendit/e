@@ -208,6 +208,35 @@
       (should (eq (plist-get (plist-get projection :continuation) :state) 'published))
       (should (= (length (plist-get projection :reports)) 1))))
 
+(ert-deftest e-board-orchestration-test-continuation-waits-for-durable-claim ()
+  "A terminal run is waiting until a publication claim commits."
+  (let* ((manifest
+          (e-board-orchestration-test--fact
+           'manifest "manifest-waiting"
+           '(:run-id "run-waiting"
+             :tasks ((:task-key "task" :required t :accepted-attempt 0))
+             :continuation (:session-id "coordinator" :prompt "reconcile"
+                            :publication-key "publication-waiting"))))
+         (report
+          (e-board-orchestration-test--fact
+           'terminal-report "report-waiting"
+           '(:run-id "run-waiting" :task-key "task" :attempt 0 :status done
+             :summary "done" :outputs [])))
+         (pending
+          (e-board-orchestration-test--fact
+           'continuation-claim "claim-waiting-pending"
+           '(:run-id "run-waiting" :publication-key "publication-waiting"
+             :status pending)))
+         (waiting-projection
+          (e-board-orchestration-reduce (list manifest report)))
+         (pending-projection
+          (e-board-orchestration-reduce
+           (list manifest report pending))))
+    (should (eq (plist-get (plist-get waiting-projection :continuation) :state)
+                'waiting))
+    (should (eq (plist-get (plist-get pending-projection :continuation) :state)
+                'pending))))
+
 (ert-deftest e-board-orchestration-test-continuation-outcome-is-separate-from-claim ()
   "A published admission claim does not imply coordinator execution success."
   (let* ((manifest

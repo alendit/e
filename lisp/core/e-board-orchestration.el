@@ -588,6 +588,10 @@ evidence."
                     (cl-find 'published matching-claims
                              :key (lambda (claim)
                                     (plist-get claim :status))))
+                   (pending
+                    (cl-find 'pending matching-claims
+                             :key (lambda (claim)
+                                    (plist-get claim :status))))
                    (failed
                     (car
                      (last
@@ -601,7 +605,7 @@ evidence."
                      (list :state
                            (cond (published 'published)
                                  (failed 'failed)
-                                 (terminal-status 'pending)
+                                 (pending 'pending)
                                  (t 'waiting))
                            :claims (copy-tree matching-claims t)
                            :execution-outcome

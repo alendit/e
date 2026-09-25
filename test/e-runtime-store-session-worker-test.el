@@ -1049,6 +1049,45 @@
           (should-not (plist-member result :content))
           (should-not (plist-member result :message)))))))
 
+(ert-deftest e-runtime-store-session-worker-continuation-outcome-skips-assistant-messages ()
+  "An assistant transcript row does not invalidate continuation input evidence."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let* ((session-id "continuation-assistant-row")
+           (run-id "assistant-row-run")
+           (publication-key "assistant-row-key")
+           (turn-id "assistant-row-turn")
+           (state (e-runtime-store-session-worker-test--state session-id)))
+      (e-runtime-store-session-worker-test--append runtime session-id 1)
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 2
+             (list :type "message" :session-id session-id :id "assistant"
+                   :timestamp "2026-09-06T00:00:01Z"
+                   :message '(:id "assistant" :role assistant
+                              :content "Coordinator complete."
+                              :turn-id "assistant-turn" :metadata nil))))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 3
+             (e-runtime-store-session-worker-test--continuation-message
+              session-id "continuation-input"
+              "2026-09-06T00:00:02Z" turn-id run-id publication-key)))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 4
+             (e-runtime-store-session-worker-test--continuation-event
+              session-id "continuation-terminal"
+              "2026-09-06T00:00:03Z" turn-id 'turn-finished)))
+      (let ((result
+             (e-runtime-store-call
+              runtime 'read
+              (list :op 'session-continuation-outcome
+                    :session-id session-id :run-id run-id
+                    :publication-key publication-key))))
+        (should (plist-get result :known-p))
+        (should (eq (plist-get result :status) 'done))
+        (should (equal (plist-get result :turn-id) turn-id))))))
+
 (ert-deftest e-runtime-store-session-worker-continuation-outcome-requires-exact-correlation ()
   "Wrong run/key and unrelated terminal turns never prove an outcome."
   (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
