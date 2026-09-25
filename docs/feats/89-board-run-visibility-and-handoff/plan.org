@@ -30,7 +30,9 @@ On an xwidget-capable graphical Emacs, opening that status shows the selected ru
 If the user sends another message, the model receives the same active-run summary in context and therefore knows that work is still pending.
 When the required work settles, the board queues one completion input for the same session.
 That input waits while a model turn is active and starts only after the session reaches an idle boundary.
-The status remains visible until the completion input is consumed, including across restart.
+The status remains visible until the coordinator turn finishes successfully,
+including across restart.  A failed or cancelled turn remains visible as
+attention.
 
 * Existing work to preserve
 
@@ -60,7 +62,7 @@ assignments, but does not identify the run or show which task is pending.
 - Run :: The durable board orchestration group defined by feature 82.
   It includes the manifest, selected task attempts, reports, terminal projection, and continuation claim.
 - Owner chat :: The canonical session participant and board association that accepted or created the run.
-- Active run :: A run with required work still pending, optional work still active, or a completion input not yet consumed.
+- Active run :: A run with required work still pending, optional work still active, or a completion continuation without a non-conflicting successful coordinator outcome.
 - Run projection :: A bounded reducer output used by both chat presentation and model context.
 - Completion input :: The one keyed board input that asks the owner session to consume the terminal run result.
 - Idle boundary :: A point after an active turn finishes where the participant FIFO may start the next queued input.
@@ -103,7 +105,7 @@ One session-scoped reducer projection drives both the chat status and the model-
 It includes:
 
 - every nonterminal run;
-- every terminal run whose completion input is not consumed;
+- every terminal run without a non-conflicting successful coordinator outcome;
 - every run with optional tasks still active.
 
 Runs are ordered by actionable state, latest durable board event, and run id.
@@ -117,7 +119,7 @@ Each detailed entry contains:
 - optional task totals by state;
 - latest durable event time;
 - conflict or deadline evidence;
-- completion delivery state.
+- completion delivery state and separate coordinator execution outcome.
 
 The projection does not copy worker transcripts, prompts, tool results, or reasoning into the owner session.
 The reducer publishes change notifications.
@@ -252,7 +254,8 @@ The context block appears even when no run event is present in the visible trans
 The agent can therefore answer new input with knowledge of outstanding work.
 It can inspect or steer the run through existing actions without guessing whether work still exists.
 
-The context provider states whether completion is waiting, pending, published, failed, or consumed.
+The context provider states whether completion publication is waiting, pending,
+published, or failed, and reports the separate coordinator execution outcome.
 It includes omitted counts when the detailed budget is exhausted.
 It does not instruct the model to wait blindly.
 
@@ -263,18 +266,22 @@ The run becomes terminal when all required tasks settle under that policy.
 Unfinished optional tasks remain visible in the run projection and completion payload.
 The first terminal transition advances one continuation under the stable publication key.
 
-Continuation state is explicit:
+Completion publication state is explicit:
 
 - =waiting= before terminal policy is satisfied;
 - =pending= after the board records the publication claim;
 - =published= after the board accepts the keyed completion input;
-- =failed= when publication cannot complete and requires attention;
-- =consumed= after the matching input-consumed receipt.
+- =failed= when publication cannot complete and requires attention.
+
+The matching =input-consumed= receipt establishes delivery into a coordinator
+turn.  It does not establish execution success.  A separate durable continuation
+outcome records =done=, =failed=, or =cancelled= after the coordinator turn and
+its completion hooks settle.  A terminal run without a non-conflicting =done=
+outcome remains active; failed or cancelled outcomes require attention.
 
 A pending claim is recorded before publication.
 The completion input uses a stable source-input key.
 The published claim is recorded only after the board accepts that input.
-The matching =input-consumed= receipt advances the run to consumed.
 A crash between any two steps retries with the same keys and cannot append a second completion input.
 
 This contract guarantees one durable completion input.
@@ -287,7 +294,9 @@ Completion never interrupts an active model turn.
 It does not start pickup until the attachment is idle after =turn-finished= or another explicit idle boundary.
 
 If a user turn reaches that boundary first, the participant FIFO preserves normal ordering.
-The run projection continues to show terminal but unconsumed completion until delivery starts and the input is consumed.
+The run projection continues to show terminal completion through delivery and
+the coordinator turn until its durable successful outcome.  Failed or cancelled
+outcomes remain visible as attention.
 
 ** Restart behavior
 
@@ -373,13 +382,16 @@ focused tests use isolated SQLite state.
 - Add the session-scoped context provider backed by the same projection.
 - Bound entries and bytes, include omitted counts, and exclude worker transcript content.
 - Keep the block present on later unrelated user turns until the run is no longer active.
-- Gate: context tests prove that the model sees active, terminal-unconsumed, optional-active, attention, and restoring states.
+- Gate: context tests prove that the model sees active, terminal-outcome-pending,
+  optional-active, attention, and restoring states.
 
 ** Slice 4: publish one completion input
 
-- Implement explicit waiting, pending, published, failed, and consumed continuation states.
+- Implement explicit waiting, pending, published, and failed publication states
+  with a separate durable coordinator outcome.
 - Publish through =e-chat-service= with a stable source-input key.
-- Drive consumed state from the matching board receipt.
+- Correlate the matching =input-consumed= receipt with the coordinator turn;
+  record its terminal outcome after completion hooks settle.
 - Gate: fault-injection tests at each claim, publication, and receipt boundary produce one input without loss or duplication.
 
 ** Slice 5: defer completion until idle
@@ -438,9 +450,11 @@ It also restores a =running= task before deciding whether to retry it.
 The required tasks settle while an optional task and another owner-session turn remain active.
 The completion input does not interrupt that turn.
 The optional task remains visible in the status, context, and completion payload.
-One keyed completion input starts after an idle boundary and advances to consumed.
+One keyed completion input starts after an idle boundary; its delivery receipt
+and later coordinator outcome remain distinct.
 
-The scenario restarts before publication, after publication but before consumption, and after consumption.
+The scenario restarts before publication, after publication but before delivery,
+after delivery but before the coordinator outcome, and after that outcome.
 No restart loses or duplicates the completion input.
 The status and context never report no work while restore is incomplete.
 
@@ -473,8 +487,10 @@ The status and context never report no work while restore is incomplete.
 - Required and optional terminal policy is explicit.
 - Unfinished optional work remains visible after required work triggers completion.
 - Terminal completion creates one bounded keyed input for the owner session.
-- Completion does not interrupt an active turn and is consumed at an idle boundary.
-- Dispatch, publication, consumption, and restart boundaries cannot lose or duplicate the completion input.
+- Completion does not interrupt an active turn and is delivered at an idle
+  boundary; its coordinator outcome is recorded after the turn settles.
+- Dispatch, publication, delivery, outcome, and restart boundaries cannot lose
+  or duplicate the completion input.
 - Incomplete restore is visible as =restoring= or =dispatching= rather than an empty state.
 - Detailed run inspection remains bounded and available through Board activity
   from the chat status, including a dispatch-pending task with no participant.
