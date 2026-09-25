@@ -1347,7 +1347,7 @@
         (delete-directory directory t)))))
 
 (ert-deftest e-chat-service-sqlite-pending-continuation-restores-before-input-and-preserves-fifo ()
-  "A pending claim survives restart and queues after an older user input."
+  "A restored pending claim starts after older input settles and completes once."
   (let* ((directory (make-temp-file "e-chat-pending-continuation-restart-" t))
          (session-id "pending-continuation-restart-owner")
          (board-id "pending-continuation-restart-board")
@@ -1370,16 +1370,28 @@
          (service-2 nil)
          (harness-2 nil)
          (binding-2 nil)
-         (busy-requests 0)
+         (backend-start-count 0)
+         backend-starts
+         activity-events
+         activity-subscription
+         user-delivery-id
+         continuation-delivery-id
          (busy-backend
           (e-backend-create
            :name "pending-restart-held-turn"
            :start
            (cl-function
-            (lambda (&key on-request-start &allow-other-keys)
-              (cl-incf busy-requests)
+            (lambda (&key messages options on-item on-done on-error
+                        on-request-start &allow-other-keys)
+              (ignore options on-error)
+              (cl-incf backend-start-count)
               (let ((request
                      (e-backend-request-create :cancel (lambda () t))))
+                (setq backend-starts
+                      (append backend-starts
+                              (list (list :messages (copy-tree messages t)
+                                          :on-item on-item
+                                          :on-done on-done))))
                 (when on-request-start (funcall on-request-start request))
                 request)))))
          (manifest
@@ -1432,6 +1444,78 @@
                (accept-process-output nil 0.01)
                (setq queued (e-harness-queued-prompts harness session-id)))
              queued))
+         (wait-for-backend-starts (wanted)
+           (let ((deadline (+ (float-time) 5.0)))
+             (while (and (< backend-start-count wanted)
+                         (< (float-time) deadline))
+               (accept-process-output nil 0.01))
+             backend-starts))
+         (last-backend-user-message (ordinal)
+           (let* ((started (nth (1- ordinal) backend-starts))
+                  (messages (plist-get started :messages)))
+             (car (last
+                   (seq-filter
+                    (lambda (message)
+                      (eq (plist-get message :role) 'user))
+                    messages)))))
+         (finish-backend-start (ordinal content)
+           (let ((started (nth (1- ordinal) backend-starts)))
+             (should started)
+             (funcall (plist-get started :on-item)
+                      (list :type 'assistant-message :content content))
+             (funcall (plist-get started :on-item)
+                      '(:type done :reason stop))
+             (funcall (plist-get started :on-done) '(:status done))))
+         (input-consumed-event (delivery-id)
+           (seq-find
+            (lambda (event)
+              (and (eq (plist-get event :type) 'input-consumed)
+                   (equal (plist-get (plist-get event :payload) :delivery-id)
+                          delivery-id)))
+            activity-events))
+         (pickup-unresolved-p (service delivery-id)
+           (seq-some
+            (lambda (pickup)
+              (equal (plist-get pickup :delivery-id) delivery-id))
+            (pickups service)))
+         (wait-for-input-consumed (service delivery-id)
+           (let ((deadline (+ (float-time) 5.0))
+                 event unresolved-p)
+             (while (and (not event) (< (float-time) deadline))
+               (setq event (input-consumed-event delivery-id))
+               (unless event (accept-process-output nil 0.01)))
+             (when event
+               (setq unresolved-p (pickup-unresolved-p service delivery-id))
+               (while (and unresolved-p (< (float-time) deadline))
+                 (accept-process-output nil 0.01)
+                 (setq unresolved-p
+                       (pickup-unresolved-p service delivery-id))))
+             (and event (not unresolved-p) event)))
+         (wait-for-session-outcome ()
+           (let ((deadline (+ (float-time) 5.0)) outcome)
+             (while (and (not (plist-get outcome :known-p))
+                         (< (float-time) deadline))
+               (setq outcome
+                     (e-board-sqlite-service-test--await
+                      (e-session-async-continuation-outcome
+                       store-2 session-id run-id publication-key)))
+               (unless (plist-get outcome :known-p)
+                 (accept-process-output nil 0.01)))
+             outcome))
+         (wait-for-board-outcome ()
+           (let ((deadline (+ (float-time) 5.0)) projection)
+             (while (and (not (eq (plist-get
+                                   (plist-get projection :continuation-outcome)
+                                   :status)
+                                  'done))
+                         (< (float-time) deadline))
+               (setq projection (run-projection service-2))
+               (unless (eq (plist-get
+                            (plist-get projection :continuation-outcome)
+                            :status)
+                           'done)
+                 (accept-process-output nil 0.01)))
+             projection))
          (wait-for-published (service)
            (let ((deadline (+ (float-time) 5.0)) projection)
              (while (and (not (eq (plist-get
@@ -1481,6 +1565,13 @@
                    (e-session-storage-runtime-store store-2))
                   harness-2
                   (e-harness-create :sessions store-2 :backend busy-backend))
+            (setq activity-subscription
+                  (e-harness-activity-subscribe
+                   harness-2
+                   (lambda (event)
+                     (when (eq (plist-get event :type) 'input-consumed)
+                       (push (copy-tree event t) activity-events)))
+                   :session-id session-id))
             ;; Bind without continuation ownership so the restarted owner can
             ;; accumulate ordinary queued input before retrying the pending run.
             (setq binding-2
@@ -1488,10 +1579,10 @@
                    (e-chat-service-binding-start harness-2 session-id)))
             (e-board-sqlite-service-test--await
              (e-chat-service-submit-session harness-2 session-id busy-prompt))
-            (let ((deadline (+ (float-time) 5.0)))
-              (while (and (= busy-requests 0) (< (float-time) deadline))
-                (accept-process-output nil 0.01)))
-            (should (= busy-requests 1))
+            (wait-for-backend-starts 1)
+            (should (= backend-start-count 1))
+            (should (equal (plist-get (last-backend-user-message 1) :content)
+                           busy-prompt))
             (should (e-chat-service-active-turn-p harness-2 session-id))
             (e-board-sqlite-service-test--await
              (e-chat-service-queue-session harness-2 session-id user-prompt))
@@ -1509,6 +1600,10 @@
               (should (= (length queued) 1))
               (should (equal (plist-get (car queued) :prompt) user-prompt))
               (should (= (length pending) 2))
+              (setq user-delivery-id
+                    (plist-get (car pending) :delivery-id)
+                    continuation-delivery-id
+                    (plist-get (cadr pending) :delivery-id))
               (should (eq (plist-get (car pending) :state) 'claimed))
               (should (eq (plist-get (cadr pending) :state) 'pending))
               (should (< (plist-get (car pending) :fifo-position)
@@ -1526,9 +1621,62 @@
             (let ((projection (wait-for-published service-2)))
               (should (eq (plist-get (plist-get projection :continuation) :state)
                           'published)))
+            (should (= (length (continuation-inputs service-2)) 1))
+
+            ;; Prove FIFO at the actual provider boundary: the older user
+            ;; request must start before the durable completion input.
+            (finish-backend-start 1 "Busy turn complete.")
+            (wait-for-backend-starts 2)
+            (should (= backend-start-count 2))
+            (should (equal (plist-get (last-backend-user-message 2) :content)
+                           user-prompt))
+            (should (wait-for-input-consumed service-2 user-delivery-id))
+            (should-not (input-consumed-event continuation-delivery-id))
+            (should (pickup-unresolved-p service-2 continuation-delivery-id))
+            (should-not (plist-get (run-projection service-2)
+                                   :continuation-outcome))
+
+            (finish-backend-start 2 "User input handled.")
+            (wait-for-backend-starts 3)
+            (should (= backend-start-count 3))
+            (let ((completion-message (last-backend-user-message 3)))
+              (should (string-prefix-p "Finalize after restore."
+                                       (plist-get completion-message :content)))
+              (should (equal (plist-get (plist-get completion-message :metadata)
+                                        :board-continuation-key)
+                             publication-key)))
+            (let ((receipt
+                   (wait-for-input-consumed service-2 continuation-delivery-id)))
+              (should (eq (plist-get receipt :type) 'input-consumed))
+              (should (equal (plist-get (plist-get receipt :payload) :delivery-id)
+                             continuation-delivery-id)))
+            ;; The input-consumed receipt says the input started; only the
+            ;; later turn-finished event writes its coordinator outcome.
+            (let ((outcome
+                   (e-board-sqlite-service-test--await
+                    (e-session-async-continuation-outcome
+                     store-2 session-id run-id publication-key))))
+              (should-not (plist-get outcome :known-p)))
+            (should-not (plist-get (run-projection service-2)
+                                   :continuation-outcome))
+            (should (= (length (continuation-inputs service-2)) 1))
+
+            (finish-backend-start 3 "Coordinator complete.")
+            (let* ((session-outcome (wait-for-session-outcome))
+                   (projection (wait-for-board-outcome))
+                   (outcome (plist-get projection :continuation-outcome)))
+              (should (plist-get session-outcome :known-p))
+              (should (eq (plist-get session-outcome :status) 'done))
+              (should (eq (plist-get outcome :status) 'done))
+              (should (= (length (plist-get projection :continuation-outcomes))
+                         1)))
+            (should-not (e-chat-service-active-turn-p harness-2 session-id))
+            (should (= backend-start-count 3))
             (should (= (length (continuation-inputs service-2)) 1)))
         (when binding-2 (e-chat-service--retire-binding binding-2))
         (when binding-1 (e-chat-service--retire-binding binding-1))
+        (when (and harness-2 activity-subscription)
+          (e-harness-activity-unsubscribe harness-2 activity-subscription))
         (dolist (store (list store-2 store-1))
           (when store (ignore-errors (e-session-sqlite-store-close store))))
         (delete-directory directory t)))))
