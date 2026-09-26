@@ -615,11 +615,21 @@ selection, state transition, and attempt creation have one commit boundary."
   (pcase (plist-get body :op)
     ('task-queue-status
      (let* ((queue-id (plist-get body :queue-id))
-            (root (e-task-storage-sqlite-worker--queue queue-id)))
+            (root (e-task-storage-sqlite-worker--queue queue-id))
+            (unsettled
+             (car
+              (sqlite-select
+               database
+               (concat
+                "SELECT COUNT(*) FROM task_records WHERE queue_id=? "
+                "AND status IN ('queued','running','pausing','paused')")
+               (vector queue-id)))))
        (list :queue-id queue-id
              :revision (e-task-storage-sqlite-worker--column root 0)
              :sequence (e-task-storage-sqlite-worker--column root 1)
-             :paused-p (= (e-task-storage-sqlite-worker--column root 2) 1))))
+             :paused-p (= (e-task-storage-sqlite-worker--column root 2) 1)
+             :unsettled-count
+             (e-task-storage-sqlite-worker--column unsettled 0))))
     ('task-snapshot
      (let* ((queue-id (plist-get body :queue-id))
             (root (e-task-storage-sqlite-worker--queue queue-id))

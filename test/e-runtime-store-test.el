@@ -3311,6 +3311,62 @@ tests can present a raw frame that production would refuse to create."
       (should (equal (plist-get (plist-get first :record) :status)
                      'running)))))
 
+(ert-deftest e-runtime-store-task-status-counts-all-durable-unsettled-rows ()
+  "Async status counts every active task beyond any bounded snapshot page."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (let* ((queue-id "count-unsettled")
+           (storage (e-task-storage-sqlite-create store)))
+      (cl-labels
+          ((status ()
+             (let* ((result nil) (failure nil) settled
+                   (request
+                    (e-task-storage-submit
+                     storage 'read 'status (list queue-id)
+                     (lambda (value error)
+                       (setq result value failure error settled t)))))
+               (e-runtime-store-test--wait-terminal request)
+               (e-runtime-store-test--wait-until (lambda () settled))
+               (should-not failure)
+               result))
+           (transition (task-id expected next)
+             (e-runtime-store-call
+              store 'write
+              (list :op 'task-transition :queue-id queue-id
+                    :task-id task-id :expected-status expected
+                    :record (list :task-id task-id :status next
+                                  :prompt "work")))))
+        (dotimes (index 5)
+          (e-runtime-store-call
+           store 'write
+           (list :op 'task-enqueue :queue-id queue-id
+                 :record (list :task-id (format "task-%d" index)
+                               :status 'queued :prompt "work"))))
+        (should (= (length
+                    (plist-get
+                     (e-runtime-store-call
+                      store 'read
+                      (list :op 'task-snapshot :queue-id queue-id :limit 1))
+                     :records))
+                   1))
+        (should (= (plist-get (status) :unsettled-count) 5))
+        (e-runtime-store-call
+         store 'write
+         (list :op 'task-runnable-claim :queue-id queue-id
+               :started-at "2026-09-26T00:00:00Z"
+               :harness-instance-id "worker"))
+        (should (= (plist-get (status) :unsettled-count) 5))
+        (transition "task-0" 'running 'pausing)
+        (transition "task-1" 'queued 'paused)
+        (should (= (plist-get (status) :unsettled-count) 5))
+        (transition "task-2" 'queued 'done)
+        (should (= (plist-get (status) :unsettled-count) 4))
+        (transition "task-0" 'pausing 'interrupted)
+        (transition "task-1" 'paused 'cancelled)
+        (transition "task-3" 'queued 'failed)
+        (transition "task-4" 'queued 'unrouted)
+        (should (= (plist-get (status) :unsettled-count) 0))))))
+
 (ert-deftest e-runtime-store-task-claim-preserves-harness-instance-id-types ()
   "Task attempt reads preserve symbol ids and legacy string ids."
   (e-runtime-store-test--with-store (store directory)
