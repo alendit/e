@@ -37,6 +37,18 @@ Addressed delivery performs an exact participant lookup and is not subject to
 this bound.  Unaddressed fan-out fails explicitly beyond the practical bound;
 it must never silently omit a participant because an internal page ended.")
 
+(defconst e-board-sqlite-worker-orchestration-run-fact-limit 1024
+  "Maximum facts reduced to update one durable run-index row.")
+
+(defconst e-board-sqlite-worker-orchestration-index-page-default-limit 32
+  "Default current-generation Board run-index page size.")
+
+(defconst e-board-sqlite-worker-orchestration-index-page-max-limit 256
+  "Maximum current-generation Board run-index page size.")
+
+(defconst e-board-sqlite-worker-orchestration-index-backfill-page-limit 128
+  "Maximum manifest identities read into one offline run-index backfill page.")
+
 (defun e-board-sqlite-worker--column (row index)
   "Return INDEX from SQLite ROW."
   (if (vectorp row) (aref row index) (nth index row)))
@@ -234,8 +246,9 @@ it only avoids a query per returned record while reconstructing that page."
          "CREATE TABLE IF NOT EXISTS board_session_admissions (delivery_key TEXT PRIMARY KEY, session_id TEXT NOT NULL, session_position INTEGER NOT NULL, lane TEXT NOT NULL, payload TEXT NOT NULL, FOREIGN KEY(delivery_key) REFERENCES board_pickups(delivery_key) ON DELETE CASCADE)"))
     (sqlite-execute database statement)))
 
-(defun e-board-sqlite-worker-initialize (database)
-  "Create current normalized Board relations on DATABASE."
+(defun e-board-sqlite-worker-initialize (database &optional schema-version)
+  "Create normalized Board relations on DATABASE through SCHEMA-VERSION.
+Nil SCHEMA-VERSION creates the current schema."
   (dolist
       (statement
        '("CREATE TABLE IF NOT EXISTS boards (board_id TEXT PRIMARY KEY, trusted_principal TEXT, generation INTEGER NOT NULL, revision INTEGER NOT NULL, next_position INTEGER NOT NULL, root_payload TEXT)"
@@ -253,7 +266,52 @@ it only avoids a query per returned record while reconstructing that page."
          "CREATE TABLE IF NOT EXISTS board_replay_progress (board_id TEXT NOT NULL, generation INTEGER NOT NULL, subscription_id TEXT NOT NULL, position INTEGER NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(board_id,generation,subscription_id), FOREIGN KEY(board_id) REFERENCES boards(board_id) ON DELETE CASCADE)"
          "CREATE TABLE IF NOT EXISTS board_session_associations (session_id TEXT PRIMARY KEY, board_id TEXT NOT NULL, generation INTEGER NOT NULL, participant_id TEXT NOT NULL, routing_policy TEXT, revision INTEGER NOT NULL DEFAULT 1, FOREIGN KEY(board_id) REFERENCES boards(board_id) ON DELETE CASCADE, FOREIGN KEY(session_id) REFERENCES session_query_state(session_id) ON DELETE CASCADE, FOREIGN KEY(board_id,generation,participant_id) REFERENCES board_participants(board_id,generation,participant_id) ON DELETE RESTRICT)"
          "CREATE INDEX IF NOT EXISTS board_session_associations_board ON board_session_associations(board_id,generation,participant_id,session_id)"))
+    (sqlite-execute database statement))
+  (when (or (null schema-version) (>= schema-version 9))
+    (e-board-sqlite-worker-initialize-run-index database)))
+
+(defun e-board-sqlite-worker-initialize-run-index (database)
+  "Create current-generation Board orchestration index relations on DATABASE."
+  (dolist
+      (statement
+       '("CREATE TABLE IF NOT EXISTS board_orchestration_run_index (board_id TEXT NOT NULL, generation INTEGER NOT NULL, run_id TEXT NOT NULL, manifest_position INTEGER NOT NULL, latest_event_position INTEGER NOT NULL, latest_event_at REAL NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)), actionable_rank INTEGER NOT NULL, deadline_at REAL, descriptor TEXT, summary TEXT NOT NULL, PRIMARY KEY(board_id,generation,run_id), UNIQUE(board_id,generation,manifest_position), FOREIGN KEY(board_id) REFERENCES boards(board_id) ON DELETE CASCADE)"
+         "CREATE INDEX IF NOT EXISTS board_orchestration_run_index_active ON board_orchestration_run_index(board_id,generation,active,actionable_rank,latest_event_position DESC,run_id)"
+         "CREATE INDEX IF NOT EXISTS board_orchestration_run_index_cursor ON board_orchestration_run_index(board_id,generation,manifest_position DESC)"))
     (sqlite-execute database statement)))
+
+(defun e-board-sqlite-worker-verify-run-index-schema (database)
+  "Verify the exact current Board orchestration index shape on DATABASE."
+  (let* ((table "board_orchestration_run_index")
+         (columns '("board_id" "generation" "run_id" "manifest_position"
+                    "latest_event_position" "latest_event_at" "active"
+                    "actionable_rank" "deadline_at" "descriptor" "summary"))
+         (actual-columns
+          (mapcar (lambda (row) (e-board-sqlite-worker--column row 1))
+                  (sqlite-select database (format "PRAGMA table_info(%s)" table))))
+         (index-rows (sqlite-select database (format "PRAGMA index_list(%s)" table)))
+         (index-names
+          (mapcar (lambda (row) (e-board-sqlite-worker--column row 1)) index-rows)))
+    (unless (equal actual-columns columns)
+      (signal 'e-runtime-store-worker-error
+              (list "Board orchestration run-index table shape is invalid"
+                    :expected columns :actual actual-columns)))
+    (dolist (expectation
+             '(("board_orchestration_run_index_active"
+                "board_id" "generation" "active" "actionable_rank"
+                "latest_event_position" "run_id")
+               ("board_orchestration_run_index_cursor"
+                "board_id" "generation" "manifest_position")))
+      (let* ((name (car expectation))
+             (actual
+              (mapcar
+               (lambda (row) (e-board-sqlite-worker--column row 2))
+               (sqlite-select database (format "PRAGMA index_info(%s)" name)))))
+        (unless (and (member name index-names)
+                     (equal actual (cdr expectation)))
+          (signal 'e-runtime-store-worker-error
+                  (list "Board orchestration run-index query index is invalid"
+                        name :expected (cdr expectation) :actual actual)))))
+    t))
 
 (defun e-board-sqlite-worker--board-row (board-id)
   "Return BOARD-ID's root row or signal."
@@ -317,6 +375,10 @@ it only avoids a query per returned record while reconstructing that page."
      e-board-sqlite-worker--database
      "UPDATE boards SET generation=?,revision=?,next_position=0 WHERE board_id=?"
      (vector generation revision board-id))
+    (sqlite-execute
+     e-board-sqlite-worker--database
+     "DELETE FROM board_orchestration_run_index WHERE board_id=?"
+     (vector board-id))
     (sqlite-execute
      e-board-sqlite-worker--database
      "INSERT INTO board_participants(board_id,generation,participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,payload,revision) SELECT board_id,?,participant_id,principal,author,controller,role,state,name,subscription_id,publication_pending,payload,1 FROM board_participants WHERE board_id=? AND generation=?"
@@ -419,6 +481,12 @@ it only avoids a query per returned record while reconstructing that page."
      e-board-sqlite-worker--database
      "UPDATE boards SET revision=?,next_position=? WHERE board_id=?"
      (vector revision position board-id))
+    (when (and (equal record-kind "fact")
+               (memq 'orchestration (plist-get record :tags)))
+      (when-let* ((fact (e-board-orchestration-fact-from-record record))
+                  (run-id (plist-get (plist-get fact :payload) :run-id)))
+        (e-board-sqlite-worker--update-orchestration-run-index
+         board-id generation run-id)))
       (list :board-id board-id :generation generation :revision revision
             :position position :status 'posted
             :record (e-board-sqlite-worker--record-dto
@@ -1634,7 +1702,8 @@ inserting it is insufficient when the count changes its encoded width."
   "Return BOARD-ID's bounded exact GENERATION facts for RUN-ID.
 The run id is selected through the normalized attribute index before any fact
 limit is applied."
-  (let* ((limit (min 1024 (max 1 (or limit 256))))
+  (let* ((limit (min e-board-sqlite-worker-orchestration-run-fact-limit
+                     (max 1 (or limit 256))))
          (rows
           (sqlite-select
            e-board-sqlite-worker--database
@@ -1650,10 +1719,11 @@ limit is applied."
                    (e-board-sqlite-worker--sql-value :orchestration-run-id)
                    (e-board-sqlite-worker--sql-value run-id)
                    (1+ limit))))
+         (truncated (> (length rows) limit))
+         (selected (if truncated (cl-subseq rows 0 limit) rows))
          (context (e-board-sqlite-worker--record-read-context
-                   board-id generation rows))
-         (truncated (> (length rows) limit)))
-    (list :run-id run-id
+                   board-id generation selected)))
+    (list :board-id board-id :generation generation :run-id run-id
           :records
           (mapcar
            (lambda (row)
@@ -1672,8 +1742,352 @@ limit is applied."
                                 context)
                                :attributes)
                     context)))
-           (if truncated (cl-subseq rows 0 limit) rows))
+           selected)
           :truncated truncated)))
+
+(defun e-board-sqlite-worker--orchestration-run-index-data
+    (board-id generation run-id)
+  "Reduce BOARD-ID's complete GENERATION/RUN-ID facts into index data."
+  (let* ((page
+          (e-board-sqlite-worker--orchestration-run-page
+           board-id generation run-id
+           e-board-sqlite-worker-orchestration-run-fact-limit))
+         (rows (plist-get page :records)))
+    (when (plist-get page :truncated)
+      (signal 'e-runtime-store-worker-error
+              (list "Board orchestration run exceeds 1024-fact index limit"
+                    board-id generation run-id)))
+    (when rows
+      (let* ((records (mapcar (lambda (row) (plist-get row :record)) rows))
+             (latest (car (last rows)))
+             (manifest-position nil))
+        (dolist (row rows)
+          (let ((fact (e-board-orchestration-fact-from-record
+                       (plist-get row :record))))
+            (when (eq (plist-get fact :type) 'manifest)
+              (setq manifest-position (plist-get row :position)))))
+        (when manifest-position
+          (let* ((projection (e-board-orchestration-reduce records))
+                 (summary
+                  (e-board-orchestration-run-index-summary
+                   projection board-id
+                   (plist-get latest :position)
+                   (plist-get (plist-get latest :record) :created-at)))
+                 (deadline (plist-get projection :deadline)))
+            (list :board-id board-id
+                  :generation generation
+                  :run-id run-id
+                  :manifest-position manifest-position
+                  :latest-event-position (plist-get latest :position)
+                  :latest-event-at
+                  (plist-get (plist-get latest :record) :created-at)
+                  :active (if (plist-get summary :active-p) 1 0)
+                  :actionable-rank (plist-get summary :actionable-rank)
+                  :deadline-at
+                  (and (eq (plist-get deadline :kind) 'at)
+                       (plist-get deadline :at))
+                  :descriptor
+                  (plist-get (plist-get projection :manifest) :descriptor)
+                  :summary summary)))))))
+
+(defun e-board-sqlite-worker--orchestration-run-index-store (data)
+  "Insert or replace detached orchestration index DATA."
+  (sqlite-execute
+   e-board-sqlite-worker--database
+   (concat
+    "INSERT INTO board_orchestration_run_index "
+    "(board_id,generation,run_id,manifest_position,latest_event_position,"
+    "latest_event_at,active,actionable_rank,deadline_at,descriptor,summary) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+    "ON CONFLICT(board_id,generation,run_id) DO UPDATE SET "
+    "manifest_position=excluded.manifest_position,"
+    "latest_event_position=excluded.latest_event_position,"
+    "latest_event_at=excluded.latest_event_at,active=excluded.active,"
+    "actionable_rank=excluded.actionable_rank,deadline_at=excluded.deadline_at,"
+    "descriptor=excluded.descriptor,summary=excluded.summary")
+   (vector (plist-get data :board-id)
+           (plist-get data :generation)
+           (plist-get data :run-id)
+           (plist-get data :manifest-position)
+           (plist-get data :latest-event-position)
+           (plist-get data :latest-event-at)
+           (plist-get data :active)
+           (plist-get data :actionable-rank)
+           (plist-get data :deadline-at)
+           (and (plist-get data :descriptor)
+                (e-board-sqlite-worker--sql-value
+                 (plist-get data :descriptor)))
+           (e-board-sqlite-worker--sql-value
+            (plist-get data :summary)))))
+
+(defun e-board-sqlite-worker--update-orchestration-run-index
+    (board-id generation run-id)
+  "Rebuild only BOARD-ID/GENERATION/RUN-ID's derived index row."
+  (let ((data
+         (e-board-sqlite-worker--orchestration-run-index-data
+          board-id generation run-id)))
+    (if data
+        (e-board-sqlite-worker--orchestration-run-index-store data)
+      (sqlite-execute
+       e-board-sqlite-worker--database
+       "DELETE FROM board_orchestration_run_index WHERE board_id=? AND generation=? AND run_id=?"
+       (vector board-id generation run-id)))
+    data))
+
+(defun e-board-sqlite-worker--orchestration-run-manifest-page
+    (board-id generation before limit)
+  "Return bounded manifest identities before position BEFORE."
+  (sqlite-select
+   e-board-sqlite-worker--database
+   (concat
+    "SELECT run_attr.attribute_value,MAX(r.position) "
+    "FROM board_records r "
+    "JOIN board_record_tags tag ON tag.board_id=r.board_id "
+    "AND tag.generation=r.generation AND tag.position=r.position AND tag.tag=? "
+    "JOIN board_record_attributes run_attr ON run_attr.board_id=r.board_id "
+    "AND run_attr.generation=r.generation AND run_attr.position=r.position "
+    "AND run_attr.attribute_key=? "
+    "JOIN board_record_attributes type_attr ON type_attr.board_id=r.board_id "
+    "AND type_attr.generation=r.generation AND type_attr.position=r.position "
+    "AND type_attr.attribute_key=? AND type_attr.attribute_value=? "
+    "WHERE r.board_id=? AND r.generation=? AND r.record_kind='fact' "
+    "GROUP BY run_attr.attribute_value "
+    "HAVING MAX(r.position)<? ORDER BY MAX(r.position) DESC LIMIT ?")
+   (vector (e-board-sqlite-worker--sql-value 'orchestration)
+           (e-board-sqlite-worker--sql-value :orchestration-run-id)
+           (e-board-sqlite-worker--sql-value :orchestration-type)
+           (e-board-sqlite-worker--sql-value "manifest")
+           board-id generation before limit)))
+
+(defun e-board-sqlite-worker--visit-current-orchestration-runs
+    (database function)
+  "Call FUNCTION for every manifest run in each current Board generation."
+  (let ((e-board-sqlite-worker--database database))
+    (dolist (board
+             (sqlite-select
+              database
+              "SELECT board_id,generation,next_position FROM boards ORDER BY board_id"))
+      (let ((board-id (e-board-sqlite-worker--column board 0))
+            (generation (e-board-sqlite-worker--column board 1))
+            (before (1+ (e-board-sqlite-worker--column board 2))))
+        (let (rows)
+          (while
+              (setq rows
+                    (e-board-sqlite-worker--orchestration-run-manifest-page
+                     board-id generation before
+                     e-board-sqlite-worker-orchestration-index-backfill-page-limit))
+            (dolist (row rows)
+              (funcall function
+                       board-id generation
+                       (e-board-sqlite-worker--value
+                        (e-board-sqlite-worker--column row 0))))
+            (setq before (e-board-sqlite-worker--column (car (last rows)) 1))))))))
+
+(defun e-board-sqlite-worker-backfill-orchestration-run-index (database)
+  "Rebuild current-generation run-index rows from canonical facts in DATABASE."
+  (let ((e-board-sqlite-worker--database database)
+        (entries 0))
+    (sqlite-execute database "DELETE FROM board_orchestration_run_index")
+    (e-board-sqlite-worker--visit-current-orchestration-runs
+     database
+     (lambda (board-id generation run-id)
+       (when (e-board-sqlite-worker--update-orchestration-run-index
+              board-id generation run-id)
+         (setq entries (1+ entries)))))
+    (list :entries entries)))
+
+(defun e-board-sqlite-worker-verify-orchestration-run-index (database)
+  "Verify every current-generation run-index row against canonical facts."
+  (let ((e-board-sqlite-worker--database database)
+        (entries 0)
+        (active 0))
+    (e-board-sqlite-worker--visit-current-orchestration-runs
+     database
+     (lambda (board-id generation run-id)
+       (let* ((expected
+               (e-board-sqlite-worker--orchestration-run-index-data
+                board-id generation run-id))
+              (actual
+               (car (sqlite-select
+                     database
+                     (concat
+                      "SELECT manifest_position,latest_event_position,"
+                      "latest_event_at,active,actionable_rank,deadline_at,"
+                      "descriptor,summary FROM board_orchestration_run_index "
+                      "WHERE board_id=? AND generation=? AND run_id=?")
+                     (vector board-id generation run-id)))))
+         (unless
+             (and actual
+                  (= (e-board-sqlite-worker--column actual 0)
+                     (plist-get expected :manifest-position))
+                  (= (e-board-sqlite-worker--column actual 1)
+                     (plist-get expected :latest-event-position))
+                  (= (e-board-sqlite-worker--column actual 2)
+                     (plist-get expected :latest-event-at))
+                  (= (e-board-sqlite-worker--column actual 3)
+                     (plist-get expected :active))
+                  (= (e-board-sqlite-worker--column actual 4)
+                     (plist-get expected :actionable-rank))
+                  (let ((stored (e-board-sqlite-worker--column actual 5))
+                        (derived (plist-get expected :deadline-at)))
+                    (or (and (null stored) (null derived))
+                        (and (numberp stored) (numberp derived)
+                             (= stored derived))))
+                  (equal (e-board-sqlite-worker--value
+                          (e-board-sqlite-worker--column actual 6))
+                         (plist-get expected :descriptor))
+                  (equal (e-board-sqlite-worker--value
+                          (e-board-sqlite-worker--column actual 7))
+                         (plist-get expected :summary)))
+           (signal 'e-runtime-store-worker-error
+                   (list "Board orchestration run-index parity failed"
+                         board-id generation run-id)))
+         (setq entries (1+ entries))
+         (when (= (plist-get expected :active) 1)
+           (setq active (1+ active))))))
+    (let ((actual-count
+           (e-board-sqlite-worker--column
+            (car (sqlite-select
+                  database
+                  "SELECT COUNT(*) FROM board_orchestration_run_index"))
+            0)))
+      (unless (= entries actual-count)
+        (signal 'e-runtime-store-worker-error
+                (list "Board orchestration run-index count parity failed"
+                      :expected entries :actual actual-count)))
+      (list :entries entries :active active))))
+
+(defun e-board-sqlite-worker--orchestration-active-runs (body)
+  "Return a bounded priority page and exact active count for BODY's Board."
+  (let* ((board-id (plist-get body :board-id))
+         (board (e-board-sqlite-worker--board-row board-id))
+         (generation (e-board-sqlite-worker--column board 1))
+         (limit (or (plist-get body :limit)
+                    e-board-sqlite-worker-orchestration-index-page-default-limit))
+         (now (or (plist-get body :now) (float-time))))
+    (unless (and (integerp limit) (> limit 0)
+                 (<= limit e-board-sqlite-worker-orchestration-index-page-max-limit))
+      (signal 'e-runtime-store-worker-error
+              (list "Board active-run page limit is out of bounds" limit)))
+    (let* ((active-count
+            (e-board-sqlite-worker--column
+             (car (sqlite-select
+                   e-board-sqlite-worker--database
+                   "SELECT COUNT(*) FROM board_orchestration_run_index WHERE board_id=? AND generation=? AND active=1"
+                   (vector board-id generation)))
+             0))
+           (rows
+            (sqlite-select
+             e-board-sqlite-worker--database
+             (concat
+              "SELECT summary FROM board_orchestration_run_index "
+              "WHERE board_id=? AND generation=? AND active=1 "
+              "ORDER BY CASE WHEN deadline_at IS NOT NULL AND deadline_at<=? "
+              "THEN 0 ELSE actionable_rank END,latest_event_position DESC,run_id "
+              "LIMIT ?")
+             (vector board-id generation now limit))))
+      (list :board-id board-id :generation generation :as-of now
+            :runs (mapcar (lambda (row)
+                            (e-board-sqlite-worker--value
+                             (e-board-sqlite-worker--column row 0)))
+                          rows)
+            :active-count active-count
+            :more-p (> active-count (length rows))
+            :limit limit))))
+
+(defun e-board-sqlite-worker--orchestration-index-cursor-position
+    (cursor board-id generation active-only)
+  "Validate CURSOR for BOARD-ID, GENERATION, and ACTIVE-ONLY; return position."
+  (unless (and (proper-list-p cursor)
+               (zerop (% (length cursor) 2))
+               (= (or (plist-get cursor :version) 0) 1)
+               (equal (plist-get cursor :board-id) board-id)
+               (integerp (plist-get cursor :generation))
+               (> (plist-get cursor :generation) 0)
+               (eq (plist-get cursor :active-only) active-only)
+               (integerp (plist-get cursor :after-position))
+               (> (plist-get cursor :after-position) 0))
+    (signal 'e-runtime-store-worker-error
+            (list "Board run-index cursor is invalid or stale"
+                  board-id generation)))
+  (unless (= (plist-get cursor :generation) generation)
+    (signal 'e-runtime-store-board-conflict
+            (list "Stale Board generation" board-id
+                  (plist-get cursor :generation) generation)))
+  (plist-get cursor :after-position))
+
+(defun e-board-sqlite-worker--orchestration-index-page (body)
+  "Return a stable current-generation run-index page for BODY's Board."
+  (let* ((board-id (plist-get body :board-id))
+         (board (e-board-sqlite-worker--board-row board-id))
+         (generation (e-board-sqlite-worker--column board 1))
+         (active-only (plist-get body :active-only))
+         (include-continuation-ref
+          (plist-get body :include-continuation-ref))
+         (limit (or (plist-get body :limit)
+                    e-board-sqlite-worker-orchestration-index-page-default-limit))
+         (cursor (plist-get body :cursor)))
+    (unless (or (null active-only) (eq active-only t))
+      (signal 'e-runtime-store-worker-error
+              (list "Board run-index active filter is invalid" active-only)))
+    (unless (or (null include-continuation-ref)
+                (eq include-continuation-ref t))
+      (signal 'e-runtime-store-worker-error
+              (list "Board run-index continuation reference flag is invalid"
+                    include-continuation-ref)))
+    (unless (and (integerp limit) (> limit 0)
+                 (<= limit e-board-sqlite-worker-orchestration-index-page-max-limit))
+      (signal 'e-runtime-store-worker-error
+              (list "Board run-index page limit is out of bounds" limit)))
+    (let* ((after
+            (if cursor
+                (e-board-sqlite-worker--orchestration-index-cursor-position
+                 cursor board-id generation active-only)
+              (1+ (e-board-sqlite-worker--column board 3))))
+           (where-active (if active-only " AND active=1" ""))
+           (rows
+            (sqlite-select
+             e-board-sqlite-worker--database
+             (concat
+              "SELECT run_id,manifest_position,latest_event_position,"
+              "latest_event_at,active,descriptor,summary "
+              "FROM board_orchestration_run_index "
+              "WHERE board_id=? AND generation=? AND manifest_position<?"
+              where-active
+              " ORDER BY manifest_position DESC LIMIT ?")
+             (vector board-id generation after (1+ limit))))
+           (more-p (> (length rows) limit))
+           (selected (if more-p (cl-subseq rows 0 limit) rows))
+           (entries
+            (mapcar
+             (lambda (row)
+               (let ((summary
+                      (e-board-sqlite-worker--value
+                       (e-board-sqlite-worker--column row 6))))
+                 (unless include-continuation-ref
+                   (cl-remf summary :continuation-ref))
+                 (list :run-id (e-board-sqlite-worker--column row 0)
+                       :manifest-position
+                       (e-board-sqlite-worker--column row 1)
+                       :latest-event-position
+                       (e-board-sqlite-worker--column row 2)
+                       :latest-event-at
+                       (e-board-sqlite-worker--column row 3)
+                       :active-p (= 1 (e-board-sqlite-worker--column row 4))
+                       :descriptor
+                       (e-board-sqlite-worker--value
+                        (e-board-sqlite-worker--column row 5))
+                       :summary summary)))
+             selected))
+           (next-cursor
+            (when (and more-p entries)
+              (list :version 1 :board-id board-id :generation generation
+                    :active-only active-only
+                    :after-position
+                    (plist-get (car (last entries)) :manifest-position)))))
+      (list :board-id board-id :generation generation :entries entries
+            :cursor cursor :next-cursor next-cursor
+            :more-p more-p :limit limit :active-only active-only))))
 
 (defun e-board-sqlite-worker--activity-run-projection
     (board-id generation run-id)
@@ -2653,16 +3067,16 @@ snapshot is resolved by the session owner after this Board-side check."
              :truncated (and truncated t))))
     ('board-orchestration-run
      (let* ((board-id (plist-get body :board-id))
+            (board (e-board-sqlite-worker--board-check body))
             (run-id (plist-get body :run-id))
-            (generation
-             (or (plist-get body :generation)
-                 (caar (sqlite-select
-                        e-board-sqlite-worker--database
-                        "SELECT generation FROM boards WHERE board_id=?"
-                        (vector board-id)))))
+            (generation (e-board-sqlite-worker--column board 1))
             (limit (plist-get body :limit)))
        (e-board-sqlite-worker--orchestration-run-page
         board-id generation run-id limit)))
+    ('board-orchestration-active-runs
+     (e-board-sqlite-worker--orchestration-active-runs body))
+    ('board-orchestration-run-index-page
+     (e-board-sqlite-worker--orchestration-index-page body))
     ('board-orchestration-runs
      (let* ((board-id (plist-get body :board-id))
             (generation

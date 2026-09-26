@@ -48,6 +48,12 @@
 (defconst e-runtime-store-offline-worker--v8-migration-checksum
   "feature95-schema-v8-normalized-communication"
   "Logical checksum for the v7-to-v8 normalized communication boundary.")
+(defconst e-runtime-store-offline-worker--v9-migration-identity
+  "feature89-v8-to-v9-board-run-index"
+  "Durable identity installed for the explicit v8-to-v9 run-index migration.")
+(defconst e-runtime-store-offline-worker--v9-migration-checksum
+  "feature89-schema-v9-board-run-index"
+  "Logical checksum for the v8-to-v9 Board run-index boundary.")
 
 (defun e-runtime-store-offline-worker--error (message &rest data)
   "Signal a bounded offline error with MESSAGE and DATA."
@@ -636,6 +642,16 @@ helper."
       (e-runtime-store-schema-too-old
        (e-runtime-store-offline-worker--error
         "Schema v8 migration lineage is invalid"
+         :reason (plist-get (cdr err) :reason))))))
+
+(defun e-runtime-store-offline-worker--verify-v9-lineage (database)
+  "Verify DATABASE's complete v9 lineage using the runtime contract."
+  (let ((e-runtime-store-worker--database database))
+    (condition-case err
+        (e-runtime-store-worker--verify-v9-lineage)
+      (e-runtime-store-schema-too-old
+       (e-runtime-store-offline-worker--error
+        "Schema v9 migration lineage is invalid"
         :reason (plist-get (cdr err) :reason))))))
 
 (defun e-runtime-store-offline-worker--install-v7 (database)
@@ -1398,7 +1414,7 @@ helper."
                    "task_queues" "task_records" "task_attempts"
                    "board_session_admissions"))
     (e-runtime-store-offline-worker--rename-table database table))
-  (e-runtime-store-worker--initialize-domain-schema database)
+  (e-runtime-store-worker--initialize-domain-schema database 8)
   (e-runtime-store-offline-worker--copy-v7-session-state database)
   (e-runtime-store-offline-worker--copy-v7-board database)
   (e-runtime-store-offline-worker--copy-v7-associations database)
@@ -1627,6 +1643,22 @@ helper."
       :reason (car (cdr err)))))
   (e-runtime-store-offline-worker--verify-v7-projection database))
 
+(defun e-runtime-store-offline-worker--verify-v9-schema (database)
+  "Verify v8 relations plus exact Board orchestration index parity."
+  (let ((v8 (e-runtime-store-offline-worker--verify-v8-schema database)))
+    (condition-case err
+        (let ((e-runtime-store-worker--database database))
+          (e-runtime-store-worker--verify-v9-normalized-schema))
+      (e-runtime-store-schema-too-old
+       (e-runtime-store-offline-worker--error
+        "Schema v9 normalized relation shape is invalid"
+        :reason (plist-get (cdr err) :reason))))
+    (let ((run-index
+           (e-board-sqlite-worker-verify-orchestration-run-index database)))
+    (append v8
+            (list :run-index-entries (plist-get run-index :entries)
+                  :run-index-active-entries (plist-get run-index :active))))))
+
 (defun e-runtime-store-offline-worker--remove-sqlite-sidecars (database-file)
   "Remove SQLite WAL sidecars for DATABASE-FILE after its connection closes."
   (dolist (file (list (concat database-file "-wal")
@@ -1686,10 +1718,10 @@ fault restores the exact pre-upgrade schema boundary."
       (sqlite-close restored))))
 
 (defun e-runtime-store-offline-worker--upgrade (database-file backup-file)
-  "Upgrade stopped schema v4, v5, v6, or v7 DATABASE-FILE explicitly to v8.
+  "Upgrade stopped schema v4, v5, v6, v7, or v8 DATABASE-FILE to v9.
 
 The complete supported chain uses one verified backup and one install
-transaction.  A verified v7 source is a read-only no-op and creates no backup."
+transaction.  A verified v9 source is a read-only no-op and creates no backup."
   (unless (file-readable-p database-file)
     (e-runtime-store-offline-worker--error "Store must exist" database-file))
   (let ((claim
@@ -1699,6 +1731,7 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
         (committed nil)
         (version nil)
         (copied nil)
+        (run-index nil)
         (projection nil))
     (unwind-protect
         (condition-case err
@@ -1713,18 +1746,20 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                           (list :actual version :supported current)))
                  ((= version current)
                   (e-runtime-store-offline-worker--check database)
-                  (e-runtime-store-offline-worker--verify-v8-lineage database)
+                  (e-runtime-store-offline-worker--verify-v9-lineage database)
                   (setq projection
-                        (e-runtime-store-offline-worker--verify-v8-schema
+                        (e-runtime-store-offline-worker--verify-v9-schema
                          database))
                   (list :from version :to current :noop t :backup nil
                         :records (plist-get projection :records)
+                        :run-index-entries
+                        (plist-get projection :run-index-entries)
                         :projection-base-rows
                         (plist-get projection :base-rows)
                         :projection-association-rows
                         (plist-get projection :association-rows)
                         :integrity "ok"))
-                 ((not (memq version '(4 5 6 7)))
+                 ((not (memq version '(4 5 6 7 8)))
                   (e-runtime-store-offline-worker--error
                    "No supported direct upgrade path" version current))
                  (t
@@ -1733,15 +1768,22 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                     (e-runtime-store-offline-worker--error
                      "Source store has no canonical session journal"))
                   (e-runtime-store-offline-worker--check database)
-                  (when (>= version 6)
+                  (when (memq version '(6 7))
                     (e-runtime-store-offline-worker--verify-v6-lineage database))
                   ;; A v7 lineage failure is a read-only source diagnostic;
                   ;; reject it before creating the operator backup.
                   (when (= version 7)
                     (e-runtime-store-offline-worker--verify-v7-lineage database))
-                  (if (< version 6)
-                      (e-runtime-store-offline-worker--preflight-v5 database)
-                    (e-runtime-store-offline-worker--preflight-v7 database))
+                  (when (= version 8)
+                    (e-runtime-store-offline-worker--verify-v8-lineage database)
+                    (setq projection
+                          (e-runtime-store-offline-worker--verify-v8-schema
+                           database)))
+                  (cond
+                   ((< version 6)
+                    (e-runtime-store-offline-worker--preflight-v5 database))
+                   ((< version 8)
+                    (e-runtime-store-offline-worker--preflight-v7 database)))
                   (when (file-exists-p backup-file)
                     (signal 'file-already-exists (list backup-file)))
                   (make-directory (file-name-directory backup-file) t)
@@ -1816,22 +1858,42 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                            e-runtime-store-offline-worker--v7-migration-checksum)
                           (e-runtime-store-offline-worker--verify-v7-lineage
                            database))
-                        (e-runtime-store-offline-worker--install-v8 database)
-                        (e-runtime-store-offline-worker--fault 'after-v8-schema)
-                        (e-runtime-store-offline-worker--fault 'after-v8-populate)
-                        (setq projection
-                              (e-runtime-store-offline-worker--verify-v8-schema
+                        (when (< version 8)
+                          (e-runtime-store-offline-worker--install-v8 database)
+                          (e-runtime-store-offline-worker--fault 'after-v8-schema)
+                          (e-runtime-store-offline-worker--fault 'after-v8-populate)
+                          (setq projection
+                                (e-runtime-store-offline-worker--verify-v8-schema
+                                 database))
+                          (e-runtime-store-offline-worker--fault 'after-v8-parity)
+                          (e-runtime-store-offline-worker--ensure-migration-row
+                           database 8
+                           e-runtime-store-offline-worker--v8-migration-identity
+                           e-runtime-store-offline-worker--v8-migration-checksum)
+                          (e-runtime-store-offline-worker--verify-v8-lineage
+                           database)
+                          (sqlite-execute
+                           database
+                           "UPDATE store_meta SET value='8' WHERE key='schema_version'"))
+                        (e-board-sqlite-worker-initialize-run-index database)
+                        (e-runtime-store-offline-worker--fault 'after-v9-schema)
+                        (setq run-index
+                              (e-board-sqlite-worker-backfill-orchestration-run-index
                                database))
-                        (e-runtime-store-offline-worker--fault 'after-v8-parity)
+                        (e-runtime-store-offline-worker--fault 'after-v9-populate)
+                        (setq projection
+                              (e-runtime-store-offline-worker--verify-v9-schema
+                               database))
+                        (e-runtime-store-offline-worker--fault 'after-v9-parity)
                         (e-runtime-store-offline-worker--ensure-migration-row
-                         database 8
-                         e-runtime-store-offline-worker--v8-migration-identity
-                         e-runtime-store-offline-worker--v8-migration-checksum)
-                        (e-runtime-store-offline-worker--verify-v8-lineage
+                         database 9
+                         e-runtime-store-offline-worker--v9-migration-identity
+                         e-runtime-store-offline-worker--v9-migration-checksum)
+                        (e-runtime-store-offline-worker--verify-v9-lineage
                          database)
                         (sqlite-execute
                          database
-                         "UPDATE store_meta SET value='8' WHERE key='schema_version'")
+                         "UPDATE store_meta SET value='9' WHERE key='schema_version'")
                         (sqlite-execute database "COMMIT")
                         (setq committed t))
                     (error
@@ -1839,9 +1901,9 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                      (signal (car transaction-error) (cdr transaction-error))))
                   (e-runtime-store-offline-worker--fault 'after)
                   (e-runtime-store-offline-worker--check database)
-                  (e-runtime-store-offline-worker--verify-v8-lineage database)
+                  (e-runtime-store-offline-worker--verify-v9-lineage database)
                   (setq projection
-                        (e-runtime-store-offline-worker--verify-v8-schema
+                        (e-runtime-store-offline-worker--verify-v9-schema
                          database))
                   (set-file-modes database-file #o600)
                   (list :from version :to current :backup backup-file
@@ -1850,6 +1912,9 @@ transaction.  A verified v7 source is a read-only no-op and creates no backup."
                         :sessions (plist-get copied :sessions)
                         :records (or (plist-get copied :records)
                                      (plist-get projection :records))
+                        :run-index-entries
+                        (or (plist-get run-index :entries)
+                            (plist-get projection :run-index-entries))
                         :payload-bytes (plist-get copied :payload-bytes)
                         :projection-base-rows
                         (plist-get projection :base-rows)

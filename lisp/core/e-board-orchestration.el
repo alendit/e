@@ -666,7 +666,8 @@ evidence."
           (plist-put counts :other (1+ (plist-get counts :other))))))
     counts))
 
-(defun e-board-orchestration--run-set-entry (projection board-id restore-state)
+(defun e-board-orchestration--run-set-entry
+    (projection board-id restore-state &optional now)
   "Map reduced durable run PROJECTION to one bounded consumer entry."
   (let* ((run-id (plist-get projection :run-id))
          (manifest (or (plist-get projection :manifest) nil))
@@ -707,7 +708,12 @@ evidence."
          (active-p (or (not required-terminal)
                        terminal-unconsumed optional-active))
          (deadline (plist-get projection :deadline))
-         (deadline-expired (plist-get deadline :expired))
+         ;; The durable run index keeps the deadline policy and recalculates
+         ;; its attention rank at read time.
+         (deadline-expired
+          (and (numberp now)
+               (eq (plist-get deadline :kind) 'at)
+               (<= (plist-get deadline :at) now)))
          (conflicts (or (plist-get projection :conflicts) nil))
          (failure (or (and (eq terminal-status 'failed) terminal-status)
                       (plist-get projection :failure)))
@@ -775,7 +781,9 @@ evidence."
           :latest-event-at latest-at :latest-event-time latest-at
           :latest-event-position latest-position
           :conflicts (copy-tree conflicts t)
-          :deadline (copy-tree deadline t)
+          :deadline (append (e-board-orchestration--without-key
+                             (copy-tree deadline t) :expired)
+                            (list :expired (and deadline-expired t)))
           :failure failure
           :restore-state restore-state
           :attention-p attention-p
@@ -784,6 +792,113 @@ evidence."
           :completion-execution-state continuation-outcome-status
           :continuation-outcome (copy-tree continuation-outcome t)
           :continuation-state continuation-state)))
+
+(defun e-board-orchestration--without-key (plist key)
+  "Return a detached PLIST without KEY."
+  (let ((tail (copy-sequence plist)) result)
+    (while tail
+      (let ((name (pop tail))
+            (value (pop tail)))
+        (unless (eq name key)
+          (setq result (append result (list name value))))))
+    result))
+
+(defun e-board-orchestration-run-index-summary
+    (projection board-id latest-position latest-at)
+  "Return a compact durable index summary for reduced PROJECTION.
+
+The summary is sufficient for the bounded run-set.  Full reports and
+continuation inputs remain canonical Board facts and are loaded only for one
+selected run when a consumer needs them.  Deadline expiry is intentionally
+omitted here and recomputed when the summary is read."
+  (let* ((run-id (plist-get projection :run-id))
+         (reports (or (plist-get projection :reports)
+                      (mapcar (lambda (task)
+                                (plist-get task :accepted-report))
+                              (plist-get projection :tasks))))
+         (participants
+          (delete-dups
+           (delq nil
+                 (mapcar (lambda (report)
+                           (or (plist-get report :participant-session-id)
+                               (plist-get report :participant-id)))
+                         reports))))
+         (continuation (plist-get projection :continuation))
+         (continuation-ref
+          (and continuation
+               (list :session-id (plist-get continuation :session-id)
+                     :publication-key
+                     (plist-get continuation :publication-key))))
+         (sanitized (copy-tree projection t))
+         (deadline (copy-tree (plist-get projection :deadline) t))
+         summary)
+    (setq sanitized
+          (plist-put sanitized :latest-event-position latest-position)
+          sanitized
+          (plist-put sanitized :latest-event-at latest-at)
+          sanitized
+          (plist-put sanitized :conflicts
+                     (when (plist-get projection :conflicts)
+                       (list (list :run-id run-id
+                                   :reason "durable conflict"))))
+          sanitized
+          (plist-put sanitized :reports nil)
+          sanitized
+          (plist-put sanitized :deadline
+                     (and deadline
+                          (append (e-board-orchestration--without-key
+                                   deadline :expired)
+                                  (list :expired nil))))
+          summary
+          (e-board-orchestration--run-set-entry
+           sanitized board-id 'ready nil))
+    (setq summary
+          (append summary
+                  (list :index-entry-p t
+                        :participant-count (length participants)
+                        :participant-total (length participants)
+                        :admission-count (length participants)
+                        :admission-total (length participants)
+                        :continuation-ref continuation-ref
+                        :terminal-status
+                        (plist-get projection :terminal-status))))
+    summary))
+
+(defun e-board-orchestration-run-index-entry-at
+    (summary board-id restore-state now)
+  "Refresh indexed SUMMARY for BOARD-ID at NOW and RESTORE-STATE."
+  (let* ((entry (copy-tree summary t))
+         (deadline (plist-get entry :deadline))
+         (expired
+          (and (eq (plist-get deadline :kind) 'at)
+               (<= (plist-get deadline :at) now)))
+         (attention (or (plist-get entry :attention-p) expired))
+         (lifecycle
+          (cond
+           ((not (eq restore-state 'ready)) 'restoring)
+           (attention 'attention)
+           (t (plist-get entry :lifecycle))))
+         (rank (pcase lifecycle
+                 ('attention 0)
+                 ('restoring 1)
+                 ('dispatching 2)
+                 ('running 3)
+                 ('finishing 4)
+                 (_ 5))))
+    (cl-remf entry :index-entry-p)
+    (cl-remf entry :continuation-ref)
+    (setq entry (plist-put entry :board-id board-id)
+          entry (plist-put entry :restore-state restore-state)
+          entry (plist-put entry :deadline
+                           (and deadline
+                                (append
+                                 (e-board-orchestration--without-key
+                                  deadline :expired)
+                                 (list :expired (and expired t)))))
+          entry (plist-put entry :attention-p (and attention t))
+          entry (plist-put entry :lifecycle lifecycle)
+          entry (plist-put entry :actionable-rank rank))
+    entry))
 
 (defun e-board-orchestration--run-set-encoded-bytes (value)
   "Return the detached encoded width of run-set VALUE."
@@ -799,19 +914,20 @@ evidence."
     candidate))
 
 (cl-defun e-board-orchestration-run-set-projection
-    (projections &key board-id more-p
+    (projections &key board-id more-p active-count now
                  (record-limit e-board-orchestration-run-set-default-record-limit)
                  (byte-limit e-board-orchestration-run-set-default-byte-limit)
                  (restore-state 'ready))
   "Reduce PROJECTIONS into one bounded Board-owned run-set value.
 
-PROJECTIONS are already detached reduced run projections; this function does
-not read SQLite or inspect live execution state.  The returned value contains
-only the largest fitting ordered prefix and an omitted count.  MORE-P records
-that the bounded query found, or may have hidden, another manifest; it does
-not count active or omitted runs.  Ordering puts actionable attention first,
-then restoring/dispatching/running/finishing, and uses newest event position
-and run id as deterministic tie breakers."
+PROJECTIONS are detached reduced projections or compact indexed summaries;
+this function does not read SQLite or inspect live execution state.  The
+returned value contains only the largest fitting ordered prefix and an omitted
+count.  ACTIVE-COUNT supplies the exact durable count when PROJECTIONS is a
+bounded index page.  MORE-P says another active run exists beyond that page.
+Ordering puts actionable attention first, then restoring/dispatching/running/
+finishing, and uses newest event position and run id as deterministic tie
+breakers."
   (unless (and (integerp record-limit) (> record-limit 0)
                (<= record-limit e-board-orchestration-run-set-max-record-limit))
     (signal 'e-board-orchestration-error
@@ -823,12 +939,16 @@ and run id as deterministic tie breakers."
   (unless (memq restore-state '(ready restoring unavailable))
     (signal 'e-board-orchestration-error
             (list "Run-set restore state is invalid" restore-state)))
-  (let* ((entries
+  (let* ((now (or now (float-time)))
+         (entries
           (cl-remove-if-not
            (lambda (entry) (plist-get entry :active-p))
            (sort (mapcar (lambda (projection)
-                           (e-board-orchestration--run-set-entry
-                            projection board-id restore-state))
+                           (if (plist-get projection :index-entry-p)
+                               (e-board-orchestration-run-index-entry-at
+                                projection board-id restore-state now)
+                             (e-board-orchestration--run-set-entry
+                              projection board-id restore-state now)))
                          projections)
                 (lambda (left right)
                   (let ((left-rank (plist-get left :actionable-rank))
@@ -841,10 +961,15 @@ and run id as deterministic tie breakers."
                                  (and (= left-position right-position)
                                       (string< (or (plist-get left :run-id) "")
                                                (or (plist-get right :run-id) "")))))))))))
-         (active-count (length entries))
+         (active-count (or active-count (length entries)))
          (selected (cl-subseq entries 0 (min record-limit (length entries))))
-         (omitted (max 0 (- (length entries) (length selected))))
+         (omitted (max 0 (- active-count (length selected))))
          value)
+    (unless (and (integerp active-count)
+                 (>= active-count (length entries)))
+      (signal 'e-board-orchestration-error
+              (list "Run-set active count does not cover its page"
+                    active-count (length entries))))
     (setq value
           (append
            (list :board-id board-id
@@ -859,7 +984,7 @@ and run id as deterministic tie breakers."
                  :runs selected :active-count active-count
                  :active-run-count active-count
                  :omitted-count omitted)
-           (when more-p (list :more-p t))))
+           (when (or more-p (> omitted 0)) (list :more-p t))))
     ;; A byte budget applies to the final returned representation, including
     ;; its accounting fields.  Drop only from the end, preserving the ordered
     ;; actionable prefix, until the detached value fits.

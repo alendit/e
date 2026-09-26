@@ -40,7 +40,8 @@ so this fixture does not pretend that v8 tables existed in a v4 store."
   (dolist (table
            '(session_process_report_index board_pickup_events board_pickups
              board_routing board_record_attributes board_record_tags
-             board_records board_replay_progress board_session_associations
+             board_orchestration_run_index board_records board_replay_progress
+             board_session_associations
              board_session_admissions board_participants boards task_attempts
              task_records task_queues session_query_state))
     (sqlite-execute database (format "DROP TABLE IF EXISTS %s" table)))
@@ -720,7 +721,7 @@ so this fixture does not pretend that v8 tables existed in a v4 store."
         (when (file-directory-p directory) (delete-directory directory t))))))
 
 (ert-deftest e-runtime-sqlite-p4-s9-explicit-upgrade-backs-up-before-install ()
-  "Ordinary startup rejects v4; explicit upgrade verifies a v7 install."
+  "Ordinary startup rejects v4; explicit upgrade verifies a v9 install."
   (let* ((directory (make-temp-file "e-runtime-p4-upgrade-" t))
          (session-id "upgrade-preserved")
          (records
@@ -771,7 +772,7 @@ so this fixture does not pretend that v8 tables existed in a v4 store."
               (sqlite-close db)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
             (should (= (plist-get result :from) 4))
-            (should (= (plist-get result :to) 8))
+            (should (= (plist-get result :to) 9))
             (should (equal (plist-get result :integrity) "ok"))
             (should (= (e-runtime-sqlite-p4-test--mode backup) #o600)))
           (setq store
@@ -779,7 +780,7 @@ so this fixture does not pretend that v8 tables existed in a v4 store."
                  (e-runtime-store-open directory)))
           (should (= (plist-get (e-runtime-store-metrics store)
                                 :schema-version)
-                     8))
+                     9))
           (should (equal
                    (plist-get
                     (car (plist-get
@@ -855,7 +856,7 @@ so this fixture does not pretend that v8 tables existed in a v4 store."
         (progn
           (should (plist-get (e-runtime-store-integrity store t) :ok))
           (let ((metrics (e-runtime-store-metrics store)))
-            (should (= (plist-get metrics :schema-version) 8))
+            (should (= (plist-get metrics :schema-version) 9))
             (should (> (plist-get metrics :database-bytes) 0)))
           (should (plist-get (e-runtime-store-backup store backup) :verified))
           (should (= (e-runtime-sqlite-p4-test--mode backup) #o600))

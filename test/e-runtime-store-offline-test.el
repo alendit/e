@@ -7,6 +7,8 @@
 
 (require 'ert)
 (require 'sqlite)
+(require 'e-board-orchestration)
+(require 'e-board-sqlite-worker)
 (require 'e-runtime-store-codec)
 (require 'e-runtime-store-offline)
 (require 'e-runtime-store)
@@ -405,14 +407,32 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
     database
     "SELECT version,identity,checksum FROM schema_migrations ORDER BY version")))
 
-(defun e-runtime-store-offline-test--make-v8 ()
-  "Create and close one disposable fresh v8 runtime store."
-  (let* ((directory (make-temp-file "e-runtime-offline-v8-" t))
+(defun e-runtime-store-offline-test--make-v9 ()
+  "Create and close one disposable fresh v9 runtime store."
+  (let* ((directory (make-temp-file "e-runtime-offline-v9-" t))
          (runtime (e-runtime-store-open directory)))
     (unwind-protect
         (e-runtime-store-call runtime 'read '(:op store-metrics))
       (e-runtime-store-close runtime))
     (list directory (expand-file-name "store.sqlite3" directory))))
+
+(defun e-runtime-store-offline-test--orchestration-record-body
+    (board-id generation record-id fact)
+  "Build a canonical worker write body for FACT in BOARD-ID/GENERATION."
+  (let* ((fields (e-board-orchestration-fact-record-fields fact))
+         (source-key (plist-get fields :source-key))
+         (record-fields
+          (cl-loop for (key value) on fields by #'cddr
+                   unless (eq key :source-key)
+                   append (list key value))))
+    (list :op 'board-record-put :board-id board-id :generation generation
+          :record
+          (append (list :id record-id :record-kind 'fact
+                        :created-at (float-time))
+                  record-fields)
+          :source (list :kind 'fact :key source-key
+                        :hash (secure-hash 'sha256
+                                          (prin1-to-string record-fields))))))
 
 (defun e-runtime-store-offline-test--root (session-id)
   "Return a minimal canonical root for SESSION-ID."
@@ -598,7 +618,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 5))
-          (should (= (plist-get result :to) 8))
+          (should (= (plist-get result :to) 9))
           (should-not (e-runtime-store-offline-test--table-p
                        database-file "session_checkpoints")))
       (when (file-directory-p directory)
@@ -619,9 +639,9 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 4))
-          (should (= (plist-get result :to) 8))
+          (should (= (plist-get result :to) 9))
           (should (= (e-runtime-store-offline-test--version backup) 4))
-          (should (= (e-runtime-store-offline-test--version database-file) 8))
+          (should (= (e-runtime-store-offline-test--version database-file) 9))
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (progn
@@ -638,11 +658,12 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                                      (e-runtime-store-offline-test--column row 0))
                                    (sqlite-select
                                     database
-                                    "SELECT identity FROM schema_migrations WHERE version IN (5,6,7,8) ORDER BY version"))
+                                    "SELECT identity FROM schema_migrations WHERE version IN (5,6,7,8,9) ORDER BY version"))
                            '("feature92-v4-to-v5-explicit-upgrade"
                              "feature92-v5-to-v6-explicit-upgrade"
                              "feature92-v6-to-v7-process-report-projection"
-                             "feature95-v7-to-v8-normalized-communication"))))
+                             "feature95-v7-to-v8-normalized-communication"
+                             "feature89-v8-to-v9-board-run-index"))))
               (sqlite-close database))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
@@ -749,11 +770,11 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 5))
-          (should (= (plist-get result :to) 8))
+          (should (= (plist-get result :to) 9))
           (should (= (plist-get result :sessions) 1))
           (should (= (plist-get result :records) 2))
           (should (equal (plist-get result :integrity) "ok"))
-          (should (= (e-runtime-store-offline-test--version database-file) 8))
+          (should (= (e-runtime-store-offline-test--version database-file) 9))
           (should (= (e-runtime-store-offline-test--version backup) 5))
           (should (= (logand (file-modes backup) #o777) #o600))
           (should-not (e-runtime-store-offline-test--table-p
@@ -810,7 +831,10 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                                         "feature92-schema-v7-process-report-projection"))
                      (list 8 "feature95-v7-to-v8-normalized-communication"
                            (secure-hash 'sha256
-                                        "feature95-schema-v8-normalized-communication"))))))
+                                        "feature95-schema-v8-normalized-communication"))
+                     (list 9 "feature89-v8-to-v9-board-run-index"
+                           (secure-hash 'sha256
+                                        "feature89-schema-v9-board-run-index"))))))
               (sqlite-close database))))
           ;; The production worker may reopen the installed v7 image.  This
           ;; is deliberately a fresh owner, after the operator subprocess has
@@ -823,7 +847,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                     (e-runtime-store-await store request 5.0))
                   (should (= (plist-get (e-runtime-store-metrics store)
                                         :schema-version)
-                             8)))
+                             9)))
               (ignore-errors (e-runtime-store-close store))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
@@ -1102,7 +1126,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                   (sqlite-close database))))
             (let ((result
                    (e-runtime-store-offline-upgrade directory backup)))
-              (should (= (plist-get result :to) 8))
+              (should (= (plist-get result :to) 9))
               (let ((database (sqlite-open database-file)))
                 (unwind-protect
                     (progn
@@ -1271,7 +1295,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
     (unwind-protect
         (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 6))
-          (should (= (plist-get result :to) 8))
+          (should (= (plist-get result :to) 9))
           (should (= (plist-get result :projection-base-rows) 305))
           (should (= (plist-get result :projection-association-rows) 3))
           (let ((runtime (e-runtime-store-open directory)))
@@ -1399,7 +1423,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
               (sqlite-close database)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
             (should (= (plist-get result :from) 5))
-            (should (= (plist-get result :to) 8)))
+            (should (= (plist-get result :to) 9)))
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (should
@@ -1418,7 +1442,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                             (e-runtime-store-call
                              runtime 'read '(:op store-metrics))
                             :schema-version)
-                           8))
+                           9))
               (e-runtime-store-close runtime))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
@@ -1447,7 +1471,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
               (sqlite-close database)))
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
             (should (= (plist-get result :from) 6))
-            (should (= (plist-get result :to) 8)))
+            (should (= (plist-get result :to) 9)))
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (should
@@ -1466,7 +1490,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                             (e-runtime-store-call
                              runtime 'read '(:op store-metrics))
                             :schema-version)
-                           8))
+                           9))
               (e-runtime-store-close runtime))))
       (when (file-directory-p directory)
         (delete-directory directory t)))))
@@ -1527,7 +1551,7 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
                      (lambda () worker-file)))
             (let ((result (e-runtime-store-offline-upgrade directory backup)))
               (should (= (plist-get result :from) 7))
-              (should (= (plist-get result :to) 8))
+              (should (= (plist-get result :to) 9))
               (should (file-exists-p backup)))))
       (when (file-directory-p build-directory)
         (delete-directory build-directory t))
@@ -1609,12 +1633,12 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
            database-file session-id)
           (let ((result (e-runtime-store-offline-upgrade directory backup)))
           (should (= (plist-get result :from) 7))
-          (should (= (plist-get result :to) 8))
+          (should (= (plist-get result :to) 9))
           (should (= (plist-get result :records) 2))
           (should (= (plist-get result :projection-base-rows) 1))
           (should (= (plist-get result :projection-association-rows) 1))
           (should (file-exists-p backup))
-          (should (= (e-runtime-store-offline-test--version database-file) 8))
+          (should (= (e-runtime-store-offline-test--version database-file) 9))
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (should
@@ -1843,8 +1867,8 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 
-(ert-deftest e-runtime-store-offline-v8-is-verified-read-only-noop ()
-  "A verified v8 store creates no backup and changes no migration rows."
+(ert-deftest e-runtime-store-offline-v9-is-verified-read-only-noop ()
+  "A verified v9 store creates no backup and changes no migration rows."
   (let* ((directory (make-temp-file "e-runtime-offline-v7-" t))
          (runtime (e-runtime-store-open directory))
          (backup (expand-file-name "operator/unused.sqlite3" directory)))
@@ -1877,10 +1901,10 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
              (equal
               before
               (list
-               (list 8 "new-current-schema"
+               (list 9 "new-current-schema"
                      (secure-hash
                       'sha256
-                      "feature95-schema-v8-normalized-communication")))))
+                      "feature89-schema-v9-board-run-index")))))
             (should (equal hash-before
                            (e-runtime-store-offline-test--file-hash
                             database-file)))))
@@ -1888,10 +1912,127 @@ would not exercise the v7-to-v8 copy boundary that the operator owns."
       (when (file-directory-p directory)
         (delete-directory directory t)))))
 
+(ert-deftest e-runtime-store-offline-v8-to-v9-backfills-current-run-index-pages ()
+  "A v8 upgrade backfills every current-generation run across index pages."
+  (let* ((directory (make-temp-file "e-runtime-offline-v8-" t))
+         (runtime (e-runtime-store-open directory))
+         (database-file (expand-file-name "store.sqlite3" directory))
+         (backup (expand-file-name "operator/pre-v8.sqlite3" directory))
+         (board-id "offline-index-board")
+         (run-count 129))
+    (unwind-protect
+        (progn
+          (e-runtime-store-call runtime 'read '(:op store-metrics))
+          (e-runtime-store-close runtime)
+          (setq runtime nil)
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (progn
+                  (e-board-sqlite-worker-write
+                   database
+                   (list :op 'board-create :board-id board-id
+                         :trusted-principal "migration-owner"
+                         :root '(:label "migration fixture")))
+                  (e-board-sqlite-worker-write
+                   database
+                   (e-runtime-store-offline-test--orchestration-record-body
+                    board-id 1 "retired-manifest"
+                    '(:version 1 :type manifest
+                      :idempotency-key "manifest:retired"
+                      :payload (:run-id "retired-run"
+                                :tasks [(:task-key "task" :required t
+                                         :accepted-attempt 0)]
+                                :deadline (:kind none)))))
+                  (e-board-sqlite-worker-write
+                   database
+                   (list :op 'board-clear :board-id board-id :generation 1))
+                  (dotimes (index run-count)
+                    (let ((run-id (format "current-run-%03d" index)))
+                      (e-board-sqlite-worker-write
+                       database
+                       (e-runtime-store-offline-test--orchestration-record-body
+                        board-id 2 (format "current-manifest-%03d" index)
+                        (list :version 1 :type 'manifest
+                              :idempotency-key (format "manifest:%s" run-id)
+                              :payload
+                              (list :run-id run-id
+                                    :tasks [(:task-key "task" :required t
+                                             :accepted-attempt 0)]
+                                    :deadline '(:kind none)))))))
+                  (should
+                   (= (e-runtime-store-offline-test--column
+                       (car (sqlite-select
+                             database
+                             "SELECT COUNT(*) FROM board_orchestration_run_index WHERE board_id=? AND generation=2"
+                             (vector board-id)))
+                       0)
+                      run-count))
+                  (sqlite-execute
+                   database "DROP TABLE board_orchestration_run_index")
+                  (sqlite-execute
+                   database
+                   "UPDATE store_meta SET value='8' WHERE key='schema_version'")
+                  (sqlite-execute database "DELETE FROM schema_migrations")
+                  (sqlite-execute
+                   database
+                   (concat
+                    "INSERT INTO schema_migrations(version,identity,checksum,applied_at) "
+                    "VALUES(8,'new-current-schema',?,0)")
+                   (vector (secure-hash
+                            'sha256
+                            "feature95-schema-v8-normalized-communication"))))
+              (sqlite-close database)))
+          (let ((result (e-runtime-store-offline-upgrade directory backup)))
+            (should (= (plist-get result :from) 8))
+            (should (= (plist-get result :to) 9))
+            (should (= (plist-get result :run-index-entries) run-count))
+            (should (file-exists-p backup))
+            (should (= (e-runtime-store-offline-test--version backup) 8)))
+          (let ((database (sqlite-open database-file)))
+            (unwind-protect
+                (let* ((verification
+                        (e-board-sqlite-worker-verify-orchestration-run-index
+                         database))
+                       (version
+                        (string-to-number
+                         (e-runtime-store-offline-test--column
+                          (car (sqlite-select
+                                database
+                                "SELECT value FROM store_meta WHERE key='schema_version'"))
+                          0))))
+                  (should (= version 9))
+                  (should (equal verification
+                                 (list :entries run-count :active run-count)))
+                  (should
+                   (= (e-runtime-store-offline-test--column
+                       (car (sqlite-select
+                             database
+                             "SELECT COUNT(*) FROM board_orchestration_run_index WHERE board_id=? AND generation=1"
+                             (vector board-id)))
+                       0)
+                      0))
+                  (should
+                   (= (e-runtime-store-offline-test--column
+                       (car (sqlite-select
+                             database
+                             "SELECT COUNT(*) FROM board_orchestration_run_index WHERE board_id=? AND generation=2"
+                             (vector board-id)))
+                       0)
+                      run-count)))
+              (sqlite-close database)))
+          (setq runtime (e-runtime-store-open directory))
+          (should
+           (= (plist-get (e-runtime-store-call runtime 'read '(:op store-metrics))
+                         :schema-version)
+              9)))
+      (when runtime (e-runtime-store-close runtime))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
 (ert-deftest e-runtime-store-offline-v7-malformed-shape-is-not-repaired ()
   "Ordinary startup rejects malformed current shape without running DDL repair."
   (dolist (case '(missing-table malformed-index split-foreign-keys))
-    (let* ((fixture (e-runtime-store-offline-test--make-v8))
+    (let* ((fixture (e-runtime-store-offline-test--make-v9))
            (directory (car fixture))
            (database-file (cadr fixture))
            (runtime nil)

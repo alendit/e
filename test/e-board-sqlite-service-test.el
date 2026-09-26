@@ -15,12 +15,20 @@
 (require 'e-session)
 (require 'e-session-query)
 (require 'e-session-storage-sqlite)
+(require 'e-runtime-store-worker)
 (require 'e-work)
 
 (defun e-board-sqlite-service-test--await (work)
   "Observe request-scoped WORK from this explicit test boundary."
   (e-work-with-batch-await
     (e-work-await-batch work :timeout 5.0)))
+
+(defun e-board-sqlite-service-test--wait-until (predicate)
+  "Wait a bounded test interval for PREDICATE to return non-nil."
+  (let ((deadline (+ (float-time) 5.0)))
+    (while (and (not (funcall predicate)) (< (float-time) deadline))
+      (accept-process-output nil 0.01))
+    (should (funcall predicate))))
 
 (defun e-board-sqlite-service-test--deferred-work (id)
   "Return cooperative work named ID for explicit test settlement."
@@ -87,6 +95,120 @@
            ,@body)
        (ignore-errors (e-session-sqlite-store-close ,store))
        (delete-directory directory t))))
+
+(defun e-board-sqlite-service-test--append-index-run
+    (service board-id run-id &optional completed)
+  "Append RUN-ID's manifest and, when COMPLETED, one successful report."
+  (let* ((manifest
+          (list :version 1 :type 'manifest
+                :idempotency-key (format "manifest:%s" run-id)
+                :payload
+                (list :run-id run-id
+                      :descriptor (list :label run-id)
+                      :tasks [(:task-key "task" :required t
+                               :accepted-attempt 0)]
+                      :deadline '(:kind none))))
+         (result
+          (e-board-sqlite-service-test--await
+           (e-board-sqlite-service-orchestration-fact-start
+            service board-id manifest))))
+    (when completed
+      (e-board-sqlite-service-test--await
+       (e-board-sqlite-service-orchestration-fact-start
+        service board-id
+        (list :version 1 :type 'terminal-report
+              :idempotency-key (format "report:%s" run-id)
+              :payload
+              (list :run-id run-id :task-key "task" :attempt 0
+                    :status 'done :summary "ready" :outputs [])))))
+    result))
+
+(defun e-board-sqlite-service-test--append-terminal-continuation
+    (service board-id session-id run-id publication-key)
+  "Append RUN-ID's terminal report and a validated continuation manifest."
+  (dolist
+      (fact
+       (list
+        (list :version 1 :type 'manifest
+              :idempotency-key (format "manifest:%s" run-id)
+              :payload
+              (list :run-id run-id
+                    :tasks [(:task-key "task" :required t
+                             :accepted-attempt 0)]
+                    :deadline '(:kind none)
+                    :continuation
+                    (list :session-id session-id :prompt "Finish once."
+                          :publication-key publication-key)))
+        (list :version 1 :type 'terminal-report
+              :idempotency-key (format "report:%s" run-id)
+              :payload
+              (list :run-id run-id :task-key "task" :attempt 0
+                    :status 'done :summary "ready" :outputs []))))
+    (e-board-sqlite-service-test--await
+     (e-board-sqlite-service-orchestration-fact-start
+      service board-id fact))))
+
+(defun e-board-sqlite-service-test--orchestration-record-body
+    (board-id record-id fact)
+  "Build a canonical worker write body for one orchestration FACT."
+  (let* ((fields (e-board-orchestration-fact-record-fields fact))
+         (source-key (plist-get fields :source-key))
+         (record-fields
+          (cl-loop for (key value) on fields by #'cddr
+                   unless (eq key :source-key)
+                   append (list key value))))
+    (list :op 'board-record-put :board-id board-id :generation 1
+          :record
+          (append (list :id record-id :record-kind 'fact
+                        :created-at (float-time))
+                  record-fields)
+          :source (list :kind 'fact :key source-key
+                        :hash (secure-hash 'sha256
+                                          (prin1-to-string record-fields))))))
+
+(defun e-board-sqlite-service-test--transactional-worker-write
+    (database body)
+  "Apply one Board worker write with its runtime transaction boundary."
+  (sqlite-execute database "BEGIN IMMEDIATE")
+  (condition-case error
+      (let ((result (e-board-sqlite-worker-write database body)))
+        (sqlite-execute database "COMMIT")
+        result)
+    (error
+     (ignore-errors (sqlite-execute database "ROLLBACK"))
+     (signal (car error) (cdr error)))))
+
+(defun e-board-sqlite-service-test--index-limit-conflict-fact
+    (run-id index)
+  "Return one distinct valid conflict fact for RUN-ID and INDEX."
+  (list :version 1 :type 'conflict
+        :idempotency-key (format "conflict:%04d" index)
+        :payload (list :run-id run-id :task-key "task" :attempt 0
+                       :reason "index-boundary")))
+
+(defun e-board-sqlite-service-test--run-index-page (record-page board-id)
+  "Build a one-page index response for the run in RECORD-PAGE."
+  (let ((record-page (if (functionp record-page)
+                         (funcall record-page)
+                       record-page))
+        entries)
+    (dolist (projection
+             (e-chat-service--sqlite-orchestration-projections record-page))
+      (let* ((manifest-position (1+ (length entries)))
+             (summary
+              (e-board-orchestration-run-index-summary
+               projection board-id (1+ manifest-position) 1.0)))
+        (push (list :run-id (plist-get projection :run-id)
+                    :manifest-position manifest-position
+                    :latest-event-position (1+ manifest-position)
+                    :latest-event-at 1.0
+                    :active-p (plist-get summary :active-p)
+                    :summary summary)
+              entries)))
+    (list :board-id board-id :generation 1
+          :entries (nreverse entries)
+          :cursor nil :next-cursor nil :more-p nil
+          :active-only t)))
 
 (ert-deftest e-board-sqlite-publication-target-is-opaque-and-mutation-isolated ()
   "Target construction and the one public identity read use defensive copies."
@@ -795,8 +917,60 @@
             (should (e-chat-service-binding-continuation-owner-p binding)))
         (when binding (e-chat-service--retire-binding binding))))))
 
+(ert-deftest e-chat-service-sqlite-continuation-index-scan-walks-pages ()
+  "Continuation scans process each cursor page in order."
+  (e-board-sqlite-service-test--with-fixture
+      (store _service _board-id session-id _participant-id)
+    (let* ((harness (e-harness-create :sessions store))
+           (page-spec
+            (e-work-spec-create
+             :id "continuation-page" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner
+             (lambda (arguments _context)
+               (if (null (plist-get arguments :cursor))
+                   (list :entries '((:run-id "older-active"))
+                         :next-cursor "second-page")
+                 (list :entries '((:run-id "newer-active"))
+                       :next-cursor nil)))))
+           binding scan cursors pages)
+      (unwind-protect
+          (progn
+            (setq binding
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness session-id)))
+            (cl-letf (((symbol-function
+                        'e-board-sqlite-service-orchestration-run-index-page-start)
+                       (lambda (_service _board-id &rest arguments)
+                         (should (eq (plist-get arguments :active-only) t))
+                         (should (eq (plist-get arguments
+                                               :include-continuation-ref)
+                                     t))
+                         (should
+                          (= (plist-get arguments :limit)
+                             e-board-orchestration-run-set-default-record-limit))
+                         (push (plist-get arguments :cursor) cursors)
+                         (e-work-start
+                          page-spec
+                          (list :cursor (plist-get arguments :cursor))))))
+              (setq scan
+                    (e-chat-service--continuation-index-scan-start
+                     binding
+                     (lambda (_binding page)
+                       (push (mapcar (lambda (entry)
+                                       (plist-get entry :run-id))
+                                     (plist-get page :entries))
+                             pages))))
+              (e-board-sqlite-service-test--await scan))
+            (should (equal (nreverse cursors) '(nil "second-page")))
+            (should (equal (nreverse pages)
+                           '(("older-active") ("newer-active"))))
+            (should (eq (plist-get (e-work-status scan) :state) 'finished))
+            (should-not (e-work-handle-result scan)))
+        (when binding (e-chat-service--retire-binding binding))))))
+
 (ert-deftest e-chat-service-sqlite-continuation-queues-detached-terminal-view ()
-  "One ordinary bounded run query supplies terminal evidence without backfill."
+  "One index page and one exact run query supply terminal evidence."
   (e-board-sqlite-service-test--with-fixture
       (store _service _board-id session-id _participant-id)
     (let* ((harness (e-harness-create :sessions store))
@@ -829,6 +1003,14 @@
              :id "continuation-query" :execution 'cheap
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) page)))
+           (index-query-spec
+            (e-work-spec-create
+             :id "continuation-index-query" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner
+             (lambda (_arguments _context)
+               (e-board-sqlite-service-test--run-index-page
+                page _board-id))))
            (admission-spec
             (e-work-spec-create
              :id "continuation-admission" :execution 'cheap
@@ -836,17 +1018,32 @@
              :runner (lambda (_arguments _context) '(:admitted t))))
            binding queued-session-id queued-input queued-metadata
            queue-saw-pending-p claim-statuses
-           (query-count 0) (publication-count 0) (backfill-count 0))
+           (query-count 0) (projection-count 0)
+           (publication-count 0) (backfill-count 0)
+           (scan-start-function
+            (symbol-function 'e-chat-service--continuation-index-scan-start))
+           scan-work)
       (unwind-protect
           (progn
             (setq binding
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness session-id)))
-              (cl-letf (((symbol-function
-                          'e-board-sqlite-service-orchestration-runs-start)
+            (cl-letf (((symbol-function
+                          'e-board-sqlite-service-orchestration-run-index-page-start)
                        (lambda (&rest _)
                          (cl-incf query-count)
+                         (e-work-start index-query-spec nil)))
+                      ((symbol-function
+                        'e-board-sqlite-service-orchestration-run-start)
+                       (lambda (&rest _)
+                         (cl-incf projection-count)
                          (e-work-start query-spec nil)))
+                      ((symbol-function
+                        'e-chat-service--continuation-index-scan-start)
+                       (lambda (scan-binding page-function)
+                         (setq scan-work
+                               (funcall scan-start-function
+                                        scan-binding page-function))))
                       ((symbol-function
                         'e-chat-service--continuation-backfill-start)
                        (lambda (&rest _)
@@ -862,13 +1059,16 @@
                          (e-work-start admission-spec nil)))
                       ((symbol-function
                         'e-chat-service--publish-sqlite-continuation-claim)
-                       (lambda (_binding _run-id _publication-key status
-                                &optional _error)
+                       (lambda (_binding _run-id _publication-key generation
+                                status &optional _error)
+                         (should (= generation 1))
                          (cl-incf publication-count)
                          (push status claim-statuses)
                          (e-work-start admission-spec nil))))
-              (e-chat-service--reconcile-sqlite-continuation binding))
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work))
             (should (= query-count 1))
+            (should (= projection-count 1))
             (should (= backfill-count 0))
             (should (= publication-count 2))
             (should (equal (nreverse claim-statuses) '(pending published)))
@@ -877,6 +1077,7 @@
             (should (eq (plist-get queued-metadata :display) 'hidden))
             (should (equal (plist-get queued-metadata :board-run-id)
                            "daily-run"))
+            (should (= (plist-get queued-metadata :board-run-generation) 1))
             (should (equal (plist-get queued-metadata
                                       :board-continuation-key)
                            "continue:daily"))
@@ -933,6 +1134,17 @@
              :id "continuation-query" :execution 'cheap
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) (funcall page))))
+           (index-query-spec
+            (e-work-spec-create
+             :id "continuation-index-query" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner
+             (lambda (_arguments _context)
+               (e-board-sqlite-service-test--run-index-page
+                page board-id))))
+           (scan-start-function
+            (symbol-function 'e-chat-service--continuation-index-scan-start))
+           scan-work
            binding pending-work admission claim-work (queue-count 0))
       (unwind-protect
           (progn
@@ -940,8 +1152,17 @@
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness session-id)))
             (cl-letf (((symbol-function
-                        'e-board-sqlite-service-orchestration-runs-start)
+                        'e-board-sqlite-service-orchestration-run-index-page-start)
+                       (lambda (&rest _) (e-work-start index-query-spec nil)))
+                      ((symbol-function
+                        'e-board-sqlite-service-orchestration-run-start)
                        (lambda (&rest _) (e-work-start query-spec nil)))
+                      ((symbol-function
+                        'e-chat-service--continuation-index-scan-start)
+                       (lambda (scan-binding page-function)
+                         (setq scan-work
+                               (funcall scan-start-function
+                                        scan-binding page-function))))
                       ((symbol-function 'e-chat-service-queue-session)
                        (lambda (&rest _)
                          (cl-incf queue-count)
@@ -950,8 +1171,8 @@
                                 "held-continuation-admission"))))
                       ((symbol-function
                         'e-chat-service--publish-sqlite-continuation-claim)
-                       (lambda (_binding _run-id _publication-key status
-                                &optional _error)
+                       (lambda (_binding _run-id _publication-key _generation
+                                status &optional _error)
                          (if (eq status 'pending)
                              (setq pending-work
                                    (e-board-sqlite-service-test--deferred-work
@@ -960,25 +1181,30 @@
                                  (e-board-sqlite-service-test--deferred-work
                                   "held-published-continuation-claim"))))))
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (= queue-count 0))
               ;; The pending claim owns the admission fence before the input
               ;; publication starts.
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (= queue-count 0))
               (e-work-finish pending-work '(:pending t))
               (should (= queue-count 1))
               ;; An in-flight input admission fences another stale query.
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (= queue-count 1))
               (e-work-finish admission '(:admitted t))
               (should (e-work-handle-p claim-work))
               ;; The claim write itself owns the fence.
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (= queue-count 1))
               (e-work-finish claim-work '(:published t))
               ;; Even after write settlement, a query that began before the
               ;; commit became visible must not requeue the continuation.
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (= queue-count 1))
               (let* ((runtime (e-chat-service--binding-runtime binding))
                      (admissions
@@ -991,6 +1217,7 @@
               ;; the process-local race sentinel.
               (setq published-p t)
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (let* ((runtime (e-chat-service--binding-runtime binding))
                      (admissions
                       (e-chat-service--runtime-coordination-table
@@ -998,6 +1225,178 @@
                 (should-not
                  (and admissions
                       (gethash (cons board-id "continue:daily") admissions))))))
+        (when binding (e-chat-service--retire-binding binding))))))
+
+(ert-deftest e-chat-service-sqlite-continuation-clear-retires-held-run-read ()
+  "A clear crossing an exact continuation read retires that old generation."
+  (let* ((stall-directory (make-temp-file "e-chat-continuation-clear-read-" t))
+         (process-environment
+          (cons (concat "E_RUNTIME_STORE_TEST_STALL_DIRECTORY=" stall-directory)
+                process-environment))
+         (hold (expand-file-name "board-orchestration-run.hold" stall-directory))
+         (ready (expand-file-name "board-orchestration-run.ready" stall-directory))
+         (release
+          (expand-file-name "board-orchestration-run.release" stall-directory)))
+    (unwind-protect
+        (progn
+          (write-region "hold" nil hold nil 'silent)
+          (e-board-sqlite-service-test--with-fixture
+              (store service board-id session-id _participant-id)
+            (let* ((harness (e-harness-create :sessions store))
+                   (run-id "clear-held-read-run")
+                   (publication-key "continue:clear-held-read")
+                   (scan-start
+                    (symbol-function
+                     'e-chat-service--continuation-index-scan-start))
+                   binding scan-work (queue-count 0) failures)
+              (unwind-protect
+                  (progn
+                    (e-board-sqlite-service-test--append-terminal-continuation
+                     service board-id session-id run-id publication-key)
+                    (setq binding
+                          (e-board-sqlite-service-test--await
+                           (e-chat-service-binding-start harness session-id)))
+                    (cl-letf (((symbol-function
+                                'e-chat-service--continuation-index-scan-start)
+                               (lambda (scan-binding page-function)
+                                 (setq scan-work
+                                       (funcall scan-start
+                                                scan-binding page-function))))
+                              ((symbol-function 'e-chat-service-queue-session)
+                               (lambda (&rest _arguments)
+                                 (cl-incf queue-count)))
+                              ((symbol-function 'e-chat-service--sql-note-failure)
+                               (lambda (_binding error &optional _owner-suspect-p)
+                                 (push error failures))))
+                      (e-chat-service--reconcile-sqlite-continuation binding)
+                      (should (e-work-handle-p scan-work))
+                      (e-board-sqlite-service-test--wait-until
+                       (lambda () (file-exists-p ready)))
+                      (e-board-sqlite-service-test--await
+                       (e-board-sqlite-service--start
+                        service 'write
+                        (list :op 'board-clear :board-id board-id
+                              :generation 1)))
+                      (write-region "release" nil release nil 'silent)
+                      (e-board-sqlite-service-test--await scan-work)
+                      (should (eq (plist-get (e-work-status scan-work) :state)
+                                  'finished))
+                      (should (= (or queue-count 0) 0))
+                      (should-not failures)
+                      (let ((current-run
+                             (e-board-sqlite-service-test--await
+                              (e-board-sqlite-service-orchestration-run-start
+                               service board-id run-id 1024 2))))
+                        (should (= (plist-get current-run :generation) 2))
+                        (should-not (plist-get current-run :records)))))
+                (when binding (e-chat-service--retire-binding binding))))))
+      (write-region "release" nil release nil 'silent)
+      (delete-directory stall-directory t))))
+
+(ert-deftest e-chat-service-sqlite-continuation-clear-fences-later-claims-and-outcomes ()
+  "A committed old-generation pending claim cannot publish later facts."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id session-id _participant-id)
+    (let* ((harness (e-harness-create :sessions store))
+           (run-id "postclaim-clear-run")
+           (publication-key "continue:postclaim-clear")
+           (scan-start
+            (symbol-function 'e-chat-service--continuation-index-scan-start))
+           (publish-claim
+            (symbol-function 'e-chat-service--publish-sqlite-continuation-claim))
+           binding scan-work admission-work published-claim-work
+           queued-metadata failures)
+      (unwind-protect
+          (progn
+            (e-board-sqlite-service-test--append-terminal-continuation
+             service board-id session-id run-id publication-key)
+            (setq binding
+                  (e-board-sqlite-service-test--await
+                   (e-chat-service-binding-start harness session-id)))
+            (cl-letf (((symbol-function
+                        'e-chat-service--continuation-index-scan-start)
+                       (lambda (scan-binding page-function)
+                         (setq scan-work
+                               (funcall scan-start scan-binding page-function))))
+                      ((symbol-function 'e-chat-service-queue-session)
+                       (lambda (_harness _session-id _input &rest arguments)
+                         (setq queued-metadata (plist-get arguments :metadata)
+                               admission-work
+                               (e-board-sqlite-service-test--deferred-work
+                                "held-postclaim-clear-admission"))
+                         admission-work))
+                      ((symbol-function
+                        'e-chat-service--publish-sqlite-continuation-claim)
+                       (lambda (claim-binding claim-run-id claim-key generation
+                                status &optional error)
+                         (let ((work
+                                (funcall publish-claim claim-binding claim-run-id
+                                         claim-key generation status error)))
+                           (when (eq status 'published)
+                             (setq published-claim-work work))
+                           work)))
+                      ((symbol-function 'e-chat-service--sql-note-failure)
+                       (lambda (_binding error &optional _owner-suspect-p)
+                         (push error failures))))
+              (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
+              (e-board-sqlite-service-test--wait-until
+               (lambda () (e-work-handle-p admission-work)))
+              (should (= (plist-get queued-metadata :board-run-generation) 1))
+              (let* ((page
+                      (e-board-sqlite-service-test--await
+                       (e-board-sqlite-service-orchestration-run-start
+                        service board-id run-id 1024 1)))
+                     (projection
+                      (e-board-orchestration-reduce
+                       (mapcar (lambda (row) (plist-get row :record))
+                               (plist-get page :records)))))
+                (should (eq (plist-get (plist-get projection :continuation)
+                                       :state)
+                            'pending)))
+              (e-board-sqlite-service-test--await
+               (e-board-sqlite-service--start
+                service 'write
+                (list :op 'board-clear :board-id board-id :generation 1)))
+              (e-work-finish admission-work '(:admitted t))
+              (should (e-work-handle-p published-claim-work))
+              (should-error
+               (e-board-sqlite-service-test--await published-claim-work)
+               :type 'e-runtime-store-board-conflict)
+              (should
+               (e-chat-service--stale-board-generation-error-p
+                (e-work-handle-error published-claim-work)))
+              (let* ((runtime (e-chat-service--binding-runtime binding))
+                     (admissions
+                      (e-chat-service--runtime-coordination-table
+                       e-chat-service--continuation-admissions runtime)))
+                (should-not
+                 (and admissions
+                      (gethash (cons board-id publication-key) admissions))))
+              (let* ((turn-id "late-continuation-turn")
+                     (context
+                      (e-chat-service--continuation-context
+                       queued-metadata turn-id))
+                     (turns
+                      (e-chat-service-binding-continuation-turns binding))
+                     (outcome-work nil))
+                (should (= (plist-get context :board-run-generation) 1))
+                (puthash turn-id context turns)
+                (setq outcome-work
+                      (e-chat-service--sql-publish-continuation-outcome
+                       binding (list :turn-id turn-id :payload nil) 'done))
+                (should (e-work-handle-p outcome-work))
+                (should-error
+                 (e-board-sqlite-service-test--await outcome-work)
+                 :type 'e-runtime-store-board-conflict)
+                (should-not (gethash turn-id turns)))
+              (let ((current-run
+                     (e-board-sqlite-service-test--await
+                      (e-board-sqlite-service-orchestration-run-start
+                       service board-id run-id 1024 2))))
+                (should (= (plist-get current-run :generation) 2))
+                (should-not (plist-get current-run :records)))
+              (should-not failures)))
         (when binding (e-chat-service--retire-binding binding))))))
 
 (ert-deftest e-chat-service-sqlite-continuation-does-not-queue-without-pending-claim ()
@@ -1032,6 +1431,17 @@
              :id "continuation-query" :execution 'cheap
              :interactive-policy 'cheap
              :runner (lambda (_arguments _context) page)))
+           (index-query-spec
+            (e-work-spec-create
+             :id "continuation-index-query" :execution 'cheap
+             :interactive-policy 'cheap
+             :runner
+             (lambda (_arguments _context)
+               (e-board-sqlite-service-test--run-index-page
+                page board-id))))
+           (scan-start-function
+            (symbol-function 'e-chat-service--continuation-index-scan-start))
+           scan-work
            binding pending-work (queue-count 0) failures)
       (unwind-protect
           (progn
@@ -1039,12 +1449,21 @@
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness session-id)))
             (cl-letf (((symbol-function
-                        'e-board-sqlite-service-orchestration-runs-start)
+                        'e-board-sqlite-service-orchestration-run-index-page-start)
+                       (lambda (&rest _) (e-work-start index-query-spec nil)))
+                      ((symbol-function
+                        'e-board-sqlite-service-orchestration-run-start)
                        (lambda (&rest _) (e-work-start query-spec nil)))
                       ((symbol-function
+                        'e-chat-service--continuation-index-scan-start)
+                       (lambda (scan-binding page-function)
+                         (setq scan-work
+                               (funcall scan-start-function
+                                        scan-binding page-function))))
+                      ((symbol-function
                         'e-chat-service--publish-sqlite-continuation-claim)
-                       (lambda (_binding _run-id _publication-key status
-                                &optional _error)
+                       (lambda (_binding _run-id _publication-key _generation
+                                status &optional _error)
                          (should (eq status 'pending))
                          (setq pending-work
                                (e-board-sqlite-service-test--deferred-work
@@ -1055,8 +1474,10 @@
                        (lambda (_binding error &optional owner-suspect-p)
                          (push (list error owner-suspect-p) failures))))
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (e-work-handle-p pending-work))
               (e-chat-service--reconcile-sqlite-continuation binding)
+              (e-board-sqlite-service-test--await scan-work)
               (should (= queue-count 0))
               (e-work-fail
                pending-work '(e-board-sqlite-error "pending claim failed"))
@@ -1097,7 +1518,7 @@
                          (lambda (_binding error &optional owner-suspect-p)
                            (setq failure (list error owner-suspect-p)))))
                 (e-chat-service--finish-sqlite-continuation-admission
-                 binding "daily-run" publication-key expected 'published)
+                 binding "daily-run" publication-key 1 expected 'published)
                 (should
                  (equal (car failure)
                         '(e-chat-service-error
@@ -1548,7 +1969,7 @@
                 service-1 board-id fact)))
             (e-board-sqlite-service-test--await
              (e-chat-service--publish-sqlite-continuation-claim
-              binding-1 run-id publication-key 'pending))
+              binding-1 run-id publication-key 1 'pending))
             (should (= (length (continuation-inputs service-1)) 0))
             (should (eq (plist-get (plist-get (run-projection service-1)
                                                :continuation)
@@ -2065,8 +2486,8 @@
                 (should (equal (e-chat-service--board-bindings-for binding-b)
                                (list binding-b)))
                 (cl-letf (((symbol-function
-                            'e-board-sqlite-service-orchestration-runs-start)
-                           (lambda (_service _board-id &optional _limit)
+                            'e-chat-service--continuation-index-scan-start)
+                           (lambda (_binding _page-function)
                              (let ((work (e-work-start spec nil)))
                                (push work reconciliation-works)
                                work))))
@@ -2082,11 +2503,9 @@
                   ;; The second runtime-A request records a durable edge while
                   ;; its first query is active.  Settling that query launches
                   ;; exactly one follow-up query rather than losing the edge.
-                  (e-work-finish (car (last reconciliation-works))
-                                 '(:records nil :truncated nil))
+                  (e-work-finish (car (last reconciliation-works)) nil)
                   (should (= (length reconciliation-works) 3))
-                  (e-work-finish (car reconciliation-works)
-                                 '(:records nil :truncated nil))
+                  (e-work-finish (car reconciliation-works) nil)
                   (e-chat-service-close-board binding-a)
                   (should-not
                    (e-chat-service--runtime-coordination-table
@@ -2098,7 +2517,7 @@
                   (dolist (work reconciliation-works)
                     (unless (memq (plist-get (e-work-status work) :state)
                                   '(finished failed cancelled))
-                      (e-work-finish work '(:records nil :truncated nil))))
+                      (e-work-finish work nil)))
                   (should (zerop
                            (hash-table-count
                             e-chat-service--continuation-reconciling)))))
@@ -2130,6 +2549,206 @@
         (should-not (plist-get page :truncated))
         (should (equal (plist-get projection :run-id) "sql-run"))
         (should (= (length (plist-get projection :tasks)) 1))))))
+
+(ert-deftest e-board-sqlite-service-run-index-keeps-old-active-run-visible ()
+  "Completed history does not hide an older active run, including duplicates."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id _participant-id)
+    (let ((original
+           (e-board-sqlite-service-test--append-index-run
+            service board-id "older-active")))
+      (dotimes (index 33)
+        (e-board-sqlite-service-test--append-index-run
+         service board-id (format "completed-%02d" index) t))
+      (let* ((duplicate
+              (e-board-sqlite-service-test--append-index-run
+               service board-id "older-active"))
+             (active
+              (e-board-sqlite-service-test--await
+               (e-board-sqlite-service-orchestration-active-runs-start
+                service board-id 32 1700000000)))
+             (all-runs
+              (e-board-sqlite-service-test--await
+               (e-board-sqlite-service-orchestration-run-index-page-start
+                service board-id :limit 64))))
+        (should (eq (plist-get original :status) 'posted))
+        (should (eq (plist-get duplicate :status) 'duplicate))
+        (should (= (plist-get active :active-count) 1))
+        (should-not (plist-get active :more-p))
+        (should (equal (mapcar (lambda (run) (plist-get run :run-id))
+                               (plist-get active :runs))
+                       '("older-active")))
+        (should (= (length (plist-get all-runs :entries)) 34))
+        (should (= (cl-count-if (lambda (entry)
+                                  (plist-get entry :active-p))
+                                (plist-get all-runs :entries))
+                   1))))))
+
+(ert-deftest e-board-sqlite-service-run-index-pages-more-than-256-active-runs ()
+  "Current-generation index cursors include runs beyond the presentation cap."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id _participant-id)
+    (dotimes (index 257)
+      (e-board-sqlite-service-test--append-index-run
+       service board-id (format "active-%03d" index)))
+    (let* ((active
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-orchestration-active-runs-start
+              service board-id 256 1700000000)))
+           (first
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-orchestration-run-index-page-start
+              service board-id :active-only t :limit 256)))
+           (second
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-orchestration-run-index-page-start
+              service board-id :active-only t :limit 256
+              :cursor (plist-get first :next-cursor))))
+           (ids (append (mapcar (lambda (entry) (plist-get entry :run-id))
+                                (plist-get first :entries))
+                        (mapcar (lambda (entry) (plist-get entry :run-id))
+                                (plist-get second :entries)))))
+      (should (= (plist-get active :active-count) 257))
+      (should (plist-get active :more-p))
+      (should (= (length (plist-get active :runs)) 256))
+      (should (= (length (plist-get first :entries)) 256))
+      (should (plist-get first :next-cursor))
+      (should (= (length (plist-get second :entries)) 1))
+      (should-not (plist-get second :next-cursor))
+      (should (= (length (delete-dups ids)) 257))
+      (should (equal (car (last ids)) "active-000")))))
+
+(ert-deftest e-board-sqlite-service-run-index-clear-starts-a-new-generation ()
+  "Board clear retires the run index with its canonical generation."
+  (e-board-sqlite-service-test--with-fixture
+      (_store service board-id _session-id _participant-id)
+    (e-board-sqlite-service-test--append-index-run
+     service board-id "before-clear")
+    (let ((before
+           (e-board-sqlite-service-test--await
+            (e-board-sqlite-service-orchestration-active-runs-start
+             service board-id 32 1700000000))))
+      (should (= (plist-get before :active-count) 1))
+      (e-board-sqlite-service-test--await
+       (e-board-sqlite-service--start
+        service 'write (list :op 'board-clear :board-id board-id
+                             :generation 1)))
+      (let ((after
+             (e-board-sqlite-service-test--await
+              (e-board-sqlite-service-orchestration-active-runs-start
+               service board-id 32 1700000000))))
+        (should (= (plist-get after :generation) 2))
+        (should (= (plist-get after :active-count) 0))
+        (should-not (plist-get after :runs))))))
+
+(ert-deftest e-board-sqlite-service-run-index-fact-limit-is-transactional ()
+  "The 1024th run fact indexes; the 1025th fact rolls back completely."
+  (let* ((directory (make-temp-file "e-board-run-index-limit-" t))
+         (database (sqlite-open (expand-file-name "board.sqlite3" directory)))
+         (board-id "run-index-limit-board")
+         (run-id "run-index-limit")
+         (manifest
+          (list :version 1 :type 'manifest :idempotency-key "manifest:limit"
+                :payload
+                (list :run-id run-id
+                      :tasks [(:task-key "task" :required t
+                               :accepted-attempt 0)]
+                      :deadline '(:kind none))))
+         (seed-facts
+          (cons manifest
+                (cl-loop for index from 0 below 1022
+                         collect
+                         (e-board-sqlite-service-test--index-limit-conflict-fact
+                          run-id index))))
+         (position 0)
+         update-milliseconds)
+    (unwind-protect
+        (progn
+          (e-board-sqlite-worker-initialize database)
+          (sqlite-execute
+           database
+           "INSERT INTO boards(board_id,trusted_principal,generation,revision,next_position,root_payload) VALUES(?,NULL,1,0,0,NULL)"
+           (vector board-id))
+          (sqlite-execute database "BEGIN IMMEDIATE")
+          (condition-case error
+              (progn
+                (cl-letf (((symbol-function
+                            'e-board-sqlite-worker--update-orchestration-run-index)
+                           (lambda (&rest _arguments) nil)))
+                  (dolist (fact seed-facts)
+                    (e-board-sqlite-worker-write
+                     database
+                     (e-board-sqlite-service-test--orchestration-record-body
+                      board-id (format "seed-%04d" (cl-incf position)) fact))))
+                (sqlite-execute database "COMMIT"))
+            (error
+             (ignore-errors (sqlite-execute database "ROLLBACK"))
+             (signal (car error) (cdr error))))
+          (should (= (length seed-facts) 1023))
+          (let ((started (float-time)))
+            (e-board-sqlite-service-test--transactional-worker-write
+             database
+             (e-board-sqlite-service-test--orchestration-record-body
+              board-id "boundary-1024"
+              (e-board-sqlite-service-test--index-limit-conflict-fact
+               run-id 1022)))
+            (setq update-milliseconds (* 1000 (- (float-time) started))))
+          (let ((count
+                 (e-board-sqlite-worker--column
+                  (car (sqlite-select
+                        database
+                        "SELECT COUNT(*) FROM board_records WHERE board_id=? AND record_kind='fact'"
+                        (vector board-id)))
+                  0))
+                (index
+                 (car (sqlite-select
+                       database
+                       (concat
+                       "SELECT active,latest_event_position FROM board_orchestration_run_index "
+                        "WHERE board_id=? AND generation=1 AND run_id=?")
+                       (vector board-id run-id)))))
+            (should (= count 1024))
+            (should index)
+            (should (= (e-board-sqlite-worker--column index 0) 1))
+            (should (= (e-board-sqlite-worker--column index 1) 1024)))
+          (should-error
+           (e-board-sqlite-service-test--transactional-worker-write
+            database
+            (e-board-sqlite-service-test--orchestration-record-body
+             board-id "overflow-1025"
+             (e-board-sqlite-service-test--index-limit-conflict-fact
+              run-id 1023)))
+           :type 'e-runtime-store-worker-error)
+          (should
+           (= (e-board-sqlite-worker--column
+               (car (sqlite-select
+                     database
+                     "SELECT COUNT(*) FROM board_records WHERE board_id=? AND record_kind='fact'"
+                     (vector board-id)))
+               0)
+              1024))
+          (should
+           (= (e-board-sqlite-worker--column
+               (car (sqlite-select
+                     database
+                     "SELECT next_position FROM boards WHERE board_id=?"
+                     (vector board-id)))
+               0)
+              1024))
+          (let ((index
+                 (car (sqlite-select
+                       database
+                       (concat
+                        "SELECT active,latest_event_position FROM board_orchestration_run_index "
+                        "WHERE board_id=? AND generation=1 AND run_id=?")
+                       (vector board-id run-id)))))
+            (should index)
+            (should (= (e-board-sqlite-worker--column index 0) 1))
+            (should (= (e-board-sqlite-worker--column index 1) 1024)))
+          (message "Board run-index 1024-fact append: %.2f ms (%.4f ms/fact)"
+                   update-milliseconds (/ update-milliseconds 1024.0)))
+      (when database (sqlite-close database))
+      (delete-directory directory t))))
 
 (ert-deftest e-board-sqlite-service-addressed-routing-does-not-truncate-at-512 ()
   "An exact addressee and its association remain routable beyond one page."

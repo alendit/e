@@ -266,16 +266,21 @@ The stable assignment key makes callback retries no-ops at the board boundary."
 
 (defun e-board-orchestration-actions--sql-run-set
     (page now &optional record-limit byte-limit)
-  "Reduce SQL PAGE into the consumer-shaped Board run-set value at NOW."
-  (let ((projections (e-board-orchestration-actions--sql-run-list page now)))
-    (e-board-orchestration-run-set-projection
-     projections
-     :board-id (plist-get page :board-id)
-     :more-p (plist-get page :more-p)
-     :record-limit (or record-limit
-                       e-board-orchestration-run-set-default-record-limit)
-     :byte-limit (or byte-limit
-                     e-board-orchestration-run-set-default-byte-limit))))
+  "Map indexed SQL PAGE into the consumer-shaped run set at NOW."
+  (unless (and (integerp (plist-get page :active-count))
+               (listp (plist-get page :runs)))
+    (signal 'e-board-orchestration-error
+            (list "Active run query returned an invalid index page")))
+  (e-board-orchestration-run-set-projection
+   (plist-get page :runs)
+   :board-id (plist-get page :board-id)
+   :more-p (plist-get page :more-p)
+   :active-count (plist-get page :active-count)
+   :now (or now (plist-get page :as-of))
+   :record-limit (or record-limit
+                     e-board-orchestration-run-set-default-record-limit)
+   :byte-limit (or byte-limit
+                   e-board-orchestration-run-set-default-byte-limit)))
 
 (cl-defun e-board-orchestration-actions-run-set
     (target &optional now &key
@@ -298,8 +303,8 @@ the detached result.  Neither may exceed the corresponding run-set maximum."
             (list "Run-set byte limit is out of bounds"
                   byte-limit e-board-orchestration-run-set-max-byte-limit)))
   (e-board-orchestration-actions--map-work
-   (e-board-sqlite-publication-target-orchestration-runs-start
-     target limit)
+   (e-board-sqlite-publication-target-orchestration-active-runs-start
+    target limit now)
    (lambda (page)
      (let ((value (e-board-orchestration-actions--sql-run-set
                    page now limit byte-limit)))

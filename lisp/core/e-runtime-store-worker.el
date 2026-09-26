@@ -50,13 +50,15 @@
 (require 'e-task-storage-sqlite-worker)
 (require 'e-voice-storage-sqlite-worker)
 
-(defconst e-runtime-store-worker-schema-version 8)
+(defconst e-runtime-store-worker-schema-version 9)
 (defconst e-runtime-store-worker--v5-schema-checksum "feature92-schema-v5")
 (defconst e-runtime-store-worker--v6-schema-checksum "feature92-schema-v6")
 (defconst e-runtime-store-worker--v7-schema-checksum
   "feature92-schema-v7-process-report-projection")
 (defconst e-runtime-store-worker--v8-schema-checksum
   "feature95-schema-v8-normalized-communication")
+(defconst e-runtime-store-worker--v9-schema-checksum
+  "feature89-schema-v9-board-run-index")
 (defconst e-runtime-store-worker-resource-byte-limit (* 16 1024 1024)
   "Private one-BLOB resource limit; deliberately above ordinary tool details.")
 
@@ -230,7 +232,7 @@ normal worker and the stopped-store upgrader."
         (e-board-sqlite-worker-initialize-v7 database)
         (e-task-storage-sqlite-worker-initialize-v7 database))
     (e-runtime-store-session-worker-initialize database)
-    (e-board-sqlite-worker-initialize database)
+    (e-board-sqlite-worker-initialize database schema-version)
     (e-task-storage-sqlite-worker-initialize database))
   (e-cron-storage-sqlite-worker-initialize database)
   (e-voice-storage-sqlite-worker-initialize database)
@@ -240,7 +242,7 @@ normal worker and the stopped-store upgrader."
 (defun e-runtime-store-worker--invalid-current-schema (reason &rest data)
   "Reject the current schema for explicit offline repair due to REASON."
   (signal 'e-runtime-store-schema-too-old
-          (append (list :actual 'malformed-v7
+          (append (list :actual 'malformed-v9
                         :required e-runtime-store-worker-schema-version
                         :operation 'e-runtime-store-offline-upgrade
                         :reason reason)
@@ -365,6 +367,44 @@ store with a different shape."
       'missing-migration-relation :cause (car (cdr err)))))
   t)
 
+(defun e-runtime-store-worker--verify-v9-normalized-schema ()
+  "Verify the v8 normalized relations plus the v9 Board run index."
+  (e-runtime-store-worker--verify-v8-normalized-schema)
+  (condition-case err
+      (e-board-sqlite-worker-verify-run-index-schema
+       e-runtime-store-worker--database)
+    (e-runtime-store-worker-error
+     (e-runtime-store-worker--invalid-current-schema
+      'invalid-board-orchestration-run-index
+      :detail (car (cdr err)) :data (cddr err))))
+  t)
+
+(defun e-runtime-store-worker--verify-v9-lineage ()
+  "Verify the exact recognized migration lineage for current schema v9."
+  (condition-case err
+      (let* ((v5 (e-runtime-store-worker--migration-row 5))
+             (v6 (e-runtime-store-worker--migration-row 6))
+             (v7 (e-runtime-store-worker--migration-row 7))
+             (v8 (e-runtime-store-worker--migration-row 8))
+             (v9 (e-runtime-store-worker--migration-row 9))
+             (v9-checksum
+              (secure-hash 'sha256 e-runtime-store-worker--v9-schema-checksum)))
+        (cond
+         ((equal v9 (list "new-current-schema" v9-checksum))
+          (when (or v5 v6 v7 v8)
+            (e-runtime-store-worker--invalid-current-schema
+             'unexpected-fresh-v9-predecessor)))
+         ((equal v9
+                 (list "feature89-v8-to-v9-board-run-index" v9-checksum))
+          (e-runtime-store-worker--verify-v8-lineage))
+         (t
+          (e-runtime-store-worker--invalid-current-schema
+           'invalid-v9-lineage))))
+    (sqlite-error
+     (e-runtime-store-worker--invalid-current-schema
+      'missing-migration-relation :cause (car (cdr err)))))
+  t)
+
 (defun e-runtime-store-worker--verify-current-schema ()
   "Verify existing current storage without executing schema initializers."
   (unless (car (sqlite-select
@@ -395,8 +435,8 @@ store with a different shape."
       (signal 'e-runtime-store-schema-too-new
               (list :actual version
                     :supported e-runtime-store-worker-schema-version)))))
-  (e-runtime-store-worker--verify-v8-lineage)
-  (e-runtime-store-worker--verify-v8-normalized-schema)
+  (e-runtime-store-worker--verify-v9-lineage)
+  (e-runtime-store-worker--verify-v9-normalized-schema)
   (condition-case err
       (e-runtime-store-session-worker-verify-process-report-projection-schema
        e-runtime-store-worker--database)
@@ -425,7 +465,7 @@ store with a different shape."
      e-runtime-store-worker--database
      "INSERT INTO schema_migrations(version,identity,checksum,applied_at) VALUES(?,?,?,?)"
      (vector e-runtime-store-worker-schema-version "new-current-schema"
-             (secure-hash 'sha256 e-runtime-store-worker--v8-schema-checksum)
+             (secure-hash 'sha256 e-runtime-store-worker--v9-schema-checksum)
              (float-time))))
   t)
 
@@ -1203,6 +1243,8 @@ acknowledgement prefix."
     ((or 'board-get 'board-list 'board-record-page 'board-visible-window
          'board-activity-page
          'board-orchestration-run 'board-orchestration-runs
+         'board-orchestration-active-runs
+         'board-orchestration-run-index-page
          'board-owner-resolve
          'board-routing-get
          'board-pickup-list 'board-participant-list

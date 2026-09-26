@@ -473,7 +473,7 @@
                  (push sql selects)
                  (list (list "ok")))))
       (let ((status (e-runtime-store-worker--read '(:op status))))
-        (should (= (plist-get status :schema-version) 8))
+        (should (= (plist-get status :schema-version) 9))
         (should-not (plist-member status :quick-check))
         (should-not selects))
       (let ((integrity
@@ -2027,7 +2027,7 @@
             (should (= (plist-get
                         (e-runtime-store-call store 'read '(:op store-metrics))
                         :schema-version)
-                       8))))
+                       9))))
       (when store (ignore-errors (e-runtime-store-close store)))
       (when (file-directory-p build-directory)
         (delete-directory build-directory t))
@@ -3523,6 +3523,55 @@ tests can present a raw frame that production would refuse to create."
           (should-not
            (and (hash-table-p (e-runtime-store--suspect-owners store))
                 (gethash owner-key (e-runtime-store--suspect-owners store)))))))))
+
+(ert-deftest e-runtime-store-board-stale-generation-conflict-does-not-fence-owner ()
+  "A stale Board-generation precondition allows a current write afterward."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (let* ((board-id "stale-generation-board")
+           (owner-key (cons 'board board-id)))
+      (e-runtime-store-call
+       store 'write
+       (list :op 'board-create :board-id board-id
+             :trusted-principal "board-owner"
+             :root (list :board-id board-id)))
+      (let ((stale-request
+             (e-runtime-store--submit-owned
+              store 'write
+              (list :op 'board-clear :board-id board-id :generation 2)
+              owner-key)))
+        (should-error (e-runtime-store-await store stale-request)
+                      :type 'e-runtime-store-board-conflict)
+        (should-not
+         (and (hash-table-p (e-runtime-store--suspect-owners store))
+              (gethash owner-key (e-runtime-store--suspect-owners store)))))
+      (let ((current-request
+             (e-runtime-store--submit-owned
+              store 'write
+              (list :op 'board-clear :board-id board-id :generation 1)
+              owner-key)))
+        (should (= (plist-get (e-runtime-store-await store current-request)
+                              :generation)
+                   2))
+        (should-not
+         (and (hash-table-p (e-runtime-store--suspect-owners store))
+              (gethash owner-key (e-runtime-store--suspect-owners store))))))))
+
+(ert-deftest e-runtime-store-board-other-conflict-still-fences-owner ()
+  "A Board conflict outside the generation precondition still fences owner."
+  (e-runtime-store-test--with-store (store directory)
+    (ignore directory)
+    (let* ((board-id "missing-conflict-board")
+           (owner-key (cons 'board board-id))
+           (body (list :op 'board-clear :board-id board-id :generation 1))
+           (request (e-runtime-store--submit-owned
+                     store 'write body owner-key)))
+      (should-error (e-runtime-store-await store request)
+                    :type 'e-runtime-store-board-conflict)
+      (should (gethash owner-key (e-runtime-store--suspect-owners store)))
+      (should-error (e-runtime-store--submit-owned
+                     store 'write body owner-key)
+                    :type 'e-runtime-store-persistence-suspect))))
 
 (ert-deftest e-runtime-store-task-snapshot-query-count-is-constant ()
   "A snapshot reads queue, task/latest-attempt rows, and history as sets."

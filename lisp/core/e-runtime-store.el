@@ -734,6 +734,22 @@ corruption retain their existing typed protocol cause."
          (eq (car owner-key) 'task)
          (stringp (cdr owner-key)))))
 
+(defun e-runtime-store--board-generation-conflict-p (request error)
+  "Return non-nil for REQUEST's exact stale Board-generation precondition."
+  (let ((owner-key (e-runtime-store-request--owner-key request)))
+    (and (eq (e-runtime-store-request--kind request) 'write)
+         (eq (car-safe error) 'e-runtime-store-board-conflict)
+         (proper-list-p error)
+         (= (length error) 5)
+         (equal (cadr error) "Stale Board generation")
+         (consp owner-key)
+         (eq (car owner-key) 'board)
+         (stringp (cdr owner-key))
+         (equal (nth 2 error) (cdr owner-key))
+         (integerp (nth 3 error))
+         (integerp (nth 4 error))
+         (/= (nth 3 error) (nth 4 error)))))
+
 (defun e-runtime-store--settle (store request response)
   "Settle REQUEST on STORE from decoded RESPONSE."
   (remhash (e-runtime-store-request--id request)
@@ -753,9 +769,10 @@ corruption retain their existing typed protocol cause."
                    (e-runtime-store--signal-response-error response)
                  (error caught))))
       (cond
-       ((e-runtime-store--task-enqueue-conflict-p request err)
-        ;; A stable-id mismatch is a caller conflict, so it does not make the
-        ;; already committed queue owner suspect.
+       ((or (e-runtime-store--task-enqueue-conflict-p request err)
+            (e-runtime-store--board-generation-conflict-p request err))
+        ;; These typed caller preconditions reject before mutation, so they do
+        ;; not make an otherwise usable owner suspect.
         (e-runtime-store--fail-request store request err))
        ((and (eq (e-runtime-store-request--kind request) 'write)
              (e-runtime-store-request--owner-key request))

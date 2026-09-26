@@ -74,11 +74,13 @@
   "The terminal adapter publishes one generic outcome fact identity."
   (let* ((binding (e-chat-continuation-outcome-test--binding))
          (context '(:run-id "run-1" :publication-key "continue-1"
+                    :board-run-generation 1
                     :turn-id "turn-1"))
-         fact)
+         fact generation)
     (cl-letf (((symbol-function 'e-board-sqlite-service-orchestration-fact-start)
-               (lambda (_service _board-id value)
+               (lambda (_service _board-id value &rest arguments)
                  (setq fact (copy-tree value t))
+                 (setq generation (plist-get arguments :generation))
                  (e-chat-continuation-outcome-test--finished-work
                   '(:status posted)))))
       (let ((work (e-chat-service--publish-sqlite-continuation-outcome
@@ -89,7 +91,8 @@
                        (e-board-orchestration-continuation-outcome-key
                         "run-1" "continue-1")))
         (should (equal (plist-get (plist-get fact :payload) :turn-id)
-                       "turn-1"))))))
+                       "turn-1"))
+        (should (= generation 1))))))
 
 (ert-deftest e-chat-continuation-outcome-test-terminal-event-publishes-once ()
   "A duplicate terminal callback cannot publish a second process-local fact."
@@ -98,6 +101,7 @@
          (calls nil))
     (puthash "turn-1"
              '(:run-id "run-1" :publication-key "continue-1"
+               :board-run-generation 1
                :turn-id "turn-1")
              turns)
     (cl-letf (((symbol-function 'e-chat-service--publish-sqlite-continuation-outcome)
@@ -131,6 +135,7 @@
          (failures nil))
     (puthash "turn-1"
              '(:run-id "run-1" :publication-key "continue-1"
+               :board-run-generation 1
                :turn-id "turn-1")
              turns)
     (cl-letf (((symbol-function 'e-chat-service--publish-sqlite-continuation-outcome)
@@ -170,6 +175,7 @@
          (failures nil))
     (puthash "turn-1"
              '(:run-id "run-1" :publication-key "continue-1"
+               :board-run-generation 1
                :turn-id "turn-1")
              turns)
     (cl-letf (((symbol-function 'e-chat-service--publish-sqlite-continuation-outcome)
@@ -221,7 +227,8 @@
          (delivery '("board-1" "message-1" "participant-1"))
          (calls nil))
     (puthash delivery
-             '(:run-id "run-1" :publication-key "continue-1")
+             '(:run-id "run-1" :publication-key "continue-1"
+               :board-run-generation 1)
              (e-chat-service-binding-continuation-deliveries binding))
     (puthash delivery 'submitting
              (e-chat-service-binding-executing-turns binding))
@@ -250,6 +257,7 @@
          (calls nil))
     (puthash "turn-1"
              '(:run-id "run-1" :publication-key "continue-1"
+               :board-run-generation 1
                :turn-id "turn-1")
              turns)
     (cl-letf (((symbol-function 'e-chat-service--publish-sqlite-continuation-outcome)

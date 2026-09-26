@@ -500,6 +500,24 @@ to request-owned producer work.  It stores no terminal outcome."
    (e-board-sqlite-publication-target--service target)
    (e-board-sqlite-publication-target--board-id target) limit))
 
+(defun e-board-sqlite-publication-target-orchestration-active-runs-start
+    (target &optional limit now)
+  "Read TARGET's bounded priority page of active run-index summaries."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service-orchestration-active-runs-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target) limit now))
+
+(cl-defun e-board-sqlite-publication-target-orchestration-run-index-page-start
+    (target &key cursor active-only include-continuation-ref limit)
+  "Read one stable current-generation run-index page from TARGET."
+  (e-board-sqlite-publication-target--require target)
+   (e-board-sqlite-service-orchestration-run-index-page-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target)
+   :cursor cursor :active-only active-only
+   :include-continuation-ref include-continuation-ref :limit limit))
+
 (defun e-board-sqlite-publication-target-board-owner-resolve-start (target)
   "Read TARGET's bounded current owner candidates."
   (e-board-sqlite-publication-target--require target)
@@ -677,39 +695,59 @@ canonical identity payload and is copied before crossing the SQL boundary."
        (e-board-sqlite-service--publish-committed-pickups settled service)))
     work))
 
-(cl-defun e-board-sqlite-service-record-append-start
-    (service board-id record-kind source-kind source-key &rest record-fields)
-  "Append one canonical non-routed RECORD-KIND with detached RECORD-FIELDS."
+(defun e-board-sqlite-service--record-append-start
+    (service board-id record-kind source-kind source-key record-fields
+             &optional generation)
+  "Append RECORD-FIELDS, fenced to GENERATION when it is supplied."
+  (unless (or (null generation)
+              (and (integerp generation) (> generation 0)))
+    (signal 'e-board-sqlite-error
+            (list "Board record generation is invalid" generation)))
   (let ((signature (list :record-kind record-kind
                          :record-fields record-fields)))
     (e-board-sqlite-service--start
      service 'write
-     (list :op 'board-record-append :board-id board-id
-           :record-kind record-kind :source-kind source-kind
-           :source-key (e-board-sqlite-service--detached-copy source-key)
-           :source-hash (e-board-sqlite-signature-hash signature)
-           :record-fields
-           (e-board-sqlite-service--detached-copy record-fields))
+     (append
+      (list :op 'board-record-append :board-id board-id)
+      (when generation (list :generation generation))
+      (list :record-kind record-kind :source-kind source-kind
+            :source-key (e-board-sqlite-service--detached-copy source-key)
+            :source-hash (e-board-sqlite-signature-hash signature)
+            :record-fields
+            (e-board-sqlite-service--detached-copy record-fields)))
      (cons 'board board-id))))
 
+(cl-defun e-board-sqlite-service-record-append-start
+    (service board-id record-kind source-kind source-key &rest record-fields)
+  "Append one canonical non-routed RECORD-KIND with detached RECORD-FIELDS."
+  (e-board-sqlite-service--record-append-start
+   service board-id record-kind source-kind source-key record-fields))
+
 (cl-defun e-board-sqlite-service-orchestration-fact-start
-    (service board-id fact &key author)
+    (service board-id fact &key author generation)
   "Validate and append one orchestration FACT to BOARD-ID."
   (let ((fields
          (e-board-orchestration-fact-record-fields fact :author author)))
-    (apply #'e-board-sqlite-service-record-append-start
-           service board-id 'fact 'fact (plist-get fields :source-key)
-           (cl-loop for (key value) on fields by #'cddr
-                    unless (eq key :source-key)
-                    append (list key value)))))
+    (e-board-sqlite-service--record-append-start
+     service board-id 'fact 'fact (plist-get fields :source-key)
+     (cl-loop for (key value) on fields by #'cddr
+              unless (eq key :source-key)
+              append (list key value))
+     generation)))
 
 (defun e-board-sqlite-service-orchestration-run-start
-    (service board-id run-id &optional limit)
-  "Read one bounded durable RUN-ID fact set from BOARD-ID."
+    (service board-id run-id &optional limit generation)
+  "Read RUN-ID's bounded facts from BOARD-ID.
+When GENERATION is non-nil, require that it is still the current generation."
+  (unless (or (null generation)
+              (and (integerp generation) (> generation 0)))
+    (signal 'e-board-sqlite-error
+            (list "Board run generation is invalid" generation)))
   (e-board-sqlite-service--start
    service 'read
-   (list :op 'board-orchestration-run :board-id board-id
-         :run-id run-id :limit (or limit 256))))
+   (append (list :op 'board-orchestration-run :board-id board-id
+                 :run-id run-id :limit (or limit 256))
+           (when generation (list :generation generation)))))
 
 (defun e-board-sqlite-service-orchestration-runs-start
     (service board-id &optional limit)
@@ -718,6 +756,46 @@ canonical identity payload and is copied before crossing the SQL boundary."
    service 'read
    (list :op 'board-orchestration-runs :board-id board-id
          :limit (or limit 32))))
+
+(defun e-board-sqlite-service-orchestration-active-runs-start
+    (service board-id &optional limit now)
+  "Read BOARD-ID's bounded priority page and exact active-run count."
+  (let ((limit (or limit e-board-orchestration-run-set-default-record-limit)))
+    (unless (and (integerp limit) (> limit 0)
+                 (<= limit e-board-orchestration-run-set-max-record-limit))
+      (signal 'e-board-sqlite-error
+              (list "Board active-run page limit is out of bounds" limit)))
+    (e-board-sqlite-service--start
+     service 'read
+     (list :op 'board-orchestration-active-runs :board-id board-id
+           :limit limit :now now))))
+
+(cl-defun e-board-sqlite-service-orchestration-run-index-page-start
+    (service board-id &key cursor active-only include-continuation-ref limit)
+  "Read one bounded stable current-generation run-index page from BOARD-ID.
+
+CURSOR is returned unchanged by the previous page.  ACTIVE-ONLY filters out
+completed rows while preserving the same manifest-position cursor contract."
+  (let ((limit (or limit e-board-orchestration-run-set-default-record-limit)))
+    (unless (and (integerp limit) (> limit 0)
+                 (<= limit e-board-orchestration-run-set-max-record-limit))
+      (signal 'e-board-sqlite-error
+              (list "Board run-index page limit is out of bounds" limit)))
+    (unless (or (null active-only) (eq active-only t))
+      (signal 'e-board-sqlite-error
+              (list "Board run-index active filter is invalid" active-only)))
+    (unless (or (null include-continuation-ref)
+                (eq include-continuation-ref t))
+      (signal 'e-board-sqlite-error
+              (list "Board run-index continuation reference flag is invalid"
+                    include-continuation-ref)))
+    (e-board-sqlite-service--start
+     service 'read
+     (list :op 'board-orchestration-run-index-page :board-id board-id
+           :cursor (e-board-sqlite-service--detached-copy cursor)
+           :active-only active-only
+           :include-continuation-ref include-continuation-ref
+           :limit limit))))
 
 (cl-defun e-board-sqlite-service-activity-page-start
     (service board-id &key after limit byte-limit participant-id run-id)
