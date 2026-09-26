@@ -471,10 +471,13 @@ dispatch failure already published by e settles the queue without a second
 terminal Board report.
 
 Repository-side Daily ERT and the isolated two-process graphical Daily
-restart scenario pass.  The isolated native Board graphical scenario also
-passes.  The paired current-configuration cold start, direct xwidget visual
-interaction, and the full required-plus-optional restart scenario remain
-acceptance checks; =review.org= records the exact evidence and limits.
+restart scenario pass.  The paired private current-configuration cold start
+and native Board graphical scenario also pass.  The stopped configured store
+was upgraded to schema v9 with one verified v8 rollback backup retained.
+Direct xwidget visual interaction and the full required-plus-optional restart
+scenario remain acceptance checks; =review.org= records the exact evidence
+and limits.  The real Doom package source must be aligned with schema v9
+before the user restarts Emacs.
 
 * End-to-end proof
 

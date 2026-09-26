@@ -4,8 +4,10 @@
 * Status
 
 In-review.  All recorded implementation findings are resolved.  The paired
-current-configuration cold start, direct xwidget playthrough, and complete
-required-plus-optional restart scenario still need acceptance evidence.
+current-configuration cold start and native Board graphical check passed.
+Direct xwidget interaction and the complete required-plus-optional restart
+scenario still need acceptance evidence.  The upgraded live store must not be
+opened by the older source in the real Doom package configuration.
 
 * Review summary
 
@@ -16,7 +18,8 @@ durable queue; completion is a keyed input delivered after an idle boundary.
 SQLite schema v9 indexes actionable runs and supports an offline v8-to-v9
 backfill.  The final independent pass at e =81fd0163= and Grimoire =a9cef39=
 found no P0--P2 issue.  Deterministic repository validation reached a fixed
-point, while the acceptance checks above remain open.
+point.  The stopped configured store was upgraded to v9 and its integrity was
+checked.  Activation remains separate from this isolated branch's tests.
 
 * Scope reviewed
 
@@ -46,6 +49,34 @@ later passes followed their corrections and focused regressions.
   alone.  The broader graphical suite failed 9/28; its Board reasoning
   timeout was reproduced unchanged at pre-index =c120b637=.  Neither broader
   run is claimed as a passing Feature 89 gate.
+- After e =aac4658a=, the paired current-configuration E2E passed 8/8 using
+  private copies of the real Doom configuration and package tree pointed at
+  this e worktree and Grimoire =a9cef39=.  The native Board graphical selector
+  passed 1/1 in the same private configuration.  Both were rerun after the
+  restart-test changes, used private Emacs processes, and did not open the
+  configured runtime store.
+- The isolated Grimoire graphical Daily acceptance ran in two distinct Emacs
+  processes after the store upgrade.  Both phases passed 1/1 with
+  =E_LISP_DIR=/private/tmp/e-feature89/lisp=.  An earlier attempt omitted that
+  variable; Grimoire's helper loaded the canonical v8 worker and rejected
+  =board-orchestration-active-runs=.  That mixed-source failure does not
+  describe the paired Feature 89 code.
+- At e =aac4658a=, four selected restart checks passed together 4/4:
+  required-plus-optional reduction, exact queue-assignment reconciliation,
+  pending-claim restart with FIFO delivery, and post-publication restart with
+  coordinator-outcome backfill.  The pending-claim scenario keeps an optional
+  task running after required work settles and checks that the coordinator
+  input still names it.  The queue test now checks durable terminal state
+  because the storage-backed queue evicts terminal records from its
+  process-local cache.  An earlier combined run exposed that test race.
+- With Emacs stopped, the configured =store.sqlite3= reports
+  =store_meta.schema_version= as =9= and =PRAGMA integrity_check= returns =ok=.
+  The single retained =store-pre-feature89-v8-20260926.sqlite3= backup reports
+  schema 8 and =quick_check= returns =ok=.  The superseded 2026-09-21 backup
+  was removed.  The Feature 89 worker then opened the configured store in
+  =read-only= mode and reported =:startup ready=, =:unavailable nil=, and no
+  startup error.  This validates code/schema compatibility without starting
+  the user's Emacs.
 
 * Findings
 
@@ -133,8 +164,10 @@ controls; visual ERT passed 16/16.
   the production queue consumer and its guidance are updated.
 - Slice 7: stable queue assignment, generation-fenced recovery, offline
   schema backfill, and two-process Daily recovery are implemented.  The
-  complete required-plus-optional scenario across every publication and
-  outcome restart boundary remains unproved as one acceptance scenario.
+  configured store was upgraded and checked.  Selected tests prove the
+  required-plus-optional policy and several restart boundaries separately;
+  the complete scenario across every boundary remains unproved as one
+  acceptance scenario.
 
 * Architecture review and design self-check
 
@@ -165,8 +198,9 @@ controls; visual ERT passed 16/16.
 13. Stale actions and generations are rejected at service boundaries.
     Unexpected store and dispatch failures surface as failed work or attention.
 14. Reducer, SQL, queue, admission, and action-fence tests prove behavior below
-    the graphical shell.  Isolated graphical tests cover their joins; the
-    current-configuration and xwidget checks are still necessary.
+    the graphical shell.  Isolated graphical tests and the paired private
+    current-configuration cold start cover their joins.  The xwidget and full
+    restart-scenario checks remain necessary.
 
 * UX and performance playthrough
 
@@ -176,15 +210,11 @@ opening the status into a displayed activity buffer, and reopening after a
 Board update.  The two-process Daily graphical fixture exercised durable
 queue recovery.  This Emacs 31.1 build lacks xwidgets, so the visual app was
 checked through view-model and event tests instead of a direct graphical
-playthrough.  The user's running Emacs was not used to test this branch:
-the core schema and record changes require an offline upgrade and restart.
+playthrough.  The user's Emacs stayed stopped; these checks used private
+processes.
 
 * Unresolved acceptance and activation
 
-- Run the paired current-configuration cold start against these exact e and
-  Grimoire revisions.  Doom's package symlinks and configured Daily checkout
-  point at the original workspaces, so the existing gate cannot prove these
-  isolated worktrees as configured.
 - Exercise the visual Daily owner scenario in an xwidget-capable Emacs,
   including pending admission, live control availability, Board update,
   focus retention, and composer responsiveness.
@@ -192,7 +222,12 @@ the core schema and record changes require an offline upgrade and restart.
   across pre-persistence, pre-publication, post-publication, post-consumption,
   and coordinator-outcome boundaries.  Measure realistic Board write and
   visual refresh latency before asserting an interactive performance bound.
+- Align the real Doom package source and Daily project with the accepted e and
+  Grimoire revisions before restarting Emacs.  The real =packages.el= still
+  names =/Users/dvorona/projects/elisp/e=, whose worker requires schema 8;
+  the stopped configured store now has schema 9.  The canonical Grimoire
+  checkout has unrelated local edits, so activation must preserve them.
 
-The user's running Emacs and canonical store were left unchanged.  Applying
-this branch requires the offline schema upgrade and a full Emacs restart;
-a shell reload cannot apply the core changes.
+The user's Emacs remains stopped.  The configured store has been upgraded;
+the core changes need a full restart after source alignment.  A shell reload
+cannot apply them.
