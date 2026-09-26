@@ -125,13 +125,15 @@
              (run-id (plist-get metadata :board-run-id))
              (task-key (plist-get metadata :board-task-key))
              (attempt (plist-get metadata :board-attempt))
+             (generation (plist-get metadata :daily-board-generation))
              (dispatch
               (e-subagent-runner-dispatch-start
                target parent parent-session-id
                :source-turn-id "board-task-turn" :type :reviewer
                :prompt (plist-get task :prompt)
                :label (plist-get task :summary)
-               :run-id run-id :task-key task-key :attempt attempt))
+               :run-id run-id :task-key task-key :attempt attempt
+               :generation generation))
              child)
         (e-work-on-settle
          dispatch
@@ -200,6 +202,7 @@
              (e-board-task-queue-test--real-subagent-runner
               target parent "parent-1" dispatch-count)))
            (prompt "Review the durable Board assignment.")
+           (board-metadata '(:daily-board-generation 1))
            (task-id (e-board-task-queue-task-id
                      target "run-1" "review" 0))
            (operations nil)
@@ -236,8 +239,12 @@
               (e-board-task-queue-test--await
                (e-board-task-queue-reconcile
                 queue target "run-1" "review" 0
-                :prompt prompt :summary "Review" :harness-instance-id :reviewer)))
+                :prompt prompt :summary "Review" :harness-instance-id :reviewer
+                :metadata board-metadata)))
         (should (eq (plist-get task :status) 'created))
+        (should (= (plist-get (plist-get (plist-get task :record) :metadata)
+                              :daily-board-generation)
+                   1))
         (should (equal (seq-take operations 2)
                        '((write enqueue) (write claim-runnable))))
         (should-not (memq 'snapshot (mapcar #'cadr operations)))
@@ -270,7 +277,7 @@
                 (e-board-task-queue-reconcile
                  queue target "run-1" "review" 0
                  :prompt prompt :summary "Review"
-                 :harness-instance-id :reviewer))))
+                 :harness-instance-id :reviewer :metadata board-metadata))))
           (should (eq (plist-get existing :status) 'existing))
           (should (eq (plist-get (plist-get existing :record) :status) 'running))
           (should (= (car dispatch-count) 1)))
@@ -284,7 +291,7 @@
                  (e-board-task-queue-reconcile
                   observer-queue target "run-1" "review" 0
                   :prompt prompt :summary "Review"
-                  :harness-instance-id :reviewer)))
+                  :harness-instance-id :reviewer :metadata board-metadata)))
                (observer-task-id (plist-get existing-assignment :task-id)))
           (should (eq (plist-get existing-assignment :status) 'existing))
           (should (equal observer-task-id task-id))
@@ -295,7 +302,7 @@
           (e-board-task-queue-reconcile
            queue target "run-1" "review" 0
            :prompt "Changed immutable prompt." :summary "Review"
-           :harness-instance-id :reviewer))
+           :harness-instance-id :reviewer :metadata board-metadata))
          :type 'e-runtime-store-task-conflict)
         (let* ((restart-count (list 0))
                (restarted-queue
@@ -312,7 +319,7 @@
                  (e-board-task-queue-reconcile
                   restarted-queue target "run-1" "review" 0
                   :prompt prompt :summary "Review"
-                  :harness-instance-id :reviewer))))
+                  :harness-instance-id :reviewer :metadata board-metadata))))
           (should (eq (plist-get orphan :status) 'orphan))
           (should (eq (plist-get (plist-get orphan :record) :status) 'running))
           (should (= (car restart-count) 0))
@@ -328,7 +335,7 @@
                 (e-board-task-queue-reconcile
                  queue target "run-1" "review" 0
                  :prompt prompt :summary "Review"
-                 :harness-instance-id :reviewer))))
+                 :harness-instance-id :reviewer :metadata board-metadata))))
           (should (eq (plist-get terminal :status) 'terminal))
           (should (eq (plist-get (plist-get terminal :record) :status) 'done)))
         (let* ((facts (e-board-task-queue-test--facts target))

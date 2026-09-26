@@ -455,47 +455,60 @@ to request-owned producer work.  It stores no terminal outcome."
    :source-input-key (e-board-sqlite-service--detached-copy source-input-key)
    :created-at created-at))
 
+(defun e-board-sqlite-publication-target--record-append-start
+    (target record-kind source-kind source-key record-fields &optional generation)
+  "Append one canonical non-routed record through TARGET.
+When GENERATION is non-nil, require that it is still current."
+  (e-board-sqlite-publication-target--require target)
+  (e-board-sqlite-service--record-append-start
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target--board-id target)
+   record-kind source-kind
+   (e-board-sqlite-service--detached-copy source-key)
+   (e-board-sqlite-service--detached-copy record-fields)
+   generation))
+
 (cl-defun e-board-sqlite-publication-target-record-append-start
     (target record-kind source-kind source-key &rest record-fields)
   "Append one canonical non-routed record through TARGET."
-  (e-board-sqlite-publication-target--require target)
-  (apply #'e-board-sqlite-service-record-append-start
-         (e-board-sqlite-publication-target--service target)
-         (e-board-sqlite-publication-target--board-id target)
-         record-kind source-kind
-         (e-board-sqlite-service--detached-copy source-key)
-         (e-board-sqlite-service--detached-copy record-fields)))
+  (e-board-sqlite-publication-target--record-append-start
+   target record-kind source-kind source-key record-fields))
 
 (cl-defun e-board-sqlite-publication-target-fact-start
-    (target content source-fact-key &key author tags attributes reference)
-  "Append one observation-only fact through TARGET."
-  (e-board-sqlite-publication-target-record-append-start
+    (target content source-fact-key &key author tags attributes reference
+            generation)
+  "Append one observation-only fact through TARGET.
+When GENERATION is non-nil, require that it is still current."
+  (e-board-sqlite-publication-target--record-append-start
    target 'fact 'fact source-fact-key
-   :author (or (e-board-sqlite-service--detached-copy author)
-               (e-board-sqlite-service--detached-copy
-                (e-board-sqlite-publication-target--author target)))
-   :tags (append
+   (list :author (or (e-board-sqlite-service--detached-copy author)
+                     (e-board-sqlite-service--detached-copy
+                      (e-board-sqlite-publication-target--author target)))
+         :tags (append
+                (e-board-sqlite-service--detached-copy
+                 (e-board-sqlite-publication-target--tags target))
+                (e-board-sqlite-service--detached-copy tags))
+         :attributes
+         (append
           (e-board-sqlite-service--detached-copy
-           (e-board-sqlite-publication-target--tags target))
-          (e-board-sqlite-service--detached-copy tags))
-   :attributes
-   (append
-    (e-board-sqlite-service--detached-copy
-     (e-board-sqlite-publication-target--attributes target))
-    (e-board-sqlite-service--detached-copy attributes))
-   :content (e-board-sqlite-service--detached-copy content)
-   :reference (e-board-sqlite-service--detached-copy reference)))
+           (e-board-sqlite-publication-target--attributes target))
+          (e-board-sqlite-service--detached-copy attributes))
+         :content (e-board-sqlite-service--detached-copy content)
+         :reference (e-board-sqlite-service--detached-copy reference))
+   generation))
 
 (cl-defun e-board-sqlite-publication-target-orchestration-fact-start
-    (target fact &key author)
-  "Validate and append orchestration FACT through TARGET."
+    (target fact &key author generation)
+  "Validate and append orchestration FACT through TARGET.
+When GENERATION is non-nil, require that it is still current."
   (e-board-sqlite-publication-target--require target)
   (e-board-sqlite-service-orchestration-fact-start
    (e-board-sqlite-publication-target--service target)
    (e-board-sqlite-publication-target--board-id target) fact
    :author (or (e-board-sqlite-service--detached-copy author)
                (e-board-sqlite-service--detached-copy
-                (e-board-sqlite-publication-target--author target)))))
+                (e-board-sqlite-publication-target--author target)))
+   :generation generation))
 
 (defun e-board-sqlite-publication-target-orchestration-run-start
     (target run-id &optional limit expected-generation)

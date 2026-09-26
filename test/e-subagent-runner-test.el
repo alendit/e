@@ -138,6 +138,26 @@
   (e-board-producer-test-records
    (e-subagent-runner-test--publication-target harness session-id)))
 
+(defun e-subagent-runner-test--clear-board (target generation)
+  "Clear TARGET's Board when its current GENERATION matches."
+  (e-runtime-store-call
+   (e-board-sqlite-service-runtime
+    (e-board-sqlite-publication-target--service target))
+   'write
+   (list :op 'board-clear
+         :board-id (e-board-sqlite-publication-target-board-id target)
+         :generation generation)))
+
+(defun e-subagent-runner-test--records-at-generation (target generation)
+  "Return TARGET's canonical records in GENERATION."
+  (mapcar
+   (lambda (row) (copy-tree (plist-get row :record) t))
+   (plist-get
+    (e-board-producer-test-await
+     (e-board-sqlite-publication-target-record-page-start
+      target :generation generation :after 0 :limit 256))
+    :records)))
+
 (defun e-subagent-runner-test--entry (live participant-id &optional pending)
   "Return LIVE's raw entry for PARTICIPANT-ID, searching PENDING when set."
   (let ((table (if pending
@@ -584,12 +604,13 @@ terminal Board publications are held and after their acknowledgement."
                                     (append (cl-subseq arguments 0 3)
                                             options)))))
                         ((symbol-function 'e-subagent--publish-lifecycle)
-                         (lambda (publication-target record &optional include-result)
+                         (lambda (publication-target record
+                                  &optional include-result generation)
                            (if (eq (plist-get record :status) 'cancelled)
                                (let ((actual
                                       (funcall original-lifecycle
                                                publication-target record
-                                               include-result))
+                                               include-result generation))
                                      (held
                                       (e-subagent-runner-test--deferred-work
                                        "held-cancelled-lifecycle")))
@@ -598,7 +619,7 @@ terminal Board publications are held and after their acknowledgement."
                                  (push held held-publications)
                                  held)
                              (funcall original-lifecycle publication-target
-                                      record include-result))))
+                                      record include-result generation))))
                         ((symbol-function
                           'e-board-orchestration-actions-publish-terminal)
                          (lambda (&rest arguments)
@@ -767,13 +788,14 @@ terminal Board publications are held and after their acknowledgement."
                      (setq settle-provider on-settle)
                      (list :cancel #'ignore)))
                   ((symbol-function 'e-subagent--publish-lifecycle)
-                   (lambda (publication-target record &optional include-result)
+                   (lambda (publication-target record
+                            &optional include-result generation)
                      (if (eq (plist-get record :status) 'failed)
                          (setq held-lifecycle
                                (e-subagent-runner-test--deferred-work
                                 "held-failing-terminal-lifecycle"))
                        (funcall original-lifecycle publication-target record
-                                include-result))))
+                                include-result generation))))
                   ((symbol-function
                     'e-board-orchestration-actions-publish-terminal)
                    (lambda (&rest _arguments)
@@ -891,11 +913,12 @@ terminal Board publications are held and after their acknowledgement."
                              ;; keeps that callback inert.
                              (funcall on-settle 'cancelled)))))
                   ((symbol-function 'e-subagent--publish-lifecycle)
-                   (lambda (publication-target record &optional include-result)
+                   (lambda (publication-target record
+                            &optional include-result generation)
                      (if (eq (plist-get record :status) 'failed)
                          (let* ((actual
                                  (funcall original-lifecycle publication-target
-                                          record include-result))
+                                          record include-result generation))
                                 (held
                                  (e-subagent-runner-test--deferred-work
                                   "deadline-held-lifecycle")))
@@ -903,7 +926,7 @@ terminal Board publications are held and after their acknowledgement."
                            (push held held-publications)
                            held)
                        (funcall original-lifecycle publication-target record
-                                include-result))))
+                                include-result generation))))
                   ((symbol-function
                     'e-board-orchestration-actions-publish-terminal)
                    (lambda (&rest arguments)
@@ -2612,7 +2635,7 @@ child Work normally."
                       parent "parent-1"))
              (assignment '(:run-id "run-1" :task-key "review" :attempt 0)))
         (cl-letf (((symbol-function 'e-subagent-runner--publish-attempt)
-                   (lambda (_target _assignment status)
+                   (lambda (_target _assignment status &optional _generation)
                      (cl-incf publication-count)
                      (let ((work
                             (e-subagent-runner-test--deferred-work
@@ -2902,6 +2925,95 @@ child Work normally."
                      "queued publication rejected"
                      (e-work-error-message (plist-get status :error))))
             (should-not spawned)))))))
+
+(ert-deftest e-subagent-runner-test-stale-generation-rejects-queued-before-admission ()
+  "A stale queued attempt fails with the Board conflict before child admission."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (spawned nil))
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (board-id (e-board-sqlite-publication-target-board-id target)))
+        (should (= (plist-get (e-subagent-runner-test--clear-board target 1)
+                              :generation)
+                   2))
+        (cl-letf (((symbol-function 'e-subagent-spawn)
+                   (lambda (&rest _arguments) (setq spawned t))))
+          (let* ((work
+                  (e-subagent-runner-dispatch-start
+                   target parent "parent-1"
+                   :source-turn-id "parent-turn" :type :reviewer
+                   :prompt "Review the Board task."
+                   :run-id "run-stale-queued" :task-key "review"
+                   :attempt 0 :generation 1))
+                 (status
+                  (progn
+                    (should
+                     (e-chat-test--wait-until
+                      (lambda ()
+                        (memq (plist-get (e-work-status work) :state)
+                              '(finished failed cancelled)))
+                      5.0))
+                    (e-work-status work))))
+            (should (eq (plist-get status :state) 'failed))
+            (should (eq (car (plist-get status :error))
+                        'e-runtime-store-board-conflict))
+            (should (string-match-p "Stale Board generation"
+                                    (e-work-error-message
+                                     (plist-get status :error))))
+            (should-not spawned)))
+        (should-not
+         (e-subagent-runner-test--records-at-generation target 2))))))
+
+(ert-deftest e-subagent-runner-test-generation-fences-in-flight-terminal-publication ()
+  "A terminal proposal from a cleared dispatch cannot write into the new generation."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          provider-settle)
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (board-id (e-board-sqlite-publication-target-board-id target)))
+        (cl-letf (((symbol-function 'e-subagent-direct-runner)
+                   (lambda (_child-harness _child-session-id _prompt _seed
+                            on-settle &optional _progress _metadata)
+                     (setq provider-settle on-settle)
+                     (list :cancel #'ignore))))
+          (let* ((dispatch
+                  (e-subagent-runner-dispatch-start
+                   target parent "parent-1"
+                   :source-turn-id "parent-turn" :type :reviewer
+                   :prompt "Review the Board task."
+                   :run-id "run-stale-terminal" :task-key "review"
+                   :attempt 0 :generation 1))
+                 (result (e-board-producer-test-await dispatch))
+                 (participant-id (plist-get result :participant-id))
+                 (child-work
+                  (e-subagent-live-work-handle
+                   (e-subagent-runner-live-owner) board-id participant-id)))
+            (should (eq (plist-get result :status) 'admitted))
+            (should (functionp provider-settle))
+            (should (e-work-handle-p child-work))
+            (should (= (plist-get
+                        (e-subagent-runner-test--clear-board target 1)
+                        :generation)
+                       2))
+            (funcall provider-settle 'done :summary "Review completed")
+            (should
+             (e-chat-test--wait-until
+              (lambda ()
+                (eq (plist-get (e-work-status child-work) :state) 'failed))
+              5.0))
+            (let* ((status (e-work-status child-work))
+                   (error (plist-get status :error)))
+              (should (eq (car error) 'e-subagent-persistence-suspect))
+              (should (string-match-p "Stale Board generation"
+                                      (e-work-error-message error))))
+            (should-not
+             (e-subagent-runner-test--records-at-generation target 2))))))))
 
 (provide 'e-subagent-runner-test)
 

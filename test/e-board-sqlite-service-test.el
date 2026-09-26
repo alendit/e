@@ -264,6 +264,29 @@
                        '(:nested (:value "original")
                          :vector ["vector-original"])))))))
 
+(ert-deftest e-board-sqlite-publication-target-fact-fences-generation ()
+  "A stale target fact cannot publish into the generation after Board clear."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id _session-id _participant-id)
+    (let* ((target (e-board-sqlite-publication-target-create service board-id))
+           (cleared
+            (e-runtime-store-call
+             (e-session-storage-runtime-store store) 'write
+             (list :op 'board-clear :board-id board-id :generation 1)))
+           (publication
+            (e-board-sqlite-publication-target-fact-start
+             target "stale subagent lifecycle" '(:subagent "stale" "queued")
+             :tags '(subagent change queued) :generation 1)))
+      (should (= (plist-get cleared :generation) 2))
+      (should-error
+       (e-board-sqlite-service-test--await publication)
+       :type 'e-runtime-store-board-conflict)
+      (let ((page
+             (e-board-sqlite-service-test--await
+              (e-board-sqlite-publication-target-record-page-start
+               target :generation 2 :after 0 :limit 8))))
+        (should-not (plist-get page :records))))))
+
 (ert-deftest e-board-sqlite-service-append-route-returns-canonical-result-and-dedupes-old-source ()
   "SQLite assigns canonical append/routing identity and dedupes full history."
   (e-board-sqlite-service-test--with-fixture

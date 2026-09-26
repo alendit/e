@@ -39,9 +39,10 @@
           (plist-get assignment :attempt)))
 
 (cl-defun e-board-orchestration-actions-publish-terminal
-    (target assignment status &key summary result outputs error author)
+    (target assignment status &key summary result outputs error author generation)
   "Publish ASSIGNMENT's bounded terminal STATUS report to TARGET.
-The stable assignment key makes callback retries no-ops at the board boundary."
+The stable assignment key makes callback retries no-ops at the board boundary.
+When GENERATION is non-nil, require that it is still current."
   (let ((fact
          (list :version e-board-orchestration-fact-version
                :type 'terminal-report
@@ -56,7 +57,7 @@ The stable assignment key makes callback retries no-ops at the board boundary."
                                       (plist-get author :session-id))))))
     (let ((work
            (e-board-sqlite-publication-target-orchestration-fact-start
-            target fact :author author)))
+            target fact :author author :generation generation)))
       (e-work-on-settle
        work
        (lambda (settled)

@@ -118,16 +118,19 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
      :tags '(subagent))))
 
 (cl-defun e-subagent--publish-board-fact
-    (target &key tags attributes content source-fact-key)
+    (target &key generation tags attributes content source-fact-key)
   "Publish one bounded fact through explicit SQL TARGET."
   (e-board-sqlite-publication-target-fact-start
    target content source-fact-key
-   :tags (copy-tree tags t) :attributes (copy-tree attributes t)))
+   :tags (copy-tree tags t) :attributes (copy-tree attributes t)
+   :generation generation))
 
-(defun e-subagent--publish-lifecycle (target record &optional include-result)
+(defun e-subagent--publish-lifecycle
+    (target record &optional include-result generation)
   "Publish RECORD's lifecycle state through execution-owned TARGET.
 RECORD is a detached publication value, not the live owner record.  The live
-owner never stores this durable status or history."
+owner never stores this durable status or history.  GENERATION, when non-nil,
+fences the fact to the Board generation captured at dispatch."
   (let ((attributes (list :participant-id (plist-get record :participant-id)
                           :status (plist-get record :status)
                           :type (plist-get record :type)
@@ -145,6 +148,7 @@ owner never stores this durable status or history."
      :content (format "Subagent %s is %s"
                       (plist-get record :participant-id)
                       (plist-get record :status))
+     :generation generation
      :source-fact-key
      ;; Durable idempotency follows the admitted child session/participant.
      (list 'subagent-lifecycle (plist-get record :participant-id)
@@ -650,7 +654,8 @@ settles the child as soon as its Work carrier starts."
   (when (eq (gethash claim-key e-subagent-runner--dispatch-claims) work)
     (remhash claim-key e-subagent-runner--dispatch-claims)))
 
-(defun e-subagent-runner--publish-attempt (target assignment status)
+(defun e-subagent-runner--publish-attempt
+    (target assignment status &optional generation)
   "Publish one bounded initial-dispatch STATUS for ASSIGNMENT."
   (e-board-sqlite-publication-target-orchestration-fact-start
    target
@@ -658,7 +663,8 @@ settles the child as soon as its Work carrier starts."
          :type 'task-attempt
          :idempotency-key (e-subagent-runner--attempt-key assignment status)
          :payload (append (copy-tree assignment)
-                          (list :status status)))))
+                          (list :status status)))
+   :generation generation))
 
 (defun e-subagent--pending-result (board-id participant-id work-handle)
   "Return the bounded pending result for PARTICIPANT-ID admission."
@@ -745,16 +751,19 @@ the record is published, retained for a gate, or immediately retired."
                           (plist-get args :error)))))
       terminal)))
 
-(defun e-subagent--terminal-publication-works (target terminal status)
+(defun e-subagent--terminal-publication-works
+    (target terminal status &optional generation)
   "Start durable terminal publications for TERMINAL and return their Works.
 Run-bound children publish both the lifecycle fact and orchestration report;
 ad-hoc children publish one bounded lifecycle fact carrying the terminal
-result.  The returned list is intentionally the only value the gate awaits."
+result.  GENERATION, when non-nil, fences each fact to the Board generation
+captured at dispatch.  The returned list is the only value the gate awaits."
   (let ((assignment (e-subagent--durable-assignment terminal)))
     (if assignment
-        (list (e-subagent--publish-lifecycle target terminal nil)
-              (e-subagent--publish-terminal-report target terminal status))
-      (list (e-subagent--publish-lifecycle target terminal t)))))
+        (list (e-subagent--publish-lifecycle target terminal nil generation)
+              (e-subagent--publish-terminal-report
+               target terminal status generation))
+      (list (e-subagent--publish-lifecycle target terminal t generation)))))
 
 (defun e-subagent--bounded-publication-error (error &optional byte-limit)
   "Return a bounded detached representation of publication ERROR.
@@ -940,7 +949,8 @@ PUBLICATION-ERROR and PUBLICATION-STATE describe the failed durable write."
       publication-state))))
 
 (defun e-subagent--terminal-gate
-    (live board-id participant-id record target report-state authorize-callback)
+    (live board-id participant-id record target report-state authorize-callback
+          &optional generation)
   "Return a pre-start Work terminal gate for one spawned child.
 The first Work terminal proposal starts all required durable terminal
 publications.  Work settlement and private live retirement happen only after
@@ -983,7 +993,7 @@ provider result for a durable Board result."
                      record report-state terminal-status terminal-args))
                    (publications
                     (e-subagent--terminal-publication-works
-                     target terminal terminal-status)))
+                     target terminal terminal-status generation)))
               (e-work-await-set
                publications
                :mode 'all
@@ -1111,10 +1121,12 @@ durable or public live-table projection."
           :task-key (plist-get record :task-key)
           :attempt (plist-get record :attempt))))
 
-(defun e-subagent--publish-terminal-report (target record status)
+(defun e-subagent--publish-terminal-report
+    (target record status &optional generation)
   "Publish RECORD's terminal orchestration fact through TARGET.
 SQLite source keys provide idempotency; no terminal publication state is
-retained in the private live owner."
+retained in the private live owner. GENERATION, when non-nil, fences the
+report to the Board generation captured at dispatch."
   (when-let* ((assignment (e-subagent--durable-assignment record)))
     (e-board-orchestration-actions-publish-terminal
      target assignment status
@@ -1122,14 +1134,15 @@ retained in the private live owner."
      :result (copy-tree (plist-get record :result))
      :outputs (or (plist-get record :outputs) [])
      :error (plist-get record :error)
-     :author (list :session-id (plist-get record :session-id)))))
+     :author (list :session-id (plist-get record :session-id))
+     :generation generation)))
 
 (defun e-subagent--drive-turn
     (live board-id publication-target participant-id record
           parent-harness parent-session-id source-turn-id
           child-harness session-id prompt seed-messages runner report-state
           &optional work-handle on-running on-runner-started
-          on-terminal)
+          on-terminal generation)
   "Start one child turn and wire its settle + work handle.
 PUBLICATION-TARGET is the execution-owned durable Board destination.  RECORD
 is detached runner context; LIVE retains only the capabilities needed by this
@@ -1166,7 +1179,8 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
     ;; durable running fact until the provider invocation returns successfully.
     (unless on-runner-started
       (let ((running (plist-put (copy-tree record) :status 'running)))
-        (e-subagent--publish-lifecycle publication-target running)))
+        (e-subagent--publish-lifecycle
+         publication-target running nil generation)))
     (when on-running
       (funcall on-running (copy-tree record)))
     (funcall record-progress 'turn-started)
@@ -1211,7 +1225,8 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
           (when on-runner-started
             (e-subagent--publish-lifecycle
              publication-target
-             (plist-put (copy-tree record) :status 'running))
+             (plist-put (copy-tree record) :status 'running)
+             nil generation)
             (funcall on-runner-started (copy-tree record)))
           handle)
       (error
@@ -1227,7 +1242,7 @@ cooperative handle.  ON-RUNNING runs immediately before invoking RUNNER."
 (cl-defun e-subagent-spawn
     (live parent-harness parent-session-id
           &key source-turn-id type prompt seed-messages label schedule runner
-          run-id task-key attempt deadline project-root report-admission
+          run-id task-key attempt deadline generation project-root report-admission
           on-admitted on-running on-failure on-runner-started
           on-terminal)
   "Spawn a subagent and return its bounded admission result.
@@ -1313,7 +1328,7 @@ the dispatch caller owns the policy that produced it."
      work-handle
      (e-subagent--terminal-gate
       live board-id participant-id record producer-target report-state
-      on-terminal))
+      on-terminal generation))
     (e-subagent-live-reserve-admission
      live board-id participant-id
      :work-handle work-handle :assignment assignment :callbacks callbacks
@@ -1356,7 +1371,8 @@ the dispatch caller owns the policy that produced it."
                        :harness child-harness :work-handle work-handle
                        :callbacks callbacks :report-admission report-admission
                        :assignment assignment)
-                      (e-subagent--publish-lifecycle producer-target record)
+                      (e-subagent--publish-lifecycle
+                       producer-target record nil generation)
                       (e-subagent--inherit-prompt-cache-policy
                        parent-harness parent-session-id
                        child-harness participant-id)
@@ -1368,7 +1384,7 @@ the dispatch caller owns the policy that produced it."
                               parent-harness parent-session-id source-turn-id
                               child-harness participant-id prompt seed-messages
                               runner report-state work-handle on-running
-                              on-runner-started)))
+                              on-runner-started on-terminal generation)))
                         ;; A synchronous provider-start error already settles
                         ;; the child locally and durably.  Do not return an
                         ;; admitted result for that path; the dispatch caller's
@@ -1569,11 +1585,13 @@ result crosses this consumer boundary."
          :run-id run-id :task-key task-key :attempt attempt)))
 
 (defun e-subagent-runner--dispatch-publish-running
-    (outer target board-id assignment run-id task-key attempt record)
+    (outer target board-id assignment run-id task-key attempt record
+           &optional generation)
   "Publish running ASSIGNMENT and finish OUTER when it is acknowledged."
   (condition-case error
       (let ((running
-             (e-subagent-runner--publish-attempt target assignment 'running)))
+             (e-subagent-runner--publish-attempt
+              target assignment 'running generation)))
         (e-work-on-settle
          running
          (lambda (settled)
@@ -1586,7 +1604,7 @@ result crosses this consumer boundary."
 
 (defun e-subagent-runner--dispatch-publish-failure
     (outer target board-id assignment run-id task-key attempt failure
-           &optional terminal-record)
+           &optional terminal-record generation)
   "Publish bounded FAILED ASSIGNMENT and settle OUTER."
   (condition-case error
       (let ((terminal
@@ -1597,7 +1615,8 @@ result crosses this consumer boundary."
               :error (e-work-error-message failure)
               :author (and terminal-record
                            (list :session-id
-                                 (plist-get terminal-record :session-id))))))
+                                 (plist-get terminal-record :session-id)))
+              :generation generation)))
         (e-work-on-settle
          terminal
          (lambda (settled)
@@ -1616,13 +1635,15 @@ result crosses this consumer boundary."
 (cl-defun e-subagent-runner-dispatch-start
     (target parent-harness parent-session-id
             &key source-turn-id type prompt seed-messages label schedule
-            project-root run-id task-key attempt report-admission deadline)
+            project-root run-id task-key attempt report-admission deadline
+            generation)
   "Start one Board-addressed child dispatch and return cooperative WORK.
 
 TARGET is the explicit durable Board destination.  The operation publishes an
 idempotent queued disposition, admits the child through the runner's private
 live owner, and publishes running only after the provider runner returns
-successfully.  WORK settles
+successfully.  GENERATION, when non-nil, fences every publication to the
+Board generation captured by the durable queue task.  WORK settles
 with detached Board/participant/assignment coordinates after the first
 disposition is acknowledged.  Grimoire callers never receive the private live
 owner, registry, callbacks, or nested work value.  DEADLINE, when non-nil, is
@@ -1665,7 +1686,7 @@ passed as one positive absolute timestamp to the admitted child Work."
                  (e-subagent-runner--release-dispatch-claim
                   claim-key settled)))
               (let ((queued (e-subagent-runner--publish-attempt
-                             target assignment 'queued)))
+                             target assignment 'queued generation)))
                 (e-work-on-settle
                  queued
                  (lambda (settled)
@@ -1680,14 +1701,14 @@ passed as one positive absolute timestamp to the admitted child Work."
                             :label label :schedule schedule :runner nil
                             :project-root project-root :run-id run-id
                             :task-key task-key :attempt attempt
-                            :deadline deadline
+                            :deadline deadline :generation generation
                             :report-admission report-admission
                             :on-admitted nil
                             :on-runner-started
                             (lambda (record)
                               (e-subagent-runner--dispatch-publish-running
                                outer target board-id assignment run-id task-key
-                               attempt record))
+                               attempt record generation))
                             :on-terminal
                             (lambda (status args persistence-error)
                               (when (e-subagent-runner--dispatch-work-active-p
@@ -1731,9 +1752,9 @@ passed as one positive absolute timestamp to the admitted child Work."
                                                           :task-key task-key
                                                           :attempt attempt)))))))
                          (error
-                          (e-subagent-runner--dispatch-publish-failure
+                         (e-subagent-runner--dispatch-publish-failure
                            outer target board-id assignment run-id task-key
-                           attempt spawn-error)))))))))))
+                           attempt spawn-error nil generation)))))))))))
       (error (e-work-fail outer error)))
     outer))
 
