@@ -115,6 +115,21 @@
   "Await one WORK result at this explicit batch test boundary."
   (e-board-producer-test-await work))
 
+(defun e-board-task-queue-test--local-status (queue task-id)
+  "Return TASK-ID's local status once the asynchronous queue has loaded it."
+  (when (gethash task-id (e-task-queue-records queue))
+    (plist-get (e-task-queue-get queue task-id) :status)))
+
+(defun e-board-task-queue-test--durable-status (storage queue-id task-id)
+  "Return TASK-ID's committed status in durable QUEUE-ID."
+  (let ((record
+         (seq-find
+          (lambda (candidate)
+            (equal (plist-get candidate :task-id) task-id))
+          (plist-get (e-task-storage-snapshot storage queue-id 16)
+                     :records))))
+    (plist-get record :status)))
+
 (defun e-board-task-queue-test--real-subagent-runner
     (target parent parent-session-id dispatch-count)
   "Return a queue runner that dispatches through the real Board runner path."
@@ -259,7 +274,7 @@
                        "run-1" "review" 0)
                       :state)
                      'live)
-                 (eq (plist-get (e-task-queue-get queue task-id) :status)
+                 (eq (e-board-task-queue-test--local-status queue task-id)
                      'running)))))
         (setq child-work
               (e-subagent-live-work-handle
@@ -329,7 +344,9 @@
         (should
          (e-board-task-queue-test--wait-until
           (lambda ()
-            (eq (plist-get (e-task-queue-get queue task-id) :status) 'done))))
+            (eq (e-board-task-queue-test--durable-status
+                 storage queue-id task-id)
+                'done))))
         (let ((terminal
                (e-board-task-queue-test--await
                 (e-board-task-queue-reconcile
