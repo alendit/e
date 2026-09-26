@@ -3089,6 +3089,99 @@ child Work normally."
         (should-not
          (e-subagent-runner-test--records-at-generation target 2))))))
 
+(ert-deftest e-subagent-runner-test-clear-after-queued-ack-rejects-admission ()
+  "A cleared Board cannot acquire a child from an acknowledged old dispatch."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          held-ack queued-acknowledged child-id admission-work)
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (board-id (e-board-sqlite-publication-target-board-id target))
+             (runtime (e-board-sqlite-service-runtime
+                       (e-board-sqlite-publication-target--service target)))
+             (publish-attempt (symbol-function 'e-subagent-runner--publish-attempt))
+             (create-participant
+              (symbol-function 'e-chat-service-create-participant-start)))
+        (cl-letf (((symbol-function 'e-subagent-runner--publish-attempt)
+                   (lambda (target assignment status &optional generation)
+                     (let ((publication
+                            (funcall publish-attempt target assignment status
+                                     generation)))
+                       (if (not (eq status 'queued))
+                           publication
+                         (setq held-ack
+                               (e-subagent-runner-test--deferred-work
+                                "held-queued-ack-before-clear"))
+                         (e-work-on-settle
+                          publication
+                          (lambda (settled)
+                            (if (eq (plist-get (e-work-status settled) :state)
+                                    'finished)
+                                (setq queued-acknowledged t)
+                              (e-work-fail held-ack
+                                           (plist-get (e-work-status settled)
+                                                      :error)))))
+                         held-ack))))
+                  ((symbol-function 'e-chat-service-create-participant-start)
+                   (lambda (&rest arguments)
+                     (setq child-id (plist-get (nthcdr 2 arguments) :id)
+                           admission-work (apply create-participant arguments)))))
+          (let ((dispatch
+                 (e-subagent-runner-dispatch-start
+                  target parent "parent-1"
+                  :source-turn-id "parent-turn" :type :reviewer
+                  :prompt "Review the Board task."
+                  :run-id "run-clear-before-admission" :task-key "review"
+                  :attempt 0 :generation 1)))
+            (should (e-chat-test--wait-until
+                     (lambda () queued-acknowledged) 5.0))
+            (should-not child-id)
+            (should
+             (seq-find
+              (lambda (record)
+                (let ((fact (e-board-orchestration-fact-from-record record)))
+                  (and fact (eq (plist-get fact :type) 'task-attempt)
+                       (eq (plist-get (plist-get fact :payload) :status)
+                           'queued))))
+              (e-subagent-runner-test--records-at-generation target 1)))
+            (should (= (plist-get (e-subagent-runner-test--clear-board target 1)
+                                  :generation)
+                       2))
+            (e-work-finish held-ack t)
+            (should (e-chat-test--wait-until
+                     (lambda ()
+                       (and admission-work
+                            (memq (plist-get (e-work-status admission-work)
+                                             :state)
+                                  '(finished failed cancelled))))
+                     5.0))
+            (let ((status (e-work-status admission-work)))
+              (should (eq (plist-get status :state) 'failed))
+              (should (eq (car (plist-get status :error))
+                          'e-runtime-store-board-conflict))
+              (should (string-match-p
+                       "Stale Board generation"
+                       (e-work-error-message (plist-get status :error)))))
+            (should (stringp child-id))
+            (should-not
+             (seq-find
+              (lambda (row) (equal (plist-get row :id) child-id))
+              (e-runtime-store-call
+               runtime 'read
+               (list :op 'board-participant-list :board-id board-id
+                     :generation 2 :limit 512))))
+            (should-not
+             (e-runtime-store-call
+              runtime 'read
+              (list :op 'session-query-state :session-id child-id)))
+            (should (e-chat-test--wait-until
+                     (lambda ()
+                       (memq (plist-get (e-work-status dispatch) :state)
+                             '(finished failed cancelled)))
+                     5.0))))))))
+
 (ert-deftest e-subagent-runner-test-generation-fences-in-flight-terminal-publication ()
   "A terminal proposal from a cleared dispatch cannot write into the new generation."
   (e-subagent-runner-test--with-instances

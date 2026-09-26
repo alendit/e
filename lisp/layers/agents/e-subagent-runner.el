@@ -1254,7 +1254,8 @@ participant identity is its admitted session id, and is the only identity
 returned to callers.  Before durable admission settles, the result contains
 the admission work reference and the durable participant/session identity.
 DEADLINE, when non-nil, is one positive absolute timestamp for the child Work;
-the dispatch caller owns the policy that produced it."
+the dispatch caller owns the policy that produced it.  GENERATION, when
+supplied, fences both admission and later Board publications."
   (unless (stringp source-turn-id)
     (signal 'wrong-type-argument (list 'stringp :source-turn-id)))
   (unless (and (stringp prompt) (not (string-empty-p (string-trim prompt))))
@@ -1342,6 +1343,7 @@ the dispatch caller owns the policy that produced it."
               (e-chat-service-create-participant-start
                admission-target child-harness
                :id participant-id :participant-id participant-id
+               :generation generation
                :metadata metadata
                :pickup-selector '(:tags (subagent))
                :observer-selector :self :default-tags '(subagent)

@@ -948,16 +948,18 @@ boundary; this SQL service only supplies the fixed-cost Board query."
    (cons 'session session-id)))
 
 (cl-defun e-board-sqlite-service-admit-participant-start
-    (service session-id board-id records query-delta participant &key pickup)
+    (service session-id board-id records query-delta participant
+             &key pickup generation)
   "Atomically admit SESSION-ID as BOARD-ID PARTICIPANT.
 
-The worker resolves the Board's current generation inside the transaction;
-the caller supplies no reconstructed Board or locally retained generation."
+The worker resolves the Board's current generation inside the transaction.
+When GENERATION is supplied, it must still match before any admission write."
   (e-board-sqlite-service--start
    service 'write
    (append
     (list :op 'session-board-participant-admit
           :session-id session-id :board-id board-id
+          :generation generation
           :records (vconcat (e-board-sqlite-service--detached-copy records))
           :query-delta (e-board-sqlite-service--detached-copy query-delta)
           :participant (e-board-sqlite-service--detached-copy participant))

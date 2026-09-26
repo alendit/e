@@ -491,7 +491,8 @@ the Board id as an address."
 (cl-defstruct (e-chat-service-participant-operation
                (:constructor e-chat-service--participant-operation-create))
   "One async admission of a private session into an already-live SQL Board."
-  work parent-binding harness store session-id metadata participant-id pickup-selector
+  work parent-binding harness store session-id metadata participant-id generation
+  pickup-selector
   observer-selector default-tags default-to binding session-result child settled)
 
 (cl-defstruct (e-chat-service-bind-operation
@@ -3699,7 +3700,9 @@ owner operation; no owner is created or repaired."
          (child
           (e-board-sqlite-service-admit-participant-start
            (e-chat-service-binding-sqlite-service parent)
-           session-id board-id records query-delta participant)))
+           session-id board-id records query-delta participant
+           :generation
+           (e-chat-service-participant-operation-generation operation))))
     (setf (e-chat-service-participant-operation-session-result operation)
           (copy-tree session t)
           (e-chat-service-participant-operation-child operation) child)
@@ -3741,12 +3744,13 @@ owner operation; no owner is created or repaired."
     (error
      (e-chat-service--finish-participant-operation operation nil error))))
 (cl-defun e-chat-service-create-participant-start
-    (parent-binding harness &key metadata id participant-id pickup-selector
-           observer-selector (default-tags '(main)) default-to)
+    (parent-binding harness &key metadata id participant-id generation
+           pickup-selector observer-selector (default-tags '(main)) default-to)
   "Start private participant admission and immediately return stable work.
 
 PARENT-BINDING is a live SQL coordination value.  SQLite identity and
-association rows are admitted by one transaction; no aggregate is created."
+association rows are admitted by one transaction; no aggregate is created.
+Optional GENERATION fences admission to the caller's captured Board epoch."
   (let* ((store (e-harness-sessions harness))
          (session-id (or id (e-session-generate-id))))
     (unless (e-session-storage-sqlite-p store)
@@ -3759,6 +3763,7 @@ association rows are admitted by one transaction; no aggregate is created."
             (e-chat-service--participant-operation-create
              :parent-binding parent-binding :harness harness :store store
              :session-id session-id
+             :generation generation
              :metadata (e-harness--normalize-session-metadata metadata)
              :participant-id participant-id
              :pickup-selector
