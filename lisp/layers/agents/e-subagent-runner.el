@@ -636,12 +636,15 @@ settles the child as soon as its Work carrier starts."
           (plist-get assignment :attempt)
           status))
 
-(defun e-subagent-runner--dispatch-claim-key (board-id assignment)
-  "Return the exact private claim key for BOARD-ID ASSIGNMENT."
-  (list board-id
-        (plist-get assignment :run-id)
-        (plist-get assignment :task-key)
-        (plist-get assignment :attempt)))
+(defun e-subagent-runner--dispatch-claim-key
+    (board-id assignment &optional generation)
+  "Return the private claim key for BOARD-ID ASSIGNMENT in GENERATION.
+When GENERATION is nil, preserve the unfenced key used by existing callers."
+  (append (list board-id
+                (plist-get assignment :run-id)
+                (plist-get assignment :task-key)
+                (plist-get assignment :attempt))
+          (when generation (list generation))))
 
 (defun e-subagent-runner--dispatch-work-active-p (work)
   "Return non-nil when WORK is a still-pending dispatch outcome."
@@ -1666,7 +1669,8 @@ passed as one positive absolute timestamp to the admitted child Work."
                     (list "Dispatch Board target does not match owner binding"
                           target-board board-id)))
           (let* ((claim-key
-                  (e-subagent-runner--dispatch-claim-key board-id assignment))
+                  (e-subagent-runner--dispatch-claim-key
+                   board-id assignment generation))
                  (existing
                   (gethash claim-key e-subagent-runner--dispatch-claims)))
             (if (e-subagent-runner--dispatch-work-active-p existing)

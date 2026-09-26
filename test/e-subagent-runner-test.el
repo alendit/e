@@ -2688,6 +2688,128 @@ child Work normally."
               (e-subagent-runner--dispatch-claim-key board-id assignment)
               e-subagent-runner--dispatch-claims))))))))
 
+(ert-deftest e-subagent-runner-test-board-dispatch-claim-is-generation-scoped ()
+  "A new Board generation does not reuse the old pending assignment claim."
+  (e-subagent-runner-test--with-instances
+    (let ((parent (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+          (held-queued nil)
+          (spawn-count 0)
+          spawned-generation)
+      (e-harness-test-create-session parent :id "parent-1")
+      (let* ((binding (e-chat-service-binding parent "parent-1"))
+             (board-id (e-chat-service-binding-board-id binding))
+             (target (e-subagent-runner-test--publication-target
+                      parent "parent-1"))
+             (assignment '(:run-id "run-1" :task-key "review" :attempt 0))
+             (publish-attempt (symbol-function
+                               'e-subagent-runner--publish-attempt))
+             old-dispatch new-dispatch)
+        (unwind-protect
+            (cl-letf (((symbol-function 'e-subagent-runner--publish-attempt)
+                       (lambda (publish-target publish-assignment status
+                                &optional generation)
+                         (if (and (eq status 'queued)
+                                  (equal generation 1))
+                             (setq held-queued
+                                   (e-subagent-runner-test--deferred-work
+                                    "held-generation-one-queued"))
+                           (funcall publish-attempt publish-target
+                                    publish-assignment status generation))))
+                      ((symbol-function 'e-subagent-spawn)
+                       (lambda (&rest arguments)
+                         (cl-incf spawn-count)
+                         (let* ((options (nthcdr 3 arguments))
+                                (on-runner-started
+                                 (plist-get options :on-runner-started)))
+                          (setq spawned-generation
+                                 (plist-get options :generation))
+                           (funcall on-runner-started
+                                    '(:participant-id
+                                      "participant-generation-two"
+                                      :session-id
+                                      "participant-generation-two")))
+                         nil)))
+              (setq old-dispatch
+                    (e-subagent-runner-dispatch-start
+                     target parent "parent-1"
+                     :source-turn-id "parent-turn" :type :reviewer
+                     :prompt "Review the Board task."
+                     :run-id "run-1" :task-key "review" :attempt 0
+                     :generation 1))
+              (should (e-work-handle-p held-queued))
+              (should (e-subagent-runner--dispatch-work-active-p old-dispatch))
+              (should
+               (eq (gethash
+                    (e-subagent-runner--dispatch-claim-key
+                     board-id assignment 1)
+                    e-subagent-runner--dispatch-claims)
+                   old-dispatch))
+              (should (= (plist-get (e-subagent-runner-test--clear-board
+                                     target 1)
+                                    :generation)
+                         2))
+              (setq new-dispatch
+                    (e-subagent-runner-dispatch-start
+                     target parent "parent-1"
+                     :source-turn-id "parent-turn" :type :reviewer
+                     :prompt "Review the Board task."
+                     :run-id "run-1" :task-key "review" :attempt 0
+                     :generation 2))
+              (should (e-work-handle-p new-dispatch))
+              (should-not (eq old-dispatch new-dispatch))
+              (let ((result (e-board-producer-test-await new-dispatch)))
+                (should (eq (plist-get result :status) 'admitted))
+                (should (equal (plist-get result :participant-id)
+                               "participant-generation-two")))
+              (should (e-subagent-runner--dispatch-work-active-p old-dispatch))
+              (should (= spawned-generation 2))
+              (should (= spawn-count 1))
+              (should-not
+               (gethash
+                (e-subagent-runner--dispatch-claim-key
+                 board-id assignment 2)
+                e-subagent-runner--dispatch-claims))
+              (let* ((facts
+                      (delq nil
+                            (mapcar
+                             #'e-board-orchestration-fact-from-record
+                             (e-subagent-runner-test--records-at-generation
+                              target 2))))
+                     (statuses
+                      (delq nil
+                            (mapcar
+                             (lambda (fact)
+                               (when (and (eq (plist-get fact :type)
+                                              'task-attempt)
+                                          (equal
+                                           (mapcar
+                                            (lambda (key)
+                                              (plist-get
+                                               (plist-get fact :payload) key))
+                                            '(:run-id :task-key :attempt))
+                                           '("run-1" "review" 0)))
+                                 (plist-get (plist-get fact :payload)
+                                            :status)))
+                             facts)))
+                (should (equal statuses '(queued running))))
+              (e-work-fail
+               held-queued
+               '(e-runtime-store-board-conflict "Stale Board generation"))
+              (should
+               (e-chat-test--wait-until
+                (lambda ()
+                  (eq (plist-get (e-work-status old-dispatch) :state) 'failed))
+                5.0))
+              (should (eq (car (plist-get (e-work-status old-dispatch) :error))
+                          'e-runtime-store-board-conflict))
+              (should (= spawn-count 1)))
+          (when (and (e-work-handle-p held-queued)
+                     (e-subagent-runner--dispatch-work-active-p held-queued))
+            (e-work-fail
+             held-queued
+             '(e-runtime-store-board-conflict "Stale Board generation")))))))))
+
 (ert-deftest e-subagent-runner-test-board-dispatch-runner-start-failure-is-not-admitted ()
   "A synchronous provider-start error publishes failure, not running."
   (e-subagent-runner-test--with-instances
