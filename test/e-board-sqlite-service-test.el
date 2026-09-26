@@ -1842,6 +1842,8 @@
           `(:version 1 :type manifest :idempotency-key "manifest:pending-restart"
             :payload (:run-id ,run-id
                       :tasks ((:task-key "report" :required t
+                               :accepted-attempt 0)
+                              (:task-key "optional-followup" :required nil
                                :accepted-attempt 0))
                       :deadline (:kind none)
                       :continuation (:session-id ,session-id
@@ -1851,7 +1853,12 @@
           `(:version 1 :type terminal-report
             :idempotency-key "report:pending-restart"
             :payload (:run-id ,run-id :task-key "report" :attempt 0
-                      :status done :summary "ready" :outputs []))))
+                      :status done :summary "ready" :outputs [])))
+         (optional-progress
+          `(:version 1 :type task-attempt
+            :idempotency-key "optional:pending-restart"
+            :payload (:run-id ,run-id :task-key "optional-followup"
+                      :attempt 0 :status running))))
     (cl-labels
         ((board-records (service)
            (plist-get
@@ -1986,10 +1993,18 @@
             (setq binding-1
                   (e-board-sqlite-service-test--await
                    (e-chat-service-binding-start harness-1 session-id)))
-            (dolist (fact (list manifest report))
+            (dolist (fact (list manifest optional-progress report))
               (e-board-sqlite-service-test--await
                (e-board-sqlite-service-orchestration-fact-start
                 service-1 board-id fact)))
+            (let* ((projection (run-projection service-1))
+                   (optional
+                    (seq-find
+                     (lambda (task)
+                       (equal (plist-get task :task-key) "optional-followup"))
+                     (plist-get projection :tasks))))
+              (should (eq (plist-get projection :terminal-status) 'done))
+              (should (eq (plist-get optional :state) 'running)))
             (e-board-sqlite-service-test--await
              (e-chat-service--publish-sqlite-continuation-claim
               binding-1 run-id publication-key 1 'pending))
@@ -2086,6 +2101,9 @@
             (let ((completion-message (last-backend-user-message 3)))
               (should (string-prefix-p "Finalize after restore."
                                        (plist-get completion-message :content)))
+              (should (string-match-p
+                       "optional-followup"
+                       (plist-get completion-message :content)))
               (should (equal (plist-get (plist-get completion-message :metadata)
                                         :board-continuation-key)
                              publication-key)))
