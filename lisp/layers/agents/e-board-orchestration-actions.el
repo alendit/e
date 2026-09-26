@@ -156,13 +156,16 @@ The stable assignment key makes callback retries no-ops at the board boundary."
          (e-board-orchestration-reduce records now))
       (list :run-id (plist-get page :run-id) :state 'missing))))
 
-(defun e-board-orchestration-actions-run-projection (target run-id &optional now)
-  "Return request-scoped work for TARGET's bounded RUN-ID projection."
+(defun e-board-orchestration-actions-run-projection
+    (target run-id &optional now generation)
+  "Return request-scoped work for TARGET's bounded RUN-ID projection.
+When GENERATION is non-nil, fence the exact run read to that Board generation."
   (unless (e-board-orchestration-actions--sqlite-target-p target)
     (signal 'wrong-type-argument
             (list 'e-board-sqlite-publication-target-p target)))
   (e-board-orchestration-actions--map-work
-   (e-board-sqlite-publication-target-orchestration-run-start target run-id)
+   (e-board-sqlite-publication-target-orchestration-run-start
+    target run-id nil generation)
    (lambda (page)
      (e-board-orchestration-actions--sql-run-projection page now))))
 

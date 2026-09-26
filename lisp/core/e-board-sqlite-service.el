@@ -498,12 +498,14 @@ to request-owned producer work.  It stores no terminal outcome."
                 (e-board-sqlite-publication-target--author target)))))
 
 (defun e-board-sqlite-publication-target-orchestration-run-start
-    (target run-id &optional limit)
-  "Read TARGET's bounded durable RUN-ID fact set."
+    (target run-id &optional limit expected-generation)
+  "Read TARGET's bounded durable RUN-ID fact set.
+When EXPECTED-GENERATION is non-nil, require that it is still current."
   (e-board-sqlite-publication-target--require target)
   (e-board-sqlite-service-orchestration-run-start
    (e-board-sqlite-publication-target--service target)
-   (e-board-sqlite-publication-target--board-id target) run-id limit))
+   (e-board-sqlite-publication-target--board-id target)
+   run-id limit expected-generation))
 
 (defun e-board-sqlite-publication-target-orchestration-runs-start
     (target &optional limit)

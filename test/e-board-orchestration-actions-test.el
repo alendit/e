@@ -108,8 +108,49 @@
                    1))
         (should (eq (plist-get projection :terminal-status) 'done))))))
 
+(ert-deftest e-board-orchestration-actions-test-run-projection-fences-generation ()
+  "An exact run read rejects the generation after its Board has been cleared."
+  (e-board-producer-test-with-target (target _service board-id runtime)
+    (e-board-orchestration-actions-test--publish-run-facts target 1)
+    (let* ((page
+            (e-board-producer-test-await
+             (e-board-sqlite-publication-target-orchestration-run-index-page-start
+              target :limit 1)))
+           (generation (plist-get page :generation))
+           (now 1700000000)
+           (legacy-call
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-projection
+              target "run-01" now)))
+           (fenced-call
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-projection
+              target "run-01" now generation)))
+           (cleared
+            (e-runtime-store-call
+             runtime 'write
+             (list :op 'board-clear :board-id board-id
+                   :generation generation))))
+      (should (integerp generation))
+      (should (equal (plist-get legacy-call :run-id) "run-01"))
+      (should (equal (plist-get fenced-call :run-id) "run-01"))
+      (should-not (eq (plist-get fenced-call :state) 'missing))
+      (should (= (plist-get cleared :generation) (1+ generation)))
+      (should-error
+       (e-board-producer-test-await
+        (e-board-orchestration-actions-run-projection
+         target "run-01" now generation))
+       :type 'e-runtime-store-board-conflict)
+      (should
+       (eq (plist-get
+            (e-board-producer-test-await
+             (e-board-orchestration-actions-run-projection
+              target "run-01" now))
+            :state)
+           'missing)))))
+
 (ert-deftest e-board-orchestration-actions-test-show-more-queries-omitted-runs ()
-  "A manifest sentinel makes a 33rd active run available to Show more."
+  "The byte-bounded run set counts omitted runs and Show more finds the oldest."
   (e-board-producer-test-with-target (target)
     (e-board-orchestration-actions-test--publish-run-facts target 33)
     (let* ((default
@@ -126,23 +167,28 @@
            (expanded-run-ids
             (mapcar (lambda (run) (plist-get run :run-id))
                     (plist-get expanded :runs))))
-      (should (= (length default-run-ids)
-                 e-board-orchestration-run-set-default-record-limit))
+      (should (= (length default-run-ids) 29))
       (should (eq (plist-get default :more-p) t))
-      (should (= (plist-get default :active-run-count) 32))
-      (should (= (plist-get default :omitted-count) 0))
+      (should (= (plist-get default :active-run-count) 33))
+      (should (= (plist-get default :omitted-count) 4))
+      (should (= (plist-get default :omitted-count)
+                 (- (plist-get default :active-run-count)
+                    (length default-run-ids))))
+      (should (<= (plist-get default :bytes)
+                  e-board-orchestration-run-set-default-byte-limit))
       (should-not (member "run-01" default-run-ids))
       (should (= (length expanded-run-ids) 33))
       (should-not (plist-get expanded :more-p))
       (should (= (plist-get expanded :active-run-count) 33))
       (should (= (plist-get expanded :omitted-count) 0))
+      (should (<= (plist-get expanded :bytes)
+                  e-board-orchestration-run-set-max-byte-limit))
       (should (member "run-01" expanded-run-ids)))))
 
 (ert-deftest e-board-orchestration-actions-test-manifest-sentinel-is-not-an-active-count ()
-  "A terminal sentinel does not stand in for later active runs."
+  "The index counts active runs beyond terminal history and its first page."
   (e-board-producer-test-with-target (target)
-    ;; Query order is newest first: the 33rd manifest is terminal, while two
-    ;; additional active runs remain beyond that sentinel.
+    ;; One terminal run is excluded while all 34 active runs remain counted.
     (e-board-orchestration-actions-test--publish-run-facts target 35 3)
     (let* ((default
             (e-board-producer-test-await
@@ -152,14 +198,30 @@
              (e-board-orchestration-actions-run-set
               target nil :limit e-board-orchestration-run-set-max-record-limit
               :byte-limit e-board-orchestration-run-set-max-byte-limit)))
-           (default-runs (plist-get default :runs)))
-      (should (= (length default-runs)
-                 e-board-orchestration-run-set-default-record-limit))
+           (default-runs (plist-get default :runs))
+           (default-run-ids
+            (mapcar (lambda (run) (plist-get run :run-id)) default-runs))
+           (expanded-runs (plist-get expanded :runs))
+           (expanded-run-ids
+            (mapcar (lambda (run) (plist-get run :run-id)) expanded-runs)))
+      (should (= (length default-runs) 29))
       (should (eq (plist-get default :more-p) t))
-      (should (= (plist-get default :active-run-count) 32))
-      (should (= (plist-get default :omitted-count) 0))
+      (should (= (plist-get default :active-run-count) 34))
+      (should (= (plist-get default :omitted-count) 5))
+      (should (= (plist-get default :omitted-count)
+                 (- (plist-get default :active-run-count)
+                    (length default-runs))))
+      (should (<= (plist-get default :bytes)
+                  e-board-orchestration-run-set-default-byte-limit))
+      (should-not (member "run-01" default-run-ids))
+      (should (= (length expanded-runs) 34))
+      (should-not (plist-get expanded :more-p))
       (should (= (plist-get expanded :active-run-count) 34))
-      (should (= (plist-get expanded :omitted-count) 0)))))
+      (should (= (plist-get expanded :omitted-count) 0))
+      (should (<= (plist-get expanded :bytes)
+                  e-board-orchestration-run-set-max-byte-limit))
+      (should-not (member "run-03" expanded-run-ids))
+      (should (member "run-01" expanded-run-ids)))))
 
 (ert-deftest e-board-orchestration-actions-test-actions-read-sql-context-target ()
   "The parent action surface returns request-scoped SQL run state."
