@@ -177,7 +177,10 @@ Feature 62 rather than copied into a second UI runtime.
 The visual view has a compact active-run selector, a selected-run workspace,
 and an inspector.  The selector shows the bounded run labels, lifecycle,
 required and optional counts, and omitted count from the shared projection.
-When runs are omitted, a =Show more= action invokes the bounded run query.
+When runs are omitted, =Browse runs= opens a 64-row active-run index page.
+=Next= follows the stable SQL cursor, and =Current= returns to the shared
+priority projection.  The selected run's detail stays open outside the
+visible selector page.
 The workspace groups selected tasks by required or optional policy.  Each task
 card shows its durable disposition, selected attempt, and an admitted
 participant when one exists.  A pending admission or failed dispatch remains
@@ -392,15 +395,19 @@ Implemented on 2026-09-25 in commits =3247bb7f=, =3b68f5ef=, and
 =d7cc2381=.  The visual shell maps the shared bounded run set and one coherent
 run page into the Board WASM app, retains selection by durable identity, and
 revalidates current task/participant coordinates and live capability before
-participant controls act.  =Show more= expands the explicit query to at most
-256 runs and 256 KiB; ordinary status and context retain their 32-run and
-32 KiB bounds.  A manifest sentinel signals that more runs may exist without
-inflating the count of materialized active runs.  The native text view remains
+participant controls act.  The native text view remains
 available when visual startup fails.  Focused Board and visual ERT, Rust tests,
 the WASM build, and web binding generation passed.  The isolated graphical
 Board scenario passed through the native fallback; this Emacs build rejects
 xwidget creation, so the visual graphical path still needs an xwidget-capable
 build for direct verification.
+
+The selector overflow correction on 2026-09-26 replaced the 256-run expanded
+query with one indexed page at a time, capped at 64 active runs.  The shared
+run set remains the status and count authority; SQL page generation and local
+action epochs fence page selection.  A rejected cursor after Board clear
+returns browsing to the first page.  A 257-run visual test reaches the final
+run without retaining earlier pages.
 
 ** Slice 3: inject active-run context
 

@@ -24,11 +24,16 @@ pub struct RunSetState {
     #[serde(default)]
     pub ready: bool,
     #[serde(default)]
-    pub expanded: bool,
+    pub browsing: bool,
     #[serde(default)]
-    pub show_more_available: bool,
+    pub browse_available: bool,
     #[serde(default)]
-    pub show_more_loading: bool,
+    pub page_loading: bool,
+    pub page_generation: Option<u64>,
+    #[serde(default)]
+    pub next_available: bool,
+    #[serde(default)]
+    pub selected_run_visible: bool,
     #[serde(default)]
     pub more_may_exist: bool,
     #[serde(default)]
@@ -259,6 +264,14 @@ impl BoardApp {
             "runSetEpoch".to_string(),
             Value::from(self.state.run_set_epoch),
         );
+        payload.insert(
+            "pageGeneration".to_string(),
+            self.state
+                .run_set
+                .page_generation
+                .map(Value::from)
+                .unwrap_or(Value::Null),
+        );
         if let Value::Object(values) = values {
             payload.extend(values);
         }
@@ -406,10 +419,22 @@ impl BoardApp {
         if let Some(status) = &self.state.run_set.status {
             ui.label(format!("Run status: {status}"));
         }
-        ui.label(format!(
-            "Active runs in this result: {}",
-            self.state.run_set.active_count
-        ));
+        ui.label(format!("Active runs: {}", self.state.run_set.active_count));
+        if !self.state.run_set.browsing && self.state.run_set.omitted_count > 0 {
+            ui.small(format!(
+                "{} active runs outside the current list",
+                self.state.run_set.omitted_count
+            ));
+        }
+        if self.state.run_set.browsing {
+            ui.small("Browsing one indexed page of active runs");
+        }
+        if self.state.selected_run_id.is_some()
+            && !self.state.run_set.page_loading
+            && !self.state.run_set.selected_run_visible
+        {
+            ui.small("Selected run is outside this selector page; its activity remains open.");
+        }
         if let Some(restore) = &self.state.run_set.restore_state {
             ui.label(format!("Board restore: {restore}"));
         }
@@ -443,19 +468,19 @@ impl BoardApp {
                     }
                 });
             }
-            if self.state.run_set.show_more_loading {
-                ui.label("Loading the expanded run list…");
-            } else if self.state.run_set.show_more_available
-                && ui.button("Show more runs").clicked()
+            if self.state.run_set.browsing {
+                if self.state.run_set.page_loading {
+                    ui.label("Loading run page…");
+                } else if self.state.run_set.next_available && ui.button("Next").clicked() {
+                    self.send_action("next-runs", json!({}));
+                }
+                if ui.button("Current").clicked() {
+                    self.send_action("current-runs", json!({}));
+                }
+            } else if self.state.run_set.browse_available
+                && ui.button("Browse runs").clicked()
             {
-                self.send_action("show-more-runs", json!({}));
-            } else if self.state.run_set.expanded
-                && self.state.run_set.omitted_count > 0
-            {
-                ui.small("Additional active runs could not fit in the bounded result.");
-            }
-            if self.state.run_set.expanded && self.state.run_set.more_may_exist {
-                ui.small("More runs may exist beyond this bounded result.");
+                self.send_action("browse-runs", json!({}));
             }
         });
     }
@@ -798,9 +823,12 @@ mod tests {
                 "status": "attention",
                 "restoreState": "ready",
                 "ready": true,
-                "expanded": true,
-                "showMoreAvailable": false,
-                "showMoreLoading": false,
+                "browsing": true,
+                "browseAvailable": false,
+                "pageLoading": false,
+                "pageGeneration": 2,
+                "nextAvailable": true,
+                "selectedRunVisible": true,
                 "moreMayExist": true,
                 "activeCount": 33,
                 "omittedCount": 1,
@@ -831,9 +859,10 @@ mod tests {
         assert_eq!(run.conflict_count, 1);
         assert_eq!(run.deadline_label.as_deref(), Some("expired"));
         assert_eq!(run.completion_delivery_state.as_deref(), Some("failed"));
-        assert!(state.run_set.expanded);
-        assert!(!state.run_set.show_more_available);
-        assert!(!state.run_set.show_more_loading);
+        assert!(state.run_set.browsing);
+        assert!(!state.run_set.browse_available);
+        assert!(!state.run_set.page_loading);
+        assert!(state.run_set.next_available);
         assert!(state.run_set.more_may_exist);
         let labels = BoardApp::run_status_labels(run);
         assert!(labels.contains(&"Attention".to_string()));
@@ -974,6 +1003,7 @@ mod tests {
     fn action_payload_keeps_current_board_and_revision_identity() {
         let mut app = BoardApp::new();
         app.state = ready_state(7);
+        app.state.run_set.page_generation = Some(3);
         let payload = app.action_payload(
             "select-task",
             json!({
@@ -988,6 +1018,7 @@ mod tests {
         assert_eq!(payload["action"], "select-task");
         assert_eq!(payload["boardId"], "board-1");
         assert_eq!(payload["runSetEpoch"], 4);
+        assert_eq!(payload["pageGeneration"], 3);
         assert_eq!(payload["runId"], "run-1");
         assert_eq!(payload["taskKey"], "calendar");
         assert_eq!(payload["attempt"], 0);

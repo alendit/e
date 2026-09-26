@@ -16,7 +16,7 @@
 (require 'e-board-activity-shell)
 (require 'e-board-activity-visual-view-model)
 (require 'e-board-observation)
-(require 'e-board-orchestration-actions)
+(require 'e-board-orchestration)
 (require 'e-board-sqlite-service)
 (require 'e-chat-service)
 (require 'e-subagent-actions)
@@ -36,9 +36,11 @@
 (defconst e-board-activity-visual-buffer-name "*e-board-activity-visual*"
   "Name of the singleton visual Board activity buffer.")
 
-(defconst e-board-activity-visual-run-limit
-  e-board-orchestration-run-set-max-record-limit
-  "Largest bounded run-set query available to Show more.")
+(defconst e-board-activity-visual-page-limit 64
+  "Maximum number of active runs on one visual selector page.")
+
+(defvar e-board-activity-visual--epoch-counter 0
+  "Monotone action fence across visual buffer rebinding.")
 
 (defconst e-board-activity-visual-update-debounce 0.05
   "Seconds used to coalesce visual snapshot pushes.")
@@ -61,23 +63,29 @@
 (defvar-local e-board-activity-visual--run-set-unsubscribe nil
   "Unsubscribe closure for the Board-owned shared run-set projection.")
 
-(defvar-local e-board-activity-visual--run-set-work nil
-  "Current request-scoped expanded run-set query, when Show more is loading.")
+(defvar-local e-board-activity-visual--selector-work nil
+  "Current request for one indexed selector page.")
 
 (defvar-local e-board-activity-visual--run-set-projection nil
-  "Detached bounded projection currently shown by the selector.")
+  "Detached shared projection authoritative for Board status and counts.")
 
 (defvar-local e-board-activity-visual--run-set-epoch 0
-  "Local action fence advanced for each accepted shared run-set update.")
+  "Local action fence advanced on rebind, shared updates, and navigation.")
 
-(defvar-local e-board-activity-visual--run-set-expanded nil
-  "Non-nil after the larger bounded Show more query succeeds.")
+(defvar-local e-board-activity-visual--selector-browsing nil
+  "Non-nil while browsing indexed active-run pages.")
 
-(defvar-local e-board-activity-visual--run-set-loading nil
-  "Non-nil while Show more is querying the larger bounded run-set.")
+(defvar-local e-board-activity-visual--selector-page nil
+  "One detached indexed active-run page, never accumulated.")
 
-(defvar-local e-board-activity-visual--run-set-error nil
-  "Request-local Show more error, when present.")
+(defvar-local e-board-activity-visual--selector-cursor nil
+  "Cursor for the requested selector page.")
+
+(defvar-local e-board-activity-visual--selector-loading nil
+  "Non-nil while an indexed selector page is loading.")
+
+(defvar-local e-board-activity-visual--selector-error nil
+  "Request-local selector page error, when present.")
 
 (defvar-local e-board-activity-visual--selected-run-id nil
   "Durable run id selected for the detailed workspace.")
@@ -176,30 +184,50 @@
     (funcall e-board-activity-visual--run-set-unsubscribe))
   (setq e-board-activity-visual--run-set-unsubscribe nil)
   (e-board-activity-visual--cancel-work
-   e-board-activity-visual--run-set-work)
+   e-board-activity-visual--selector-work)
   (e-board-activity-visual--cancel-work
    e-board-activity-visual--detail-request)
   (when (timerp e-board-activity-visual--push-timer)
     (cancel-timer e-board-activity-visual--push-timer))
-  (setq e-board-activity-visual--run-set-work nil
+  (setq e-board-activity-visual--selector-work nil
         e-board-activity-visual--detail-request nil
         e-board-activity-visual--push-timer nil))
 
 (defun e-board-activity-visual--snapshot ()
   "Return the current detached egui snapshot."
-  (e-board-activity-visual-view-model-snapshot
-   :board-id (e-board-activity-visual--target-id)
-   :projection e-board-activity-visual--run-set-projection
-   :selected-run-id e-board-activity-visual--selected-run-id
-   :selected-task e-board-activity-visual--selected-task
-   :detail-state e-board-activity-visual--detail-state
-   :page e-board-activity-visual--detail-page
-   :detail-error e-board-activity-visual--detail-error
-   :live e-board-activity-visual--live
-   :expanded-runs e-board-activity-visual--run-set-expanded
-   :run-set-loading e-board-activity-visual--run-set-loading
-   :run-set-epoch e-board-activity-visual--run-set-epoch
-   :run-set-error e-board-activity-visual--run-set-error))
+  (let* ((page e-board-activity-visual--selector-page)
+         (projection (copy-tree e-board-activity-visual--run-set-projection t))
+         (runs (when page
+                 (mapcar
+                  (lambda (entry)
+                    (e-board-orchestration-run-index-entry-at
+                     (plist-get entry :summary)
+                     (e-board-activity-visual--target-id)
+                     (or (plist-get projection :restore-state) 'ready)
+                     (float-time)))
+                  (plist-get page :entries)))))
+    (when e-board-activity-visual--selector-browsing
+      (setq projection (plist-put projection :runs runs)))
+    (e-board-activity-visual-view-model-snapshot
+     :board-id (e-board-activity-visual--target-id)
+     :projection projection
+     :selected-run-id e-board-activity-visual--selected-run-id
+     :selected-task e-board-activity-visual--selected-task
+     :detail-state e-board-activity-visual--detail-state
+     :page e-board-activity-visual--detail-page
+     :detail-error e-board-activity-visual--detail-error
+     :live e-board-activity-visual--live
+     :selector-browsing e-board-activity-visual--selector-browsing
+     :selector-loading e-board-activity-visual--selector-loading
+     :run-set-epoch e-board-activity-visual--run-set-epoch
+     :selector-error e-board-activity-visual--selector-error
+     :selector-generation (plist-get page :generation)
+     :selector-next (and page (plist-get page :next-cursor))
+     :selected-run-visible
+     (cl-some (lambda (run)
+                (equal (plist-get run :run-id)
+                       e-board-activity-visual--selected-run-id))
+              (plist-get projection :runs)))))
 
 (defun e-board-activity-visual--push-snapshot (&optional buffer)
   "Push a full detached snapshot for BUFFER or the current buffer."
@@ -335,43 +363,56 @@
              (error-message-string error))
        (e-board-activity-visual--schedule-push)))))
 
-(defun e-board-activity-visual--run-set-query-settled
-    (buffer target binding epoch request settled)
-  "Install expanded RUN-SET QUERY after the matching shared EPOCH."
+(defun e-board-activity-visual--selector-page-settled
+    (buffer target binding epoch cursor request settled)
+  "Install one indexed page after the matching selector EPOCH."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (when (and (eq request e-board-activity-visual--run-set-work)
+      (when (and (eq request e-board-activity-visual--selector-work)
                  (eq target e-board-activity-visual--target)
                  (eq binding e-board-activity-visual--binding)
                  (= epoch e-board-activity-visual--run-set-epoch))
-        (setq e-board-activity-visual--run-set-work nil
-              e-board-activity-visual--run-set-loading nil)
+        (setq e-board-activity-visual--selector-work nil
+              e-board-activity-visual--selector-loading nil)
         (let ((status (e-work-status settled)))
           (if (eq (plist-get status :state) 'finished)
-              (let ((projection (copy-tree
-                                 (e-work-handle-result settled) t)))
-                (if (equal (plist-get projection :board-id)
-                           (e-board-activity-visual--target-id))
-                    (setq e-board-activity-visual--run-set-projection projection
-                          e-board-activity-visual--run-set-expanded t
-                          e-board-activity-visual--run-set-error nil)
-                  (setq e-board-activity-visual--run-set-expanded nil
-                        e-board-activity-visual--run-set-error
-                        "Run query response did not match this Board")))
-            (setq e-board-activity-visual--run-set-expanded nil
-                  e-board-activity-visual--run-set-error
-                  (e-work-error-message
-                   (or (plist-get status :error)
-                       '(e-work-cancelled "cancelled")))))
+              (let ((page (copy-tree (e-work-handle-result settled) t)))
+                (if (and (equal (plist-get page :board-id)
+                                (e-board-activity-visual--target-id))
+                         (equal (plist-get page :cursor) cursor)
+                         (integerp (plist-get page :generation))
+                         (or (null cursor)
+                             (= (plist-get page :generation)
+                                (plist-get cursor :generation))))
+                    (setq e-board-activity-visual--selector-page page
+                          e-board-activity-visual--selector-error nil)
+                  (setq e-board-activity-visual--selector-page nil
+                        e-board-activity-visual--selector-error
+                        "Run index response did not match this Board page")))
+            (let* ((failure (or (plist-get status :error)
+                                '(e-work-cancelled "cancelled")))
+                   (error-text (e-work-error-message failure)))
+              (if (and cursor
+                       (or (eq (car-safe failure)
+                               'e-runtime-store-board-conflict)
+                           (string-match-p
+                            "Board run-index cursor is invalid or stale"
+                            error-text)))
+                  (e-board-activity-visual--start-selector-page nil)
+                (setq e-board-activity-visual--selector-page nil
+                      e-board-activity-visual--selector-error error-text))))
           (e-board-activity-visual--schedule-push buffer))))))
 
-(defun e-board-activity-visual--start-expanded-run-set ()
-  "Start the larger bounded Show more query for the current Board."
+(defun e-board-activity-visual--start-selector-page (cursor)
+  "Read one indexed active-run page after CURSOR, or the first page."
   (e-board-activity-visual--cancel-work
-   e-board-activity-visual--run-set-work)
-  (setq e-board-activity-visual--run-set-expanded t
-        e-board-activity-visual--run-set-loading t
-        e-board-activity-visual--run-set-error nil)
+   e-board-activity-visual--selector-work)
+  (cl-incf e-board-activity-visual--run-set-epoch)
+  (setq e-board-activity-visual--selector-browsing t
+        e-board-activity-visual--selector-cursor cursor
+        e-board-activity-visual--selector-page nil
+        e-board-activity-visual--selector-loading t
+        e-board-activity-visual--selector-error nil)
   (e-board-activity-visual--schedule-push)
   (condition-case error
       (let* ((buffer (current-buffer))
@@ -379,20 +420,19 @@
              (binding e-board-activity-visual--binding)
              (epoch e-board-activity-visual--run-set-epoch)
              (request
-              (e-board-orchestration-actions-run-set
-               target nil :limit e-board-activity-visual-run-limit
-               :byte-limit e-board-orchestration-run-set-max-byte-limit)))
-        (setq e-board-activity-visual--run-set-work request)
+              (e-board-sqlite-publication-target-orchestration-run-index-page-start
+               target :cursor cursor :active-only t
+               :limit e-board-activity-visual-page-limit)))
+        (setq e-board-activity-visual--selector-work request)
         (e-work-on-settle
          request
          (lambda (settled)
-           (e-board-activity-visual--run-set-query-settled
-            buffer target binding epoch request settled))))
+           (e-board-activity-visual--selector-page-settled
+            buffer target binding epoch cursor request settled))))
     (error
-     (setq e-board-activity-visual--run-set-work nil
-           e-board-activity-visual--run-set-expanded nil
-           e-board-activity-visual--run-set-loading nil
-           e-board-activity-visual--run-set-error
+     (setq e-board-activity-visual--selector-work nil
+           e-board-activity-visual--selector-loading nil
+           e-board-activity-visual--selector-error
            (error-message-string error))
      (e-board-activity-visual--schedule-push))))
 
@@ -411,17 +451,18 @@
               (progn
                 (cl-incf e-board-activity-visual--run-set-epoch)
                 (e-board-activity-visual--cancel-work
-                 e-board-activity-visual--run-set-work)
-                (setq e-board-activity-visual--run-set-work nil
+                 e-board-activity-visual--selector-work)
+                (setq e-board-activity-visual--selector-work nil
                       e-board-activity-visual--run-set-projection
                       (copy-tree projection t)
-                      e-board-activity-visual--run-set-error nil)
+                      e-board-activity-visual--selector-error nil)
                 (e-board-activity-visual--selected-run-from-projection)
-                (if e-board-activity-visual--run-set-expanded
-                    (e-board-activity-visual--start-expanded-run-set)
-                  (setq e-board-activity-visual--run-set-loading nil))
+                (if e-board-activity-visual--selector-browsing
+                    (e-board-activity-visual--start-selector-page
+                     e-board-activity-visual--selector-cursor)
+                  (setq e-board-activity-visual--selector-loading nil))
                 (e-board-activity-visual--refresh-detail-page))
-            (setq e-board-activity-visual--run-set-error
+            (setq e-board-activity-visual--selector-error
                   "Run-set update did not match this Board"))
           (e-board-activity-visual--schedule-push buffer))))))
 
@@ -526,7 +567,22 @@
   (and (stringp run-id)
        (cl-some (lambda (run)
                   (equal (plist-get run :run-id) run-id))
-                (plist-get e-board-activity-visual--run-set-projection :runs))))
+                (if e-board-activity-visual--selector-browsing
+                    (mapcar (lambda (entry) (plist-get entry :summary))
+                            (plist-get e-board-activity-visual--selector-page
+                                       :entries))
+                  (plist-get e-board-activity-visual--run-set-projection
+                             :runs)))))
+
+(defun e-board-activity-visual--selector-action-current-p (payload)
+  "Return non-nil when PAYLOAD names the visible indexed page."
+  (or (not e-board-activity-visual--selector-browsing)
+      (and e-board-activity-visual--selector-page
+           (integerp (e-board-activity-visual--payload-field
+                      payload 'pageGeneration))
+           (= (e-board-activity-visual--payload-field
+               payload 'pageGeneration)
+              (plist-get e-board-activity-visual--selector-page :generation)))))
 
 (defun e-board-activity-visual--handle-ui-action (payload)
   "Handle semantic UI action PAYLOAD after checking current Board identity."
@@ -535,9 +591,9 @@
          (action (and (stringp action-text) (intern-soft action-text))))
     (when (e-board-activity-visual--payload-current-p payload)
       (pcase action
-        ('show-more-runs
-         (when (and (not e-board-activity-visual--run-set-expanded)
-                    (not e-board-activity-visual--run-set-loading)
+        ('browse-runs
+         (when (and (not e-board-activity-visual--selector-browsing)
+                    (not e-board-activity-visual--selector-loading)
                     (or (plist-get
                          e-board-activity-visual--run-set-projection :more-p)
                         (> (or (plist-get
@@ -545,11 +601,36 @@
                                 :omitted-count)
                                0)
                            0)))
-           (e-board-activity-visual--start-expanded-run-set)))
+           (e-board-activity-visual--start-selector-page nil)))
+        ('next-runs
+         (when (and (e-board-activity-visual--selector-action-current-p
+                     payload)
+                    (not e-board-activity-visual--selector-loading)
+                    (plist-get e-board-activity-visual--selector-page
+                               :next-cursor))
+           (e-board-activity-visual--start-selector-page
+            (plist-get e-board-activity-visual--selector-page
+                       :next-cursor))))
+        ('current-runs
+         (when (and e-board-activity-visual--selector-browsing
+                    (or (null e-board-activity-visual--selector-page)
+                        (e-board-activity-visual--selector-action-current-p
+                         payload)))
+           (e-board-activity-visual--cancel-work
+            e-board-activity-visual--selector-work)
+           (cl-incf e-board-activity-visual--run-set-epoch)
+           (setq e-board-activity-visual--selector-work nil
+                 e-board-activity-visual--selector-browsing nil
+                 e-board-activity-visual--selector-page nil
+                 e-board-activity-visual--selector-cursor nil
+                 e-board-activity-visual--selector-loading nil
+                 e-board-activity-visual--selector-error nil)))
         ('select-run
          (let ((run-id
                 (e-board-activity-visual--payload-field payload 'runId)))
            (when (and (stringp run-id)
+                      (e-board-activity-visual--selector-action-current-p
+                       payload)
                       (e-board-activity-visual--run-present-p run-id))
              (unless (equal run-id e-board-activity-visual--selected-run-id)
                (setq e-board-activity-visual--selected-run-id run-id
@@ -709,10 +790,13 @@ Board run-set observer."
                   e-board-activity-visual--live live
                   e-board-activity-visual--egui-session session
                   e-board-activity-visual--run-set-projection nil
-                  e-board-activity-visual--run-set-epoch 0
-                  e-board-activity-visual--run-set-expanded nil
-                  e-board-activity-visual--run-set-loading nil
-                  e-board-activity-visual--run-set-error nil
+                  e-board-activity-visual--run-set-epoch
+                  (cl-incf e-board-activity-visual--epoch-counter)
+                  e-board-activity-visual--selector-browsing nil
+                  e-board-activity-visual--selector-page nil
+                  e-board-activity-visual--selector-cursor nil
+                  e-board-activity-visual--selector-loading nil
+                  e-board-activity-visual--selector-error nil
                   e-board-activity-visual--selected-run-id run-id
                   e-board-activity-visual--selected-task nil
                   e-board-activity-visual--detail-state 'loading

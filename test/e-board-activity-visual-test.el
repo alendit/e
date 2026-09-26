@@ -36,7 +36,7 @@
          (run-set
           (e-board-activity-visual-view-model-run-set projection)))
     (should (eq (alist-get 'ready run-set) t))
-    (should (eq (alist-get 'showMoreAvailable run-set) t))
+    (should (eq (alist-get 'browseAvailable run-set) t))
     (should (= (alist-get 'activeCount run-set) 33))
     (should (= (alist-get 'omittedCount run-set) 1))
     (let ((run (aref (alist-get 'runs run-set) 0)))
@@ -49,17 +49,17 @@
       (should (equal (alist-get 'completionExecutionState run) "cancelled")))))
 
 (ert-deftest e-board-activity-visual-test-manifest-sentinel-keeps-exact-counts ()
-  "A manifest sentinel enables Show more without inflating materialized counts."
+  "A manifest sentinel enables browsing without inflating counts."
   (let* ((projection '(:status running :restore-state ready :ready-p t
                        :active-run-count 32 :omitted-count 0 :more-p t))
          (run-set (e-board-activity-visual-view-model-run-set projection))
          (expanded
           (e-board-activity-visual-view-model-run-set projection t)))
-    (should (eq (alist-get 'showMoreAvailable run-set) t))
+    (should (eq (alist-get 'browseAvailable run-set) t))
     (should (= (alist-get 'activeCount run-set) 32))
     (should (= (alist-get 'omittedCount run-set) 0))
     (should (eq (alist-get 'moreMayExist expanded) t))
-    (should-not (eq (alist-get 'showMoreAvailable expanded) t))
+    (should-not (eq (alist-get 'browseAvailable expanded) t))
     (should (= (alist-get 'activeCount expanded) 32))
     (should (= (alist-get 'omittedCount expanded) 0))))
 
@@ -334,8 +334,8 @@
       (should (equal e-board-activity-visual--selected-task
                      '(:run-task "run-1" "calendar" 1))))))
 
-(ert-deftest e-board-activity-visual-test-show-more-accepts-manifest-sentinel ()
-  "Show more runs is accepted when the bounded query found another manifest."
+(ert-deftest e-board-activity-visual-test-browse-accepts-manifest-sentinel ()
+  "Browse is accepted when the bounded query found another manifest."
   (let ((e-board-activity-visual--binding
          (e-chat-service--binding-create
           :lifecycle-state 'ready :board-id "board-1"))
@@ -345,28 +345,198 @@
         started)
     (cl-letf (((symbol-function 'e-board-activity-visual--target-id)
                (lambda () "board-1"))
-              ((symbol-function 'e-board-activity-visual--start-expanded-run-set)
-               (lambda () (setq started t)))
+              ((symbol-function 'e-board-activity-visual--start-selector-page)
+               (lambda (cursor) (should-not cursor) (setq started t)))
               ((symbol-function 'e-board-activity-visual--schedule-push)
                #'ignore))
       (e-board-activity-visual--handle-ui-action
-       '((action . "show-more-runs") (boardId . "board-1")
+       '((action . "browse-runs") (boardId . "board-1")
          (runSetEpoch . 4)))
       (should started))))
 
-(ert-deftest e-board-activity-visual-test-expanded-notification-refreshes-detail ()
-  "An expanded run-set notification refreshes the selected page safely."
-  (let* ((target 'target)
-         (binding (e-chat-service--binding-create
-                   :lifecycle-state 'ready :board-id "board-1"))
-         (selected-task '(:run-task "run-1" "task" 2))
-         request-args settle expanded-started cancelled)
+(ert-deftest e-board-activity-visual-test-browses-past-256-with-one-page ()
+  "Indexed browsing reaches run 257 while retaining one bounded page."
+  (let ((target 'target)
+        (binding (e-chat-service--binding-create
+                  :lifecycle-state 'ready :board-id "board-1"))
+        (queries 0))
     (with-temp-buffer
       (setq-local e-board-activity-visual--target target
                   e-board-activity-visual--binding binding
                   e-board-activity-visual--run-set-epoch 4
-                  e-board-activity-visual--run-set-expanded t
-                  e-board-activity-visual--run-set-work 'stale-run-set
+                  e-board-activity-visual--run-set-projection
+                  '(:board-id "board-1" :ready-p t :restore-state ready
+                    :active-run-count 257 :more-p t
+                    :runs ((:run-id "run-000")))
+                  e-board-activity-visual--selected-run-id "run-000")
+      (cl-letf (((symbol-function 'e-board-activity-visual--target-id)
+                 (lambda () "board-1"))
+                ((symbol-function 'e-board-activity-visual--schedule-push)
+                 #'ignore)
+                ((symbol-function
+                  'e-board-sqlite-publication-target-orchestration-run-index-page-start)
+                 (lambda (_target &rest args)
+                   (cl-incf queries)
+                   (should (= (plist-get args :limit) 64))
+                   (should (eq (plist-get args :active-only) t))
+                   (let* ((cursor (plist-get args :cursor))
+                          (start (or (plist-get cursor :start) 0))
+                          (end (min 257 (+ start 64)))
+                          (next (when (< end 257)
+                                  (list :generation 3 :start end)))
+                          (entries
+                           (cl-loop for index from start below end
+                                    collect
+                                    (list :summary
+                                          (list :run-id
+                                                (format "run-%03d" index)
+                                                :label
+                                                (format "Run %d" index))))))
+                     (e-work-start
+                      (e-work-spec-create
+                       :id "visual-index-page" :execution 'cheap
+                       :interactive-policy 'cheap
+                       :runner
+                       (lambda (_arguments _context)
+                         (list :board-id "board-1" :generation 3
+                               :cursor cursor :next-cursor next
+                               :entries entries)))
+                      nil)))))
+        (e-board-activity-visual--start-selector-page nil)
+        (dotimes (_ 4)
+          (let* ((snapshot (e-board-activity-visual--snapshot))
+                 (run-set (alist-get 'runSet snapshot)))
+            (should (<= (length (alist-get 'runs run-set)) 64))
+            (should (eq (alist-get 'nextAvailable run-set) t))
+            (e-board-activity-visual--handle-ui-action
+             `((action . "next-runs") (boardId . "board-1")
+               (runSetEpoch . ,e-board-activity-visual--run-set-epoch)
+               (pageGeneration . 3)))))
+        (let* ((snapshot (e-board-activity-visual--snapshot))
+               (run-set (alist-get 'runSet snapshot))
+               (runs (alist-get 'runs run-set)))
+          (should (= queries 5))
+          (should (= (length runs) 1))
+          (should (equal (alist-get 'runId (aref runs 0)) "run-256"))
+          (should-not (eq (alist-get 'nextAvailable run-set) t))
+          (should-not (eq (alist-get 'selectedRunVisible run-set) t))
+          (should (equal e-board-activity-visual--selected-run-id "run-000"))
+          (should (equal (plist-get
+                          e-board-activity-visual--run-set-projection
+                          :runs)
+                         '((:run-id "run-000"))))
+          (e-board-activity-visual--handle-ui-action
+           `((action . "current-runs") (boardId . "board-1")
+             (runSetEpoch . ,e-board-activity-visual--run-set-epoch)
+             (pageGeneration . 3)))
+          (should-not e-board-activity-visual--selector-browsing)
+          (should (equal (alist-get 'runId
+                                    (aref (alist-get
+                                           'runs
+                                           (alist-get 'runSet
+                                                      (e-board-activity-visual--snapshot)))
+                                          0))
+                         "run-000")))))))
+
+(ert-deftest e-board-activity-visual-test-selector-fences-page-and-actions ()
+  "Late page responses and stale page clicks cannot change selection."
+  (let ((target 'target)
+        (binding (e-chat-service--binding-create
+                  :lifecycle-state 'ready :board-id "board-1"))
+        (other-binding (e-chat-service--binding-create
+                        :lifecycle-state 'ready :board-id "board-1"))
+        (page '(:board-id "board-1" :generation 3 :cursor nil
+                :entries ((:summary (:run-id "run-2")))))
+        (settled
+         (e-work-start
+          (e-work-spec-create
+           :id "visual-selector-settlement" :execution 'cheap
+           :interactive-policy 'cheap
+           :runner
+           (lambda (_arguments _context)
+             '(:board-id "board-1" :generation 9 :cursor nil
+               :entries ((:summary (:run-id "stale"))))))
+          nil)))
+    (with-temp-buffer
+      (setq-local e-board-activity-visual--target target
+                  e-board-activity-visual--binding binding
+                  e-board-activity-visual--run-set-epoch 8
+                  e-board-activity-visual--selector-browsing t
+                  e-board-activity-visual--selector-page page
+                  e-board-activity-visual--selector-work 'pending
+                  e-board-activity-visual--selected-run-id "run-1")
+      (cl-letf (((symbol-function 'e-board-activity-visual--target-id)
+                 (lambda () "board-1"))
+                ((symbol-function 'e-board-activity-visual--schedule-push)
+                 #'ignore)
+                ((symbol-function 'e-board-activity-visual--refresh-detail-page)
+                 #'ignore))
+        (dolist (coordinates
+                 (list (list (current-buffer) 'other-target binding 8)
+                       (list (current-buffer) target other-binding 8)
+                       (list (current-buffer) target binding 7)))
+          (apply #'e-board-activity-visual--selector-page-settled
+                 (append coordinates (list nil 'pending settled)))
+          (should (eq e-board-activity-visual--selector-page page)))
+        (e-board-activity-visual--handle-ui-action
+         '((action . "select-run") (boardId . "board-1")
+           (runSetEpoch . 8) (pageGeneration . 2) (runId . "run-2")))
+        (should (equal e-board-activity-visual--selected-run-id "run-1"))
+        (e-board-activity-visual--handle-ui-action
+         '((action . "select-run") (boardId . "board-1")
+           (runSetEpoch . 7) (pageGeneration . 3) (runId . "run-2")))
+        (should (equal e-board-activity-visual--selected-run-id "run-1"))
+        (e-board-activity-visual--handle-ui-action
+         '((action . "select-run") (boardId . "board-1")
+           (runSetEpoch . 8) (pageGeneration . 3) (runId . "run-2")))
+        (should (equal e-board-activity-visual--selected-run-id "run-2"))))))
+
+(ert-deftest e-board-activity-visual-test-stale-cursor-restarts-first-page ()
+  "A cleared Board's rejected cursor returns browsing to page one."
+  (let* ((target 'target)
+         (binding (e-chat-service--binding-create
+                   :lifecycle-state 'ready :board-id "board-1"))
+         (cursor '(:generation 3 :after-position 64))
+         (failure
+          (e-work-start
+           (e-work-spec-create
+            :id "stale-visual-cursor" :execution 'cheap
+            :interactive-policy 'cheap
+            :runner
+            (lambda (_arguments _context)
+              (error "Board run-index cursor is invalid or stale")))
+           nil))
+         restarted)
+    (with-temp-buffer
+      (setq-local e-board-activity-visual--target target
+                  e-board-activity-visual--binding binding
+                  e-board-activity-visual--run-set-epoch 8
+                  e-board-activity-visual--selector-browsing t
+                  e-board-activity-visual--selector-cursor cursor
+                  e-board-activity-visual--selector-work failure)
+      (cl-letf (((symbol-function 'e-board-activity-visual--target-id)
+                 (lambda () "board-1"))
+                ((symbol-function 'e-board-activity-visual--start-selector-page)
+                 (lambda (next) (setq restarted (eq next nil))))
+                ((symbol-function 'e-board-activity-visual--schedule-push)
+                 #'ignore))
+        (e-board-activity-visual--selector-page-settled
+         (current-buffer) target binding 8 cursor failure failure)
+        (should restarted)))))
+
+(ert-deftest e-board-activity-visual-test-browsing-notification-refreshes-detail ()
+  "A browsing notification refreshes selected detail even outside the page."
+  (let* ((target 'target)
+         (binding (e-chat-service--binding-create
+                   :lifecycle-state 'ready :board-id "board-1"))
+         (selected-task '(:run-task "run-1" "task" 2))
+         request-args settle browsing-started cancelled)
+    (with-temp-buffer
+      (setq-local e-board-activity-visual--target target
+                  e-board-activity-visual--binding binding
+                  e-board-activity-visual--run-set-epoch 4
+                  e-board-activity-visual--selector-browsing t
+                  e-board-activity-visual--selector-work 'stale-run-set
                   e-board-activity-visual--detail-request 'stale-detail
                   e-board-activity-visual--selected-run-id "run-1"
                   e-board-activity-visual--selected-task selected-task
@@ -395,15 +565,16 @@
                    (should (eq work 'fresh-detail))
                    (setq settle callback)))
                 ((symbol-function
-                  'e-board-activity-visual--start-expanded-run-set)
-                 (lambda () (setq expanded-started t)))
+                  'e-board-activity-visual--start-selector-page)
+                 (lambda (cursor) (should-not cursor)
+                   (setq browsing-started t)))
                 ((symbol-function 'e-board-activity-visual--schedule-push)
                  #'ignore))
         (e-board-activity-visual--run-set-updated
          (current-buffer) target binding
          '(:projection (:board-id "board-1"
-                       :runs ((:run-id "run-1")))))
-        (should expanded-started)
+                       :runs ((:run-id "run-2")))))
+        (should browsing-started)
         (should (equal (car request-args) target))
         (should (equal (plist-get (cdr request-args) :run-id) "run-1"))
         (should (member 'stale-detail cancelled))
@@ -412,9 +583,9 @@
         (should (eq e-board-activity-visual--detail-state 'loading))
         (should (equal e-board-activity-visual--selected-run-id "run-1"))
         (should (equal e-board-activity-visual--selected-task selected-task))
-        ;; A superseded expanded query cannot replace the newer run-set.
-        (e-board-activity-visual--run-set-query-settled
-         (current-buffer) target binding 4 'stale-run-set nil)
+        ;; A superseded page query cannot replace the newer run-set.
+        (e-board-activity-visual--selector-page-settled
+         (current-buffer) target binding 4 nil 'stale-run-set nil)
         (should (equal (plist-get e-board-activity-visual--run-set-projection
                                   :board-id)
                        "board-1"))

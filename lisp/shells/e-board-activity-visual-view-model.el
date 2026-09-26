@@ -87,11 +87,10 @@
            (plist-get run :completion-execution-state))))))
 
 (defun e-board-activity-visual-view-model-run-set
-    (projection &optional expanded loading error)
+    (projection &optional browsing loading error page-generation next-cursor
+                selected-run-visible)
   "Return the selector DTO for bounded run-set PROJECTION.
-EXPANDED records that this presentation has requested its larger bounded
-Show more query.  LOADING marks that query while it is pending.  ERROR is a
-request-local query error."
+BROWSING identifies indexed browsing; LOADING and ERROR describe its page."
   (let* ((projection (or projection nil))
          (runs (plist-get projection :runs))
          (active-count (or (plist-get projection :active-run-count)
@@ -103,14 +102,17 @@ request-local query error."
       (restoreState . ,(e-board-activity-visual-view-model--string
                         (plist-get projection :restore-state)))
       (ready . ,(if (eq (plist-get projection :ready-p) t) t :json-false))
-      (expanded . ,(if expanded t :json-false))
-      (showMoreLoading . ,(if loading t :json-false))
+      (browsing . ,(if browsing t :json-false))
+      (pageLoading . ,(if loading t :json-false))
+      (pageGeneration . ,page-generation)
+      (nextAvailable . ,(if next-cursor t :json-false))
+      (selectedRunVisible . ,(if selected-run-visible t :json-false))
       (activeCount . ,active-count)
       (omittedCount . ,omitted-count)
       (moreMayExist . ,(if more-p t :json-false))
-      (showMoreAvailable . ,(if (and (not expanded)
-                                     (or more-p (> omitted-count 0)))
-                                t :json-false))
+      (browseAvailable . ,(if (and (not browsing)
+                                   (or more-p (> omitted-count 0)))
+                              t :json-false))
       (error . ,(e-board-activity-visual-view-model--string error))
       (runs . ,(vconcat (mapcar
                          #'e-board-activity-visual-view-model--run
@@ -315,8 +317,8 @@ SELECTED-TASK is the presentation's durable task identity."
 
 (cl-defun e-board-activity-visual-view-model-snapshot
     (&key board-id projection selected-run-id selected-task detail-state
-          page detail-error live expanded-runs run-set-loading run-set-epoch
-          run-set-error)
+          page detail-error live selector-browsing selector-loading run-set-epoch
+          selector-error selector-generation selector-next selected-run-visible)
   "Return a narrow JSON-compatible Board visual snapshot.
 When DETAIL-STATE is `ready', PAGE must match BOARD-ID and SELECTED-RUN-ID;
 otherwise the view stays in a loading state without stale task rows."
@@ -345,7 +347,8 @@ otherwise the view stays in a loading state without stale task rows."
     `((boardId . ,board-id)
       (runSetEpoch . ,(or run-set-epoch 0))
       (runSet . ,(e-board-activity-visual-view-model-run-set
-                  projection expanded-runs run-set-loading run-set-error))
+                  projection selector-browsing selector-loading selector-error
+                  selector-generation selector-next selected-run-visible))
       (selectedRunId . ,selected-run-id)
       (selectedTask . ,selected-task-dto)
       (detail . ,detail))))
