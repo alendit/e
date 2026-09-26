@@ -11,14 +11,15 @@
 (defun e-board-activity-visual-test--control-payload
     (action &optional revision attempt participant-id &rest fields)
   "Return a task control payload for ACTION and optional coordinates."
-  (append
-   `((action . ,action)
-     (boardId . "board-1") (runSetEpoch . 4)
-     (generation . 3) (revision . ,(or revision 10))
-     (runId . "run-1") (taskKey . "task")
-     (attempt . ,(or attempt 2))
-     (participantId . ,(or participant-id "worker-1")))
-   fields))
+  (copy-tree
+   (append
+    `((action . ,action)
+      (boardId . "board-1") (runSetEpoch . 4)
+      (generation . 3) (revision . ,(or revision 10))
+      (runId . "run-1") (taskKey . "task")
+      (attempt . ,(or attempt 2))
+      (participantId . ,(or participant-id "worker-1")))
+    fields)))
 
 (ert-deftest e-board-activity-visual-test-run-selector-keeps-bounded-status ()
   "The selector exposes counts, restore state, attention, and omitted runs."
@@ -334,6 +335,100 @@
       (should (equal e-board-activity-visual--selected-task
                      '(:run-task "run-1" "calendar" 1))))))
 
+(ert-deftest e-board-activity-visual-test-rebind-never-reuses-old-control-epoch ()
+  "An old same-Board control stays stale after rebinding the same buffer."
+  (let* ((e-board-activity-visual-buffer-name
+          (generate-new-buffer-name "*e-visual-epoch-test*"))
+         (e-board-activity-visual--epoch-counter 0)
+         (buffer (get-buffer-create e-board-activity-visual-buffer-name))
+         (target 'target)
+         (first (e-chat-service--binding-create
+                 :lifecycle-state 'ready :board-id "board-1"))
+         (second (e-chat-service--binding-create
+                  :lifecycle-state 'ready :board-id "board-1"))
+         (projection '(:projection (:board-id "board-1" :ready-p t
+                                   :runs ((:run-id "run-1")))))
+         old-epoch old-interrupt old-shutdown calls)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-board-activity-visual--ensure-runtime)
+                   #'ignore)
+                  ((symbol-function
+                    'e-board-sqlite-publication-target-valid-p)
+                   (lambda (_target) t))
+                  ((symbol-function
+                    'e-board-sqlite-publication-target-board-id)
+                   (lambda (_target) "board-1"))
+                  ((symbol-function 'emacs-egui-create-buffer)
+                   (lambda (&rest _) (list :buffer buffer)))
+                  ((symbol-function 'e-board-activity-visual--wire-actions)
+                   #'ignore)
+                  ((symbol-function 'e-board-activity-visual--push-snapshot)
+                   #'ignore)
+                  ((symbol-function 'e-board-activity-visual--schedule-push)
+                   #'ignore)
+                  ((symbol-function 'e-board-activity-visual--refresh-detail-page)
+                   #'ignore)
+                  ((symbol-function 'e-board-run-set-subscribe)
+                   (lambda (&rest _) #'ignore))
+                  ((symbol-function 'e-workspace-pop-to-buffer)
+                   #'ignore)
+                  ((symbol-function
+                    'e-board-activity-visual-view-model-task-controls)
+                   (lambda (&rest _)
+                     '((canInterrupt . t) (canShutdown . t))))
+                  ((symbol-function 'e-subagent-interrupt)
+                   (lambda (&rest _) (push 'interrupt calls)))
+                  ((symbol-function 'e-subagent-shutdown)
+                   (lambda (&rest _) (push 'shutdown calls))))
+          (e-board-activity-visual-open-buffer
+           :target target :binding first :live 'live :run-id "run-1")
+          (e-board-activity-visual--run-set-updated
+           buffer target first projection)
+          (with-current-buffer buffer
+            (setq e-board-activity-visual--selector-browsing t
+                  e-board-activity-visual--selector-page nil)
+            (e-board-activity-visual--handle-ui-action
+             `((action . "current-runs") (boardId . "board-1")
+               (runSetEpoch . ,e-board-activity-visual--run-set-epoch)))
+            (setq old-epoch e-board-activity-visual--run-set-epoch
+                  old-interrupt
+                  (e-board-activity-visual-test--control-payload
+                   "interrupt-participant")
+                  old-shutdown
+                  (e-board-activity-visual-test--control-payload
+                   "shutdown-participant"))
+            (setf (alist-get 'runSetEpoch old-interrupt) old-epoch
+                  (alist-get 'runSetEpoch old-shutdown) old-epoch))
+          (e-board-activity-visual-open-buffer
+           :target target :binding second :live 'live :run-id "run-1")
+          (e-board-activity-visual--run-set-updated
+           buffer target second projection)
+          (with-current-buffer buffer
+            (should (> e-board-activity-visual--run-set-epoch old-epoch))
+            (setq e-board-activity-visual--selected-task
+                  '(:run-task "run-1" "task" 2)
+                  e-board-activity-visual--detail-state 'ready
+                  e-board-activity-visual--detail-page
+                  '(:board-id "board-1" :generation 3 :revision 10
+                    :run (:run-id "run-1")
+                    :tasks ((:task-key "task" :accepted-attempt 2
+                             :participant-id "worker-1"
+                             :participant-row
+                             (:participant-id "worker-1" :run-id "run-1"
+                              :task-key "task" :attempt 2)))))
+            (e-board-activity-visual--handle-ui-action old-interrupt)
+            (e-board-activity-visual--handle-ui-action old-shutdown)
+            (should-not calls)
+            (setf (alist-get 'runSetEpoch old-interrupt)
+                  e-board-activity-visual--run-set-epoch
+                  (alist-get 'runSetEpoch old-shutdown)
+                  e-board-activity-visual--run-set-epoch)
+            (e-board-activity-visual--handle-ui-action old-interrupt)
+            (e-board-activity-visual--handle-ui-action old-shutdown)
+            (should (equal (nreverse calls) '(interrupt shutdown)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-board-activity-visual-test-browse-accepts-manifest-sentinel ()
   "Browse is accepted when the bounded query found another manifest."
   (let ((e-board-activity-visual--binding
@@ -578,7 +673,7 @@
         (should (equal (car request-args) target))
         (should (equal (plist-get (cdr request-args) :run-id) "run-1"))
         (should (member 'stale-detail cancelled))
-        (should (= e-board-activity-visual--run-set-epoch 5))
+        (should (> e-board-activity-visual--run-set-epoch 4))
         (should (eq e-board-activity-visual--detail-request 'fresh-detail))
         (should (eq e-board-activity-visual--detail-state 'loading))
         (should (equal e-board-activity-visual--selected-run-id "run-1"))

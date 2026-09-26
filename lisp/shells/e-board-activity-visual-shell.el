@@ -72,6 +72,14 @@
 (defvar-local e-board-activity-visual--run-set-epoch 0
   "Local action fence advanced on rebind, shared updates, and navigation.")
 
+(defun e-board-activity-visual--advance-epoch ()
+  "Assign this selector a process-monotone action epoch."
+  (setq e-board-activity-visual--epoch-counter
+        (1+ (max e-board-activity-visual--epoch-counter
+                 e-board-activity-visual--run-set-epoch))
+        e-board-activity-visual--run-set-epoch
+        e-board-activity-visual--epoch-counter))
+
 (defvar-local e-board-activity-visual--selector-browsing nil
   "Non-nil while browsing indexed active-run pages.")
 
@@ -407,7 +415,7 @@
   "Read one indexed active-run page after CURSOR, or the first page."
   (e-board-activity-visual--cancel-work
    e-board-activity-visual--selector-work)
-  (cl-incf e-board-activity-visual--run-set-epoch)
+  (e-board-activity-visual--advance-epoch)
   (setq e-board-activity-visual--selector-browsing t
         e-board-activity-visual--selector-cursor cursor
         e-board-activity-visual--selector-page nil
@@ -449,7 +457,7 @@
                    (equal target-id (e-board-activity-visual--target-id)))
           (if (equal (plist-get projection :board-id) target-id)
               (progn
-                (cl-incf e-board-activity-visual--run-set-epoch)
+                (e-board-activity-visual--advance-epoch)
                 (e-board-activity-visual--cancel-work
                  e-board-activity-visual--selector-work)
                 (setq e-board-activity-visual--selector-work nil
@@ -618,7 +626,7 @@
                          payload)))
            (e-board-activity-visual--cancel-work
             e-board-activity-visual--selector-work)
-           (cl-incf e-board-activity-visual--run-set-epoch)
+           (e-board-activity-visual--advance-epoch)
            (setq e-board-activity-visual--selector-work nil
                  e-board-activity-visual--selector-browsing nil
                  e-board-activity-visual--selector-page nil
@@ -790,8 +798,6 @@ Board run-set observer."
                   e-board-activity-visual--live live
                   e-board-activity-visual--egui-session session
                   e-board-activity-visual--run-set-projection nil
-                  e-board-activity-visual--run-set-epoch
-                  (cl-incf e-board-activity-visual--epoch-counter)
                   e-board-activity-visual--selector-browsing nil
                   e-board-activity-visual--selector-page nil
                   e-board-activity-visual--selector-cursor nil
@@ -804,6 +810,7 @@ Board run-set observer."
                   e-board-activity-visual--detail-error nil
                   e-board-activity-visual--after nil
                   e-board-activity-visual--next nil)
+      (e-board-activity-visual--advance-epoch)
       (add-hook 'kill-buffer-hook
                 #'e-board-activity-visual--cleanup nil t)
       (unless e-board-activity-visual--actions-wired
