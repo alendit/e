@@ -408,6 +408,9 @@ run set remains the status and count authority; SQL page generation and local
 action epochs fence page selection.  A rejected cursor after Board clear
 returns browsing to the first page.  A 257-run visual test reaches the final
 run without retaining earlier pages.
+The correction =81fd0163= assigns action epochs from one process-monotone
+counter on rebind and navigation.  Controls from a previous binding of the
+same Board are rejected even when task coordinates still match.
 
 ** Slice 3: inject active-run context
 
@@ -457,13 +460,21 @@ binding, owner id, Board, and window-safe headless dispatch.
 - Run focused orchestration, task-queue, board-runtime, chat-service, context, shell, persistence, and daily tests together.
 - Run isolated graphical tests for indicator visibility, composer readiness, focus, and idle completion delivery.
 
-The e-side bridge foundation is implemented in commits =02b00767=,
-=204e01f6=, and =c120b637=.  Stable task identity is arbitrated by SQLite;
-the Board bridge classifies the canonical enqueue result and distinguishes a
-live queue claim from an orphan after restart.  The Grimoire Daily producer
-still needs to call the bridge and own its dedicated queue lifecycle.  The
-independent review in =review.org= records the remaining run-selection and
-native activity findings.
+The e bridge and Grimoire Daily producer now reconcile stable run, task, and
+attempt identities through a dedicated durable queue.  The Board run index is
+rebuilt transactionally with each write; the offline v8-to-v9 upgrade backfills
+it.  Paged active-run reads, exact counts, and generation-fenced Board writes
+keep older active runs visible and prevent a cleared run's queued or in-flight
+work from publishing into a new generation.  A cleared run retains its queue
+owner until SQL confirms that all durable tasks have drained.  A subagent
+dispatch failure already published by e settles the queue without a second
+terminal Board report.
+
+Repository-side Daily ERT and the isolated two-process graphical Daily
+restart scenario pass.  The isolated native Board graphical scenario also
+passes.  The paired current-configuration cold start, direct xwidget visual
+interaction, and the full required-plus-optional restart scenario remain
+acceptance checks; =review.org= records the exact evidence and limits.
 
 * End-to-end proof
 

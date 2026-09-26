@@ -3,101 +3,196 @@
 
 * Status
 
-In-review.  Three findings are open, and Daily's production queue integration
-is still in progress.
+In-review.  All recorded implementation findings are resolved.  The paired
+current-configuration cold start, direct xwidget playthrough, and complete
+required-plus-optional restart scenario still need acceptance evidence.
 
 * Review summary
 
-The owner chat now presents durable run status, bounded context, task detail,
-and one idle-delivered completion input.  The e-side queue bridge has a tested
-stable assignment identity.  The first independent pass at =c120b637= found
-two visibility failures and one native refresh gap.  The visual xwidget path
-cannot be exercised directly on this Emacs build.
+The owner chat and model context use the same durable Board run projection.
+Board activity shows tasks before participant admission through the native or
+optional visual view.  Daily uses the canonical owner session and a dedicated
+durable queue; completion is a keyed input delivered after an idle boundary.
+SQLite schema v9 indexes actionable runs and supports an offline v8-to-v9
+backfill.  The final independent pass at e =81fd0163= and Grimoire =a9cef39=
+found no P0--P2 issue.  Deterministic repository validation reached a fixed
+point, while the acceptance checks above remain open.
 
 * Scope reviewed
 
-The review compared the plan's chat, Board activity, visual, completion, and
-restart contracts with the e source through =c120b637=.  It inspected the
-run-set SQL and reducer, native and visual Board shells, chat status action,
-continuation reconciliation, queue bridge, and focused tests.  Grimoire's
-production consumer remains outside this pass.
+The review compared the chat, visual activity, context, completion, single
+owner, and restart contracts in =plan.org= with the e and Grimoire changes.
+It inspected Board run indexing, exact run reads, native and visual shells,
+queue ownership, generation fences, subagent admission, and Daily recovery.
+The first independent pass at =c120b637= supplied three visibility findings;
+later passes followed their corrections and focused regressions.
 
-* Verification performed during this review pass
+* Verification
 
-- Focused run-set and visual ERT: 23 passed.
-- Focused queue bridge, orchestration actions, and native shell ERT: 20 passed.
-- Restart/FIFO ERT: 2 passed.
-- A reducer witness with 32 completed projections and =more-p= returned
-  =status=idle=, =active-count=0=, and no selected run.
-- A native window witness returned the Board buffer while the chat remained
-  selected and no window displayed that buffer.
-- =git diff --check HEAD~13..HEAD= passed at =c120b637=.
-
-The passing suites do not cover the failure partitions below.
+- At e =81fd0163=, visual ERT passed 16/16.  The combined Board, SQLite,
+  queue, recovery, and subagent suite passed 188/188 on its final run.
+  An earlier run on that revision passed 187/188: the queue restart test failed
+  with =e-task-queue-unknown-task=, passed alone 1/1, then passed in the
+  188/188 rerun.  This test has shown intermittent failure under combined load.
+- The isolated native Board graphical scenario passed 1/1 at =81fd0163= in a
+  private Emacs daemon.  It asserts the displayed fallback and composer state.
+- At e =4d3559e3= and Grimoire =a9cef39=, Daily ERT passed 41/41.  The
+  isolated two-process graphical Daily queue scenario passed 1/1 in each
+  phase.  The subsequent e edit only changes the visual selector action epoch.
+- The visual package passed Rust tests 7/7, a real-SQL 257-run test 1/1,
+  WASM release build, and web binding generation at =4d3559e3=.
+  =cargo fmt --check= could not run because =rustfmt= is absent.
+- An expanded 273-test run failed the same queue restart test, which passed
+  alone.  The broader graphical suite failed 9/28; its Board reasoning
+  timeout was reproduced unchanged at pre-index =c120b637=.  Neither broader
+  run is claimed as a passing Feature 89 gate.
 
 * Findings
 
-** TODO High: Older active run disappears behind completed run history
+** DONE High: Older active run disappears behind completed history
 
-The plan requires every nonterminal run in the shared projection.  The
-=board-orchestration-runs= SQL read chooses the newest 32 manifests before
-=e-board-orchestration-run-set= filters completed runs.  With 32 newer
-completed runs and one older active run, the default chat status and model
-context report idle with zero active and omitted runs.  The same window can
-hide an older published run from continuation reconciliation and outcome
-backfill.  Select actionable runs before applying the presentation budget,
-and never report idle from an incomplete scan.  Add a durable-history test for
-status, context, and continuation backfill.
+The plan requires every actionable run in the shared projection.  At
+=c120b637=, SQL selected the newest 32 manifests before filtering completed
+runs, so an older active run could disappear from status, context, and
+continuation reconciliation.  =44af350f= added a transactionally rebuilt run
+index and offline v8-to-v9 backfill.  Combined ERT covers older active runs,
+exact counts, paging, and migration.
 
-** TODO High: Native Board activity is not displayed from chat
+** DONE High: Native Board activity is not displayed from chat
 
-On a build without xwidgets, the chat status action falls back to
-=e-board-activity-list-buffer=.  The explicit
-=e-chat-open-board-activity-text= command calls the same function.  It pops a
-window only when the native function itself was called interactively; both
-callers are programmatic.  The Board buffer is created but remains hidden.
-Display it from both public routes and assert the selected window after the
-header action in the isolated graphical scenario, without a test-side pop.
+The chat status action and text command created a native buffer without
+displaying it when xwidgets were unavailable.  =c0aa3a2d= made both routes
+display the buffer.  The isolated graphical fallback scenario asserts the
+selected window and passed again at =81fd0163=.
 
-** TODO Medium: Open native Board activity does not follow Board updates
+** DONE Medium: Open native Board activity does not follow Board updates
 
-The plan requires notification-driven refresh in both renderers.  The native
-shell refreshes on open, =g=, paging, and local controls, but it has no Board
-subscription.  Task rows therefore remain stale after another actor changes
-the Board until the user presses =g=.  Subscribe the native buffer to Board
-commits, coalesce bounded refreshes, preserve its selected run and row, and
-unsubscribe on rebind or kill.
+The native view previously refreshed only on local actions, leaving rows
+stale after another actor committed a Board change.  =acec9aff= added a
+coalesced Board subscription, selection retention, and cleanup on rebind or
+kill.  Native shell ERT and the isolated graphical scenario passed.
+
+** DONE High: Subagent participant admission races Board clear
+
+A child could pass an early generation check and admit a participant after
+Board clear.  =5d2ee1f6=, =c43bb97f=, and =26cfcc01= fence queued work,
+claims, and participant admission by current Board generation.  The last
+step makes admission atomic with the Board write.  Combined ERT exercises
+stale generations before and during admission.
+
+** DONE Medium: Cleared Daily queue owner can remain attached indefinitely
+
+Daily must retain a strong queue owner while cleared-run tasks drain, but a
+process-local check could miss the release point.  Grimoire =e16eaa8=
+releases it only after indexed SQL reports zero unsettled rows; e =3b70573e=
+provides the durable exact count.  Daily ERT and the two-process queue test
+cover ownership through recovery and release.
+
+** DONE Medium: Visual run selector cannot reach older active runs
+
+The expanded visual query stopped at 256 manifests even when the shared
+projection reported omissions.  =4d3559e3= replaced it with one indexed
+64-run page at a time and Browse, Next, and Current actions.  The real-SQL
+257-run test reaches the final run without retaining earlier pages; visual
+ERT covers stale cursors and navigation.
+
+** DONE Low: Daily model guidance describes retired routing
+
+The Daily skill still described an update session and obsolete queue and
+restart behavior.  Grimoire =01349b5= corrected the guide after production
+moved to the canonical owner.  Source review and Daily tests check the
+dedicated queue path; the guide no longer instructs the old path.
+
+** DONE High: Acknowledged dispatch failure can publish two terminal reports
+
+When e had already published a subagent dispatch failure to the Board,
+Daily's queue consumer could publish a second conflicting terminal report.
+Grimoire =a9cef39= settles the queue after the acknowledged failure without
+re-reporting it.  Its real-SQL regression is included in the 41/41 Daily run.
+
+** DONE Medium: Stale visual control can pass after same-Board rebind
+
+At =4d3559e3=, a new binding took its epoch from a global counter, but local
+navigation could advance past that counter.  Reopening the same Board could
+reuse an old epoch and admit an old interrupt or shutdown click when task
+coordinates still matched.  =81fd0163= uses one process-monotone allocator
+for rebind, run-set updates, page navigation, and Current.  Its regression
+recreates the collision, rejects both stale controls, and accepts current
+controls; visual ERT passed 16/16.
 
 * Plan coverage
 
-Slices 1-5 and the e-side part of Slice 7 have focused implementation evidence.
-Slice 6's single-owner Grimoire path was delivered previously.  Slice 7's
-production queue consumer and whole-scenario restart proof remain open.
-The xwidget visual renderer builds, but its graphical interaction still needs
-an xwidget-capable Emacs.
+- Slices 1-5: shared bounded projection, owner-chat status and detail,
+  context, keyed completion, and idle FIFO delivery have focused e evidence.
+  Native graphical coverage includes the idle composer and Board fallback.
+- Slice 2b: the visual view model, Rust/WASM app, indexed run browsing, and
+  action guards have focused and build evidence.  Direct xwidget interaction
+  remains unverified.
+- Slice 6: Grimoire uses one canonical owner session and Board for interactive
+  and headless Daily dispatch.  Old =E_UPDATE_SESSION= routing was removed;
+  the production queue consumer and its guidance are updated.
+- Slice 7: stable queue assignment, generation-fenced recovery, offline
+  schema backfill, and two-process Daily recovery are implemented.  The
+  complete required-plus-optional scenario across every publication and
+  outcome restart boundary remains unproved as one acceptance scenario.
 
-* Architecture review
+* Architecture review and design self-check
 
-The Board owns run reduction, the task queue owns durable assignment rows,
-and the bridge maps exact identities without putting Board policy into the
-generic queue.  The run-set SQL's newest-manifest window currently contradicts
-the Board-owned active-run contract.  The native shell needs a presentation-owned
-subscription; it should not poll workers or duplicate the run inventory.
+1. This stopping point provides durable visibility, exact recovery, and
+   single-owner Daily dispatch, although remaining gates keep it =In-review=.
+2. It moves toward one Board-owned run authority and one owner-chat handoff.
+3. Stable run and queue identities are direct contracts.  Visual layout and
+   paging stay local and rebuildable; uncertain UI behavior is not persisted.
+4. Board orchestration owns run policy, the queue owns task execution, chat
+   service owns keyed owner input, and shells own presentation.
+5. The Board observation page and queue bridge are narrow joins.  The visual
+   shell consumes detached facts without owning another durable inventory.
+6. Core policy does not depend on Rust, xwidgets, Grimoire, or a shell.
+   Daily depends on e's Board and queue contracts.
+7. SQLite and worker dispatch side effects remain in their owning services;
+   the reducer and visual view model map committed facts.
+8. Schema v9 stores the run index and queue facts because restart requires
+   them.  Selection, cursors, focus, and progress stay transient.  Cleared
+   queue ownership lasts only until SQL confirms drain.
+9. Indexed reads return bounded pages.  A 1024-fact append witness took
+   187 ms (0.183 ms/fact), but representative interactive latency and
+   per-Board-write production cost are unmeasured.
+10. The Board page, queue assignment identity, and keyed input have concrete
+    contracts; neither renderer must fake an unsupported operation.
+11. The v8-to-v9 upgrade is explicit and offline.  Update-session routing is
+    removed; native rendering remains supported without xwidgets.
+12. The second coordinator and expanded 256-run visual scan were removed.
+13. Stale actions and generations are rejected at service boundaries.
+    Unexpected store and dispatch failures surface as failed work or attention.
+14. Reducer, SQL, queue, admission, and action-fence tests prove behavior below
+    the graphical shell.  Isolated graphical tests cover their joins; the
+    current-configuration and xwidget checks are still necessary.
 
 * UX and performance playthrough
 
-The isolated native graphical scenario exercised an idle owner chat, pending
-task detail, an editable composer during a held Board read, and a reopened
-activity page.  The review's window witness shows why the default no-xwidget
-route fails to display that page.  Per-Board-write run-set query cost and
-visual detail refresh cost still need measurement after corrections.
+The private native graphical frame exercised an idle owner chat, a pending
+task without a participant, an editable composer during a held Board read,
+opening the status into a displayed activity buffer, and reopening after a
+Board update.  The two-process Daily graphical fixture exercised durable
+queue recovery.  This Emacs 31.1 build lacks xwidgets, so the visual app was
+checked through view-model and event tests instead of a direct graphical
+playthrough.  The user's running Emacs was not used to test this branch:
+the core schema and record changes require an offline upgrade and restart.
 
-* Live reload
+* Unresolved acceptance and activation
 
-The user's running Emacs was left unchanged.  Core storage and record behavior
-requires a full restart before the new behavior is available there.
+- Run the paired current-configuration cold start against these exact e and
+  Grimoire revisions.  Doom's package symlinks and configured Daily checkout
+  point at the original workspaces, so the existing gate cannot prove these
+  isolated worktrees as configured.
+- Exercise the visual Daily owner scenario in an xwidget-capable Emacs,
+  including pending admission, live control availability, Board update,
+  focus retention, and composer responsiveness.
+- Run the complete required-plus-optional restart scenario from =plan.org=
+  across pre-persistence, pre-publication, post-publication, post-consumption,
+  and coordinator-outcome boundaries.  Measure realistic Board write and
+  visual refresh latency before asserting an interactive performance bound.
 
-* Unresolved
-
-The three findings above, Daily production queue integration, whole-scenario
-gates, and direct xwidget graphical verification remain open.
+The user's running Emacs and canonical store were left unchanged.  Applying
+this branch requires the offline schema upgrade and a full Emacs restart;
+a shell reload cannot apply the core changes.
