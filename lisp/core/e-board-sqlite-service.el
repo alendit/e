@@ -293,6 +293,19 @@ observation is a wake-up path only; SQLite remains authoritative."
     (puthash key (cons observation (gethash key table)) table)
     observation))
 
+(defun e-board-sqlite-publication-target-observe-commits (target callback)
+  "Observe committed writes addressed by TARGET with CALLBACK.
+Return the process-local observation; cancel it with
+`e-board-sqlite-commit-observation-cancel'.  CALLBACK receives no durable row
+and must issue its own bounded query."
+  (unless (e-board-sqlite-publication-target-valid-p target)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-publication-target-p target)))
+  (e-board-sqlite-service-observe-commits
+   (e-board-sqlite-publication-target--service target)
+   (e-board-sqlite-publication-target-board-id target)
+   callback))
+
 (defun e-board-sqlite-commit-observation-cancel (observation)
   "Cancel committed-write OBSERVATION and return non-nil when active."
   (when (and (e-board-sqlite-commit-observation-p observation)

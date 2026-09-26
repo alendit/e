@@ -81,6 +81,11 @@
                          :status 'done :summary "accepted terminal"
                          :outputs [] :participant-session-id participant-id)))))
 
+(defun e-board-activity-shell-test--publish-orchestration-fact (target fact)
+  "Publish one orchestration FACT and await its commit."
+  (e-board-producer-test-await
+   (e-board-sqlite-publication-target-orchestration-fact-start target fact)))
+
 (defun e-board-activity-shell-test--row-cells (buffer participant-id)
   "Return BUFFER's rendered cells for PARTICIPANT-ID."
   (with-current-buffer buffer
@@ -119,6 +124,130 @@
                 (should (equal (aref (e-board-activity-shell-test--row-cells
                                       buffer "participant-1") 0)
                                "participant-1"))))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest e-board-activity-shell-test-committed-task-update-refreshes-selection ()
+  "A committed task update refreshes the native page and keeps its run row."
+  (e-board-producer-test-with-target (target)
+    (e-board-activity-shell-test--publish-orchestration-fact
+     target
+     '(:version 1 :type manifest :idempotency-key "manifest:activity-refresh"
+       :payload (:run-id "activity-refresh"
+                 :tasks ((:task-key "calendar" :required t
+                           :accepted-attempt 0))
+                 :deadline (:kind none)
+                 :descriptor (:label "Activity refresh"))))
+    (e-board-activity-shell-test--publish-orchestration-fact
+     target
+     '(:version 1 :type task-attempt
+       :idempotency-key "attempt:activity-refresh:calendar:0:queued"
+       :payload (:run-id "activity-refresh" :task-key "calendar"
+                 :attempt 0 :status queued)))
+    (let ((buffer nil)
+          (entry-id '(:run-task "activity-refresh" "calendar" 0)))
+      (unwind-protect
+          (progn
+            (setq buffer
+                  (e-board-activity-list-buffer
+                   :target target :live nil :run-id "activity-refresh"))
+            (e-board-activity-shell-test--wait
+             (lambda ()
+               (with-current-buffer buffer
+                 (and (null e-board-activity-shell--request)
+                      (equal (aref
+                              (e-board-activity-shell-test--row-cells
+                               buffer entry-id)
+                              2)
+                             "queued")))))
+            (with-current-buffer buffer
+              (e-board-activity-shell--goto-entry-id entry-id)
+              (should (equal (tabulated-list-get-id) entry-id)))
+            (e-board-activity-shell-test--publish-orchestration-fact
+             target
+             '(:version 1 :type task-attempt
+               :idempotency-key "attempt:activity-refresh:calendar:0:running"
+               :payload (:run-id "activity-refresh" :task-key "calendar"
+                         :attempt 0 :status running)))
+            (e-board-activity-shell-test--wait
+             (lambda ()
+               (with-current-buffer buffer
+                 (and (null e-board-activity-shell--request)
+                      (equal (aref
+                              (e-board-activity-shell-test--row-cells
+                               buffer entry-id)
+                              2)
+                             "running")))))
+            (with-current-buffer buffer
+              (should (equal e-board-activity-shell--focus-run-id
+                             "activity-refresh"))
+              (should (equal (plist-get e-board-activity-shell--page
+                                        :run)
+                             '(:run-id "activity-refresh"
+                               :label "Activity refresh"
+                               :terminal-status nil)))
+              (should (equal e-board-activity-shell--focus-entry-id entry-id))
+              (should (equal (tabulated-list-get-id) entry-id))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest e-board-activity-shell-test-coalesces-commit-refreshes ()
+  "Several commit wake-ups produce one refresh and retain the selected row."
+  (e-board-producer-test-with-target (target)
+    (let ((callback nil)
+          (query-count 0)
+          (buffer nil))
+      (cl-letf (((symbol-function
+                  'e-board-observation-activity-subscribe-commits)
+                 (lambda (_target observer)
+                   (setq callback observer)
+                   (lambda () nil)))
+                ((symbol-function 'e-board-observation-activity-page-start)
+                 (lambda (&rest _arguments)
+                   (cl-incf query-count)
+                   (let ((work
+                          (e-work-start
+                           e-board-activity-shell-test--deferred-spec nil)))
+                     (e-work-finish
+                      work
+                      (list :board-id "test-board"
+                            :generation 1 :revision query-count
+                            :run '(:run-id "test-run" :label "Test run"
+                                   :terminal-status nil)
+                            :tasks '((:task-key "test-task"
+                                      :accepted-attempt 0
+                                      :state queued :label "Test task"))
+                            :participants nil :bytes 1))
+                     work))))
+        (unwind-protect
+            (progn
+              (setq buffer
+                    (e-board-activity-list-buffer
+                     :target target :live nil :run-id "test-run"))
+              (e-board-activity-shell-test--wait
+               (lambda ()
+                 (and (= query-count 1)
+                      (with-current-buffer buffer
+                        (null e-board-activity-shell--request)))))
+              (let ((entry-id '(:run-task "test-run" "test-task" 0)))
+                (with-current-buffer buffer
+                  (e-board-activity-shell--goto-entry-id entry-id)
+                  (should (equal (tabulated-list-get-id) entry-id)))
+                (funcall callback)
+                (funcall callback)
+                (funcall callback)
+                (e-board-activity-shell-test--wait
+                 (lambda ()
+                   (and (= query-count 2)
+                        (with-current-buffer buffer
+                          (and (null e-board-activity-shell--request)
+                               (= (plist-get e-board-activity-shell--page
+                                             :revision)
+                                  2))))))
+                (with-current-buffer buffer
+                  (should (equal e-board-activity-shell--focus-run-id
+                                 "test-run"))
+                  (should (equal e-board-activity-shell--focus-entry-id
+                                 entry-id))
+                  (should (equal (tabulated-list-get-id) entry-id)))))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest e-board-activity-shell-test-renders-empty-mixed-and-terminal-rows ()
@@ -252,6 +381,51 @@
                      (not (e-request-terminal-p
                            (e-work-handle-lifecycle work-b))))
             (e-work-cancel work-b))))))))
+
+(ert-deftest e-board-activity-shell-test-unsubscribes-on-rebind-and-kill ()
+  "A retarget replaces the old observer and killing the buffer removes it."
+  (e-board-producer-test-with-target (target-a service)
+    (let* ((target-b
+            (e-board-sqlite-publication-target-create
+             service "second-observer-board" :author "activity-test"))
+           (work-a (e-work-start e-board-activity-shell-test--deferred-spec nil))
+           (work-b (e-work-start e-board-activity-shell-test--deferred-spec nil))
+           (subscriptions nil)
+           (unsubscribe-count 0)
+           (buffer nil))
+      (cl-letf (((symbol-function
+                  'e-board-observation-activity-subscribe-commits)
+                 (lambda (target callback)
+                   (push (cons target callback) subscriptions)
+                   (lambda () (cl-incf unsubscribe-count))))
+                ((symbol-function 'e-board-observation-activity-page-start)
+                 (lambda (target &rest _arguments)
+                   (if (eq target target-a) work-a work-b))))
+        (unwind-protect
+            (progn
+              (setq buffer
+                    (e-board-activity-list-buffer
+                     :target target-a :live nil))
+              (should (= (length subscriptions) 1))
+              (e-board-activity-list-buffer :target target-b :live nil)
+              (should (= unsubscribe-count 1))
+              (should (= (length subscriptions) 2))
+              ;; An already queued wake-up for the retired target is fenced.
+              (funcall (cdr (cadr subscriptions)))
+              (with-current-buffer buffer
+                (should-not e-board-activity-shell--commit-refresh-timer)
+                (should-not e-board-activity-shell--commit-refresh-pending))
+              (kill-buffer buffer)
+              (setq buffer nil)
+              (should (= unsubscribe-count 2))
+              (should (eq (plist-get (e-work-status work-b) :state)
+                          'cancelled)))
+          (when (buffer-live-p buffer) (kill-buffer buffer))
+          (dolist (work (list work-a work-b))
+            (when (and (e-work-handle-p work)
+                       (not (e-request-terminal-p
+                             (e-work-handle-lifecycle work))))
+              (e-work-cancel work))))))))
 
 (ert-deftest e-board-activity-shell-test-summary-detail-settles-and-retarget-cancels ()
   "Summary detail renders settlement and cannot outlive a Board retarget."

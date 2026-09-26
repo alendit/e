@@ -102,7 +102,8 @@
 (declare-function e-chat-surface-board-status "e-chat-surface" (&optional buffer))
 (declare-function e-board-activity-visual-open-or-text
                   "e-board-activity-visual-shell" (target binding run-id &optional live))
-(declare-function e-board-activity-list-buffer "e-board-activity-shell" (&rest args))
+(declare-function e-board-activity-shell-open-buffer "e-board-activity-shell"
+                  (&rest args))
 (declare-function e-chat-surface-window-reaches-output-p "e-chat-surface")
 (declare-function e-chat-surface-without-recenter "e-chat-surface")
 (declare-function e-chat-composer-active-p "e-chat-composer")
@@ -1241,7 +1242,7 @@ context insertions from the chat buffer the user is looking at."
     (unless (e-chat-service-binding-p binding)
       (user-error "The current chat has no ready Board activity binding"))
     (require 'e-board-activity-shell)
-    (e-board-activity-list-buffer
+    (e-board-activity-shell-open-buffer
      :target (e-chat-service-publication-target binding)
      :run-id run-id)))
 

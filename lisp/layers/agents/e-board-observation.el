@@ -45,6 +45,16 @@ consumer work handle settles."
   (apply #'e-board-sqlite-publication-target-activity-page-start
          target arguments))
 
+(defun e-board-observation-activity-subscribe-commits (target callback)
+  "Subscribe CALLBACK to committed activity changes on TARGET.
+CALLBACK receives no row; it must start its own bounded observation.  Return an
+unsubscriber for the process-local wake-up subscription."
+  (let ((observation
+         (e-board-sqlite-publication-target-observe-commits
+          target callback)))
+    (lambda ()
+      (e-board-sqlite-commit-observation-cancel observation))))
+
 (defun e-board-observation-activity-participant-start
     (target participant-id)
   "Return work for TARGET's exact durable PARTICIPANT-ID projection.

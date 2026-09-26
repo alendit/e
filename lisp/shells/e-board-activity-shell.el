@@ -40,6 +40,9 @@
 (defconst e-board-activity-shell-raw-buffer-name "*e-board-activity-raw*"
   "Name of the explicitly requested durable transcript buffer.")
 
+(defconst e-board-activity-shell-commit-refresh-delay 0.05
+  "Seconds to coalesce Board commit wake-ups before refreshing this shell.")
+
 (defvar-local e-board-activity-shell--target nil
   "Explicit SQLite publication target displayed by this buffer.")
 
@@ -60,6 +63,15 @@
 
 (defvar-local e-board-activity-shell--request nil
   "Current request-scoped Board activity work handle.")
+
+(defvar-local e-board-activity-shell--commit-unsubscribe nil
+  "Unsubscriber for this buffer's current Board commit wake-up.")
+
+(defvar-local e-board-activity-shell--commit-refresh-timer nil
+  "Debounce timer for the next committed Board activity refresh.")
+
+(defvar-local e-board-activity-shell--commit-refresh-pending nil
+  "Non-nil when a commit requires a refresh after the current read settles.")
 
 (defvar-local e-board-activity-shell--detail-request nil
   "Current request-scoped Board summary detail work handle.")
@@ -221,15 +233,13 @@
 (defun e-board-activity-shell--goto-entry-id (entry-id)
   "Move point to activity row ENTRY-ID, or the first row when absent."
   (goto-char (point-min))
-  (forward-line 1)
   (let ((found nil))
     (while (and (not found) (not (eobp)))
       (if (equal entry-id (tabulated-list-get-id))
           (setq found t)
         (forward-line 1)))
     (unless found
-      (goto-char (point-min))
-      (forward-line 1))))
+      (goto-char (point-min)))))
 
 (defconst e-board-activity-shell--hint-bindings
   '(("RET" . "open chat")
@@ -295,6 +305,49 @@
                         (or e-board-activity-shell--next "-")))
         (e-keymap-hints-insert e-board-activity-shell--hint-bindings)))))
 
+(defun e-board-activity-shell--request-active-p ()
+  "Return non-nil when the current page request has not settled."
+  (and e-board-activity-shell--request
+       (not (memq (plist-get (e-work-status
+                              e-board-activity-shell--request)
+                             :state)
+                  '(finished failed cancelled)))))
+
+(defun e-board-activity-shell--queue-commit-refresh (buffer target)
+  "Debounce one committed TARGET wake-up for BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (eq target e-board-activity-shell--target)
+                 (derived-mode-p 'e-board-activity-shell-mode))
+        (setq e-board-activity-shell--commit-refresh-pending t)
+        (when (timerp e-board-activity-shell--commit-refresh-timer)
+          (cancel-timer e-board-activity-shell--commit-refresh-timer))
+        (setq e-board-activity-shell--commit-refresh-timer
+              (run-at-time e-board-activity-shell-commit-refresh-delay nil
+                           #'e-board-activity-shell--commit-refresh-timer-fired
+                           buffer target))))))
+
+(defun e-board-activity-shell--commit-refresh-timer-fired (buffer target)
+  "Refresh BUFFER for TARGET after its commit debounce settles."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (eq target e-board-activity-shell--target)
+        (setq e-board-activity-shell--commit-refresh-timer nil)
+        (when e-board-activity-shell--commit-refresh-pending
+          (unless (e-board-activity-shell--request-active-p)
+            (setq e-board-activity-shell--commit-refresh-pending nil)
+            (e-board-activity-shell--refresh)))))))
+
+(defun e-board-activity-shell--schedule-pending-commit-refresh ()
+  "Schedule a queued commit refresh when the current request has settled."
+  (when (and e-board-activity-shell--commit-refresh-pending
+             (not (timerp e-board-activity-shell--commit-refresh-timer)))
+    (setq e-board-activity-shell--commit-refresh-timer
+          (run-at-time e-board-activity-shell-commit-refresh-delay nil
+                       #'e-board-activity-shell--commit-refresh-timer-fired
+                       (current-buffer)
+                       e-board-activity-shell--target))))
+
 (defun e-board-activity-shell--install-result (buffer target request settled)
   "Install SETTLED REQUEST in BUFFER when it still owns TARGET."
   (when (buffer-live-p buffer)
@@ -319,14 +372,12 @@
                   (e-work-error-message
                    (or (plist-get status :error)
                        '(e-work-cancelled "cancelled")))))
-          (e-board-activity-shell--render))))))
+          (e-board-activity-shell--render)
+          (e-board-activity-shell--schedule-pending-commit-refresh))))))
 
 (defun e-board-activity-shell--cancel-request ()
   "Cancel the current nonterminal request, if any."
-  (when (and e-board-activity-shell--request
-             (not (memq (plist-get (e-work-status
-                                    e-board-activity-shell--request) :state)
-                        '(finished failed cancelled))))
+  (when (e-board-activity-shell--request-active-p)
     (e-work-cancel e-board-activity-shell--request)))
 
 (defun e-board-activity-shell--cancel-detail-request ()
@@ -338,6 +389,36 @@
                         '(finished failed cancelled))))
     (e-work-cancel e-board-activity-shell--detail-request))
   (setq e-board-activity-shell--detail-request nil))
+
+(defun e-board-activity-shell--cancel-commit-refresh ()
+  "Cancel this buffer's scheduled commit refresh and clear its pending bit."
+  (when (timerp e-board-activity-shell--commit-refresh-timer)
+    (cancel-timer e-board-activity-shell--commit-refresh-timer))
+  (setq e-board-activity-shell--commit-refresh-timer nil
+        e-board-activity-shell--commit-refresh-pending nil))
+
+(defun e-board-activity-shell--unsubscribe-commits ()
+  "Unsubscribe this buffer from its current Board commit wake-up."
+  (when (functionp e-board-activity-shell--commit-unsubscribe)
+    (funcall e-board-activity-shell--commit-unsubscribe))
+  (setq e-board-activity-shell--commit-unsubscribe nil))
+
+(defun e-board-activity-shell--subscribe-commits ()
+  "Subscribe this buffer to committed writes for its current target."
+  (let ((buffer (current-buffer))
+        (target e-board-activity-shell--target))
+    (setq e-board-activity-shell--commit-unsubscribe
+          (e-board-observation-activity-subscribe-commits
+           target
+           (lambda ()
+             (e-board-activity-shell--queue-commit-refresh buffer target))))))
+
+(defun e-board-activity-shell--cleanup ()
+  "Retire this buffer's Board subscription and outstanding local work."
+  (e-board-activity-shell--unsubscribe-commits)
+  (e-board-activity-shell--cancel-commit-refresh)
+  (e-board-activity-shell--cancel-request)
+  (e-board-activity-shell--cancel-detail-request))
 
 (defun e-board-activity-shell--refresh (&optional reset)
   "Start one detached Board observation request for the current buffer."
@@ -365,7 +446,8 @@
               buffer target work settled))))
       (error
        (setq e-board-activity-shell--error (error-message-string error))
-       (e-board-activity-shell--render)))))
+       (e-board-activity-shell--render)
+       (e-board-activity-shell--schedule-pending-commit-refresh)))))
 
 (defun e-board-activity-shell-refresh ()
   "Refresh the detached Board activity page."
@@ -678,6 +760,8 @@ dispositions and keeps the Board participant inventory available."
       ;; a held read can continue after the buffer has moved to another Board.
       (e-board-activity-shell--cancel-request)
       (e-board-activity-shell--cancel-detail-request)
+      (e-board-activity-shell--unsubscribe-commits)
+      (e-board-activity-shell--cancel-commit-refresh)
       (setq e-board-activity-shell--target target
             e-board-activity-shell--live live
             e-board-activity-shell--after nil
@@ -688,9 +772,21 @@ dispositions and keeps the Board participant inventory available."
             e-board-activity-shell--page nil
             e-board-activity-shell--request nil
             e-board-activity-shell--error nil)
+      (add-hook 'kill-buffer-hook #'e-board-activity-shell--cleanup nil t)
+      (e-board-activity-shell--subscribe-commits)
       (e-board-activity-shell--refresh t))
     (when (called-interactively-p 'interactive)
       (e-workspace-pop-to-buffer buffer))
+    buffer))
+
+(cl-defun e-board-activity-shell-open-buffer
+    (&key target (live e-subagent-actions-default-live) run-id)
+  "Display TARGET's native Board activity buffer and return it.
+LIVE and RUN-ID are passed to `e-board-activity-list-buffer'."
+  (let ((buffer
+         (e-board-activity-list-buffer
+          :target target :live live :run-id run-id)))
+    (e-workspace-pop-to-buffer buffer)
     buffer))
 
 (provide 'e-board-activity-shell)

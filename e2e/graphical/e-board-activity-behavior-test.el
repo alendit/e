@@ -29,6 +29,7 @@
 (require 'e-harness)
 (require 'e-harness-instances)
 (require 'e-harness-registry)
+(require 'e-board-activity-visual-shell)
 (require 'e-runtime-store)
 (require 'e-session-sqlite)
 (require 'e-subagent-live)
@@ -285,10 +286,20 @@
              5.0 "populated Board run-set status")
             (setq board-buffer
                   (with-current-buffer (plist-get fixture :transcript)
-                    (funcall e-chat-surface--board-status-action)))
+                    (cl-letf
+                        (((symbol-function
+                           'e-board-activity-visual-unavailable-reason)
+                          (lambda () "forced native fallback")))
+                      (funcall e-chat-surface--board-status-action))))
+            (should (eq (window-buffer (selected-window)) board-buffer))
             (with-current-buffer board-buffer
               (should (equal e-board-activity-shell--focus-run-id
                              "graphical-run")))
+            (should
+             (eq board-buffer
+                 (with-current-buffer (plist-get fixture :transcript)
+                   (e-chat-open-board-activity-text))))
+            (should (eq (window-buffer (selected-window)) board-buffer))
             ;; Admission and runner installation are observed through the
             ;; actual production owner before the Board query begins.
             (dolist (participant-id child-ids)

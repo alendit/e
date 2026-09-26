@@ -742,8 +742,8 @@ Board run-set observer."
                    "native text view with M-x "
                    "e-chat-open-board-activity-text.")
            reason)
-  (e-board-activity-list-buffer :target target :live live
-                                :run-id run-id))
+  (e-board-activity-shell-open-buffer :target target :live live
+                                      :run-id run-id))
 
 (defun e-board-activity-visual-open-or-text
     (target binding run-id &optional live)

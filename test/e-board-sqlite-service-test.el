@@ -2793,13 +2793,15 @@
       (should (plist-get pickup :addressed-p)))))
 
 (ert-deftest e-board-sqlite-service-commit-observer-wakes-only-while-subscribed ()
-  "Committed Board writes wake a bounded consumer until its lease is cancelled."
+  "A publication-target observer wakes until its lease is cancelled."
   (e-board-sqlite-service-test--with-fixture
       (_store service board-id _session-id _participant-id)
-    (let* ((notifications 0)
+    (let* ((target (e-board-sqlite-publication-target-create
+                    service board-id :author "observer-test"))
+           (notifications 0)
            (observation
-            (e-board-sqlite-service-observe-commits
-             service board-id (lambda () (cl-incf notifications)))))
+            (e-board-sqlite-publication-target-observe-commits
+             target (lambda () (cl-incf notifications)))))
       (e-board-sqlite-service-test--await
        (e-board-sqlite-service-record-append-start
         service board-id 'fact 'fact "observer-1"
