@@ -451,7 +451,7 @@
               ((symbol-function 'message)
                (lambda (format-string &rest values)
                  (setq message-text (apply #'format format-string values))))
-              ((symbol-function 'e-board-activity-list-buffer)
+              ((symbol-function 'e-board-activity-shell-open-buffer)
                (lambda (&rest values) (setq arguments values) 'native-buffer)))
       (should (eq (e-board-activity-visual-open-or-text
                    'target 'binding "run-1")
@@ -474,7 +474,7 @@
               ((symbol-function 'message)
                (lambda (format-string &rest values)
                  (setq message-text (apply #'format format-string values))))
-              ((symbol-function 'e-board-activity-list-buffer)
+              ((symbol-function 'e-board-activity-shell-open-buffer)
                (lambda (&rest values)
                  (setq fallback-arguments values)
                  'native-buffer)))
