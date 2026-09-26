@@ -30,9 +30,11 @@
 (require 'e-harness-instances)
 (require 'e-layers)
 (require 'e-project-local)
+(require 'e-runtime-sqlite)
 (require 'e-session-sqlite)
 (require 'e-session-storage)
 (require 'e-subagent-runner)
+(require 'e-task-queue)
 (require 'e-tools)
 (require 'e-await-tool)
 (require 'e-waitable)
@@ -278,14 +280,12 @@
       (signal (car unexpected) (cdr unexpected)))
     (or result (ert-fail "Timed out awaiting configured Daily action"))))
 
-(defun e-current-config-e2e-test--close-private-harness (harness)
-  "Retire HARNESS bindings and close its test-owned SQLite store."
+(defun e-current-config-e2e-test--retire-private-harness (harness)
+  "Retire HARNESS bindings before the private test process exits."
   (when-let* ((bindings (gethash harness e-chat-service--bindings)))
     (maphash (lambda (_session-id binding)
                (ignore-errors (e-chat-service--retire-binding binding)))
-             bindings))
-  (ignore-errors
-    (e-session-sqlite-store-close (e-harness-sessions harness))))
+             bindings)))
 
 (ert-deftest e-current-config-e2e-test-first-file-hooks-succeed ()
   "The first file opens with the current configuration's persisted state."
@@ -355,9 +355,6 @@
            configured-root))
          (repo (expand-file-name "grimoire-consumer/"
                                  e-current-config-e2e-test--state-directory))
-         (store-directory
-          (expand-file-name "grimoire-runtime/"
-                            e-current-config-e2e-test--state-directory))
          (e-harness-instance--instances (make-hash-table :test 'equal))
          (e-harness-instance--defaults (make-hash-table :test 'equal))
          (e-subagent--configured-harnesses
@@ -370,13 +367,15 @@
         (progn
           (e-current-config-e2e-test--initialize-git-repo repo)
           (setq sessions
-                (e-session-sqlite-store-create store-directory
-                                               :asynchronous t)
+                (e-runtime-sqlite-session-store (e-default-runtime))
                 harness
                 (e-harness-create
                  :backend (e-backend-fake-create :items nil :delay 0.01)
                  :sessions sessions :enabled-layer-ids nil))
           (e-session-enable sessions)
+          (e-harness-instance-register
+           :id :chat-default :kind 'chat :harness-id :chat-default
+           :factory (lambda () harness) :default t)
           (should (e-layer-get 'slack-mcp))
           (dolist (id '(:tool-user :fast-tool-user))
             (e-harness-instance-register
@@ -459,14 +458,25 @@
                 (should
                  (cl-every
                   (lambda (task)
-                    (eq (plist-get task :state) 'running))
-                  (plist-get projection :tasks))))))
+                    (memq (plist-get task :state) '(pending queued running)))
+                  (plist-get projection :tasks)))
+                (let* ((queue-id
+                        (grimoire-daily-run--queue-id board-id run-id))
+                       (queue
+                        (plist-get
+                         (gethash queue-id grimoire-daily-run--task-queues)
+                         :queue)))
+                  (should (e-task-queue-p queue))
+                  (should
+                   (eq (e-task-queue-storage queue)
+                       (e-runtime-sqlite-task-storage
+                        (e-default-runtime))))))))
           (dolist (command
                    (list (intern (concat "e-" "subagents-list-buffer"))
                          (intern (concat "e-board-" "runs-list-buffer"))))
             (should-not (commandp command))))
       (when harness
-        (e-current-config-e2e-test--close-private-harness harness)))))
+        (e-current-config-e2e-test--retire-private-harness harness)))))
 
 (ert-deftest e-current-config-e2e-test-slack-layer-reaches-tool-user ()
   "The configured Slack layer can be activated on the shared tool-user type."
