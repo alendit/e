@@ -398,9 +398,13 @@ revalidates current task/participant coordinates and live capability before
 participant controls act.  The native text view remains
 available when visual startup fails.  Focused Board and visual ERT, Rust tests,
 the WASM build, and web binding generation passed.  The isolated graphical
-Board scenario passed through the native fallback; this Emacs build rejects
-xwidget creation, so the visual graphical path still needs an xwidget-capable
-build for direct verification.
+Board scenario passed through the native fallback.  After Emacs 31.1 was
+rebuilt with xwidgets, a phased private graphical E2E opened the WebKit Board
+from the public chat status, loaded the WASM canvas, exchanged a coherent run
+snapshot and task-selection action, and retained that selection after a Board
+update.  Its fixture covered a task pending participant admission beside a
+running task with live controls and a responsive owner composer.  A human
+pointer and pixel playthrough remains to be checked.
 
 The selector overflow correction on 2026-09-26 replaced the 256-run expanded
 query with one indexed page at a time, capped at 64 active runs.  The shared
@@ -475,8 +479,8 @@ restart scenario pass.  The paired private current-configuration cold start
 and native Board graphical scenario also pass.  The stopped configured store
 was upgraded to schema v9 with one verified v8 rollback backup retained.
 Direct xwidget visual interaction and the full required-plus-optional restart
-scenario remain acceptance checks; =review.org= records the exact evidence
-and limits.  Feature 89 is merged into the current e and Grimoire checkouts;
+scenario have partial evidence; =review.org= records the exact checks and
+limits.  Feature 89 is merged into the current e and Grimoire checkouts;
 the configured schema-v9 store opens read-only with the integrated e worker.
 The core runtime changes take effect when the user next starts Emacs.
 

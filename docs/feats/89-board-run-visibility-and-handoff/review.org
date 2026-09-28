@@ -6,8 +6,9 @@
 In-review.  All recorded implementation findings are resolved.  The paired
 current-configuration cold start, native Board graphical check, and
 two-process Grimoire graphical Daily check passed from the current checkouts.
-Direct xwidget interaction and the complete required-plus-optional restart
-scenario still need acceptance evidence.
+The xwidget-capable build passed a phased WebKit Board interaction gate.
+A pointer and pixel playthrough and the complete required-plus-optional
+restart scenario still need acceptance evidence.
 
 * Review summary
 
@@ -92,6 +93,21 @@ later passes followed their corrections and focused regressions.
   saved Daily commit and the second process's reopen assertions passed.
   The integrated e worker independently opened the configured store with
   =:schema-version 9= and =:access-mode read-only=.
+- After reinstalling Emacs 31.1 with =--with-xwidgets=, visual ERT passed
+  17/17 and =bash e2e/run-current-config-tests.sh= passed 8/8.  The new
+  =bash e2e/run-board-visual-tests.sh= passed through one private configured
+  graphical daemon: public chat status opened a live WebKit xwidget; its
+  Board WASM canvas initialized; WebKit received the pending required and
+  running optional task cards, including the latter's live control; the
+  owner composer accepted input; a WebKit-originated semantic selection
+  reached Emacs; and a Board update retained the selected task.  A single
+  =emacsclient= evaluation cannot observe WebKit navigation before returning,
+  so the test uses bounded separate calls and private runtime state.
+  The ignored WASM package in this checkout came from the prior Feature 89
+  build; its Board source tree matched byte-for-byte, and the copied WASM hash
+  matched.  =wasm-pack= is absent on this host, so this was not a fresh build.
+  The source guard now checks native =xwidget-internal= rather than the Lisp
+  WebKit command, which exists even in builds without xwidgets.
 
 * Findings
 
@@ -172,8 +188,9 @@ controls; visual ERT passed 16/16.
   context, keyed completion, and idle FIFO delivery have focused e evidence.
   Native graphical coverage includes the idle composer and Board fallback.
 - Slice 2b: the visual view model, Rust/WASM app, indexed run browsing, and
-  action guards have focused and build evidence.  Direct xwidget interaction
-  remains unverified.
+  action guards have focused and build evidence.  The real xwidget and WASM
+  state/action bridge passed; pointer-driven and pixel-rendering inspection
+  remain unverified.
 - Slice 6: Grimoire uses one canonical owner session and Board for interactive
   and headless Daily dispatch.  Old =E_UPDATE_SESSION= routing was removed;
   the production queue consumer and its guidance are updated.
@@ -214,8 +231,9 @@ controls; visual ERT passed 16/16.
     Unexpected store and dispatch failures surface as failed work or attention.
 14. Reducer, SQL, queue, admission, and action-fence tests prove behavior below
     the graphical shell.  Isolated graphical tests and the paired private
-    current-configuration cold start cover their joins.  The xwidget and full
-    restart-scenario checks remain necessary.
+    current-configuration cold start cover their joins.  The phased xwidget
+    test covers native startup and state/action exchange; pointer pixels and
+    the full restart scenario remain necessary.
 
 * UX and performance playthrough
 
@@ -223,16 +241,20 @@ The private native graphical frame exercised an idle owner chat, a pending
 task without a participant, an editable composer during a held Board read,
 opening the status into a displayed activity buffer, and reopening after a
 Board update.  The two-process Daily graphical fixture exercised durable
-queue recovery.  This Emacs 31.1 build lacks xwidgets, so the visual app was
-checked through view-model and event tests instead of a direct graphical
-playthrough.  The user's Emacs stayed stopped; these checks used private
-processes.
+queue recovery.  The earlier Emacs 31.1 build lacked xwidgets, so the app was
+initially checked through view-model and event tests.  The rebuilt xwidget
+version passed the phased WebKit gate described above.  The off-screen
+WebGL canvas returned a black PNG capture, and macOS window capture of a
+private visible test frame did not produce an image.  These checks do not
+prove the drawn pixels or a pointer click.  The user's Emacs stayed stopped;
+all checks used private processes.
 
 * Unresolved acceptance and activation
 
-- Exercise the visual Daily owner scenario in an xwidget-capable Emacs,
-  including pending admission, live control availability, Board update,
-  focus retention, and composer responsiveness.
+- Inspect the Board's drawn cards and use a real pointer click in an
+  xwidget-capable frame.  The private phased gate already proves pending
+  admission, live control data, Board update, selection retention, and
+  composer input across the native WebKit bridge.
 - Run the complete required-plus-optional restart scenario from =plan.org=
   across pre-persistence, pre-publication, post-publication, post-consumption,
   and coordinator-outcome boundaries.  Measure realistic Board write and
