@@ -26,7 +26,11 @@ A user asks the main chat to start work that expands into a board run.
 The main session publishes the run and ends its turn without waiting for the full graph.
 The composer becomes ready at once.
 A persistent status area shows that the run is active and provides a bounded summary.
-On an xwidget-capable graphical Emacs, opening that status shows the selected run's tasks and participants in a visual Board activity view, including tasks that have not admitted a participant yet.
+On an xwidget-capable graphical Emacs, opening that status shows a small,
+focusless Board HUD near the top-right corner of chat.  It lists the selected
+run's required and optional task states, including tasks that have not
+admitted a participant yet.  An explicit =Details= action opens the full
+visual activity view with participants and controls.
 If the user sends another message, the model receives the same active-run summary in context and therefore knows that work is still pending.
 When the required work settles, the board queues one completion input for the same session.
 That input waits while a model turn is active and starts only after the session reaches an idle boundary.
@@ -168,16 +172,21 @@ view does not block the composer.
 Board activity offers an =emacs-egui= visualization of the same Board-owned
 run-focused page as its native text view.  The chat status opens the selected
 run in this one activity surface.  The visual renderer occupies an xwidget
-buffer in a floating child frame over the owner chat; a user can choose the
-text renderer on a build without xwidgets or when they prefer keyboard-oriented
-rows.  The text renderer also floats when child frames are available.
+buffer in a floating child frame over the owner chat.  Its default form is a
+roughly 300-pixel-wide, top-right HUD that leaves the chat focused.  It shows
+the selected run label, lifecycle, attention or completion cue, and short
+required and optional task rows.  =Details= opens the larger focused view;
+=HUD= returns to the small view.  Both forms have a close control.  A user can
+choose the text renderer on a build without xwidgets or when they prefer
+keyboard-oriented rows.  The text renderer also floats when child frames are
+available.
 Dismissing the view with =q= or =C-g= returns focus to chat without ending the
 Board run or changing the chat layout; terminal Emacs uses a normal window.
 Adding the repository-root =emacs-egui= submodule and building the Board WASM
 app are part of this feature's visual slice.  The submodule is shared with
 Feature 62 rather than copied into a second UI runtime.
 
-The visual view has a compact active-run selector, a selected-run workspace,
+The full visual view has an active-run selector, a selected-run workspace,
 and an inspector.  The selector shows the bounded run labels, lifecycle,
 required and optional counts, and omitted count from the shared projection.
 When runs are omitted, =Browse runs= opens a 64-row active-run index page.
@@ -194,6 +203,8 @@ latest bounded outcome or progress, and only the controls available for its
 current participant.  Board-wide participant navigation remains available so
 an ad-hoc child does not disappear behind the run-focused layout.
 
+The full view expands the HUD's task summary:
+
 #+begin_example
 Board activity                     Daily update  [dispatching]
 Runs: Daily update  2 required · 1 optional     Completion: waiting
@@ -205,14 +216,15 @@ Optional  Notes     · succeeded         · attempt 1 → participant
 Inspector: selected task, durable outcome, exact available actions
 #+end_example
 
-The layout takes the glanceable status and attention cues of
-[[https://github.com/nohzafk/emacs-workspace-hud][emacs-workspace-hud]], while using the
-larger activity view for task detail.  It draws only relationships recorded
+The default HUD takes its small, top-right, focusless layout from
+[[https://github.com/nohzafk/emacs-workspace-hud][emacs-workspace-hud]]; the
+larger activity view is entered only for task detail.  It draws only
+relationships recorded
 by the Board: run to task, task to selected attempt, and attempt to admitted
 participant.  The current manifest does not define dependency edges, so the
 view does not invent a directed task graph or offer graph editing.  The
-compact chat status stays outside the transcript.  Opening the detailed view
-floats it over the owner chat while preserving the chat windows and composer.
+compact chat status stays outside the transcript.  Opening the HUD or its
+detailed view preserves the chat windows and composer.
 
 Board observation supplies a bounded, coherent page for the selected run;
 the visual adapter maps that detached page into a narrow JSON view model.
@@ -386,9 +398,11 @@ reopened durable activity page.
 - Route semantic UI events through Elisp to the existing Board activity and
   participant-control services.  Refresh from Board notifications, preserving
   focus by durable identity and rejecting stale or unavailable controls.
-- Gate: a graphical Daily owner scenario opens the visual view from an idle
-  chat, shows a dispatch-pending task without a participant beside a running
-  task with one, and leaves the composer responsive.  A Board update changes
+- Gate: a graphical Daily owner scenario opens the focusless top-right HUD
+  from an idle chat, leaves chat focus and the composer responsive, and opens
+  the large visual view only through =Details=.  Returning with =HUD= restores
+  the small frame and chat focus.  The visual view shows a dispatch-pending
+  task without a participant beside a running task with one.  A Board update changes
   the task card without duplicating it or losing focus.  Focused view-model
   and event tests prove bounded payloads, coherent task/participant mapping,
   omitted-run access, restore/attention labels, and stale-click handling.  Build
@@ -524,9 +538,10 @@ The status and context never report no work while restore is incomplete.
 
 - The initiating turn can end while its board run continues and the composer is ready for more input.
 - The owner chat shows a persistent board-run indicator derived from durable board state.
-- Opening Board activity from that indicator floats its visual or native view
-  over the owner chat on graphical Emacs, preserves the chat windows and
-  composer, and dismisses back to chat without ending the run.
+- Opening Board activity from that indicator floats over the owner chat on
+  graphical Emacs, preserves the chat windows and composer, and dismisses
+  without ending the run.  The visual default is a small, focusless top-right
+  HUD; the full inspector appears only after =Details= is chosen.
 - The indicator distinguishes chat-turn idleness from an active Board run,
   names the most actionable run, counts runs rather than workers, and opens
   the one Board activity surface focused on that run.

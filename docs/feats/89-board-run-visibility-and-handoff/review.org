@@ -20,8 +20,9 @@ SQLite schema v9 indexes actionable runs and supports an offline v8-to-v9
 backfill.  The final independent pass at e =81fd0163= and Grimoire =a9cef39=
 found no P0--P2 issue.  Deterministic repository validation reached a fixed
 point.  The stopped configured store was upgraded to v9 and its integrity was
-checked.  Feature 89 is now merged into both current checkouts; the user has
-not restarted Emacs with those sources yet.
+checked.  Feature 89 is merged into both current checkouts.  This HUD
+correction was validated in private Emacs processes; it was not loaded into
+the user's running Emacs.
 
 * Scope reviewed
 
@@ -118,8 +119,34 @@ later passes followed their corrections and focused regressions.
   WebKit E2E passed: the real Board WASM view opened in a child frame over
   chat, accepted the selected-run page and a task action, retained selection
   after an update, kept the composer active, and dismissed back to chat.
+- After the HUD correction, Rust tests passed 7/7 and visual ERT passed
+  17/17.  The Board WASM was rebuilt for =wasm32-unknown-unknown= and bound
+  with =wasm-bindgen 0.2.126=.  The private phased WebKit E2E passed: the
+  public chat status opened an approximately 300-pixel-wide, focusless child
+  frame at the top right while chat kept focus; WebKit received the pending
+  required and running optional task rows; =Details= opened the large focused
+  view; the task action and update passed; =HUD= returned to the compact frame
+  and chat focus.  The focusless off-screen WebKit frame delayed its first
+  animation-frame callback, so the canvas visibility class is set immediately
+  after WASM initialization.  This gate checks frame geometry and WebKit
+  state delivery, not a human-visible pixel or pointer playthrough.
+- The current-configuration native graphical fallback passed 1/1 after the
+  HUD change, using a private state directory.  The isolated bootstrap
+  failed before test execution with an Emacs 31 macro-expansion cycle, so it
+  supplies no Board result.  Focused Board shell and visual ERT passed 28/28;
+  =bash e2e/run-current-config-tests.sh= passed 8/8 with private state.
 
 * Findings
+
+** DONE High: The first floating Board view obscured chat
+
+The first overlay used 82% of the chat frame and focused its full inspector
+on opening.  That missed the small status card shown in
+[[https://github.com/nohzafk/emacs-workspace-hud][emacs-workspace-hud]].
+The chat action now opens a roughly 300-pixel top-right HUD without taking
+focus.  Its required and optional task rows retain pending-admission
+visibility; the full inspector requires =Details=.  The private WebKit E2E
+checks compact geometry, focus, state delivery, expansion, and return.
 
 ** DONE High: Board activity replaced the chat instead of floating over it
 
