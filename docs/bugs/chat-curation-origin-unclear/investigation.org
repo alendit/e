@@ -1,0 +1,101 @@
+#+title: Chat Context Update Origin Investigation
+#+startup: overview
+
+* Evidence
+
+The screenshot shows repeated =Context curated= rows with category-only source
+descriptions.  A bounded read-only =scripts/e-live-probe chat= found the user's
+selected Grimoire chat in =done= state.  The probe does not expose transcript
+content; no live Emacs state was changed.
+
+Source inspection found that =e-capabilities--context-fragments= knows the
+contributing capability and context provider, but
+=e-context-lifetime--segment-observations= previously reduced every such
+source to =current-state= or =dynamic-context=.  Its public curation stub then
+carried only the semantic source kind.  =e-chat-service-format-context-curation=
+could therefore print “current state” but could not distinguish visible Emacs
+buffers from workspace state or chat attachments.  Classic chat and ModernChat
+used the same formatter; the classic and ModernChat titles both said “Context
+curated” without naming the actor.
+
+* Correction
+
+- Context providers may declare one static, bounded =:public-origin= display
+  name.  Known dynamic providers declare names such as “visible Emacs buffers”
+  and “Emacs workspace state”.  Invalid or absent names are omitted.
+- Context lifetime carries that name only in runtime observations and public
+  stubs for =current-state= or =dynamic-context=; it does not add it to model
+  input or durable curation records.  Core and chat service validate the
+  allowlisted field.  Source content, source labels, tool arguments/output,
+  call IDs, observation IDs, fingerprints, and request-time provider values
+  remain outside the activity.
+- Both shells title the entry “Agent updated context”.  Their shared formatter
+  says “from” before a source list and calls a tool source a tool result.  Old
+  count-only and category-only Board activities remain readable with generic
+  origin text.
+- The graphical scenario publishes two ordered updates and checks the active
+  and expanded settled views, along with composer and window invariants.
+
+The public activity remains an audit of accepted context curation, not a
+transcript =System= message.  The running Emacs was left unchanged; new core
+record handling requires a restart before the new origin text appears there.
+
+* Validation
+
+- =e-chat-activity-test.el=: 16/16 passed.
+- =e-context-lifetime-test.el=: 31/31 passed.
+- =e-capabilities-test.el=: 22/22 passed.
+- =e-harness-context-lifetime-composition-test.el=: 14/14 passed.
+- =e-board-sqlite-service-test.el=: 39/39 passed.
+- =e-context-test.el=: 15/15 passed; =e-defaults-test.el=: 37/37 passed;
+  =e-chat-activity-composition-test.el=: 31/31 passed; =e-modernchat-test.el=:
+  7/7 passed; ModernChat Rust tests: 3/3 passed.
+- Focused isolated graphical scenario: 1/1 passed.  Captured active and
+  settled PNGs were inspected; the active view visibly distinguishes the two
+  source lists and the settled summary reports two curations.
+- Changed production modules byte-compiled successfully.  The
+  warnings-as-errors variant remains blocked by warnings in untouched
+  =e-chat-service= lines 695, 1249, 1255, 2011, and 696, along with existing
+  ModernChat/Org Canvas cross-module warnings.
+- The full private graphical suite finished 24/32 with eight failures in
+  selectors outside the curation scenario.  The first failure also reproduces
+  alone: its hardcoded mode-line assertion expects =/353k tok=, while the
+  captured Emacs 31 mode line is occupied by ERT's long test label.  The other
+  seven broad-suite failures remain unclassified; the focused curation
+  scenario passed alone and inside that suite.
+
+The Emacs 31.1 graphical daemon initially failed before test loading because
+source-first loading recursively macroexpanded =comp.el=.  The isolated E2E
+bootstrap now preloads =comp= before switching to source-first loading.  The
+private daemon then reached the test; the sandbox required a local-socket
+escalation.  This did not connect to the user's Emacs.
+
+* Architecture self-check
+
+1. The package makes a previously opaque user-facing activity attributable and
+   gives its context inputs meaningful names even if work stops here.
+2. It moves toward source-grounded context activity without adding a private
+   source browser to the chat surface.
+3. Provider display names are declared at the contributing provider; absent
+   and unsuitable names have one reversible generic fallback.
+4. Context providers own their public names, context lifetime owns the trusted
+   projection, and the chat service owns wording for both shells.
+5. One optional string extends an existing narrow stub; shells do not inspect
+   provider internals.
+6. Core does not depend on any named capability or UI implementation.
+7. Board publication and rendering remain outside context lifetime.
+8. The new provider and observation fields are runtime-only.  The public stub
+   has the existing bounded Board activity lifetime and no new durable
+   curation record field.
+9. A provider contributes at most one static name per segment; the additional
+   validation and formatting work is bounded by the existing 16-source limit.
+10. The origin means the same thing for every provider: its static display
+    name, never a dynamic source label.
+11. Count-only and old category-only Board activities retain generic wording;
+    no obsolete rendering branch is needed.
+12. No legacy semantic path became unnecessary in this presentation change.
+13. Invalid provider display metadata is omitted before curation; malformed
+    public projections fail visibly at the existing validation boundary.
+14. Provider-to-segment, segment-to-stub, formatter, ModernChat DTO, and
+    graphical two-event tests cover the core behavior independently and in
+    composition.

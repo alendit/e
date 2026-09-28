@@ -333,7 +333,7 @@ mod tests {
                 "turnId": "turn-1",
                 "kind": "context-curated",
                 "status": "ok",
-                "title": "Context curated",
+                "title": "Agent updated context",
                 "summary": "kept 1 · erased 2"
               }]
             }"#,
@@ -345,7 +345,7 @@ mod tests {
 
         let selected = app.selected_activity().unwrap();
         assert_eq!(selected.id.as_deref(), Some("board-activity-7"));
-        assert_eq!(selected.title.as_deref(), Some("Context curated"));
+        assert_eq!(selected.title.as_deref(), Some("Agent updated context"));
         assert_eq!(selected.status.as_deref(), Some("ok"));
         assert_eq!(selected.summary.as_deref(), Some("kept 1 · erased 2"));
     }

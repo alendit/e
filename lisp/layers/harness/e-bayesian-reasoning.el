@@ -839,6 +839,7 @@ Every performed check writes a durable hook-audit record."
    :context-providers
    (list (e-context-provider-create
           :name 'bayesian-reasoning-evidence-handles
+          :public-origin "reasoning evidence handles"
           :priority 255
           :cache-placement 'dynamic-context
           :build #'e-bayesian-reasoning--current-turn-evidence-context))

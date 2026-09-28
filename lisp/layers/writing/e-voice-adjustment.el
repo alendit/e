@@ -337,6 +337,7 @@ PARAMETERS is its input schema and RUNNER implements the action."
    :context-providers
    (list (e-context-provider-create
           :name 'voice-adjustment
+          :public-origin "voice preferences"
           :priority 210
           :cache-placement 'dynamic-context
           :build #'e-voice-adjustment--context-provider))

@@ -622,6 +622,7 @@ uses `e-board-run-set-state-for' and emits restoring until an application
 query installs the first durable value."
   (e-context-provider-create
    :name 'board-run-set
+   :public-origin "Board run state"
    :priority 215
    :cache-placement 'dynamic-context
    :build

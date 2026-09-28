@@ -53,6 +53,7 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
   "Return the visible-buffer context provider for Emacs awareness."
   (e-context-provider-create
    :name 'visible-buffers
+   :public-origin "visible Emacs buffers"
    :priority 320
    :cache-placement 'dynamic-context
    :build (cl-function
@@ -276,6 +277,7 @@ Before finalizing, verify presentation, not just content. Confirm the resource y
   "Return the workspace-awareness context provider."
   (e-context-provider-create
    :name 'workspace-awareness
+   :public-origin "Emacs workspace state"
    :priority 330
    :cache-placement 'dynamic-context
    :build (cl-function

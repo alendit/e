@@ -697,6 +697,7 @@ and returns the number of paragraphs whose text changed."
    :context-providers
    (list (e-context-provider-create
           :name 'org-canvas
+          :public-origin "Org Canvas state"
           :priority 118
           :cache-placement 'dynamic-context
           :build #'e-org-canvas-context-provider

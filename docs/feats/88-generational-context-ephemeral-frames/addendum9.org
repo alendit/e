@@ -6,9 +6,9 @@
 
 Done (the original implementation through =02fd61be=, the activity-order
 correction at =0f7da154=, and the source-stub follow-up at =445bba69= pass
-focused, classified full-suite, and isolated graphical evidence.  The literal
-warnings-as-errors gate remains baseline-blocked by Emacs 31 obsolete-macro
-warnings that predate this package).
+focused, classified full-suite, and isolated graphical evidence.  The
+2026-09-28 origin follow-up also passes focused ERT and isolated graphical
+evidence; see [[file:../../bugs/chat-curation-origin-unclear/investigation.org][the investigation]] for the current Emacs 31 suite limits).
 
 This addendum extends [[file:addendum7.org][Addendum 7]] with a presentation
 contract for successfully committed non-empty curation packages.  It does not
@@ -54,7 +54,7 @@ identities, or making presentation part of semantic correctness.
 * Decision
 
 Visualize every successfully committed non-empty curation package as a compact
-turn activity named =Context curated=.
+turn activity named =Agent updated context=.
 
 The activity summarizes only non-zero explicit dispositions and names the safe
 kind of each disposed source.  Tool-result sources also include the ordinary
@@ -62,9 +62,9 @@ tool name when the trusted result envelope supplies one.  Repeated identical
 stubs are grouped in first-seen order:
 
 #+begin_example
-Context curated
-kept 5 — tool output · run_elisp ×3, tool output · bash ×2
-summarized 2 sources into 1 summary — current state, tool output · read
+Agent updated context
+kept 5 — from run_elisp tool result ×3, bash tool result ×2
+summarized 2 sources into 1 summary — from visible Emacs buffers, read tool result
 #+end_example
 
 The wording may use singular or plural forms appropriate to the counts, but it
@@ -86,7 +86,7 @@ tool or action counts.  In classic chat it participates in the existing turn
 activity presentation: it is visible while the turn is active, remains in the
 expanded settled details, and contributes a compact =1 curation= count to the
 settled turn summary.  ModernChat receives the equivalent generic activity DTO
-with title =Context curated=, status =ok=, and the same disposition and source
+with title =Agent updated context=, status =ok=, and the same disposition and source
 summary.
 
 Multiple successfully committed non-empty curation packages in one turn produce
@@ -94,7 +94,7 @@ multiple ordered activities and the settled summary reports their total.  A
 live event followed by replay must not produce duplicate rows.
 
 While a turn remains active, completed activity belongs above the current
-mutable progress tail.  A =Context curated= row that occurs between provider
+mutable progress tail.  A =Agent updated context= row that occurs between provider
 rounds therefore appears after the completed earlier round and before the later
 =Thinking for ...= row.  Provider-supplied reasoning-summary prose follows the
 same rule: a bounded concise preview is visible above its round's mutable
@@ -121,7 +121,8 @@ projection to the existing
     :source-kind "tool-result"
     :tool-name "run_elisp")
    (:disposition summarized
-    :source-kind "current-state")
+    :source-kind "current-state"
+    :origin "visible Emacs buffers")
    (:disposition summarized
     :source-kind "tool-result"
     :tool-name "read")
@@ -137,18 +138,21 @@ present.  At least one of =:kept-source-count=,
 and must not exceed the summarized source count.
 
 New package-bearing decisions also carry one ordered =:source-stubs= entry per
-explicitly kept, summarized, or erased source.  Each stub has exactly
-=:disposition= and =:source-kind=, plus optional =:tool-name= only for a
-=tool-result= source.  Stub disposition totals must equal the corresponding
-counts, and the existing curation ceiling bounds the list to 16 entries.
-Missing, malformed, or disagreeing tool-name metadata is presentation-only and
-falls back to =tool output=; it never changes semantic curation success.
+explicitly kept, summarized, or erased source.  Each stub has =:disposition=
+and =:source-kind=, optional =:tool-name= only for a =tool-result= source, and
+optional =:origin= only for =current-state= or =dynamic-context=.  The origin
+is a static, provider-declared display name, not a source label or request
+value.  Stub disposition totals must equal the corresponding counts, and the
+existing curation ceiling bounds the list to 16 entries.  Missing or unsuitable
+display metadata falls back to a generic source kind and never changes semantic
+curation success.
 Persisted count-only activities from the earlier Addendum 9 implementation
 remain valid and retain their original count-only rendering.
 
 The projection contains no:
 
 - source body, tool arguments/output, or generated summary text;
+- dynamic provider values or source-specific labels in =:origin=;
 - frame-local numeric label;
 - tool-call identity, observation identity, source reference, or fingerprint;
 - provider request or carrier payload; or
@@ -208,9 +212,9 @@ Presentation never reads or mutates context-lifetime state.
 - Direct scenario :: An actual reserved OpenAI response produces
   provider-supplied reasoning-summary prose and at least one submitted =keep=,
   =summaries=, or =erase= disposition.  Context lifetime commits the non-empty
-  package and Board publishes one =Context curated= activity.  After
+  package and Board publishes one =Agent updated context= activity.  After
   acknowledgement starts the next provider round, classic chat renders the
-  completed summary and =Context curated=, in occurrence order, above the
+  completed summary and =Agent updated context=, in occurrence order, above the
   current mutable =Thinking for ...= row; raw provider reasoning is absent, the
   composer and viewport remain intact, and the turn does not settle until
   normal terminal output.  The same curation reaches ModernChat with identical
@@ -252,12 +256,12 @@ to the matrix as follows; they do not define independent observable outcomes.
 | Contract | Observable | Semantic owner and public composition | Establishing package | Deterministic evidence | External evidence | Telemetry | Status |
 |----------+------------+---------------------------------------+----------------------+------------------------+-------------------+-----------+--------|
 | =F88A9-PROJECTION= | One successfully committed non-empty keep, summary, erase, or mixed package attaches one validated count-and-stub projection.  No-call, all-label omission, and failed decisions attach none. | Context lifetime derives facts; harness attaches them to successful frame completion. | =F88A9-DP1= | =A9-OWNER=, =A9-NEGATIVE=, =A9-DIRECT= | N/A: repository-owned projection | None required | Passing at =445bba69= |
-| =F88A9-SOURCE-STUBS= | Each newly projected disposed source identifies its disposition and source kind; a safe agreeing tool-result name is included when available, otherwise the description remains =tool output=.  Repeated equivalent stubs group as =×N=. | Context lifetime owns trusted derivation; the shared chat formatter owns grouping and wording. | =F88A9-DP1= | =A9-OWNER=, =A9-PRIVACY=, =A9-CLASSIC=, =A9-MODERN=, =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69= |
+| =F88A9-SOURCE-STUBS= | Each newly projected disposed source identifies its disposition and source kind; an optional static provider origin identifies request context and a safe agreeing name identifies tool results.  Missing metadata uses a generic description.  Repeated equivalent stubs group as =×N=. | Context providers declare static names, context lifetime derives trusted stubs, and the shared chat formatter owns grouping and wording. | =F88A9-DP1= | =A9-OWNER=, =A9-PRIVACY=, =A9-CLASSIC=, =A9-MODERN=, =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69=; origin follow-up passing in focused tests |
 | =F88A9-BOARD= | A projected consumption publishes exactly one =context-curated= Board activity with validated counts and optional stubs; unprojected consumption publishes none. | Board runtime consumes the attached-turn activity port and emits one allowlisted activity. | =F88A9-DP1= | =A9-BOARD=, =A9-DIRECT= | N/A: repository-owned adapter | Board activity is product output, not acceptance telemetry | Passing at =445bba69= |
 | =F88A9-CLASSIC= | Classic chat shows the activity and safe source descriptions live, retains ordered settled detail, reports the curation count, and leaves tool/action counts unchanged.  With ordinary defaults, completed curation and a bounded non-empty provider-summary preview appear above the current mutable progress row.  An explicit zero preview setting suppresses summary prose without exposing raw reasoning or changing curation ordering. | Chat service transports the Board event; classic activity owns its presentation state. | =F88A9-DP1= | =A9-CLASSIC=, =A9-DIRECT=, =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69= |
-| =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Context curated=, status =ok=, and the same safe disposition and source summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Passing at =445bba69= |
+| =F88A9-MODERN= | ModernChat receives a stable Board-backed DTO identity, title =Agent updated context=, status =ok=, and the same safe disposition and source summary; its activity surface can select and inspect it. | Chat service transports the Board event; view model maps the DTO; Rust renders it. | =F88A9-DP1= | =A9-MODERN=, =A9-DIRECT= | N/A | None required | Passing at =445bba69= |
 | =F88A9-LANGUAGE= | Kept, summarized-source/summary, and erased counts retain Addendum 7 meanings; zero categories are omitted, omission is never called =drop=, and safe source descriptions follow each non-zero disposition. | One shell-family formatter below shell renderers. | =F88A9-DP1= | =A9-OWNER= | N/A | None required | Passing at =445bba69= |
-| =F88A9-PRIVACY= | Only the four counts, disposition, source kind, and optional safe agreeing tool name enter new public activity.  Source/tool content, labels, call/observation identities, fingerprints, provider material, and private correlation identities do not. | Core projection plus Board and service allowlists. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Passing at =445bba69= |
+| =F88A9-PRIVACY= | Only the four counts, disposition, source kind, optional static provider origin, and optional safe agreeing tool name enter new public activity.  Source/tool content, source labels, call/observation identities, fingerprints, request-time provider values, and private correlation identities do not. | Provider-declared static name plus core, Board, and service allowlists. | =F88A9-DP1= | =A9-PRIVACY=, =A9-DIRECT= | N/A | None required | Passing at =445bba69=; origin follow-up passing in focused tests |
 | =F88A9-ORDERING= | Two committed packages produce two Board-ordered activities and =2 curations= without live/replay duplication. | Board sequence/source key and shell activity state. | =F88A9-DP1= | =A9-ORDERING= | N/A | None required | Passing at =02fd61be= |
 | =F88A9-GRAPHICAL= | Compact and expanded classic states retain readable source descriptions without disturbing composer, viewport, or settlement; completed activity stays above the active mutable progress tail. | Classic presentation shell. | =F88A9-DP1= | =A9-GRAPHICAL= | N/A | None required | Passing at =445bba69= |
 | =F88A9-PRESERVATION= | Visualization does not change semantic success, transcript shape, tool/action counts, compaction, terminal, or unread behavior.  Provider-supplied summary prose remains distinct from raw reasoning: the former has a bounded classic preview and the latter never enters the visible activity path. | Existing semantic and presentation owners retain their responsibilities. | =F88A9-DP1= | =A9-NEGATIVE=, =A9-PRESERVATION=, =A9-DIRECT= | N/A: request/provider material unchanged | Existing telemetry is observational only | Passing at =0f7da154=; warnings-as-errors baseline-blocked |
@@ -282,7 +286,7 @@ to the matrix as follows; they do not define independent observable outcomes.
 ** Classic chat
 
 The activity owner records =context-curated= as one intermittent turn entry.
-Its compact title is =Context curated= and its body is produced from the safe
+Its compact title is =Agent updated context= and its body is produced from the safe
 count-and-stub projection.  While the turn is active, the normal activity
 transient makes the entry discoverable.  After settlement, the ordinary summary
 includes the curation count alongside duration, tool count, and action count;
@@ -571,3 +575,21 @@ Affected test dispositions:
     unexpected projection/publication/rendering errors surface at their owner.
 14. Pure projection, harness, Board, each shell, graphical, real-adapter, and
     full-suite tests isolate the behavior at narrow boundaries.
+
+* 2026-09-28 origin follow-up evidence
+
+The screenshot in [[file:../../bugs/chat-curation-origin-unclear/report.org][the user report]] showed that the safe category stubs accepted
+at =445bba69= still left “current state ×2” opaque.  The follow-up adds one
+optional static provider display origin to current-state and dynamic-context
+stubs and names the actor in both shells.  It leaves model input, curation
+semantics, durable curation records, and internal identities unchanged.
+
+The focused provider, context, curation, harness, Board, classic, and ModernChat
+tests pass, as does the isolated graphical two-update scenario.  The captured
+active view shows “visible Emacs buffers”, “Emacs workspace state”, and “bash
+tool result” in occurrence order, while the settled summary reports two
+curations.  The full private graphical run passed the curation scenario and 23
+other tests but had eight failures outside the curation scenario.  The first
+failure reproduces alone because Emacs 31's ERT mode-line label crowds the
+hardcoded token-limit assertion; the remaining seven are unclassified.  See
+[[file:../../bugs/chat-curation-origin-unclear/investigation.org][the investigation]] for the exact validation record and restart note.

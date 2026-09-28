@@ -120,7 +120,7 @@ capability-owned message details."
                         (plist-get payload :action))))
     (pcase type
       ('hook-audit "Hook audit")
-      ('context-curated "Context curated")
+      ('context-curated "Agent updated context")
       (_
        (string-trim
         (mapconcat #'identity

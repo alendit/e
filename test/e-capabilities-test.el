@@ -290,6 +290,7 @@
          (provider
           (e-context-provider-create
            :name 'sourced
+           :public-origin "visible Emacs buffers"
            :cache-placement 'dynamic-context
            :build
            (lambda (&rest _)
@@ -307,8 +308,29 @@
     (should-not (plist-member message e-context-evidence-sources-key))
     (should (equal (plist-get segment e-context-evidence-sources-key)
                    (list source)))
+    (should (equal (plist-get segment :public-origin)
+                   "visible Emacs buffers"))
+    (should-not (plist-member message :public-origin))
     (should (equal (plist-get segment :messages)
                    '((:role system :content "sourced context"))))))
+
+(ert-deftest e-capabilities-test-invalid-display-origin-does-not-fail-context ()
+  "Unsafe presentation metadata cannot prevent a provider request."
+  (let* ((provider
+          (e-context-provider-create
+           :name 'sourced
+           :public-origin "private\nspoof"
+           :cache-placement 'dynamic-context
+           :build (lambda (&rest _)
+                    '((:role system :content "useful context")))))
+         (capability
+          (e-capability-create :id 'context :context-providers
+                               (list provider)))
+         (context (e-capabilities-context (list capability)))
+         (segment (car (plist-get context :segments))))
+    (should (equal (plist-get (car (plist-get context :messages)) :content)
+                   "useful context"))
+    (should-not (plist-member segment :public-origin))))
 
 (ert-deftest e-capabilities-test-context-priority-orders_fragments ()
   "Context aggregation keeps static instructions before provider fragments."

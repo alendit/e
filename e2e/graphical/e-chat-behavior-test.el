@@ -297,7 +297,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
    3.0 "settled assistant answer")
   (e-chat-behavior-test--fixture-windows fixture))
 
-(defun e-chat-behavior-test--publish-context-curation (fixture projection)
+(defun e-chat-behavior-test--publish-context-curation (fixture projection &optional event-id)
   "Publish one live context-curation PROJECTION through FIXTURE's SQL binding."
   (let* ((harness (plist-get fixture :harness))
          (session-id (plist-get fixture :session-id))
@@ -306,7 +306,7 @@ Return a plist containing its stream, harness, transcript, and visible windows."
     (e-harness-activity-emit
      harness
      (e-events-make
-      :id "graphical-context-curation"
+      :id (or event-id "graphical-context-curation")
       :type 'context-frame-consumed
       :session-id session-id
       :turn-id (plist-get turn :id)
@@ -314,7 +314,9 @@ Return a plist containing its stream, harness, transcript, and visible windows."
     (e-graphical-test-wait-until
      (lambda ()
        (with-current-buffer (plist-get fixture :transcript)
-         (string-match-p "Context curated" (buffer-string))))
+         (string-match-p
+          (regexp-quote (e-chat-service-format-context-curation projection))
+          (buffer-string))))
      3.0 "SQL-backed context curation publication")))
 
 (defun e-chat-behavior-test--rendered-tail-position (&optional position)
@@ -772,21 +774,43 @@ than the invisible insertion position."
                  :source-stubs
                  ((:disposition kept :source-kind "tool-result"
                    :tool-name "inspect")
-                  (:disposition summarized :source-kind "current-state")
+                  (:disposition summarized :source-kind "current-state"
+                   :origin "visible Emacs buffers")
                   (:disposition summarized :source-kind "tool-result"
                    :tool-name "read")
                   (:disposition erased :source-kind "tool-result"
                    :tool-name "bash"))))
+              (e-chat-behavior-test--publish-context-curation
+               fixture
+               '(:kept-source-count 0 :summary-count 1
+                 :summarized-source-count 3 :erased-source-count 0
+                 :source-stubs
+                 ((:disposition summarized :source-kind "current-state"
+                   :origin "visible Emacs buffers")
+                  (:disposition summarized :source-kind "current-state"
+                   :origin "Emacs workspace state")
+                  (:disposition summarized :source-kind "tool-result"
+                   :tool-name "bash")))
+               "graphical-context-curation-2")
               (with-current-buffer transcript
                 (should
                  (string-match-p
                   (regexp-quote
                    (concat
-                    "Context curated\n"
-                    "kept 1 — tool output · inspect\n"
-                    "summarized 2 sources into 1 summary — "
-                    "current state, tool output · read\n"
-                    "erased 1 — tool output · bash"))
+                    "Agent updated context\n"
+                    "kept 1 — from inspect tool result\n"
+                    "summarized 2 sources into 1 summary — from "
+                    "visible Emacs buffers, read tool result\n"
+                    "erased 1 — from bash tool result"))
+                  (buffer-string)))
+                (should
+                 (string-match-p
+                  (regexp-quote
+                   (concat
+                    "Agent updated context\n"
+                    "summarized 3 sources into 1 summary — from "
+                    "visible Emacs buffers, Emacs workspace state, "
+                    "bash tool result"))
                   (buffer-string))))
               (should (= (length (window-list nil 'nomini)) window-count))
               (should (eq (selected-window) composer-window))
@@ -797,20 +821,29 @@ than the invisible insertion position."
                                composer-text)))
               (e-chat-behavior-test--finish fixture "curation graphical answer")
               (with-current-buffer transcript
-                (should (string-match-p "1 curation" (buffer-string)))
-                (should-not (string-match-p "Context curated" (buffer-string)))
+                (should (string-match-p "2 curations" (buffer-string)))
+                (should-not (string-match-p "Agent updated context" (buffer-string)))
                 (goto-char (point-min))
-                (should (search-forward "1 curation" nil t))
+                (should (search-forward "2 curations" nil t))
                 (call-interactively #'e-chat-transcript-enter-response-navigation)
                 (call-interactively #'e-chat-response-navigation-activate)
                 (should
                  (string-match-p
                   (regexp-quote
                    (concat
-                    "Context curated: kept 1 — tool output · inspect\n"
-                    "summarized 2 sources into 1 summary — "
-                    "current state, tool output · read\n"
-                    "erased 1 — tool output · bash"))
+                    "Agent updated context: kept 1 — from inspect tool result\n"
+                    "summarized 2 sources into 1 summary — from "
+                    "visible Emacs buffers, read tool result\n"
+                    "erased 1 — from bash tool result"))
+                  (buffer-string)))
+                (should
+                 (string-match-p
+                  (regexp-quote
+                   (concat
+                    "Agent updated context: "
+                    "summarized 3 sources into 1 summary — from "
+                    "visible Emacs buffers, Emacs workspace state, "
+                    "bash tool result"))
                   (buffer-string))))
               (should (= (length (window-list nil 'nomini)) window-count))
               (with-current-buffer composer

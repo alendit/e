@@ -887,7 +887,7 @@ Count tool invocations after the reasoning chunk they followed."
                    (append (or current nil)
                            (list (format "Action: %s" content)))))
             ("Action")
-            ("Context curated"
+            ("Agent updated context"
              (finish-current)
              (push (e-chat-activity--intermittent-entry-text entry) chunks))
             (_
@@ -1997,7 +1997,7 @@ function records only lifecycle audit text."
                      :test #'equal)
       (e-chat-activity--append-activity-entry
        record
-       (list :title "Context curated"
+       (list :title "Agent updated context"
              :content
              (e-chat-service-format-context-curation
               (plist-get activity-event :payload))

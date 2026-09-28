@@ -136,6 +136,29 @@
     (should (equal (cdr (assq 'summary dto))
                    "Claim check needs revision"))))
 
+(ert-deftest e-modernchat-view-model-test-attributes-agent-context-update ()
+  "ModernChat uses the same safe origin text as classic chat."
+  (let* ((event
+          '(:message-id "curation-1" :turn-id "turn-1"
+            :event-type context-curated
+            :payload
+            (:kept-source-count 0 :summary-count 1
+             :summarized-source-count 3 :erased-source-count 0
+             :source-stubs
+             ((:disposition summarized :source-kind "current-state"
+               :origin "visible Emacs buffers")
+              (:disposition summarized :source-kind "current-state"
+               :origin "Emacs workspace state")
+              (:disposition summarized :source-kind "tool-result"
+               :tool-name "bash")))))
+         (dto (e-modernchat-view-model-activity event)))
+    (should (equal (cdr (assq 'title dto)) "Agent updated context"))
+    (should
+     (equal (cdr (assq 'summary dto))
+            (concat "summarized 3 sources into 1 summary — from "
+                    "visible Emacs buffers, Emacs workspace state, "
+                    "bash tool result")))))
+
 (ert-deftest e-modernchat-test-existing-open-queries-after-return ()
   "Existing modern chat opens immediately and applies one detached SQL view."
   (let* ((harness (e-modernchat-test--harness))

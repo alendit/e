@@ -498,6 +498,7 @@ request-time source descriptor."
    :context-providers
    (list (e-context-provider-create
           :name 'chat-session-attachments
+          :public-origin "chat attachments"
           :priority 120
           :cache-placement 'dynamic-context
           :build #'e-chat-session-context-attachments-provider))

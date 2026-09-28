@@ -1,0 +1,13 @@
+#+title: Chat Context Updates Hide Their Sources
+#+startup: overview
+
+* Report
+
+The chat output shows repeated system-looking =Context curated= entries such as
+“summarized 3 sources into 1 summary — current state ×2, tool output · bash”.
+The user cannot tell who produced the update or which part of the supplied
+context “current state” describes.
+
+Expected behavior: a compact activity identifies the agent as the actor and
+names the safe origin of context supplied by known providers, while retaining
+the existing privacy boundary for source content and internal identities.

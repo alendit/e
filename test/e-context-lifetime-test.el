@@ -862,6 +862,11 @@ the record-focused assertions concise without restoring the retired wrapper."
                   :tool-name "inspect")))
                (:kept-source-count 1 :summary-count 0
                 :summarized-source-count 0 :erased-source-count 0
+                :source-stubs
+                ((:disposition kept :source-kind "current-state"
+                  :origin "private\nspoof")))
+               (:kept-source-count 1 :summary-count 0
+                :summarized-source-count 0 :erased-source-count 0
                 :source-stubs nil)))
       (should-error
        (e-context-lifetime-validate-curation-activity-projection bad)
@@ -876,6 +881,48 @@ the record-focused assertions concise without restoring the retired wrapper."
             (make-list 17
                        '(:disposition kept :source-kind "current-state"))))
      :type 'e-context-lifetime-invalid-record)))
+
+(ert-deftest e-context-lifetime-test-curation-activity-keeps-declared-origin ()
+  "A static provider name reaches only the safe curation source stub."
+  (let* ((frame
+          (e-context-lifetime-frame-create-from-segments
+           :id "origin-frame"
+           :generation-id "generation-1"
+           :consumer-request-id "consumer-1"
+           :segments
+           '((:kind current-state :id (emacs visible-buffers 0)
+              :public-origin "visible Emacs buffers"
+              :messages ((:role system :content "private buffer names"))))))
+         (prepared
+          (e-context-lifetime-prepare-curation-disposition
+           frame '(:keep [1]) "origin-response"))
+         (projection
+          (e-context-lifetime-curation-activity-projection prepared)))
+    (should
+     (equal (plist-get projection :source-stubs)
+            '((:disposition kept :source-kind "current-state"
+               :origin "visible Emacs buffers"))))
+    (should-not (string-match-p "private buffer names\|origin-response"
+                                (prin1-to-string projection)))
+    (dolist (bad-origin '("private\nspoof" ""))
+      (let* ((bad-frame
+              (e-context-lifetime-frame-create-from-segments
+               :id "invalid-origin"
+               :generation-id "generation-1"
+               :consumer-request-id "consumer-1"
+               :segments
+               (list (list :kind 'current-state :id 'dynamic
+                           :public-origin bad-origin
+                           :messages '((:role system :content "private"))))))
+             (bad-prepared
+              (e-context-lifetime-prepare-curation-disposition
+               bad-frame '(:keep [1]) "bad-origin-response")))
+        (should
+         (equal
+          (plist-get (e-context-lifetime-curation-activity-projection
+                      bad-prepared)
+                     :source-stubs)
+          '((:disposition kept :source-kind "current-state"))))))))
 
 (ert-deftest e-context-lifetime-test-curation-disposition-bounds-live-frame ()
   "Disposition preparation rejects consumed frames and one-over records."

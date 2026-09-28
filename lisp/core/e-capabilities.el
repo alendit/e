@@ -550,6 +550,9 @@ providers."
                                       (e-context-provider-name provider)
                                     provider-index)
                                   message-index)
+                            :public-origin
+                            (and (e-context-provider-p provider)
+                                 (e-context-provider-public-origin provider))
                             :sources (copy-tree sources)
                             :message backend-message)
                       fragments))
@@ -575,6 +578,8 @@ providers."
           :kind (plist-get fragment :segment-kind)
           :id (plist-get fragment :segment-id)
           :messages (list (plist-get fragment :message)))))
+    (when-let* ((origin (plist-get fragment :public-origin)))
+      (plist-put segment :public-origin origin))
     (when-let* ((sources (plist-get fragment :sources)))
       (plist-put segment e-context-evidence-sources-key sources))
     segment))

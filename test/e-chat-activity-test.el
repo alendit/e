@@ -110,7 +110,22 @@
         (:disposition kept :source-kind "tool-result" :tool-name "run_elisp")
         (:disposition kept :source-kind "tool-result" :tool-name "bash")
         (:disposition kept :source-kind "tool-result" :tool-name "bash"))))
-    "kept 5 — tool output · run_elisp ×3, tool output · bash ×2"))
+    "kept 5 — from run_elisp tool result ×3, bash tool result ×2"))
+  (should
+   (equal
+    (e-chat-service-format-context-curation
+     '(:kept-source-count 0 :summary-count 1
+       :summarized-source-count 3 :erased-source-count 0
+       :source-stubs
+       ((:disposition summarized :source-kind "current-state"
+         :origin "visible Emacs buffers")
+        (:disposition summarized :source-kind "current-state"
+         :origin "Emacs workspace state")
+        (:disposition summarized :source-kind "tool-result"
+         :tool-name "bash"))))
+    (concat "summarized 3 sources into 1 summary — from "
+            "visible Emacs buffers, Emacs workspace state, "
+            "bash tool result")))
   (should-error
    (e-chat-service-format-context-curation
     '(:kept-source-count 1 :summary-count 0
@@ -130,7 +145,15 @@
             :summarized-source-count 0
             :erased-source-count 0
             :source-stubs (list stub)))
-     :type 'e-chat-service-invalid-activity)))
+     :type 'e-chat-service-invalid-activity))
+  (should-error
+   (e-chat-service-format-context-curation
+    '(:kept-source-count 1 :summary-count 0
+      :summarized-source-count 0 :erased-source-count 0
+      :source-stubs
+      ((:disposition kept :source-kind "current-state"
+        :origin "private\nspoof"))))
+   :type 'e-chat-service-invalid-activity))
 
 (ert-deftest e-chat-activity-owner-curation-is-ordered-deduplicated-and-counted ()
   "Board identities deduplicate curation without changing tool/action totals."
@@ -166,7 +189,7 @@
             (should (= (plist-get display :action-count) 1))
             (should
              (= (cl-loop with start = 0
-                         while (string-match "Context curated" expanded start)
+                         while (string-match "Agent updated context" expanded start)
                          count t
                          do (setq start (match-end 0)))
                 2))
@@ -176,8 +199,8 @@
              (equal
               (mapcar (lambda (child) (plist-get child :text))
                       curation-children)
-              '("Context curated: kept 1"
-                "Context curated: summarized 2 sources into 1 summary · erased 1")))
+              '("Agent updated context: kept 1"
+                "Agent updated context: summarized 2 sources into 1 summary · erased 1")))
             (should-not (string-match-p "drop" expanded))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -212,12 +235,12 @@
             (should-not (string-match-p "summary one" text))
             (should-not (string-match-p "raw secret" text))
             (should (< (string-match-p "Thought for" text)
-                       (string-match-p "Context curated" text)))
+                       (string-match-p "Agent updated context" text)))
             (should (< (string-match-p "summary three" text)
                        (string-match-p "Thought for" text)))
             (should (< (string-match-p "Thought for" text)
-                       (string-match-p "Context curated" text)))
-            (should (< (string-match-p "Context curated" text)
+                       (string-match-p "Agent updated context" text)))
+            (should (< (string-match-p "Agent updated context" text)
                        (string-match-p "Thinking" text)))
             (should
              (= 1
@@ -248,7 +271,7 @@
                        (tail (plist-get transient :progress-tail-text)))
                   (should (string-match-p "Thinking" tail))
                   (should-not (string-match-p "summary" tail))
-                  (should-not (string-match-p "Context curated" tail))))))
+                  (should-not (string-match-p "Agent updated context" tail))))))
       (e-chat-owner-test--kill-buffer buffer)))))
 
 (ert-deftest e-chat-activity-owner-reasoning-visibility-limits-are-explicit ()
@@ -291,7 +314,7 @@
                      :reasoning ((:content "stable summary"))))
                    :intermittent-entries
                    ((:kind context-curated :round 1
-                     :title "Context curated"
+                     :title "Agent updated context"
                      :content "kept 1")))))
             (let ((e-chat-activity--progress-turn-id "turn-1"))
               (cl-letf (((symbol-function
@@ -304,7 +327,7 @@
                          record))
                        (text (plist-get display :text))
                        (summary (string-match-p "stable summary" text))
-                       (curation (string-match-p "Context curated" text))
+                       (curation (string-match-p "Agent updated context" text))
                        (working (string-match-p "Working for" text)))
                   (should summary)
                   (should curation)

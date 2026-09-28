@@ -117,7 +117,8 @@ emitted them.")
       (pop tail))
     (unless (and (= (length keys) (length (delete-dups (copy-sequence keys))))
                  (cl-every (lambda (key)
-                             (memq key '(:disposition :source-kind :tool-name)))
+                             (memq key '(:disposition :source-kind :tool-name
+                                         :origin)))
                            keys)
                  (plist-member stub :disposition)
                  (plist-member stub :source-kind))
@@ -125,6 +126,7 @@ emitted them.")
               (list 'context-curated :source-stub-keys (nreverse keys)))))
   (let ((disposition (plist-get stub :disposition))
         (source-kind (plist-get stub :source-kind))
+        (origin (plist-get stub :origin))
         (tool-name (and (plist-member stub :tool-name)
                         (plist-get stub :tool-name))))
     (unless (and (memq disposition '(kept summarized erased))
@@ -134,12 +136,20 @@ emitted them.")
                           (stringp tool-name)
                           (not (string-empty-p tool-name))
                           (not (string-match-p "[[:cntrl:]]" tool-name))
-                          (<= (length tool-name) 256))))
+                          (<= (length tool-name) 256)))
+                 (or (not (plist-member stub :origin))
+                     (and (member source-kind
+                                  '("current-state" "dynamic-context"))
+                          (stringp origin)
+                          (not (string-empty-p origin))
+                          (not (string-match-p "[[:cntrl:]]" origin))
+                          (<= (length origin) 80))))
       (signal 'e-chat-service-invalid-activity
               (list 'context-curated :source-stub stub)))
     (append (list :disposition disposition
                   :source-kind (copy-sequence source-kind))
-            (when tool-name (list :tool-name (copy-sequence tool-name))))))
+            (when tool-name (list :tool-name (copy-sequence tool-name)))
+            (when origin (list :origin (copy-sequence origin))))))
 
 (defun e-chat-service--curation-counts (projection)
   "Return validated curation counts and source stubs from public PROJECTION."
@@ -220,14 +230,14 @@ by this projection boundary."
      (when stubs (list :source-stubs (copy-tree stubs t))))))
 
 (defun e-chat-service--curation-source-stub-label (stub)
-  "Return compact human-readable label for curation source STUB."
+  "Return a readable origin for curation source STUB."
   (pcase (plist-get stub :source-kind)
     ("tool-result"
      (let ((name (plist-get stub :tool-name)))
-       (if name (format "tool output · %s" name) "tool output")))
-    ("current-state" "current state")
-    ("dynamic-context" "dynamic context")
-    ("trace" "trace")
+       (if name (format "%s tool result" name) "tool result")))
+    ((or "current-state" "dynamic-context")
+     (or (plist-get stub :origin) "live context sent to the agent"))
+    ("trace" "trace input")
     ("retrieved-excerpt" "retrieved excerpt")))
 
 (defun e-chat-service--curation-source-description (stubs disposition)
@@ -251,7 +261,7 @@ by this projection boundary."
   "Append a safe source breakdown to curation line TEXT when available."
   (let ((description
          (e-chat-service--curation-source-description stubs disposition)))
-    (if description (format "%s — %s" text description) text)))
+    (if description (format "%s — from %s" text description) text)))
 
 (defun e-chat-service-format-context-curation (projection)
   "Format content-free public context-curation PROJECTION for chat shells."

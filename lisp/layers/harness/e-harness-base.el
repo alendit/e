@@ -200,6 +200,7 @@ before current-path ordering, entry/byte bounds, and omitted-count derivation."
    :context-providers
    (list (e-context-provider-create
           :name 'tool-invocation-receipts
+          :public-origin "tool invocation receipts"
           :priority 200
           :cache-placement 'dynamic-context
           :build #'e-harness-base--receipt-context-provider))))

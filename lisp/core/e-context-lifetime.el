@@ -386,12 +386,28 @@ the initial identity generation may retain a nil checkpoint."
 
 (defun e-context-lifetime--validate-observation (observation)
   "Return one canonical runtime observation from OBSERVATION."
-  (e-context-lifetime--validate-exact-plist
-   observation
-   '(:observation-id :kind :source-entry-ref :source-fingerprint
-     :effective-delivery :body)
-   'observation)
-  (list :observation-id
+  (unless (e-context-lifetime--keyword-plist-p observation)
+    (signal 'e-context-lifetime-invalid-record
+            (list 'observation :shape observation)))
+  (let ((core-observation (copy-sequence observation))
+        (origin (plist-get observation :public-origin)))
+    (cl-remf core-observation :public-origin)
+    (e-context-lifetime--validate-exact-plist
+     core-observation
+     '(:observation-id :kind :source-entry-ref :source-fingerprint
+       :effective-delivery :body)
+     'observation)
+    (when (plist-member observation :public-origin)
+      (unless (and (member (format "%s" (plist-get observation :kind))
+                           '("current-state" "dynamic-context"))
+                   (stringp origin)
+                   (not (string-empty-p origin))
+                   (<= (length origin) 80)
+                   (not (string-match-p "[[:cntrl:]]" origin)))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'observation :public-origin origin))))
+    (append
+     (list :observation-id
         (e-context-lifetime--require-id
          (plist-get observation :observation-id) 'observation-id)
         :kind (e-context-lifetime--canonical-observation-kind
@@ -409,7 +425,8 @@ the initial identity generation may retain a nil checkpoint."
         ;; detached values; the projection boundary canonicalizes them when
         ;; they become model input, and no frame codec persists them.
         :body (e-context-lifetime--detached-copy
-               (plist-get observation :body))))
+               (plist-get observation :body)))
+     (when origin (list :public-origin (copy-sequence origin))))))
 
 (defun e-context-lifetime--observation-items (observations)
   "Return OBSERVATIONS as a proper sequence or signal a shape error."
@@ -755,7 +772,8 @@ identifies the external source that delivered the values."
                            (secure-hash 'sha256
                                         (prin1-to-string identity-inputs))
                            do (push
-                               (list :observation-id observation-id
+                               (append
+                                (list :observation-id observation-id
                                      :kind kind
                                      :source-entry-ref source-entry-ref
                                      :source-fingerprint source-fingerprint
@@ -765,6 +783,13 @@ identifies the external source that delivered the values."
                                      :body
                                      (e-context-lifetime--detached-copy
                                       message))
+                                (when-let* ((origin (plist-get segment :public-origin))
+                                            ((stringp origin))
+                                            ((not (string-empty-p origin)))
+                                            ((<= (length origin) 80))
+                                            ((not (string-match-p
+                                                   "[[:cntrl:]]" origin))))
+                                  (list :public-origin origin)))
                                observations))))
     (nreverse observations)))
 
@@ -878,7 +903,9 @@ BYTES-PER-TOKEN supplies the estimate ratio."
               (list :tool-call-id
                     (e-context-lifetime--detached-copy tool-call-id)))
             (when tool-name
-              (list :tool-name tool-name)))
+              (list :tool-name tool-name))
+            (when-let* ((origin (plist-get observation :public-origin)))
+              (list :public-origin origin)))
            result))))))
 
 (defun e-context-lifetime-frame-curation-sources
@@ -1059,12 +1086,15 @@ supplied.  Only labels and summary text are copied; omitted or erased source
                                         dispositions)
              when disposition
              collect
-             (let ((tool-name (plist-get source :tool-name)))
+             (let ((tool-name (plist-get source :tool-name))
+                   (origin (plist-get source :public-origin)))
                (append
                 (list :disposition disposition
                       :source-kind (copy-sequence (plist-get source :kind)))
                 (when tool-name
-                  (list :tool-name (copy-sequence tool-name))))))))
+                  (list :tool-name (copy-sequence tool-name)))
+                (when origin
+                  (list :origin (copy-sequence origin))))))))
 
 (defun e-context-lifetime-prepare-curation-disposition
     (frame arguments response-entry-id &optional bytes-per-token)
@@ -1146,7 +1176,7 @@ into the normalized disposition or either record."
   "Required count fields in a context-curation activity projection.")
 
 (defconst e-context-lifetime-curation-activity-source-stub-keys
-  '(:disposition :source-kind :tool-name)
+  '(:disposition :source-kind :tool-name :origin)
   "Allowed public fields in a content-free curation source stub.")
 
 (defun e-context-lifetime--validate-curation-activity-source-stub (stub)
@@ -1171,6 +1201,7 @@ into the normalized disposition or either record."
               (list 'curation-activity-source-stub :keys (nreverse keys)))))
   (let ((disposition (plist-get stub :disposition))
         (source-kind (plist-get stub :source-kind))
+        (origin (plist-get stub :origin))
         (tool-name (and (plist-member stub :tool-name)
                         (plist-get stub :tool-name))))
     (unless (memq disposition '(kept summarized erased))
@@ -1188,18 +1219,29 @@ into the normalized disposition or either record."
                    (<= (length tool-name) 256))
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation-activity-source-stub :tool-name tool-name))))
+    (when (plist-member stub :origin)
+      (unless (and (member source-kind '("current-state" "dynamic-context"))
+                   (stringp origin)
+                   (not (string-empty-p origin))
+                   (<= (length origin) 80)
+                   (not (string-match-p "[[:cntrl:]]" origin)))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation-activity-source-stub :origin origin))))
     (append (list :disposition disposition
                   :source-kind (copy-sequence source-kind))
             (when tool-name
-              (list :tool-name (copy-sequence tool-name))))))
+              (list :tool-name (copy-sequence tool-name)))
+            (when origin
+              (list :origin (copy-sequence origin))))))
 
 (defun e-context-lifetime-validate-curation-activity-projection (projection)
   "Return canonical safe curation activity PROJECTION.
 
 The optional source stubs expose only disposition, semantic source kind, and a
-tool name already visible in ordinary tool activity.  Source labels, bodies,
-provenance, provider material, response identities, and frame identities stay
-excluded.  Invalid projections signal `e-context-lifetime-invalid-record'."
+tool name already visible in ordinary tool activity or a static provider
+display origin.  Source labels, bodies, request-time provider values, response
+identities, and frame identities stay excluded.  Invalid projections signal
+`e-context-lifetime-invalid-record'."
   (unless (e-context-lifetime--keyword-plist-p projection)
     (signal 'e-context-lifetime-invalid-record
             (list 'curation-activity-projection :shape projection)))

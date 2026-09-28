@@ -32,7 +32,8 @@
   (priority 200)
   build
   (cache-placement 'stable-context)
-  snapshot-build)
+  snapshot-build
+  public-origin)
 
 (defconst e-context-evidence-sources-key :evidence-sources
   "Internal message key carrying request-time source descriptors.
@@ -89,6 +90,17 @@ contributing adapter without becoming part of claim policy."
   (unless (e-context-provider-p provider)
     (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
   (e-context-provider--name provider))
+
+(defun e-context-provider-public-origin (provider)
+  "Return PROVIDER's static, presentation-safe source name, if declared."
+  (unless (e-context-provider-p provider)
+    (signal 'wrong-type-argument (list 'e-context-provider-p provider)))
+  (let ((origin (e-context-provider--public-origin provider)))
+    (and (stringp origin)
+         (not (string-empty-p origin))
+         (<= (length origin) 80)
+         (not (string-match-p "[[:cntrl:]]" origin))
+         origin)))
 
 (put 'e-context-provider-name 'compiler-macro nil)
 
