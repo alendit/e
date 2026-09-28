@@ -4,10 +4,10 @@
 * Status
 
 In-review.  All recorded implementation findings are resolved.  The paired
-current-configuration cold start and native Board graphical check passed.
+current-configuration cold start, native Board graphical check, and
+two-process Grimoire graphical Daily check passed from the current checkouts.
 Direct xwidget interaction and the complete required-plus-optional restart
-scenario still need acceptance evidence.  The upgraded live store must not be
-opened by the older source in the real Doom package configuration.
+scenario still need acceptance evidence.
 
 * Review summary
 
@@ -19,7 +19,8 @@ SQLite schema v9 indexes actionable runs and supports an offline v8-to-v9
 backfill.  The final independent pass at e =81fd0163= and Grimoire =a9cef39=
 found no P0--P2 issue.  Deterministic repository validation reached a fixed
 point.  The stopped configured store was upgraded to v9 and its integrity was
-checked.  Activation remains separate from this isolated branch's tests.
+checked.  Feature 89 is now merged into both current checkouts; the user has
+not restarted Emacs with those sources yet.
 
 * Scope reviewed
 
@@ -77,6 +78,20 @@ later passes followed their corrections and focused regressions.
   =read-only= mode and reported =:startup ready=, =:unavailable nil=, and no
   startup error.  This validates code/schema compatibility without starting
   the user's Emacs.
+- In the current checkouts, e =b8a336de= merged Feature 89 and Grimoire
+  =face6e4= contains the Daily integration.  Grimoire Daily ERT passed 42/42.
+  =bash e2e/run-current-config-tests.sh= passed 8/8 using private runtime state,
+  and the native Board graphical selector passed 1/1.  The latter took 62.15
+  seconds in the current configuration; its opening interaction is asserted
+  under one second, so this total is not an interaction-latency measurement.
+- The two-process Grimoire graphical Daily acceptance passed 1/1 in each
+  fresh Emacs process with =E_LISP_DIR= and =E_GRAPHICAL_E2E_RUNNER= set to the
+  current e checkout, running
+  =.e/layers/topic/test/run-graphical-daily-acceptance.sh=.  The first process
+  logged a =tmp://= write failure while the fixture closed its store; its
+  saved Daily commit and the second process's reopen assertions passed.
+  The integrated e worker independently opened the configured store with
+  =:schema-version 9= and =:access-mode read-only=.
 
 * Findings
 
@@ -222,12 +237,9 @@ processes.
   across pre-persistence, pre-publication, post-publication, post-consumption,
   and coordinator-outcome boundaries.  Measure realistic Board write and
   visual refresh latency before asserting an interactive performance bound.
-- Align the real Doom package source and Daily project with the accepted e and
-  Grimoire revisions before restarting Emacs.  The real =packages.el= still
-  names =/Users/dvorona/projects/elisp/e=, whose worker requires schema 8;
-  the stopped configured store now has schema 9.  The canonical Grimoire
-  checkout has unrelated local edits, so activation must preserve them.
+- Restart Emacs to activate the integrated core runtime and Daily source.
+  The current Grimoire checkout retains unrelated local edits; preserve them
+  during any later work.
 
 The user's Emacs remains stopped.  The configured store has been upgraded;
-the core changes need a full restart after source alignment.  A shell reload
-cannot apply them.
+the core changes need a full restart.  A shell reload cannot apply them.

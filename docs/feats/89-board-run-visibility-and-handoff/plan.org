@@ -476,8 +476,9 @@ and native Board graphical scenario also pass.  The stopped configured store
 was upgraded to schema v9 with one verified v8 rollback backup retained.
 Direct xwidget visual interaction and the full required-plus-optional restart
 scenario remain acceptance checks; =review.org= records the exact evidence
-and limits.  The real Doom package source must be aligned with schema v9
-before the user restarts Emacs.
+and limits.  Feature 89 is merged into the current e and Grimoire checkouts;
+the configured schema-v9 store opens read-only with the integrated e worker.
+The core runtime changes take effect when the user next starts Emacs.
 
 * End-to-end proof
 
