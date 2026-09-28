@@ -33,11 +33,26 @@
       (error "Board WebKit widget is not live"))
     widget))
 
+(defun e-board-visual-e2e--hud-in-output-p (popup fixture)
+  "Return whether POPUP fits the right edge of FIXTURE's chat output."
+  (let* ((output (car (e-chat-behavior-test--fixture-windows fixture)))
+         (edges (window-pixel-edges output))
+         (position (frame-position popup))
+         (right (nth 2 edges))
+         (top (nth 1 edges)))
+    (and (<= (abs (- (cdr position) (+ top 12))) 8)
+         (<= (abs (- right (+ (car position) (frame-pixel-width popup))
+                     12))
+             (+ 8 (frame-char-width popup)))
+         (>= (car position) (car edges))
+         (<= (+ (cdr position) (frame-pixel-height popup))
+             (nth 3 edges)))))
+
 (defun e-board-visual-e2e-start ()
   "Open a disposable owner chat and its real WebKit Board view."
   (unless (featurep 'xwidget-internal)
     (error "This Emacs has no native xwidget support"))
-  (setq e-board-visual-e2e--fixture (e-chat-behavior-test--open-surface))
+  (setq e-board-visual-e2e--fixture (e-chat-behavior-test--open-surface t))
   (let* ((fixture e-board-visual-e2e--fixture)
          (transcript (plist-get fixture :transcript))
          (chat-frame (selected-frame)))
@@ -50,6 +65,8 @@
                    (with-current-buffer auto-hud
                      (and e-board-activity-visual--compact
                           (null e-board-activity-visual--selected-run-id)
+                          (e-board-visual-e2e--hud-in-output-p
+                           e-board-activity-shell--popup-frame fixture)
                           (<= (frame-pixel-height
                                e-board-activity-shell--popup-frame)
                               (+ e-board-activity-hud-idle-height
@@ -57,6 +74,34 @@
                                   e-board-activity-shell--popup-frame))))))
         (error "Opening the chat did not automatically show its empty Board HUD"))
       (setq e-board-visual-e2e--buffer auto-hud))
+    t))
+
+(defun e-board-visual-e2e-place-other-pane-above-chat ()
+  "Move the chat below an unrelated buffer and verify its HUD follows."
+  (let* ((fixture e-board-visual-e2e--fixture)
+         (output (car (e-chat-behavior-test--fixture-windows fixture)))
+         (upper (split-window (window-atom-root output) nil 'above))
+         (other (get-buffer "*e graphical outside*")))
+    (set-window-buffer upper other)
+    (condition-case err
+        (e-graphical-test-wait-until
+         (lambda ()
+           (let* ((output (car (e-chat-behavior-test--fixture-windows fixture)))
+                  (popup (with-current-buffer e-board-visual-e2e--buffer
+                           e-board-activity-shell--popup-frame)))
+             (and (> (nth 1 (window-pixel-edges output)) 100)
+                  (e-board-visual-e2e--hud-in-output-p popup fixture))))
+         3.0 "HUD inside lower chat output window")
+      (error
+       (let* ((output (car (e-chat-behavior-test--fixture-windows fixture)))
+              (popup (with-current-buffer e-board-visual-e2e--buffer
+                       e-board-activity-shell--popup-frame)))
+         (error "%s: output %S, popup %S size %S"
+                (error-message-string err)
+                (window-pixel-edges output)
+                (frame-position popup)
+                (cons (frame-pixel-width popup)
+                      (frame-pixel-height popup))))))
     t))
 
 (defun e-board-visual-e2e-populate ()
@@ -161,15 +206,10 @@
                        (+ e-board-activity-hud-height (frame-char-height popup)))
                    (< (frame-pixel-width popup)
                       (/ (frame-pixel-width chat-frame) 2))
-                   (<= (abs (- (cdr (frame-position popup)) 20)) 8)
-                   (<= (abs (- (- (frame-pixel-width chat-frame)
-                                   (+ (car (frame-position popup))
-                                      (frame-pixel-width popup)))
-                               19))
-                       12)
+                   (e-board-visual-e2e--hud-in-output-p popup fixture)
                    (eq (window-buffer (frame-root-window popup))
                        e-board-visual-e2e--buffer))
-        (error "Chat status did not open a compact focusless top-right Board HUD: %S"
+        (error "Chat status did not open a compact HUD in its output window: %S"
                (list :selected (selected-frame)
                      :popup popup :position (frame-position popup)
                      :size (cons (frame-pixel-width popup)

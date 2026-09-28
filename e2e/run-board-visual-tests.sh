@@ -66,6 +66,9 @@ echo 'Board visual E2E: chat auto-opened its empty HUD'
 wait_for '(e-board-visual-e2e-probe-web)' \
   '(e-board-visual-e2e-web-ready-p)' 'WebKit loaded the HUD and received its initial empty state'
 
+expect_true '(e-board-visual-e2e-place-other-pane-above-chat)'
+echo 'Board visual E2E: HUD followed the chat output below another pane'
+
 expect_true '(e-board-visual-e2e-install-state-observer)'
 expect_true '(e-board-visual-e2e-submit-chat-message)'
 expect_true '(e-board-visual-e2e-stream-chat-reply)'

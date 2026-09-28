@@ -326,7 +326,8 @@
                            e-board-activity-visual--displayed-hud-height)))
       (setq e-board-activity-visual--displayed-hud-height height)
       (with-selected-frame parent
-        (e-board-activity-shell-display (current-buffer) t height)))))
+        (e-board-activity-shell-display
+         (current-buffer) t height e-board-activity-visual--owner-chat)))))
 
 (defun e-board-activity-visual--page-task-id (run-id task)
   "Return TASK's stable identity within RUN-ID."
@@ -674,7 +675,8 @@
            (setq e-board-activity-visual--displayed-hud-height
                  (e-board-activity-visual--hud-height))
            (e-board-activity-shell-display
-            (current-buffer) t e-board-activity-visual--displayed-hud-height)))
+            (current-buffer) t e-board-activity-visual--displayed-hud-height
+            e-board-activity-visual--owner-chat)))
         ('dismiss
          (e-board-activity-shell-dismiss))
         ('browse-runs
@@ -944,7 +946,8 @@ Board run-set observer."
             (e-board-activity-visual--hud-height)))
     (e-board-activity-shell-display
      buffer t (buffer-local-value
-               'e-board-activity-visual--displayed-hud-height buffer))
+               'e-board-activity-visual--displayed-hud-height buffer)
+     owner-chat)
     buffer))
 
 (defun e-board-activity-visual--open-text-fallback

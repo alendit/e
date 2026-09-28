@@ -73,6 +73,16 @@
   "Outer chat frame to refocus after Board activity closes.")
 (defvar-local e-board-activity-shell--dismiss-action nil
   "Optional presentation callback after this Board popup is dismissed.")
+(defvar-local e-board-activity-shell--hud-anchor-buffer nil
+  "Chat output buffer whose window owns this compact HUD.")
+(defvar-local e-board-activity-shell--hud-anchor-edges nil
+  "Last chat output window edges used to position this HUD.")
+(defvar-local e-board-activity-shell--hud-display-height nil
+  "Requested pixel height of this compact HUD.")
+(defvar-local e-board-activity-shell--hud-reposition-timer nil
+  "Deferred HUD move after the chat window layout changes.")
+(defvar e-board-activity-shell--anchored-huds nil
+  "Live compact HUD buffers that follow a chat output window.")
 
 (defvar e-board-activity-shell-popup-mode-map
   (let ((map (make-sparse-keymap)))
@@ -113,44 +123,138 @@
 
 (defun e-board-activity-shell--cleanup-popup ()
   "Delete the child frame when its Board activity buffer is killed."
+  (e-board-activity-shell--untrack-hud (current-buffer))
   (when (and e-board-activity-shell--popup-frame
              (fboundp 'posframe-delete-frame))
     (posframe-delete-frame (current-buffer))
     (when (frame-live-p e-board-activity-shell--popup-frame)
       (delete-frame e-board-activity-shell--popup-frame))))
 
-(defun e-board-activity-shell--hud-position (info)
-  "Place the HUD described by INFO near its parent frame's top right."
-  (cons (max 0 (- (plist-get info :parent-frame-width)
-                  (plist-get info :posframe-width) 19))
-        20))
+(defun e-board-activity-shell--hud-position (info &optional anchor-window)
+  "Place the HUD described by INFO at ANCHOR-WINDOW's top right."
+  (if (window-live-p anchor-window)
+      (pcase-let ((`(,left ,top ,right ,bottom)
+                   (window-pixel-edges anchor-window)))
+        (cons (max (+ left 8)
+                   (- right (plist-get info :posframe-width) 12))
+              (max (+ top 8)
+                   (min (+ top 12)
+                        (- bottom (plist-get info :posframe-height) 8)))))
+    (cons (max 0 (- (plist-get info :parent-frame-width)
+                    (plist-get info :posframe-width) 19))
+          20)))
 
 (defun e-board-activity-shell--hud-dimension (pixels char-pixels frame-size)
   "Fit PIXELS to CHAR-PIXELS units within FRAME-SIZE."
   (max 1 (min (floor (/ pixels (max 1 char-pixels))) frame-size)))
 
-(defun e-board-activity-shell-display (buffer &optional compact hud-height)
+(defun e-board-activity-shell--untrack-hud (buffer)
+  "Stop following a chat output window for HUD BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (timerp e-board-activity-shell--hud-reposition-timer)
+        (cancel-timer e-board-activity-shell--hud-reposition-timer))
+      (setq e-board-activity-shell--hud-reposition-timer nil
+            e-board-activity-shell--hud-anchor-buffer nil
+            e-board-activity-shell--hud-anchor-edges nil
+            e-board-activity-shell--hud-display-height nil)))
+  (setq e-board-activity-shell--anchored-huds
+        (delq buffer e-board-activity-shell--anchored-huds))
+  (unless e-board-activity-shell--anchored-huds
+    (remove-hook 'window-state-change-functions
+                 #'e-board-activity-shell--window-state-changed)))
+
+(defun e-board-activity-shell--track-hud
+    (buffer anchor-buffer anchor-window height)
+  "Keep HUD BUFFER aligned with ANCHOR-BUFFER's visible window."
+  (with-current-buffer buffer
+    (setq e-board-activity-shell--hud-anchor-buffer anchor-buffer
+          e-board-activity-shell--hud-anchor-edges
+          (window-pixel-edges anchor-window)
+          e-board-activity-shell--hud-display-height height))
+  (cl-pushnew buffer e-board-activity-shell--anchored-huds)
+  (add-hook 'window-state-change-functions
+            #'e-board-activity-shell--window-state-changed))
+
+(defun e-board-activity-shell--reposition-hud (buffer)
+  "Move anchored HUD BUFFER after its chat output window changes."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq e-board-activity-shell--hud-reposition-timer nil)
+      (when (and (buffer-live-p e-board-activity-shell--hud-anchor-buffer)
+                 (frame-live-p e-board-activity-shell--popup-parent))
+        (let* ((parent e-board-activity-shell--popup-parent)
+               (anchor (get-buffer-window
+                        e-board-activity-shell--hud-anchor-buffer parent)))
+          (if (window-live-p anchor)
+              (with-selected-frame parent
+                (e-board-activity-shell-display
+                 buffer t e-board-activity-shell--hud-display-height
+                 e-board-activity-shell--hud-anchor-buffer))
+            (when (frame-live-p e-board-activity-shell--popup-frame)
+              (posframe-hide buffer))))))))
+
+(defun e-board-activity-shell--window-state-changed (frame)
+  "Schedule HUD moves when an owner chat window changes on FRAME."
+  (dolist (buffer (copy-sequence e-board-activity-shell--anchored-huds))
+    (if (not (buffer-live-p buffer))
+        (e-board-activity-shell--untrack-hud buffer)
+      (with-current-buffer buffer
+        (when (eq frame e-board-activity-shell--popup-parent)
+          (let* ((anchor (and (buffer-live-p
+                               e-board-activity-shell--hud-anchor-buffer)
+                              (get-buffer-window
+                               e-board-activity-shell--hud-anchor-buffer frame)))
+                 (edges (and (window-live-p anchor)
+                             (window-pixel-edges anchor))))
+            (when (and (not (equal edges
+                                   e-board-activity-shell--hud-anchor-edges))
+                       (not (timerp e-board-activity-shell--hud-reposition-timer)))
+              (setq e-board-activity-shell--hud-anchor-edges edges
+                    e-board-activity-shell--hud-reposition-timer
+                    (run-at-time 0 nil
+                                 #'e-board-activity-shell--reposition-hud
+                                 buffer)))))))))
+
+(defun e-board-activity-shell-display
+    (buffer &optional compact hud-height anchor-buffer)
   "Show Board activity BUFFER over the current frame when possible.
-COMPACT places a focusless status HUD at the top right; full detail is focused.
-HUD-HEIGHT overrides the compact frame height in pixels."
+COMPACT places a focusless status HUD in ANCHOR-BUFFER's output window.
+Full detail is focused.  HUD-HEIGHT overrides the compact frame height."
   (if (e-board-activity-shell--popup-available-p)
       (let* ((parent (e-board-activity-shell--root-frame (selected-frame)))
+             (anchor-window
+              (and compact (buffer-live-p anchor-buffer)
+                   (get-buffer-window anchor-buffer parent)))
              (frame
               (with-selected-frame parent
                 (posframe-show
                  buffer
                  :poshandler (if compact
-                                 #'e-board-activity-shell--hud-position
+                                 (lambda (info)
+                                   (e-board-activity-shell--hud-position
+                                    info (and (buffer-live-p anchor-buffer)
+                                              (get-buffer-window anchor-buffer
+                                                                 parent))))
                                'posframe-poshandler-frame-center)
                  :width (if compact
                             (e-board-activity-shell--hud-dimension
-                             e-board-activity-hud-width (frame-char-width parent)
+                             (if anchor-window
+                                 (min e-board-activity-hud-width
+                                      (max 1 (- (window-pixel-width
+                                                 anchor-window) 24)))
+                               e-board-activity-hud-width)
+                             (frame-char-width parent)
                              (frame-width parent))
                           (e-board-activity-shell--popup-dimension
                            e-board-activity-popup-width (frame-width parent)))
                  :height (if compact
                              (e-board-activity-shell--hud-dimension
-                              (or hud-height e-board-activity-hud-height)
+                              (if anchor-window
+                                  (min (or hud-height e-board-activity-hud-height)
+                                       (max 1 (- (window-pixel-height
+                                                  anchor-window) 24)))
+                                (or hud-height e-board-activity-hud-height))
                               (frame-char-height parent)
                               (frame-height parent))
                            (e-board-activity-shell--popup-dimension
@@ -164,9 +268,14 @@ HUD-HEIGHT overrides the compact frame height in pixels."
           (e-board-activity-shell-popup-mode 1)
           (add-hook 'kill-buffer-hook #'e-board-activity-shell--cleanup-popup
                     nil t))
+        (if (and compact (window-live-p anchor-window))
+            (e-board-activity-shell--track-hud
+             buffer anchor-buffer anchor-window hud-height)
+          (e-board-activity-shell--untrack-hud buffer))
         (when (and (not compact) (frame-live-p frame))
           (select-frame-set-input-focus frame)))
     (with-current-buffer buffer
+      (e-board-activity-shell--untrack-hud buffer)
       (e-board-activity-shell-popup-mode -1))
     (e-workspace-pop-to-buffer buffer))
   buffer)
@@ -174,6 +283,7 @@ HUD-HEIGHT overrides the compact frame height in pixels."
 (defun e-board-activity-shell-dismiss ()
   "Dismiss Board activity without ending its run or killing its buffer."
   (interactive)
+  (e-board-activity-shell--untrack-hud (current-buffer))
   (if (and e-board-activity-shell-popup-mode
            (frame-live-p e-board-activity-shell--popup-frame))
       (let ((parent e-board-activity-shell--popup-parent))
