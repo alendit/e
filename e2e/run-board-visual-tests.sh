@@ -51,6 +51,12 @@ wait_for() {
 }
 
 cd "$project_dir"
+for asset in ui/board/pkg/e_board.js ui/board/pkg/e_board_bg.wasm; do
+  if [[ ! -r $asset ]]; then
+    echo "Missing $asset; build Board assets with wasm-pack build --target web --release --out-dir pkg ui/board" >&2
+    exit 2
+  fi
+done
 eldev prepare emacs
 emacs --daemon="$server_name" --load "$e2e_dir/e-e2e-bootstrap.el"
 
