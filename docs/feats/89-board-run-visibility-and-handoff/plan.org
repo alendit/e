@@ -167,9 +167,12 @@ view does not block the composer.
 
 Board activity offers an =emacs-egui= visualization of the same Board-owned
 run-focused page as its native text view.  The chat status opens the selected
-run in this one activity surface.  The visual renderer occupies a normal
-Emacs xwidget buffer; a user can choose the text renderer on a build without
-xwidgets or when they prefer keyboard-oriented rows.
+run in this one activity surface.  The visual renderer occupies an xwidget
+buffer in a floating child frame over the owner chat; a user can choose the
+text renderer on a build without xwidgets or when they prefer keyboard-oriented
+rows.  The text renderer also floats when child frames are available.
+Dismissing the view with =q= or =C-g= returns focus to chat without ending the
+Board run or changing the chat layout; terminal Emacs uses a normal window.
 Adding the repository-root =emacs-egui= submodule and building the Board WASM
 app are part of this feature's visual slice.  The submodule is shared with
 Feature 62 rather than copied into a second UI runtime.
@@ -208,8 +211,8 @@ larger activity view for task detail.  It draws only relationships recorded
 by the Board: run to task, task to selected attempt, and attempt to admitted
 participant.  The current manifest does not define dependency edges, so the
 view does not invent a directed task graph or offer graph editing.  The
-compact chat status stays outside the transcript and never covers its
-composer; a floating child frame is not needed for the detailed view.
+compact chat status stays outside the transcript.  Opening the detailed view
+floats it over the owner chat while preserving the chat windows and composer.
 
 Board observation supplies a bounded, coherent page for the selected run;
 the visual adapter maps that detached page into a narrow JSON view model.
@@ -521,6 +524,9 @@ The status and context never report no work while restore is incomplete.
 
 - The initiating turn can end while its board run continues and the composer is ready for more input.
 - The owner chat shows a persistent board-run indicator derived from durable board state.
+- Opening Board activity from that indicator floats its visual or native view
+  over the owner chat on graphical Emacs, preserves the chat windows and
+  composer, and dismisses back to chat without ending the run.
 - The indicator distinguishes chat-turn idleness from an active Board run,
   names the most actionable run, counts runs rather than workers, and opens
   the one Board activity surface focused on that run.

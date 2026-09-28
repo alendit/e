@@ -112,8 +112,26 @@ later passes followed their corrections and focused regressions.
   after the xwidget rebuild.  They verify separate queue, required/optional,
   pending-delivery FIFO, and outcome-backfill boundaries; they do not join
   every crash point into one continuous scenario.
+- After the chat-overlay correction, focused Board shell and visual ERT passed
+  28/28.  The private current-configuration native graphical scenario passed
+  1/1 with a child-frame opening and dismissal check.  The private phased
+  WebKit E2E passed: the real Board WASM view opened in a child frame over
+  chat, accepted the selected-run page and a task action, retained selection
+  after an update, kept the composer active, and dismissed back to chat.
 
 * Findings
+
+** DONE High: Board activity replaced the chat instead of floating over it
+
+The initial plan explicitly chose a normal xwidget buffer and rejected a
+floating child frame, which missed the intended hover-over-chat interaction.
+The visual and native public open paths now display the same Board-owned page
+in a posframe child of the chat frame when graphical child frames are
+available.  =q= and =C-g= dismiss the view without killing the Board buffer;
+detail and participant navigation return to the outer frame.  The graphical
+fallback uses an ordinary window when a child frame is unavailable.  The
+private graphical tests above cover opening, chat layout and composer
+retention, repeated opening, dismissal, and WebKit delivery in the child frame.
 
 ** DONE High: Older active run disappears behind completed history
 
@@ -191,10 +209,10 @@ controls; visual ERT passed 16/16.
 - Slices 1-5: shared bounded projection, owner-chat status and detail,
   context, keyed completion, and idle FIFO delivery have focused e evidence.
   Native graphical coverage includes the idle composer and Board fallback.
-- Slice 2b: the visual view model, Rust/WASM app, indexed run browsing, and
-  action guards have focused and build evidence.  The real xwidget and WASM
-  state/action bridge passed; pointer-driven and pixel-rendering inspection
-  remain unverified.
+- Slice 2b: the visual view model, Rust/WASM app, indexed run browsing, popup
+  presentation, and action guards have focused and build evidence.  The real
+  xwidget and WASM state/action bridge passed in a child frame; pointer-driven
+  and pixel-rendering inspection remain unverified.
 - Slice 6: Grimoire uses one canonical owner session and Board for interactive
   and headless Daily dispatch.  Old =E_UPDATE_SESSION= routing was removed;
   the production queue consumer and its guidance are updated.
@@ -213,7 +231,8 @@ controls; visual ERT passed 16/16.
 3. Stable run and queue identities are direct contracts.  Visual layout and
    paging stay local and rebuildable; uncertain UI behavior is not persisted.
 4. Board orchestration owns run policy, the queue owns task execution, chat
-   service owns keyed owner input, and shells own presentation.
+   service owns keyed owner input, and shells own presentation, including the
+   floating Board frame and its focus return.
 5. The Board observation page and queue bridge are narrow joins.  The visual
    shell consumes detached facts without owning another durable inventory.
 6. Core policy does not depend on Rust, xwidgets, Grimoire, or a shell.
@@ -221,11 +240,12 @@ controls; visual ERT passed 16/16.
 7. SQLite and worker dispatch side effects remain in their owning services;
    the reducer and visual view model map committed facts.
 8. Schema v9 stores the run index and queue facts because restart requires
-   them.  Selection, cursors, focus, and progress stay transient.  Cleared
-   queue ownership lasts only until SQL confirms drain.
-9. Indexed reads return bounded pages.  A 1024-fact append witness took
-   187 ms (0.183 ms/fact), but representative interactive latency and
-   per-Board-write production cost are unmeasured.
+   them.  Selection, cursors, focus, popup frame, and progress stay transient.
+   Cleared queue ownership lasts only until SQL confirms drain.
+9. Indexed reads return bounded pages.  Floating presentation adds one child
+   frame on open and no Board query.  A 1024-fact append witness took 187 ms
+   (0.183 ms/fact), but representative interactive latency and per-Board-write
+   production cost are unmeasured.
 10. The Board page, queue assignment identity, and keyed input have concrete
     contracts; neither renderer must fake an unsupported operation.
 11. The v8-to-v9 upgrade is explicit and offline.  Update-session routing is
@@ -235,9 +255,10 @@ controls; visual ERT passed 16/16.
     Unexpected store and dispatch failures surface as failed work or attention.
 14. Reducer, SQL, queue, admission, and action-fence tests prove behavior below
     the graphical shell.  Isolated graphical tests and the paired private
-    current-configuration cold start cover their joins.  The phased xwidget
-    test covers native startup and state/action exchange; pointer pixels and
-    the full restart scenario remain necessary.
+    current-configuration cold start cover their joins.  The graphical native
+    and phased xwidget tests cover floating frame ownership, dismissal, and
+    state/action exchange; pointer pixels and the full restart scenario remain
+    necessary.
 
 * UX and performance playthrough
 
@@ -252,6 +273,12 @@ WebGL canvas returned a black PNG capture, and macOS window capture of a
 private visible test frame did not produce an image.  These checks do not
 prove the drawn pixels or a pointer click.  The user's Emacs stayed stopped;
 all checks used private processes.
+
+The corrected graphical path now floats both renderers over the chat frame.
+The native test dismisses and reopens it without losing the chat composer;
+the WebKit test verifies the child frame, underlying composer, Board state
+delivery, and focus return on dismissal.  These tests still do not establish
+the drawn pixels or a physical pointer click.
 
 * Unresolved acceptance and activation
 
