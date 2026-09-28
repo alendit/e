@@ -75,6 +75,13 @@
     (when (file-directory-p egui)
       (add-to-list 'load-path egui))))
 
+(when (and (not (e-e2e-current-config-p))
+           (eq system-type 'darwin)
+           (>= emacs-major-version 31))
+  ;; Preload bytecode before the test switches to source-first loading, which
+  ;; otherwise makes this Emacs build recursively macroexpand comp.el.
+  (require 'comp))
+
 (unless (e-e2e-current-config-p)
   (when-let* ((directory (getenv "E_GRAPHICAL_E2E_EMACS_DIR")))
     (setq user-emacs-directory (file-name-as-directory directory)))
