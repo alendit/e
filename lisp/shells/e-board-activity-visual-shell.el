@@ -823,7 +823,7 @@ Board run-set observer."
              (lambda (status)
                (e-board-activity-visual--run-set-updated
                 buffer target binding status)))))
-    (e-workspace-pop-to-buffer buffer)
+    (e-board-activity-shell-display buffer)
     buffer))
 
 (defun e-board-activity-visual--open-text-fallback

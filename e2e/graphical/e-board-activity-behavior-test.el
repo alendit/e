@@ -150,6 +150,7 @@
   "A held Board view stays interactive and converges after live state clears."
   (should (display-graphic-p))
   (let* ((configuration (current-window-configuration))
+         (chat-frame (selected-frame))
          (frame-size (cons (frame-width) (frame-height)))
          (stall-directory (make-temp-file "e-board-activity-graphical-stall-" t))
          (process-environment
@@ -167,6 +168,7 @@
           (make-hash-table :test 'eq :weakness 'key))
          (live (e-subagent-live-create))
          (fixture nil)
+         (composer-window nil)
          (board-buffer nil)
          (child-harness nil)
          (ad-hoc-capture (list nil))
@@ -189,6 +191,8 @@
                     :backend (e-backend-fake-create :items nil)
                     :sessions child-store))))
           (setq fixture (e-chat-behavior-test--open-surface))
+          (setq composer-window
+                (cdr (e-chat-behavior-test--fixture-windows fixture)))
           (let* ((harness (plist-get fixture :harness))
                  (session-id (plist-get fixture :session-id))
                  (binding (e-chat-service-binding harness session-id))
@@ -292,6 +296,15 @@
                           (lambda () "forced native fallback")))
                       (funcall e-chat-surface--board-status-action))))
             (should (eq (window-buffer (selected-window)) board-buffer))
+            (when (e-board-activity-shell--popup-available-p)
+              (should (eq (frame-parameter (selected-frame) 'parent-frame)
+                          chat-frame))
+              (let ((popup (selected-frame)))
+                (with-current-buffer board-buffer
+                  (e-board-activity-shell-dismiss))
+                (should (eq (selected-frame) chat-frame))
+                (should-not (frame-visible-p popup))
+                (should (buffer-live-p board-buffer))))
             (with-current-buffer board-buffer
               (should (equal e-board-activity-shell--focus-run-id
                              "graphical-run")))
@@ -342,17 +355,14 @@
                    (run-at-time 0.01 nil (lambda () (cl-incf heartbeat-count)))
                    (run-at-time 0.02 nil (lambda () (cl-incf heartbeat-count)))
                    (run-at-time 0.03 nil (lambda () (cl-incf heartbeat-count)))))
-            (select-window
-             (cdr (e-chat-behavior-test--fixture-windows fixture)))
+            (select-window composer-window)
             (with-current-buffer
-                (window-buffer
-                 (cdr (e-chat-behavior-test--fixture-windows fixture)))
+                (window-buffer composer-window)
               (should (derived-mode-p 'e-chat-composer-mode))
               (should (e-chat-composer-active-p)))
             (e-graphical-test-type-text "draft while Board activity is held")
             (with-current-buffer
-                (window-buffer
-                 (cdr (e-chat-behavior-test--fixture-windows fixture)))
+                (window-buffer composer-window)
               (should (e-chat-composer-active-p))
               (should (string-suffix-p
                        "draft while Board activity is held"

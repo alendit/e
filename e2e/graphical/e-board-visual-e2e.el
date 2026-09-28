@@ -44,6 +44,7 @@
          (binding (e-chat-service-binding harness session-id))
          (target (e-chat-service-publication-target binding))
          (board-id (e-chat-service-binding-board-id binding))
+         (chat-frame (selected-frame))
          (composer-window
           (cdr (e-chat-behavior-test--fixture-windows fixture)))
          (live (e-subagent-live-create))
@@ -115,11 +116,16 @@
     (setq e-board-visual-e2e--buffer
           (with-current-buffer transcript
             (funcall e-chat-surface--board-status-action)))
-    (unless (and (eq (window-buffer (selected-window))
+    (unless (and (eq (frame-parameter (selected-frame) 'parent-frame)
+                     chat-frame)
+                 (frame-visible-p (selected-frame))
+                 (< (frame-width (selected-frame)) (frame-width chat-frame))
+                 (< (frame-height (selected-frame)) (frame-height chat-frame))
+                 (eq (window-buffer (selected-window))
                      e-board-visual-e2e--buffer)
                  (equal (buffer-name e-board-visual-e2e--buffer)
                         e-board-activity-visual-buffer-name))
-      (error "Chat status did not display the visual Board buffer"))
+      (error "Chat status did not float the visual Board over chat"))
     (e-board-visual-e2e--widget)
     (unless (and (window-live-p composer-window)
                  (with-current-buffer (window-buffer composer-window)
@@ -131,7 +137,6 @@
                "draft while visual Board is open"
                (buffer-substring-no-properties (point-min) (point-max)))
         (error "Composer did not accept input beside the visual Board")))
-    (e-workspace-pop-to-buffer e-board-visual-e2e--buffer)
     (e-graphical-test-wait-until
      (lambda ()
        (with-current-buffer e-board-visual-e2e--buffer
@@ -296,6 +301,15 @@
 
 (defun e-board-visual-e2e-finish ()
   "Release the disposable chat and its private SQL runtime."
+  (when (buffer-live-p e-board-visual-e2e--buffer)
+    (with-current-buffer e-board-visual-e2e--buffer
+      (let ((parent e-board-activity-shell--popup-parent)
+            (popup e-board-activity-shell--popup-frame))
+        (e-board-activity-shell-dismiss)
+        (unless (and (eq (selected-frame) parent)
+                     (not (frame-visible-p popup))
+                     (buffer-live-p e-board-visual-e2e--buffer))
+          (error "Dismissing Board activity did not restore chat focus")))))
   (when e-board-visual-e2e--fixture
     (e-chat-behavior-test--cleanup
      e-board-visual-e2e--fixture

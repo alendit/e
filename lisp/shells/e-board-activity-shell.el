@@ -30,6 +30,114 @@
 (require 'e-workspaces)
 
 (declare-function e-chat-open-session "e-chat")
+(declare-function posframe-delete-frame "ext:posframe")
+(declare-function posframe-hide "ext:posframe")
+(declare-function posframe-show "ext:posframe")
+(declare-function posframe-workable-p "ext:posframe")
+
+(defgroup e-board-activity nil
+  "Board activity presentation."
+  :group 'e
+  :prefix "e-board-activity-")
+
+(defcustom e-board-activity-popup-width 0.82
+  "Width of the floating Board activity view, as columns or a frame fraction."
+  :type '(choice (number :tag "Frame fraction")
+                 (integer :tag "Columns"))
+  :group 'e-board-activity)
+
+(defcustom e-board-activity-popup-height 0.72
+  "Height of the floating Board activity view, as lines or a frame fraction."
+  :type '(choice (number :tag "Frame fraction")
+                 (integer :tag "Lines"))
+  :group 'e-board-activity)
+
+(defvar-local e-board-activity-shell--popup-frame nil
+  "Child frame currently displaying this Board activity buffer.")
+(defvar-local e-board-activity-shell--popup-parent nil
+  "Outer chat frame to refocus after Board activity closes.")
+
+(defvar e-board-activity-shell-popup-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-g") #'e-board-activity-shell-dismiss)
+    (define-key map (kbd "q") #'e-board-activity-shell-dismiss)
+    map)
+  "Keys that dismiss a floating Board activity view.")
+
+(define-minor-mode e-board-activity-shell-popup-mode
+  "Allow a floating Board activity view to be dismissed without closing it."
+  :init-value nil
+  :lighter nil
+  :keymap e-board-activity-shell-popup-mode-map)
+
+(defun e-board-activity-shell--popup-available-p ()
+  "Return non-nil when a child frame can present Board activity."
+  (and (display-graphic-p)
+       (require 'posframe nil t)
+       (fboundp 'posframe-workable-p)
+       (posframe-workable-p)
+       (fboundp 'posframe-show)
+       (fboundp 'posframe-hide)
+       (fboundp 'posframe-delete-frame)))
+
+(defun e-board-activity-shell--popup-dimension (value frame-size)
+  "Resolve VALUE against FRAME-SIZE for a floating Board view."
+  (cond
+   ((and (numberp value) (> value 0) (< value 1))
+    (max 20 (floor (* frame-size value))))
+   ((and (integerp value) (> value 0)) value)
+   (t (max 20 (floor (* frame-size 0.7))))))
+
+(defun e-board-activity-shell--root-frame (frame)
+  "Return FRAME's outermost parent frame."
+  (while (frame-parameter frame 'parent-frame)
+    (setq frame (frame-parameter frame 'parent-frame)))
+  frame)
+
+(defun e-board-activity-shell--cleanup-popup ()
+  "Delete the child frame when its Board activity buffer is killed."
+  (when (and e-board-activity-shell--popup-frame
+             (fboundp 'posframe-delete-frame))
+    (posframe-delete-frame (current-buffer))))
+
+(defun e-board-activity-shell-display (buffer)
+  "Show Board activity BUFFER over the current frame when possible."
+  (if (e-board-activity-shell--popup-available-p)
+      (let* ((parent (e-board-activity-shell--root-frame (selected-frame)))
+             (frame
+              (with-selected-frame parent
+                (posframe-show
+                 buffer
+                 :poshandler 'posframe-poshandler-frame-center
+                 :width (e-board-activity-shell--popup-dimension
+                         e-board-activity-popup-width (frame-width parent))
+                 :height (e-board-activity-shell--popup-dimension
+                          e-board-activity-popup-height (frame-height parent))
+                 :accept-focus t :border-width 1
+                 :override-parameters '((tab-bar-lines . 0))))))
+        (with-current-buffer buffer
+          (setq-local e-board-activity-shell--popup-frame frame
+                      e-board-activity-shell--popup-parent parent)
+          (e-board-activity-shell-popup-mode 1)
+          (add-hook 'kill-buffer-hook #'e-board-activity-shell--cleanup-popup
+                    nil t))
+        (when (frame-live-p frame)
+          (select-frame-set-input-focus frame)))
+    (with-current-buffer buffer
+      (e-board-activity-shell-popup-mode -1))
+    (e-workspace-pop-to-buffer buffer))
+  buffer)
+
+(defun e-board-activity-shell-dismiss ()
+  "Dismiss Board activity without ending its run or killing its buffer."
+  (interactive)
+  (if (and e-board-activity-shell-popup-mode
+           (frame-live-p e-board-activity-shell--popup-frame))
+      (let ((parent e-board-activity-shell--popup-parent))
+        (posframe-hide (current-buffer))
+        (when (frame-live-p parent)
+          (select-frame-set-input-focus parent)))
+    (quit-window)))
 
 (defconst e-board-activity-shell-buffer-name "*e-board-activity*"
   "Name of the bounded Board participant activity buffer.")
@@ -534,6 +642,8 @@
       (user-error "The selected Board row has no durable participant"))
     (unless (require 'e-chat nil t)
       (user-error "e-chat is not available to open the participant"))
+    (when e-board-activity-shell-popup-mode
+      (e-board-activity-shell-dismiss))
     (e-chat-open-session
      (e-board-activity-shell--harness-for-row row board-id live)
      participant-id t (e-board-activity-shell--instance-id row))))
@@ -554,6 +664,8 @@
         (erase-buffer)
         (insert content)
         (special-mode)))
+    (when e-board-activity-shell-popup-mode
+      (e-board-activity-shell-dismiss))
     (e-workspace-pop-to-buffer buffer)
     buffer))
 
@@ -786,7 +898,7 @@ LIVE and RUN-ID are passed to `e-board-activity-list-buffer'."
   (let ((buffer
          (e-board-activity-list-buffer
           :target target :live live :run-id run-id)))
-    (e-workspace-pop-to-buffer buffer)
+    (e-board-activity-shell-display buffer)
     buffer))
 
 (provide 'e-board-activity-shell)
