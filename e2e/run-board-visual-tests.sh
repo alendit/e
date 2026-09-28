@@ -35,8 +35,9 @@ wait_for() {
   local probe=$1
   local predicate=$2
   local description=$3
+  local max_attempts=${4:-40}
   local attempt
-  for attempt in {1..40}; do
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     expect_true "$probe"
     sleep 0.25
     if [[ $(eval_in_test "$predicate") == t ]]; then
@@ -65,6 +66,12 @@ echo 'Board visual E2E: chat auto-opened its empty HUD'
 
 wait_for '(e-board-visual-e2e-probe-web)' \
   '(e-board-visual-e2e-web-ready-p)' 'WebKit loaded the HUD and received its initial empty state'
+
+if [[ $(eval_in_test 'e-board-visual-e2e--expected-font-file') != nil ]]; then
+  wait_for '(e-board-visual-e2e-probe-web)' \
+    '(e-board-visual-e2e-font-settled-p)' 'WebKit settled the configured font load' 120
+  expect_true '(e-board-visual-e2e-font-ready-p)'
+fi
 
 expect_true '(e-board-visual-e2e-place-other-pane-above-chat)'
 echo 'Board visual E2E: HUD followed the chat output below another pane'

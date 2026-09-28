@@ -9,6 +9,7 @@ pub struct BoardState {
     #[serde(default)]
     pub compact: bool,
     pub chat_status: Option<String>,
+    pub font_file: Option<String>,
     #[serde(default)]
     pub run_set_epoch: u64,
     #[serde(default)]
@@ -198,9 +199,30 @@ pub struct BoardApp {
     steer_reason: String,
     send_prompt: String,
     fonts_for_compact: Option<bool>,
+    emacs_font_size: Option<f32>,
+    #[cfg(target_arch = "wasm32")]
+    font_requested: bool,
+    #[cfg(target_arch = "wasm32")]
+    font_download: std::rc::Rc<std::cell::RefCell<Option<Vec<u8>>>>,
 }
 
 impl BoardApp {
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn install_emacs_font(ctx: &egui::Context, bytes: Vec<u8>) {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("Emacs".into(), egui::FontData::from_owned(bytes));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .get_mut(&family)
+                .unwrap()
+                .insert(0, "Emacs".into());
+        }
+        ctx.set_fonts(fonts);
+    }
+
     pub fn new() -> Self {
         Self {
             state: BoardState {
@@ -212,6 +234,47 @@ impl BoardApp {
             steer_reason: String::new(),
             send_prompt: String::new(),
             fonts_for_compact: None,
+            emacs_font_size: None,
+            #[cfg(target_arch = "wasm32")]
+            font_requested: false,
+            #[cfg(target_arch = "wasm32")]
+            font_download: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn apply_emacs_font(&mut self, ctx: &egui::Context) {
+        if let Some(bytes) = self.font_download.borrow_mut().take() {
+            Self::install_emacs_font(ctx, bytes);
+            let _ = emacs_egui_sdk::js_sys::Reflect::set(
+                &emacs_egui_sdk::js_sys::global(),
+                &wasm_bindgen::JsValue::from_str("eguiBoardFontReady"),
+                &wasm_bindgen::JsValue::TRUE,
+            );
+        }
+
+        if !self.font_requested {
+            if let Some(path) = self.state.font_file.clone() {
+                self.font_requested = true;
+                let download = self.font_download.clone();
+                let ctx = ctx.clone();
+                // Use the installed font locally without adding its bytes to the WASM asset.
+                emacs_egui_sdk::wasm_bindgen_futures::spawn_local(async move {
+                    match emacs_egui_sdk::fetch_bytes(&emacs_egui_sdk::file_url(&path)).await {
+                        Ok(bytes) => {
+                            *download.borrow_mut() = Some(bytes);
+                            ctx.request_repaint();
+                        }
+                        Err(error) => {
+                            let _ = emacs_egui_sdk::js_sys::Reflect::set(
+                                &emacs_egui_sdk::js_sys::global(),
+                                &wasm_bindgen::JsValue::from_str("eguiBoardFontError"),
+                                &wasm_bindgen::JsValue::from_str(&format!("{error:?}")),
+                            );
+                        }
+                    }
+                });
+            }
         }
     }
 
@@ -222,39 +285,40 @@ impl BoardApp {
         }
 
         let mut style = (*ctx.style()).clone();
+        let hud_size = self.emacs_font_size.unwrap_or(13.0).clamp(13.0, 18.0);
         style.override_text_style = Some(egui::TextStyle::Body);
         style.text_styles.insert(
             egui::TextStyle::Heading,
             egui::FontId::new(
-                if compact { 13.0 } else { 22.0 },
-                egui::FontFamily::Proportional,
+                if compact { hud_size + 1.0 } else { 22.0 },
+                egui::FontFamily::Monospace,
             ),
         );
         style.text_styles.insert(
             egui::TextStyle::Body,
             egui::FontId::new(
-                if compact { 12.0 } else { 16.0 },
-                egui::FontFamily::Proportional,
+                if compact { hud_size } else { 16.0 },
+                egui::FontFamily::Monospace,
             ),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
             egui::FontId::new(
-                if compact { 11.0 } else { 15.0 },
-                egui::FontFamily::Proportional,
+                if compact { hud_size } else { 15.0 },
+                egui::FontFamily::Monospace,
             ),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
             egui::FontId::new(
-                if compact { 11.0 } else { 14.0 },
-                egui::FontFamily::Proportional,
+                if compact { hud_size - 1.0 } else { 14.0 },
+                egui::FontFamily::Monospace,
             ),
         );
         style.text_styles.insert(
             egui::TextStyle::Monospace,
             egui::FontId::new(
-                if compact { 11.0 } else { 15.0 },
+                if compact { hud_size - 1.0 } else { 15.0 },
                 egui::FontFamily::Monospace,
             ),
         );
@@ -460,7 +524,7 @@ impl BoardApp {
     }
 
     fn render_hud_tasks(ui: &mut egui::Ui, tasks: &[TaskCard], title: &str) {
-        ui.label(egui::RichText::new(title).weak().size(11.0));
+        ui.label(egui::RichText::new(title).weak().size(12.0));
         if tasks.is_empty() {
             ui.small("None");
         }
@@ -477,7 +541,7 @@ impl BoardApp {
                     [label_width, 0.0],
                     egui::Label::new(format!("• {label}")).truncate(),
                 );
-                ui.label(egui::RichText::new(state).weak().size(11.0));
+                ui.label(egui::RichText::new(state).weak().size(12.0));
             });
             if task.participant_id.is_none() {
                 ui.label(
@@ -487,7 +551,7 @@ impl BoardApp {
                         "No participant admitted"
                     })
                     .weak()
-                    .size(11.0),
+                    .size(12.0),
                 );
             }
         }
@@ -498,7 +562,7 @@ impl BoardApp {
             .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Activity").strong().size(12.0));
+                    ui.label(egui::RichText::new("Activity").strong().size(14.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(egui::Button::new("×").frame(false)).clicked() {
                             self.send_action("dismiss", json!({}));
@@ -512,7 +576,7 @@ impl BoardApp {
                 });
                 if let Some(status) = &self.state.chat_status {
                     ui.separator();
-                    ui.label(egui::RichText::new("Chat").weak().size(11.0));
+                    ui.label(egui::RichText::new("Chat").weak().size(12.0));
                     ui.add(egui::Label::new(Self::chat_status_label(status)).truncate());
                 }
                 ui.separator();
@@ -531,7 +595,7 @@ impl BoardApp {
                     .or_else(|| selected.and_then(|run| run.label.as_deref()))
                     .or(self.state.selected_run_id.as_deref())
                     .unwrap_or("No delegated work");
-                ui.label(egui::RichText::new("Board work").weak().size(11.0));
+                ui.label(egui::RichText::new("Board work").weak().size(12.0));
                 ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate());
                 if let Some(run) = selected {
                     let lifecycle = run.lifecycle.as_deref().unwrap_or("unknown");
@@ -871,11 +935,14 @@ impl EguiEmacsApp for BoardApp {
         self.selected_task = selected_task;
     }
 
-    fn on_theme_update(&mut self, _theme: ThemeColors) {
+    fn on_theme_update(&mut self, theme: ThemeColors) {
+        self.emacs_font_size = theme.font_size;
         self.fonts_for_compact = None;
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_arch = "wasm32")]
+        self.apply_emacs_font(ctx);
         self.apply_readable_fonts(ctx);
 
         if self.state.compact {
@@ -985,6 +1052,19 @@ mod tests {
     #[test]
     fn boot_state_uses_the_compact_hud_before_emacs_connects() {
         assert!(BoardApp::new().state.compact);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn installed_menlo_collection_renders_in_egui() {
+        let bytes = std::fs::read("/System/Library/Fonts/Menlo.ttc").unwrap();
+        let ctx = egui::Context::default();
+        BoardApp::install_emacs_font(&ctx, bytes);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label(egui::RichText::new("Activity").monospace());
+            });
+        });
     }
 
     #[test]

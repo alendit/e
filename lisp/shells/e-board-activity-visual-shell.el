@@ -79,6 +79,10 @@
 (defvar-local e-board-activity-visual--compact t
   "Non-nil while the visual Board uses the compact chat HUD.")
 
+(defconst e-board-activity-visual--menlo-file
+  "/System/Library/Fonts/Menlo.ttc"
+  "Installed macOS Menlo collection used when the chat frame selects Menlo.")
+
 (defvar-local e-board-activity-visual--actions-wired nil
   "Non-nil when the egui session has its semantic action callback.")
 
@@ -229,6 +233,16 @@
         e-board-activity-visual--detail-request nil
         e-board-activity-visual--push-timer nil))
 
+(defun e-board-activity-visual--font-file ()
+  "Return the installed font file matching the owner chat frame, if known."
+  (let ((frame (if (frame-live-p e-board-activity-shell--popup-parent)
+                   e-board-activity-shell--popup-parent
+                 (selected-frame))))
+    (when (and (equal (face-attribute 'default :family frame 'default)
+                      "Menlo")
+               (file-readable-p e-board-activity-visual--menlo-file))
+      e-board-activity-visual--menlo-file)))
+
 (defun e-board-activity-visual--snapshot ()
   "Return the current detached egui snapshot."
   (let* ((page e-board-activity-visual--selector-page)
@@ -247,6 +261,7 @@
     (e-board-activity-visual-view-model-snapshot
      :board-id (e-board-activity-visual--target-id)
      :compact e-board-activity-visual--compact
+     :font-file (e-board-activity-visual--font-file)
      :chat-status (when (buffer-live-p e-board-activity-visual--owner-chat)
                     (or (e-chat-surface-status
                          e-board-activity-visual--owner-chat)

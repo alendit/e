@@ -319,7 +319,7 @@ SELECTED-TASK is the presentation's durable task identity."
     (&key board-id projection selected-run-id selected-task detail-state
           page detail-error live selector-browsing selector-loading run-set-epoch
           selector-error selector-generation selector-next selected-run-visible
-          compact chat-status)
+          compact chat-status font-file)
   "Return a narrow JSON-compatible Board visual snapshot.
 When DETAIL-STATE is `ready', PAGE must match BOARD-ID and SELECTED-RUN-ID;
 otherwise the view stays in a loading state without stale task rows."
@@ -348,6 +348,7 @@ otherwise the view stays in a loading state without stale task rows."
     `((boardId . ,board-id)
       (compact . ,(if compact t :json-false))
       (chatStatus . ,chat-status)
+      (fontFile . ,font-file)
       (runSetEpoch . ,(or run-set-epoch 0))
       (runSet . ,(e-board-activity-visual-view-model-run-set
                   projection selector-browsing selector-loading selector-error

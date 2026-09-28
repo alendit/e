@@ -18,6 +18,7 @@
 (defvar e-board-visual-e2e--fixture nil)
 (defvar e-board-visual-e2e--buffer nil)
 (defvar e-board-visual-e2e--web-state nil)
+(defvar e-board-visual-e2e--expected-font-file nil)
 (defvar e-board-visual-e2e--chat-state nil)
 (defvar e-board-visual-e2e--delivery nil)
 (defvar e-board-visual-e2e--child-store nil)
@@ -73,7 +74,16 @@
                                  (frame-char-height
                                   e-board-activity-shell--popup-frame))))))
         (error "Opening the chat did not automatically show its empty Board HUD"))
-      (setq e-board-visual-e2e--buffer auto-hud))
+      (setq e-board-visual-e2e--buffer auto-hud
+            e-board-visual-e2e--expected-font-file
+            (with-current-buffer auto-hud
+              (alist-get 'fontFile (e-board-activity-visual--snapshot))))
+      (when (and (eq system-type 'darwin)
+                 (equal (face-attribute 'default :family chat-frame 'default)
+                        "Menlo")
+                 (not (equal e-board-visual-e2e--expected-font-file
+                             "/System/Library/Fonts/Menlo.ttc")))
+        (error "The HUD did not select the configured Menlo font")))
     t))
 
 (defun e-board-visual-e2e-place-other-pane-above-chat ()
@@ -263,7 +273,9 @@
     "push:!!window.eguiPushState,"
     "canvas:!!document.getElementById('egui-canvas'),"
     "drawn:!!document.querySelector('#egui-canvas.ready'),"
-    "stateReceived:!!window.eguiBoardStateReady})")
+    "stateReceived:!!window.eguiBoardStateReady,"
+    "fontReady:!!window.eguiBoardFontReady,"
+    "fontError:window.eguiBoardFontError||null})")
    (lambda (value)
      (when (stringp value)
        (setq e-board-visual-e2e--web-state
@@ -280,6 +292,17 @@
          (eq (alist-get 'canvas state) t)
          (eq (alist-get 'drawn state) t)
          (eq (alist-get 'stateReceived state) t))))
+
+(defun e-board-visual-e2e-font-settled-p ()
+  "Return whether the configured font loaded or reported an error."
+  (or (eq (alist-get 'fontReady e-board-visual-e2e--web-state) t)
+      (alist-get 'fontError e-board-visual-e2e--web-state)))
+
+(defun e-board-visual-e2e-font-ready-p ()
+  "Assert that WebKit applied the configured Emacs font."
+  (when-let* ((failure (alist-get 'fontError e-board-visual-e2e--web-state)))
+    (error "Board font load failed: %s" failure))
+  (eq (alist-get 'fontReady e-board-visual-e2e--web-state) t))
 
 (defun e-board-visual-e2e-install-state-observer ()
   "Capture the next real Emacs-to-WebKit Board snapshot."
