@@ -37,6 +37,9 @@ The HUD separates the transient owner-chat status from delegated Board work.
 A normal message changes the Chat row without implying that a Board run was
 created.  Until work is delegated, it says =No delegated work= and uses a
 shorter idle frame; the =Details= action appears when Board work exists.
+The canvas uses the owner frame's installed Menlo when that is its configured
+font.  It loads the local font at runtime rather than bundling it in WASM;
+egui's built-in monospace font remains available elsewhere.
 The WebKit canvas starts in compact mode and requests its first Board snapshot
 after its state bridge is ready, so an idle chat never shows an unbound full
 inspector.  HUD typography and rows stay dense at the compact frame width;
@@ -574,6 +577,8 @@ The status and context never report no work while restore is incomplete.
 - An ordinary chat turn updates the HUD's Chat status while its Board work
   remains empty.  The idle HUD says =No delegated work=, avoids internal run
   terminology, and occupies less height than the task-bearing HUD.
+- On a Menlo-configured macOS chat frame, the WebKit canvas loads the installed
+  Menlo collection.  Other frames retain a readable bundled monospace font.
 - The indicator distinguishes chat-turn idleness from an active Board run,
   names the most actionable run, counts runs rather than workers, and opens
   the one Board activity surface focused on that run.

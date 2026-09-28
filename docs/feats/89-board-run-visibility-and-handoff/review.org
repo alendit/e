@@ -175,8 +175,27 @@ later passes followed their corrections and focused regressions.
   in both layouts, while the submitted chat turn, two-task view, and native
   handoff phases still passed.  Focused Board shell and visual ERT passed
   31/31.  The user's Emacs was not reloaded.
+- After the font complaint, the current Doom configuration was checked and
+  selects Menlo at size 13.  The private WebKit gate received the local Menlo
+  path, loaded it into egui, and passed its chat, split-window, task, and
+  handoff phases with the rebuilt WASM.  A macOS Rust test rendered through
+  egui with the installed Menlo collection; Rust passed 10/10 and visual ERT
+  passed 20/20.  The font is read locally when the owner frame uses Menlo;
+  the WASM asset does not contain its bytes.  The stable Rust toolchain lacks
+  =rustfmt=; a later installed toolchain's format check reports pre-existing
+  formatting differences elsewhere in the Board source.
 
 * Findings
+
+** DONE Medium: The HUD used egui's mismatched proportional font
+
+The compact view used egui's light Ubuntu font at 11--12 points while the
+user's Doom configuration selected Menlo 13.  The Board canvas now requests
+the installed Menlo collection through the local file gateway when the owner
+frame uses it.  All Board text uses monospace; egui's bundled Hack font is the
+fallback when Menlo is absent.  The private WebKit test waits for the font to
+be applied before testing the HUD.  Visible glyph appearance still needs a
+pixel check in a normal on-screen frame.
 
 ** DONE Medium: The HUD floated over an unrelated Daily pane
 
@@ -353,15 +372,16 @@ controls; visual ERT passed 16/16.
    the reducer and visual view model map committed facts.
 8. Schema v9 stores the run index and queue facts because restart requires
    them.  Selection, cursors, focus, popup frame, and progress stay transient.
-   Chat status and the WebKit ready retry stay transient; the retry ends at
-   its first snapshot and is page-local.
+   Chat status, the selected font path, and WebKit font bytes stay transient;
+   the ready retry ends at its first snapshot and is page-local.
    Cleared queue ownership lasts only until SQL confirms drain.
 9. Indexed reads return bounded pages.  Floating presentation adds one child
    frame on open and no Board query.  Window changes compare one visible chat
    window's edges and schedule a move only when they differ.  The ready request
    backs off to a four-second interval only while the first snapshot is
    missing.  Chat status changes coalesce one visual snapshot without a Board
-   query.  A
+   query.  Menlo adds one local collection read per WebKit page that selects
+   it; there is no remote font request.  A
    1024-fact append witness took 187 ms
    (0.183 ms/fact), but representative interactive latency and per-Board-write
    production cost are unmeasured.
@@ -377,8 +397,8 @@ controls; visual ERT passed 16/16.
     current-configuration cold start cover their joins.  The graphical native
     and phased xwidget tests cover floating frame ownership, dismissal,
     initial idle state delivery, an ordinary submitted chat turn, split-window
-    HUD placement, and state/action exchange; pointer pixels and the full
-    restart scenario remain necessary.
+    HUD placement, Menlo load, and state/action exchange; pointer pixels and
+    the full restart scenario remain necessary.
 
 * UX and performance playthrough
 
