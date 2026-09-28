@@ -44,7 +44,7 @@
       right: 18px;
       box-sizing: border-box;
       width: min(300px, calc(100% - 36px));
-      min-height: 225px;
+      min-height: 145px;
       padding: 9px 11px;
       background: var(--board-hud);
       color: var(--board-text);
@@ -52,8 +52,7 @@
       font-size: 12px;
       line-height: 1.4;
     }
-    #board-hud-preview .hud-header,
-    #board-hud-preview .task-row {
+    #board-hud-preview .hud-header {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
@@ -71,21 +70,12 @@
       padding-top: 6px;
       border-top: 1px solid var(--board-rule);
     }
-    #board-hud-preview .section-name,
-    #board-hud-preview .secondary,
-    #board-hud-preview .task-row span:last-child {
+    #board-hud-preview .section-name {
       color: var(--board-muted);
       font-size: 11px;
     }
     #board-hud-preview .section-name { margin-bottom: 3px; }
-    #board-hud-preview .run-label { font-weight: 500; }
-    #board-hud-preview .task-row { margin-top: 3px; }
-    #board-hud-preview .task-row span:first-child {
-      overflow: hidden;
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-    #board-hud-preview .secondary { padding-left: 13px; }
+    #board-hud-preview .value { font-weight: 500; }
     @media (max-width: 520px) {
       #board-hud-preview .chat-line { max-width: 100%; }
       #board-hud-preview .hud { top: 64px; }
@@ -93,24 +83,20 @@
   </style>
   <div class="chat">
     <div class="chat-line">Start the Daily update and let me know when the required tasks finish.</div>
-    <div class="chat-line">The Board run is active. You can keep chatting while it works.</div>
+    <div class="chat-line">I’m working on your request now.</div>
     <div class="composer">Message the agent…</div>
-    <div class="hud" role="group" aria-label="Board activity, active run">
+    <div class="hud" role="group" aria-label="Chat responding, no delegated Board work">
       <div class="hud-header">
-        <strong>Board activity</strong>
-        <div class="hud-actions"><span>Details</span><span>×</span></div>
+        <strong>Activity</strong>
+        <div class="hud-actions"><span>×</span></div>
       </div>
       <div class="section">
-        <div class="section-name">Run</div>
-        <div class="run-label">Daily update</div>
-        <div class="secondary">active · 1 required · 1 optional</div>
+        <div class="section-name">Chat</div>
+        <div class="value">Responding</div>
       </div>
       <div class="section">
-        <div class="section-name">Required</div>
-        <div class="task-row"><span>• Calendar</span><span>queued</span></div>
-        <div class="secondary">Admission pending</div>
-        <div class="section-name">Optional</div>
-        <div class="task-row"><span>• Slack</span><span>running</span></div>
+        <div class="section-name">Board work</div>
+        <div class="value">No delegated work</div>
       </div>
     </div>
   </div>

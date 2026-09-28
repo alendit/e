@@ -32,6 +32,10 @@ is ready.  An empty Board shows an idle HUD.  When a run exists, it lists the
 selected run's required and optional task states, including tasks that have
 not admitted a participant yet.  An explicit =Details= action opens the full
 visual activity view with participants and controls.
+The HUD separates the transient owner-chat status from delegated Board work.
+A normal message changes the Chat row without implying that a Board run was
+created.  Until work is delegated, it says =No delegated work= and uses a
+shorter idle frame; the =Details= action appears when Board work exists.
 The WebKit canvas starts in compact mode and requests its first Board snapshot
 after its state bridge is ready, so an idle chat never shows an unbound full
 inspector.  HUD typography and rows stay dense at the compact frame width;
@@ -189,6 +193,9 @@ ready, even before a run exists.  Dismissing it suppresses automatic reopening
 for that chat until the status is explicitly activated.  A build without
 xwidgets keeps the chat usable and does not automatically open the large text
 renderer.
+The HUD labels its two scopes =Chat= and =Board work=.  Chat status is transient
+surface state; a normal message does not create a Board run.  When Board work
+is absent, the idle frame is shorter and does not show an empty inspector.
 Dismissing the view with =q= or =C-g= returns focus to chat without ending the
 Board run or changing the chat layout; terminal Emacs uses a normal window.
 Adding the repository-root =emacs-egui= submodule and building the Board WASM
@@ -559,6 +566,9 @@ The status and context never report no work while restore is incomplete.
   Board binding is ready, including when no run is active.  Dismissal is
   respected until an explicit status activation; missing xwidget support does
   not automatically open the native full activity view.
+- An ordinary chat turn updates the HUD's Chat status while its Board work
+  remains empty.  The idle HUD says =No delegated work=, avoids internal run
+  terminology, and occupies less height than the task-bearing HUD.
 - The indicator distinguishes chat-turn idleness from an active Board run,
   names the most actionable run, counts runs rather than workers, and opens
   the one Board activity surface focused on that run.

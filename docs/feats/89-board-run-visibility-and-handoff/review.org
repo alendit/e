@@ -158,8 +158,31 @@ later passes followed their corrections and focused regressions.
   current-configuration cold start passed 8/8.  The final button styling
   rebuild passed the WebKit test again.  The preview is illustrative; corrected
   visible pixels and real pointer clicks have not been checked.
+- After the second screenshot, the live read-only chat probe reported a
+  completed chat turn.  The user's Emacs process had started at 15:41, before
+  the compact HUD fix was committed; its displayed =Details ↗= control and
+  large empty layout match the earlier WASM renderer.  The follow-up change
+  passed 36/36 focused Board/chat-surface ERT, 76/76 broader chat ERT, 9/9
+  Rust tests, and the private current-configuration cold start 8/8.  The
+  rebuilt private WebKit gate passed an idle frame height check and a real
+  composer submission with a streamed provider reply.  WebKit received both
+  =streaming= and =done= chat states while Board work remained empty.  Its
+  two-task and handoff phases also passed.  The user's Emacs was only probed;
+  it was not reloaded.
 
 * Findings
+
+** DONE Medium: The idle HUD implied every chat message should create a run
+
+The second screenshot showed =No run selected= after an ordinary chat message.
+That is technically possible because a Board run is delegated task work, not
+every chat turn, but the HUD gave no visible account of the chat turn.  The
+compact view now has a transient Chat row driven by the chat surface and a
+separate Board work row.  With no delegated work it says =No delegated work=,
+hides =Details=, and uses a shorter idle frame.  A chat status hook refreshes
+the HUD without querying or creating Board facts.  The focused tests cover
+listener cleanup; the private WebKit test submits a real chat message,
+streams a reply, and observes both active and settled HUD states.
 
 ** DONE High: An idle WebKit canvas displayed the full inspector
 
@@ -305,7 +328,7 @@ controls; visual ERT passed 16/16.
    paging stay local and rebuildable; uncertain UI behavior is not persisted.
 4. Board orchestration owns run policy, the queue owns task execution, chat
    service owns keyed owner input, and shells own presentation, including the
-   floating Board frame and its focus return.
+   floating Board frame, transient chat status, and its focus return.
 5. The Board observation page and queue bridge are narrow joins.  The visual
    shell consumes detached facts without owning another durable inventory.
 6. Core policy does not depend on Rust, xwidgets, Grimoire, or a shell.
@@ -314,11 +337,13 @@ controls; visual ERT passed 16/16.
    the reducer and visual view model map committed facts.
 8. Schema v9 stores the run index and queue facts because restart requires
    them.  Selection, cursors, focus, popup frame, and progress stay transient.
-   The WebKit ready retry ends at its first snapshot and is page-local.
+   Chat status and the WebKit ready retry stay transient; the retry ends at
+   its first snapshot and is page-local.
    Cleared queue ownership lasts only until SQL confirms drain.
 9. Indexed reads return bounded pages.  Floating presentation adds one child
    frame on open and no Board query.  The ready request backs off to a
-   four-second interval only while the first snapshot is missing.  A
+   four-second interval only while the first snapshot is missing.  Chat status
+   changes coalesce one visual snapshot without a Board query.  A
    1024-fact append witness took 187 ms
    (0.183 ms/fact), but representative interactive latency and per-Board-write
    production cost are unmeasured.
@@ -333,8 +358,9 @@ controls; visual ERT passed 16/16.
     the graphical shell.  Isolated graphical tests and the paired private
     current-configuration cold start cover their joins.  The graphical native
     and phased xwidget tests cover floating frame ownership, dismissal,
-    initial idle state delivery, and state/action exchange; pointer pixels and
-    the full restart scenario remain necessary.
+    initial idle state delivery, an ordinary submitted chat turn, and
+    state/action exchange; pointer pixels and the full restart scenario remain
+    necessary.
 
 * UX and performance playthrough
 
@@ -347,8 +373,8 @@ initially checked through view-model and event tests.  The rebuilt xwidget
 version passed the phased WebKit gate described above.  The off-screen
 WebGL canvas returned a black PNG capture, and macOS window capture of a
 private visible test frame did not produce an image.  These checks do not
-prove the drawn pixels or a pointer click.  The user's Emacs stayed stopped;
-all checks used private processes.
+prove the drawn pixels or a pointer click.  The graphical checks used private
+processes; the user's running Emacs was read only probed after the screenshots.
 
 The corrected graphical path now floats both renderers over the chat frame.
 The native test dismisses and reopens it without losing the chat composer;
@@ -366,9 +392,10 @@ the drawn pixels or a physical pointer click.
   across pre-persistence, pre-publication, post-publication, post-consumption,
   and coordinator-outcome boundaries.  Measure realistic Board write and
   visual refresh latency before asserting an interactive performance bound.
-- Restart Emacs to activate the integrated core runtime and Daily source.
+- Restart Emacs to activate the latest HUD and integrated core source.
   The current Grimoire checkout retains unrelated local edits; preserve them
   during any later work.
 
-The user's Emacs remains stopped.  The configured store has been upgraded;
-the core changes need a full restart.  A shell reload cannot apply them.
+The user's Emacs is running code loaded before the latest HUD changes.  The
+configured store has been upgraded; the core changes need a full restart.
+A shell reload cannot apply them.
