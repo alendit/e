@@ -1,0 +1,7 @@
+#+title: Report: Stuck resource glob and incomplete Grimoire Daily
+#+startup: overview
+
+The user observed a =glob= call for =session://= that did not return and a
+Grimoire Daily run that produced only a partial note.  They asked for the root
+causes and fixes for both failures.  These were separate failures on
+2026-09-28; the Daily deadline expired before the =glob= call began.

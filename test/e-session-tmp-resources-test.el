@@ -15,6 +15,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-request)
 (require 'e-resources)
 (require 'e-tools)
@@ -394,6 +395,39 @@ blocked on the interactive coding-system picker."
 	             "missing"
 	             nil)
 	            '(:matches [] :truncated nil)))))
+
+(ert-deftest e-session-tmp-test-model-glob-settles-with-canonical-metadata ()
+  "The async tmp:// glob returns JSON-safe kinds and file timestamps."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities
+                   (list (e-session-tmp-capability-create))))
+         (resources (e-harness-resources harness "session-1" "turn-1"))
+         (tools (e-tools-registry-create))
+         result failure)
+    (unwind-protect
+        (progn
+          (e-resources-write resources "tmp://notes/one.txt" "one")
+          (e-harness-register-resource-tools tools resources)
+          (e-tools-start
+           tools
+           '(:id "tmp-glob" :name "glob"
+             :arguments (:uri "tmp://notes" :sort-by "updated-at"))
+           :context '(:interactive t)
+           :on-done (lambda (value) (setq result value))
+           :on-error (lambda (err) (setq failure err)))
+          (let ((deadline (+ (float-time) 3)))
+            (while (and (not (or result failure)) (< (float-time) deadline))
+              (accept-process-output nil 0.01)))
+          (should-not failure)
+          (should (eq (plist-get result :status) 'ok))
+          (let* ((content (plist-get result :content))
+                 (entry (aref (plist-get content :resources) 0)))
+            (should (e-json-value-p content))
+            (should (equal (plist-get entry :kind) "file"))
+            (should (numberp (plist-get (plist-get entry :metadata)
+                                       :updated-at)))))
+      (e-session-tmp-cleanup-harness harness))))
 
 (ert-deftest e-session-tmp-test-glob-start-returns-before-fd-exits ()
   "tmp:// glob starts a cancellable fd process without waiting for completion."

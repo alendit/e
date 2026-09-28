@@ -1,0 +1,53 @@
+#+title: Investigation: Resource tool settlement and Daily queue deadline
+#+startup: overview
+
+* Resource glob
+
+The earlier bounded live probe showed the =glob= call at =session://= still in
+tool status without a terminal result.  Source inspection and an isolated
+reproduction found that resource entries use internal symbol
+values such as =:kind 'engine=, while model-facing tool content requires
+canonical JSON.  Result validation signalled inside the child completion
+callback; the isolated child was already terminal, and the outer Work remained
+started.
+
+The resource-to-tool boundary now copies glob entries, converts their kind
+enum to a string and known Emacs time metadata to numeric timestamps, and
+leaves internal resource results unchanged.  The asynchronous completion
+callback fails the outer Work if result conversion or validation signals.
+Tests drive =glob= through =e-tools-start= for =session://= and =tmp://=;
+an invalid resource payload must return an error result with a failed outer
+Work rather than remaining pending.
+
+* Daily deadline
+
+The prior run's frozen 900-second deadline expired at approximately 16:29:20
+UTC.  Gmail and Slack were cancelled at that deadline, and calendar was first
+claimed afterward.  Grimoire's private queue had inherited the generic
+two-worker limit, so six independent gatherers ran in waves against one
+deadline.  The later =glob= call began at approximately 16:39:43 UTC and did
+not cause this failure.
+
+Grimoire now gives its private queue an explicit seven-worker cap, covering
+the six refresh gatherers and the populate-only previous-day gatherer.  The
+controller preserves the one absolute manifest deadline and rejects a claimed
+task whose deadline has passed before starting its collector or subagent.
+An agentic collector that finishes at the deadline cannot dispatch its worker
+afterward.  Expired assignments publish a visible failed Board report rather
+than silently disappearing or being treated as optional.
+
+* Verification and activation
+
+The =e= resource/harness composition suite passed 74/74 before the optional
+metadata regression was added; the three directly affected test files passed
+50/50 afterward.  The changed core file compiled with warnings treated as
+errors.  The full =eldev test= run passed 2780/2791.  Its eleven failures are
+outside the changed resource path: six HTTP tests cannot bind a loopback
+socket in this sandbox, while the five chat, process-reporting, runtime-store,
+and subagent failures reproduce when selected independently.  The full suite
+is therefore not green.  Grimoire's Daily suite passed 44/44, including an
+expired queued-claim regression and frozen-deadline restart coverage.  The
+changed Grimoire source compiled with warnings treated as errors.  These are
+repository-side checks; no live Emacs reload or session-state mutation was
+performed.  The changed =e= core behavior requires a full Emacs restart before
+it is active in the user's process.

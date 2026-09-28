@@ -373,12 +373,41 @@ available through e:// resources instead of repeating it in every request.")
    (list (list :uri uri
                :operation (e-operation-id operation)))))
 
+(defun e-harness-capabilities--resource-glob-tool-entry (entry)
+  "Return resource glob ENTRY with its documented fields ready for JSON."
+  (let ((result (copy-sequence entry))
+        (kind (plist-get entry :kind))
+        (metadata (copy-sequence (plist-get entry :metadata))))
+    (when (and kind (symbolp kind))
+      (setq result (plist-put result :kind (symbol-name kind))))
+    (dolist (key '(:created-at :updated-at :last-message-at))
+      (let ((value (plist-get metadata key)))
+        (when (consp value)
+          (setq metadata (plist-put metadata key (float-time value))))))
+    (if (plist-member entry :metadata)
+        (plist-put result :metadata metadata)
+      result)))
+
+(defun e-harness-capabilities--resource-tool-content (operation content)
+  "Project resource CONTENT for the model-facing OPERATION boundary."
+  (if (and (eq (e-operation-id-of operation) 'glob)
+           (vectorp (plist-get content :resources)))
+      (let ((result (copy-sequence content)))
+        (plist-put result :resources
+                   (vconcat (mapcar
+                             #'e-harness-capabilities--resource-glob-tool-entry
+                             (append (plist-get content :resources) nil)))))
+    content))
+
 (defun e-harness-capabilities--resource-operation-result (operation uri content)
   "Return CONTENT as the current resource OPERATION tool result when possible."
   (let ((call (plist-get (e-tools-current-context) :tool-call))
         (metadata (e-harness-capabilities--resource-operation-metadata operation uri)))
     (if call
-        (e-tools-result-create call 'ok content metadata)
+        (e-tools-result-create
+         call 'ok
+         (e-harness-capabilities--resource-tool-content operation content)
+         metadata)
       content)))
 
 (defun e-harness-capabilities--resource-operation-call (resources operation uri arguments)
@@ -431,10 +460,12 @@ available through e:// resources instead of repeating it in every request.")
                                         :resource-operation
                                         (e-operation-id-of operation))
                          :on-done (lambda (content)
-                                    (e-work-finish
-                                     handle
-                                     (e-harness-capabilities--resource-operation-result
-                                      operation uri content)))
+                                    (condition-case err
+                                        (e-work-finish
+                                         handle
+                                         (e-harness-capabilities--resource-operation-result
+                                          operation uri content))
+                                      (error (e-work-fail handle err))))
                          :on-error (lambda (err)
                                      (e-work-fail handle err))
                          :on-progress (lambda (payload)

@@ -15,6 +15,7 @@
 (require 'e)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-json)
 (require 'e-session-catalog)
 (require 'e-resources)
 (require 'e-session-resources)
@@ -56,6 +57,97 @@
                  :operation-arguments operation-arguments
                  :resource-operation operation))))
     (e-session-resources-test--await-work handle)))
+
+(defun e-session-resources-test--tool-outcome (tools uri)
+  "Return the settled model-facing glob outcome for URI through TOOLS."
+  (let (result failure request)
+    (setq request
+          (e-tools-start
+           tools
+           (list :id "resource-glob" :name "glob"
+                 :arguments (list :uri uri))
+           :context '(:interactive t)
+           :on-done (lambda (value) (setq result value))
+           :on-error (lambda (err) (setq failure err))))
+    (let ((deadline (+ (float-time) 3)))
+      (while (and (not (or result failure)) (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (list :result result :error failure :request request)))
+
+(ert-deftest e-session-resources-test-model-glob-settles-with-canonical-entries ()
+  "The real tool boundary converts internal resource entries to JSON."
+  (e-session-resources-test--with-empty-config
+    (let* ((harness (e-session-resources-test--harness))
+           (resources (e-session-resources-test--resources harness))
+           (tools (e-tools-registry-create)))
+      (e-harness-create-session harness :id "session-1")
+      (e-harness-register-resource-tools tools resources)
+      (dolist (case '(("session://" . "engine")
+                      ("session://e/sessions/" . "session")
+                      ("session://e/sessions/session-1/" . "file")))
+        (let* ((outcome (e-session-resources-test--tool-outcome
+                         tools (car case)))
+               (result (plist-get outcome :result))
+               (content (plist-get result :content)))
+          (should-not (plist-get outcome :error))
+          (should (eq (plist-get result :status) 'ok))
+          (should (e-json-value-p content))
+          (should (equal (plist-get
+                          (aref (plist-get content :resources) 0) :kind)
+                         (cdr case))))))))
+
+(ert-deftest e-session-resources-test-invalid-async-result-fails-outer-work ()
+  "An invalid child result fails the model tool instead of stranding it."
+  (let* ((resources (e-resources-registry-create))
+         (tools (e-tools-registry-create))
+         (child-work
+          (e-work-spec-create
+           :id "invalid-resource-glob"
+           :execution 'cooperative
+           :interactive-policy 'async
+           :owner 'e-session-resources-test
+           :runner
+           (lambda (handle _arguments _context)
+             (e-work-finish
+              handle
+              '(:resources [(:uri "invalid://entry" :name "entry"
+                             :kind file :metadata (:invalid unexpected-symbol))]
+                :truncated nil))))))
+    (e-resources-register
+     resources
+     (e-resource-method-create
+      :scheme "invalid" :operation e-operation-glob :work child-work))
+    (e-harness-register-resource-tools tools resources)
+    (let* ((outcome (e-session-resources-test--tool-outcome
+                     tools "invalid://"))
+           (request (plist-get outcome :request))
+           (outer (plist-get (e-tools-request-metadata request)
+                             :work-handle)))
+      (should (eq (plist-get (plist-get outcome :result) :status) 'error))
+      (should-not (plist-get outcome :error))
+      (should (eq (plist-get (e-work-status outer) :state) 'failed)))))
+
+(ert-deftest e-session-resources-test-glob-tool-normalizes-resource-time ()
+  "File timestamps remain sortable numbers in model-facing glob metadata."
+  (let* ((source-time (current-time))
+         (content
+          (e-harness-capabilities--resource-tool-content
+           e-operation-glob
+           (list :resources
+                 (vector (list :uri "tmp://entry" :name "entry" :kind 'file
+                               :metadata (list :updated-at source-time)))
+                 :truncated nil)))
+         (entry (aref (plist-get content :resources) 0)))
+    (should (e-json-value-p content))
+    (should (numberp (plist-get (plist-get entry :metadata) :updated-at)))))
+
+(ert-deftest e-session-resources-test-glob-tool-preserves-absent-metadata ()
+  "Projecting a glob entry does not invent optional metadata."
+  (let* ((entry '(:uri "session://e" :name "e" :kind engine))
+         (projected (e-harness-capabilities--resource-glob-tool-entry entry)))
+    (should (equal (plist-get projected :kind) "engine"))
+    (should-not (plist-member projected :metadata))
+    (should-not (plist-member entry :metadata))))
 
 (ert-deftest e-session-resources-test-glob-discovers-engine-sessions-and-projections ()
   "session:// glob follows the engine, sessions, projection workflow."
