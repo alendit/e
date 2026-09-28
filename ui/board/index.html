@@ -26,18 +26,41 @@
       };
     }
 
+    function pushTheme(theme) {
+      const probe = document.createElement("span");
+      document.body.appendChild(probe);
+      const color = (value) => {
+        if (!value) return value;
+        probe.style.color = "";
+        probe.style.color = value;
+        if (!probe.style.color) return value;
+        const match = getComputedStyle(probe).color.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+        return match
+          ? `#${match.slice(1).map((part) => Number(part).toString(16).padStart(2, "0")).join("")}`
+          : value;
+      };
+      const normalized = {
+        ...theme,
+        bg: color(theme.bg),
+        fg: color(theme.fg),
+        "surface-bg": color(theme["surface-bg"] || theme.bg),
+      };
+      probe.remove();
+      egui_push_theme(JSON.stringify(normalized));
+    }
+
     async function run() {
       const canvas = document.getElementById("egui-canvas");
       await init();
       await start_app("egui-canvas");
       const theme = parseHashParams();
       if (theme && theme.bg && theme.fg) {
-        egui_push_theme(JSON.stringify({
+        pushTheme({
           bg: theme.bg,
           fg: theme.fg,
           "font-size": theme.fontSize,
           "surface-bg": theme.surfaceBg,
-        }));
+        });
       }
       canvas.classList.add("ready");
       let receivedState = false;
@@ -47,7 +70,7 @@
         window.eguiBoardStateReady = true;
         egui_push_state(json);
       };
-      window.eguiPushTheme = (json) => egui_push_theme(json);
+      window.eguiPushTheme = (json) => pushTheme(JSON.parse(json));
       let retryDelay = 250;
       function requestInitialState() {
         if (receivedState) return;

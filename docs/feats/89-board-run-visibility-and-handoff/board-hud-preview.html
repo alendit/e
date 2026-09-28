@@ -8,6 +8,7 @@
       --board-text: light-dark(#4c5048, #d5d7d8);
       --board-muted: light-dark(#888d80, #94999c);
       --board-rule: light-dark(#dddcc8, #3b3e42);
+      --board-accent: light-dark(#705b28, #d2b971);
       font-family: Menlo, ui-monospace, SFMono-Regular, monospace;
       width: 100%;
     }
@@ -78,6 +79,8 @@
       gap: 9px;
     }
     #board-hud-preview .hud-header strong { font-weight: 500; }
+    #board-hud-preview .pictogram { color: var(--board-accent); }
+    #board-hud-preview .section-name .pictogram { margin-right: 5px; }
     #board-hud-preview .hud-actions { white-space: nowrap; }
     #board-hud-preview .hud-actions span {
       padding: 0 0 0 8px;
@@ -95,6 +98,7 @@
     }
     #board-hud-preview .section-name { margin-bottom: 3px; }
     #board-hud-preview .value { font-weight: 500; }
+    #board-hud-preview .status-line { display: flex; align-items: baseline; gap: 8px; }
     @media (max-width: 520px) {
       #board-hud-preview .chat-line { max-width: 100%; }
       #board-hud-preview .chat { min-height: 350px; }
@@ -115,15 +119,14 @@
       <div class="composer">Message the agent…</div>
       <div class="hud" role="group" aria-label="Chat responding, no delegated Board work">
         <div class="hud-header">
-          <strong>Activity</strong>
+          <strong><span class="pictogram" aria-hidden="true">✦</span> Activity</strong>
           <div class="hud-actions"><span>×</span></div>
         </div>
         <div class="section">
-          <div class="section-name">Chat</div>
-          <div class="value">Responding</div>
+          <div class="status-line"><span class="section-name">Chat</span><span class="value"><span class="pictogram" aria-hidden="true">●</span> Responding</span></div>
         </div>
         <div class="section">
-          <div class="section-name">Board work</div>
+          <div class="section-name"><span class="pictogram" aria-hidden="true">▦</span> Board work</div>
           <div class="value">No delegated work</div>
         </div>
       </div>

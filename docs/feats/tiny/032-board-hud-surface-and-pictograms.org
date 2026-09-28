@@ -1,0 +1,35 @@
+#+title: Board HUD Surface and Pictograms
+
+* Status
+
+Done.
+
+* Change
+
+The compact WebKit Board HUD now has a warm, theme-derived surface and a
+subtle border instead of a plain white panel.  Drawn pictograms distinguish
+the activity title, chat status, and Board work without depending on font glyphs.
+The Board page converts Emacs
+color names such as =White= and =Black= to the hex values expected by egui,
+and supplies the background when the boot URL omits a surface color.  The tint
+and text follow both light and dark themes.  The Feature 89 preview
+matches the revised compact layout.  This is presentation-only work; Board
+state and actions retain their existing owners.
+
+* Validation
+
+- Rust Board tests: 11/11 passed, including light and dark surface checks.
+- A JavaScript probe checked the boot theme payload for named =White=/=Black=
+  colors and a missing surface color; all three become valid hex colors.
+- The rebuilt WASM was rendered at the real 300x145 HUD size with a streaming
+  chat state in private headless Chrome.  Its light and dark PNGs were
+  inspected: tint, borders, pictograms, and text are visible without missing
+  glyph squares.  The images are in the Feature 89 review directory.
+- Rebuilt the ignored local WASM package with the installed WebAssembly target
+  and =wasm-bindgen=.
+- The standard private current-config WebKit test passed every phase with the
+  final WASM and boot theme: default HUD, Menlo font load, chat status, task
+  state, focus, details, and handoff.  A physical pointer click in the Emacs
+  xwidget remains outside this gate.
+- The running Emacs was left unchanged.  A new WebKit Board buffer is needed
+  to load the rebuilt local WASM and HTML.

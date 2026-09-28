@@ -11,6 +11,7 @@ Status values for coding agents:
 
 [[file:tiny/030-codex-gpt6-models.org][Tiny 030: Codex GPT-6 Sol and Luna models]] is =Done=.
 [[file:tiny/031-emacs31-warning-cleanup.org][Tiny 031: Emacs 31 warning cleanup]] is =Done=.
+[[file:tiny/032-board-hud-surface-and-pictograms.org][Tiny 032: Board HUD surface and pictograms]] is =Done=.
 
 Feature 91 is =Done=, so its temporary implementation gate is satisfied.
 Before implementation or review remediation resumes in Features 87, 88, or 90,

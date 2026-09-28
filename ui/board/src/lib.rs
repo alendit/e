@@ -206,6 +206,14 @@ pub struct BoardApp {
     font_download: std::rc::Rc<std::cell::RefCell<Option<Vec<u8>>>>,
 }
 
+enum HudIcon {
+    Activity,
+    Board,
+    Ready,
+    Active,
+    Attention,
+}
+
 impl BoardApp {
     #[cfg(any(target_arch = "wasm32", test))]
     fn install_emacs_font(ctx: &egui::Context, bytes: Vec<u8>) {
@@ -523,6 +531,98 @@ impl BoardApp {
         }
     }
 
+    fn hud_colors(base: egui::Color32) -> (egui::Color32, egui::Color32, egui::Color32) {
+        let light =
+            (u32::from(base.r()) * 299 + u32::from(base.g()) * 587 + u32::from(base.b()) * 114)
+                / 1000
+                >= 128;
+        let mix = |accent: egui::Color32, weight: u16| {
+            let channel = |base: u8, accent: u8| {
+                ((u16::from(base) * (100 - weight) + u16::from(accent) * weight) / 100) as u8
+            };
+            egui::Color32::from_rgb(
+                channel(base.r(), accent.r()),
+                channel(base.g(), accent.g()),
+                channel(base.b(), accent.b()),
+            )
+        };
+        if light {
+            (
+                mix(egui::Color32::from_rgb(223, 210, 149), 34),
+                egui::Color32::from_rgb(180, 162, 99),
+                egui::Color32::from_rgb(112, 91, 40),
+            )
+        } else {
+            (
+                mix(egui::Color32::from_rgb(124, 113, 70), 21),
+                egui::Color32::from_rgb(91, 84, 60),
+                egui::Color32::from_rgb(210, 185, 113),
+            )
+        }
+    }
+
+    fn chat_status_icon(status: &str) -> HudIcon {
+        match status {
+            "idle" | "done" => HudIcon::Ready,
+            "error" | "input failed" | "compaction failed" => HudIcon::Attention,
+            _ => HudIcon::Active,
+        }
+    }
+
+    fn paint_hud_icon(ui: &mut egui::Ui, icon: HudIcon, color: egui::Color32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::hover());
+        let center = rect.center();
+        let painter = ui.painter();
+        let stroke = egui::Stroke::new(1.5, color);
+        match icon {
+            HudIcon::Activity => {
+                painter.line_segment(
+                    [center + egui::vec2(0.0, -5.0), center + egui::vec2(0.0, 5.0)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [center + egui::vec2(-5.0, 0.0), center + egui::vec2(5.0, 0.0)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [center + egui::vec2(-2.5, -2.5), center + egui::vec2(2.5, 2.5)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [center + egui::vec2(-2.5, 2.5), center + egui::vec2(2.5, -2.5)],
+                    stroke,
+                );
+            }
+            HudIcon::Board => {
+                for x in [-4.0, 1.0] {
+                    for y in [-4.0, 1.0] {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                center + egui::vec2(x, y),
+                                egui::vec2(3.0, 3.0),
+                            ),
+                            0.5,
+                            color,
+                        );
+                    }
+                }
+            }
+            HudIcon::Ready => {
+                painter.circle_stroke(center, 3.5, stroke);
+            }
+            HudIcon::Active => {
+                painter.circle_filled(center, 3.5, color);
+            }
+            HudIcon::Attention => {
+                painter.line_segment(
+                    [center + egui::vec2(0.0, -4.0), center + egui::vec2(0.0, 1.0)],
+                    stroke,
+                );
+                painter.circle_filled(center + egui::vec2(0.0, 4.0), 1.0, color);
+            }
+        }
+    }
+
     fn render_hud_tasks(ui: &mut egui::Ui, tasks: &[TaskCard], title: &str) {
         ui.label(egui::RichText::new(title).weak().size(12.0));
         if tasks.is_empty() {
@@ -558,10 +658,18 @@ impl BoardApp {
     }
 
     fn render_hud(&self, ctx: &egui::Context) {
+        let (surface, border, accent) = Self::hud_colors(ctx.style().visuals.panel_fill);
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
+            .frame(
+                egui::Frame::none()
+                    .fill(surface)
+                    .stroke(egui::Stroke::new(1.0, border))
+                    .rounding(6.0)
+                    .inner_margin(egui::Margin::same(9.0)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    Self::paint_hud_icon(ui, HudIcon::Activity, accent);
                     ui.label(egui::RichText::new("Activity").strong().size(14.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(egui::Button::new("×").frame(false)).clicked() {
@@ -576,8 +684,11 @@ impl BoardApp {
                 });
                 if let Some(status) = &self.state.chat_status {
                     ui.separator();
-                    ui.label(egui::RichText::new("Chat").weak().size(12.0));
-                    ui.add(egui::Label::new(Self::chat_status_label(status)).truncate());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Chat").weak().size(12.0));
+                        Self::paint_hud_icon(ui, Self::chat_status_icon(status), accent);
+                        ui.add(egui::Label::new(Self::chat_status_label(status)).truncate());
+                    });
                 }
                 ui.separator();
 
@@ -595,7 +706,10 @@ impl BoardApp {
                     .or_else(|| selected.and_then(|run| run.label.as_deref()))
                     .or(self.state.selected_run_id.as_deref())
                     .unwrap_or("No delegated work");
-                ui.label(egui::RichText::new("Board work").weak().size(12.0));
+                ui.horizontal(|ui| {
+                    Self::paint_hud_icon(ui, HudIcon::Board, accent);
+                    ui.label(egui::RichText::new("Board work").weak().size(12.0));
+                });
                 ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate());
                 if let Some(run) = selected {
                     let lifecycle = run.lifecycle.as_deref().unwrap_or("unknown");
@@ -1072,6 +1186,15 @@ mod tests {
         assert_eq!(BoardApp::chat_status_label("running turn-42"), "Working");
         assert_eq!(BoardApp::chat_status_label("streaming"), "Responding");
         assert_eq!(BoardApp::chat_status_label("done"), "Ready");
+    }
+
+    #[test]
+    fn hud_surface_is_tinted_for_light_and_dark_chat_themes() {
+        let (light, _, _) = BoardApp::hud_colors(egui::Color32::WHITE);
+        let (dark, _, _) = BoardApp::hud_colors(egui::Color32::from_rgb(32, 33, 38));
+        assert_ne!(light, egui::Color32::WHITE);
+        assert!(light.b() < light.r());
+        assert!(dark.r() > 32);
     }
 
     fn ready_state(revision: i64) -> BoardState {

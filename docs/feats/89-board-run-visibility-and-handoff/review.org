@@ -420,6 +420,17 @@ the WebKit test verifies the child frame, underlying composer, Board state
 delivery, and focus return on dismissal.  These tests still do not establish
 the drawn pixels or a physical pointer click.
 
+The compact WebKit HUD now paints a warm surface derived from the Emacs theme
+and draws small pictograms for its title, chat state, and Board work.  Named
+Emacs colors are converted and the boot surface gets a non-null background
+before egui applies them.  Rust tests passed 11/11, and the standard private
+current-config WebKit gate completed its Menlo, chat, task, focus, and handoff
+phases with the rebuilt WASM.  Private headless Chrome rendered the actual WASM at 300x145 with a
+streaming chat state; the inspected [[file:board-hud-light.png][light]] and
+[[file:board-hud-dark.png][dark]] images show the tint, text, and drawn pictograms.
+This proves the renderer pixels in Chrome, while xwidget pixels and a physical
+pointer click still need verification.
+
 * Unresolved acceptance and activation
 
 - Inspect the Board's drawn cards and use a real pointer click in an
