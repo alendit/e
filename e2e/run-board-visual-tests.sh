@@ -73,11 +73,19 @@ wait_for '(e-board-visual-e2e-probe-delivery)' \
   '(e-board-visual-e2e-delivered-p)' \
   'WebKit received the pending required and running optional task groups'
 
+expect_true '(e-board-visual-e2e-send-presentation-action "show-details")'
+wait_for 't' '(e-board-visual-e2e-details-open-p)' \
+  'Details action opened the full focused Board view'
+
 expect_true '(e-board-visual-e2e-select-pending-task)'
 wait_for 't' '(e-board-visual-e2e-pending-task-selected-p)' \
   'WebKit selected the pending task through the inbound event route'
 expect_true '(e-board-visual-e2e-publish-update)'
 echo 'Board visual E2E: task selection survived a Board update'
+
+expect_true '(e-board-visual-e2e-send-presentation-action "show-hud")'
+wait_for 't' '(e-board-visual-e2e-hud-open-p)' \
+  'HUD action restored the compact focusless Board view'
 
 expect_true '(e-board-visual-e2e-finish)'
 echo 'Board visual E2E complete: all phases passed.'

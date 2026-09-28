@@ -7,6 +7,8 @@ use serde_json::{json, Map, Value};
 pub struct BoardState {
     pub board_id: Option<String>,
     #[serde(default)]
+    pub compact: bool,
+    #[serde(default)]
     pub run_set_epoch: u64,
     #[serde(default)]
     pub run_set: RunSetState,
@@ -414,6 +416,104 @@ impl BoardApp {
         }
     }
 
+    fn render_hud_tasks(ui: &mut egui::Ui, tasks: &[TaskCard], title: &str) {
+        ui.label(egui::RichText::new(title).strong().size(13.0));
+        if tasks.is_empty() {
+            ui.small("None");
+        }
+        for task in tasks {
+            let label = task
+                .label
+                .as_deref()
+                .or(task.task_key.as_deref())
+                .unwrap_or("Task");
+            let state = task.state.as_deref().unwrap_or("unknown");
+            ui.label(format!("{label} · {state}"));
+            if task.participant_id.is_none() {
+                ui.small(if matches!(state, "queued" | "pending") {
+                    "Admission pending"
+                } else {
+                    "No participant admitted"
+                });
+            }
+        }
+    }
+
+    fn render_hud(&self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Board activity").strong().size(14.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("×").clicked() {
+                        self.send_action("dismiss", json!({}));
+                    }
+                });
+            });
+            ui.separator();
+
+            let selected = self.state.run_set.runs.iter().find(|run| {
+                run.run_id.as_deref() == self.state.selected_run_id.as_deref()
+            });
+            let label = self
+                .state
+                .detail
+                .label
+                .as_deref()
+                .or_else(|| selected.and_then(|run| run.label.as_deref()))
+                .or(self.state.selected_run_id.as_deref())
+                .unwrap_or("No run selected");
+            ui.label(egui::RichText::new(label).strong());
+            if let Some(run) = selected {
+                let lifecycle = run.lifecycle.as_deref().unwrap_or("unknown");
+                ui.small(format!(
+                    "{lifecycle} · {} required · {} optional",
+                    run.required_count, run.optional_count
+                ));
+                if run.attention || run.conflict_count > 0 {
+                    ui.label("Attention required");
+                }
+                if let Some(delivery) = &run.completion_delivery_state {
+                    ui.small(format!("Completion: {delivery}"));
+                }
+            } else if let Some(status) = &self.state.detail.terminal_status {
+                ui.small(format!("Completion: {status}"));
+            }
+
+            ui.separator();
+            match self.state.detail.state.as_deref() {
+                Some("ready") => {
+                    egui::ScrollArea::vertical()
+                        .max_height(155.0)
+                        .show(ui, |ui| {
+                            Self::render_hud_tasks(
+                                ui,
+                                &self.state.detail.required_tasks,
+                                "Required",
+                            );
+                            ui.add_space(4.0);
+                            Self::render_hud_tasks(
+                                ui,
+                                &self.state.detail.optional_tasks,
+                                "Optional",
+                            );
+                        });
+                }
+                Some("error") => {
+                    ui.label("Activity unavailable");
+                    ui.small(self.state.detail.error.as_deref().unwrap_or("Unknown error"));
+                }
+                _ => {
+                    ui.spinner();
+                    ui.small("Loading Board activity…");
+                }
+            }
+            ui.separator();
+            if ui.button("Details ↗").clicked() {
+                self.send_action("show-details", json!({}));
+            }
+        });
+    }
+
     fn render_run_selector(&mut self, ui: &mut egui::Ui) {
         ui.heading("Board runs");
         if let Some(status) = &self.state.run_set.status {
@@ -701,9 +801,20 @@ impl EguiEmacsApp for BoardApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_readable_fonts(ctx);
 
+        if self.state.compact {
+            self.render_hud(ctx);
+            return;
+        }
+
         egui::TopBottomPanel::top("board-header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Board activity");
+                if ui.button("HUD").clicked() {
+                    self.send_action("show-hud", json!({}));
+                }
+                if ui.button("Close").clicked() {
+                    self.send_action("dismiss", json!({}));
+                }
                 if let Some(board_id) = &self.state.board_id {
                     ui.small(format!("Board {board_id}"));
                 }

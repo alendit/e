@@ -39,7 +39,7 @@
           "surface-bg": theme.surfaceBg,
         }));
       }
-      requestAnimationFrame(() => canvas.classList.add("ready"));
+      canvas.classList.add("ready");
       window.eguiPushState = (json) => egui_push_state(json);
       window.eguiPushTheme = (json) => egui_push_theme(json);
     }

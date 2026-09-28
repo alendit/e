@@ -116,16 +116,36 @@
     (setq e-board-visual-e2e--buffer
           (with-current-buffer transcript
             (funcall e-chat-surface--board-status-action)))
-    (unless (and (eq (frame-parameter (selected-frame) 'parent-frame)
-                     chat-frame)
-                 (frame-visible-p (selected-frame))
-                 (< (frame-width (selected-frame)) (frame-width chat-frame))
-                 (< (frame-height (selected-frame)) (frame-height chat-frame))
-                 (eq (window-buffer (selected-window))
-                     e-board-visual-e2e--buffer)
+    (let ((popup (with-current-buffer e-board-visual-e2e--buffer
+                   e-board-activity-shell--popup-frame)))
+      (unless (and (eq (selected-frame) chat-frame)
+                   (eq (frame-parameter popup 'parent-frame) chat-frame)
+                   (frame-visible-p popup)
+                   (frame-parameter popup 'no-accept-focus)
+                   (>= (frame-pixel-width popup)
+                       (- e-board-activity-hud-width
+                          (* 2 (frame-char-width popup))))
+                   (<= (frame-pixel-width popup)
+                       (+ e-board-activity-hud-width (frame-char-width popup)))
+                   (<= (frame-pixel-height popup)
+                       (+ e-board-activity-hud-height (frame-char-height popup)))
+                   (< (frame-pixel-width popup)
+                      (/ (frame-pixel-width chat-frame) 2))
+                   (<= (abs (- (cdr (frame-position popup)) 20)) 8)
+                   (<= (abs (- (- (frame-pixel-width chat-frame)
+                                   (+ (car (frame-position popup))
+                                      (frame-pixel-width popup)))
+                               19))
+                       12)
+                   (eq (window-buffer (frame-root-window popup))
+                       e-board-visual-e2e--buffer)
                  (equal (buffer-name e-board-visual-e2e--buffer)
                         e-board-activity-visual-buffer-name))
-      (error "Chat status did not float the visual Board over chat"))
+        (error "Chat status did not open a compact focusless top-right Board HUD: %S"
+               (list :selected (selected-frame)
+                     :popup popup :position (frame-position popup)
+                     :size (cons (frame-pixel-width popup)
+                                 (frame-pixel-height popup))))))
     (e-board-visual-e2e--widget)
     (unless (and (window-live-p composer-window)
                  (with-current-buffer (window-buffer composer-window)
@@ -218,6 +238,7 @@
     "(function(){const states=window.__eBoardStates||[];"
     "const s=states[states.length-1];"
     "return JSON.stringify({count:states.length,"
+    "compact:s&&s.compact,"
     "run:s&&s.selectedRunId,"
     "required:s&&s.detail.requiredTasks[0].taskKey,"
     "participant:s&&s.detail.requiredTasks[0].participantId,"
@@ -234,12 +255,54 @@
   "Return whether WebKit received the selected run and both task groups."
   (let ((delivery e-board-visual-e2e--delivery))
     (and (> (or (alist-get 'count delivery) 0) 0)
+         (eq (alist-get 'compact delivery) t)
          (equal (alist-get 'run delivery) "visual-run")
          (equal (alist-get 'required delivery) "calendar")
          (null (alist-get 'participant delivery))
          (equal (alist-get 'optional delivery) "slack")
          (stringp (alist-get 'optionalParticipant delivery))
          (eq (alist-get 'canSteer delivery) t))))
+
+(defun e-board-visual-e2e-send-presentation-action (action)
+  "Send ACTION over the real WebKit event route for this Board snapshot."
+  (let* ((session
+          (with-current-buffer e-board-visual-e2e--buffer
+            e-board-activity-visual--egui-session))
+         (snapshot
+          (with-current-buffer e-board-visual-e2e--buffer
+            (e-board-activity-visual--snapshot)))
+         (payload
+          (json-encode
+           `((action . ,action)
+             (boardId . ,(alist-get 'boardId snapshot))
+             (runSetEpoch . ,(alist-get 'runSetEpoch snapshot))))))
+    (xwidget-webkit-execute-script
+     (e-board-visual-e2e--widget)
+     (format
+      "fetch('/api/event?session=%s&action=ui-action&payload='+encodeURIComponent(%S))"
+      (plist-get session :id) payload))
+    t))
+
+(defun e-board-visual-e2e-details-open-p ()
+  "Return whether the explicit Details action opened the large view."
+  (with-current-buffer e-board-visual-e2e--buffer
+    (and (not e-board-activity-visual--compact)
+         (eq (selected-frame) e-board-activity-shell--popup-frame)
+         (> (frame-pixel-width e-board-activity-shell--popup-frame)
+            e-board-activity-hud-width))))
+
+(defun e-board-visual-e2e-hud-open-p ()
+  "Return whether the explicit HUD action restored compact chat view."
+  (with-current-buffer e-board-visual-e2e--buffer
+    (and e-board-activity-visual--compact
+         (eq (selected-frame) e-board-activity-shell--popup-parent)
+         (frame-parameter e-board-activity-shell--popup-frame 'no-accept-focus)
+         (>= (frame-pixel-width e-board-activity-shell--popup-frame)
+             (- e-board-activity-hud-width
+                (* 2 (frame-char-width e-board-activity-shell--popup-frame))))
+         (<= (frame-pixel-width e-board-activity-shell--popup-frame)
+             (+ e-board-activity-hud-width
+                (frame-char-width e-board-activity-shell--popup-frame))))))
 
 (defun e-board-visual-e2e-select-pending-task ()
   "Send one WebKit-to-Emacs task selection through the egui event route."

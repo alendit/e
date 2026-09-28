@@ -57,6 +57,9 @@
 (defvar-local e-board-activity-visual--egui-session nil
   "emacs-egui session associated with the current visual buffer.")
 
+(defvar-local e-board-activity-visual--compact t
+  "Non-nil while the visual Board uses the compact chat HUD.")
+
 (defvar-local e-board-activity-visual--actions-wired nil
   "Non-nil when the egui session has its semantic action callback.")
 
@@ -218,6 +221,7 @@
       (setq projection (plist-put projection :runs runs)))
     (e-board-activity-visual-view-model-snapshot
      :board-id (e-board-activity-visual--target-id)
+     :compact e-board-activity-visual--compact
      :projection projection
      :selected-run-id e-board-activity-visual--selected-run-id
      :selected-task e-board-activity-visual--selected-task
@@ -599,6 +603,16 @@
          (action (and (stringp action-text) (intern-soft action-text))))
     (when (e-board-activity-visual--payload-current-p payload)
       (pcase action
+        ('show-details
+         (when e-board-activity-visual--compact
+           (setq e-board-activity-visual--compact nil)
+           (e-board-activity-shell-display (current-buffer))))
+        ('show-hud
+         (unless e-board-activity-visual--compact
+           (setq e-board-activity-visual--compact t)
+           (e-board-activity-shell-display (current-buffer) t)))
+        ('dismiss
+         (e-board-activity-shell-dismiss))
         ('browse-runs
          (when (and (not e-board-activity-visual--selector-browsing)
                     (not e-board-activity-visual--selector-loading)
@@ -797,6 +811,7 @@ Board run-set observer."
                   e-board-activity-visual--binding binding
                   e-board-activity-visual--live live
                   e-board-activity-visual--egui-session session
+                  e-board-activity-visual--compact t
                   e-board-activity-visual--run-set-projection nil
                   e-board-activity-visual--selector-browsing nil
                   e-board-activity-visual--selector-page nil
@@ -823,7 +838,7 @@ Board run-set observer."
              (lambda (status)
                (e-board-activity-visual--run-set-updated
                 buffer target binding status)))))
-    (e-board-activity-shell-display buffer)
+    (e-board-activity-shell-display buffer t)
     buffer))
 
 (defun e-board-activity-visual--open-text-fallback

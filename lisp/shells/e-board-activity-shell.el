@@ -52,6 +52,16 @@
                  (integer :tag "Lines"))
   :group 'e-board-activity)
 
+(defcustom e-board-activity-hud-width 300
+  "Target width of the compact Board activity HUD in pixels."
+  :type 'integer
+  :group 'e-board-activity)
+
+(defcustom e-board-activity-hud-height 310
+  "Target height of the compact Board activity HUD in pixels."
+  :type 'integer
+  :group 'e-board-activity)
+
 (defvar-local e-board-activity-shell--popup-frame nil
   "Child frame currently displaying this Board activity buffer.")
 (defvar-local e-board-activity-shell--popup-parent nil
@@ -100,28 +110,50 @@
              (fboundp 'posframe-delete-frame))
     (posframe-delete-frame (current-buffer))))
 
-(defun e-board-activity-shell-display (buffer)
-  "Show Board activity BUFFER over the current frame when possible."
+(defun e-board-activity-shell--hud-position (info)
+  "Place the HUD described by INFO near its parent frame's top right."
+  (cons (max 0 (- (plist-get info :parent-frame-width)
+                  (plist-get info :posframe-width) 19))
+        20))
+
+(defun e-board-activity-shell--hud-dimension (pixels char-pixels frame-size)
+  "Fit PIXELS to CHAR-PIXELS units within FRAME-SIZE."
+  (max 1 (min (floor (/ pixels (max 1 char-pixels))) frame-size)))
+
+(defun e-board-activity-shell-display (buffer &optional compact)
+  "Show Board activity BUFFER over the current frame when possible.
+COMPACT places a focusless status HUD at the top right; full detail is focused."
   (if (e-board-activity-shell--popup-available-p)
       (let* ((parent (e-board-activity-shell--root-frame (selected-frame)))
              (frame
               (with-selected-frame parent
                 (posframe-show
                  buffer
-                 :poshandler 'posframe-poshandler-frame-center
-                 :width (e-board-activity-shell--popup-dimension
-                         e-board-activity-popup-width (frame-width parent))
-                 :height (e-board-activity-shell--popup-dimension
-                          e-board-activity-popup-height (frame-height parent))
-                 :accept-focus t :border-width 1
-                 :override-parameters '((tab-bar-lines . 0))))))
+                 :poshandler (if compact
+                                 #'e-board-activity-shell--hud-position
+                               'posframe-poshandler-frame-center)
+                 :width (if compact
+                            (e-board-activity-shell--hud-dimension
+                             e-board-activity-hud-width (frame-char-width parent)
+                             (frame-width parent))
+                          (e-board-activity-shell--popup-dimension
+                           e-board-activity-popup-width (frame-width parent)))
+                 :height (if compact
+                             (e-board-activity-shell--hud-dimension
+                              e-board-activity-hud-height (frame-char-height parent)
+                              (frame-height parent))
+                           (e-board-activity-shell--popup-dimension
+                            e-board-activity-popup-height (frame-height parent)))
+                 :accept-focus (not compact) :border-width 1
+                 :override-parameters '((tab-bar-lines . 0)
+                                        (no-focus-on-map . t))))))
         (with-current-buffer buffer
           (setq-local e-board-activity-shell--popup-frame frame
                       e-board-activity-shell--popup-parent parent)
           (e-board-activity-shell-popup-mode 1)
           (add-hook 'kill-buffer-hook #'e-board-activity-shell--cleanup-popup
                     nil t))
-        (when (frame-live-p frame)
+        (when (and (not compact) (frame-live-p frame))
           (select-frame-set-input-focus frame)))
     (with-current-buffer buffer
       (e-board-activity-shell-popup-mode -1))
