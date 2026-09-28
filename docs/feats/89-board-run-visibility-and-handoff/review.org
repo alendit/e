@@ -135,8 +135,32 @@ later passes followed their corrections and focused regressions.
   failed before test execution with an Emacs 31 macro-expansion cycle, so it
   supplies no Board result.  Focused Board shell and visual ERT passed 28/28;
   =bash e2e/run-current-config-tests.sh= passed 8/8 with private state.
+- After automatic HUD opening, focused Board activity ERT passed 29/29,
+  including a WebKit buffer-rename ownership regression.  Chat tests passed
+  316/316.  The current-configuration cold start passed 8/8 and the private
+  native Board graphical scenario passed 1/1 with visual auto-opening isolated
+  from its text-renderer fixture.  The phased WebKit E2E passed twice against
+  the rebuilt WASM: opening an empty chat automatically displayed the HUD,
+  dismissal was respected, the status reopened it for a two-task run, the
+  composer retained focus, the full view handled a real WebKit-origin task
+  action, and an explicit native fallback closed the visual child frame.
+  Presentation mode switches were driven through the semantic handler in the
+  transparent off-screen test frame because WebKit deferred synthetic fetches
+  there.  Pointer clicks and visible pixels remain unverified.  One earlier
+  combined native test stalled with an auto-open WebKit frame and was stopped;
+  the isolated native scenario and phased cross-renderer handoff then passed.
 
 * Findings
+
+** DONE High: The HUD required a separate status click after opening chat
+
+The compact HUD was initially available only through the run status action.
+Chat display now opens it once the Board binding is ready, including an idle
+Board.  Dismissal is remembered for that chat until the user activates its
+status.  WebKit can rename the visual buffer after startup, so the visual
+shell tracks its live buffer identity when rebinding or closing it; native
+fallback then closes that child frame before opening its own view.  The
+private WebKit and native tests above cover those transitions.
 
 ** DONE High: The first floating Board view obscured chat
 

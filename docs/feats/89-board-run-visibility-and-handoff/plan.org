@@ -26,10 +26,11 @@ A user asks the main chat to start work that expands into a board run.
 The main session publishes the run and ends its turn without waiting for the full graph.
 The composer becomes ready at once.
 A persistent status area shows that the run is active and provides a bounded summary.
-On an xwidget-capable graphical Emacs, opening that status shows a small,
-focusless Board HUD near the top-right corner of chat.  It lists the selected
-run's required and optional task states, including tasks that have not
-admitted a participant yet.  An explicit =Details= action opens the full
+On an xwidget-capable graphical Emacs, displaying the chat automatically opens
+a small, focusless Board HUD near its top-right corner once the Board binding
+is ready.  An empty Board shows an idle HUD.  When a run exists, it lists the
+selected run's required and optional task states, including tasks that have
+not admitted a participant yet.  An explicit =Details= action opens the full
 visual activity view with participants and controls.
 If the user sends another message, the model receives the same active-run summary in context and therefore knows that work is still pending.
 When the required work settles, the board queues one completion input for the same session.
@@ -179,7 +180,11 @@ required and optional task rows.  =Details= opens the larger focused view;
 =HUD= returns to the small view.  Both forms have a close control.  A user can
 choose the text renderer on a build without xwidgets or when they prefer
 keyboard-oriented rows.  The text renderer also floats when child frames are
-available.
+available.  Chat display opens the visual HUD after the Board binding is
+ready, even before a run exists.  Dismissing it suppresses automatic reopening
+for that chat until the status is explicitly activated.  A build without
+xwidgets keeps the chat usable and does not automatically open the large text
+renderer.
 Dismissing the view with =q= or =C-g= returns focus to chat without ending the
 Board run or changing the chat layout; terminal Emacs uses a normal window.
 Adding the repository-root =emacs-egui= submodule and building the Board WASM
@@ -398,12 +403,14 @@ reopened durable activity page.
 - Route semantic UI events through Elisp to the existing Board activity and
   participant-control services.  Refresh from Board notifications, preserving
   focus by durable identity and rejecting stale or unavailable controls.
-- Gate: a graphical Daily owner scenario opens the focusless top-right HUD
-  from an idle chat, leaves chat focus and the composer responsive, and opens
-  the large visual view only through =Details=.  Returning with =HUD= restores
+- Gate: a graphical chat automatically opens the focusless top-right HUD
+  after Board readiness, even with no active run.  Closing it is respected;
+  the chat status can reopen it.  The HUD leaves chat focus and the composer
+  responsive.  It opens the large visual view only through =Details=.
+  Returning with =HUD= restores
   the small frame and chat focus.  The visual view shows a dispatch-pending
-  task without a participant beside a running task with one.  A Board update changes
-  the task card without duplicating it or losing focus.  Focused view-model
+  task without a participant beside a running task with one.  A Board update
+  changes the task card without duplicating it or losing focus.  Focused view-model
   and event tests prove bounded payloads, coherent task/participant mapping,
   omitted-run access, restore/attention labels, and stale-click handling.  Build
   the WASM app and verify the native view still opens without xwidgets.
@@ -542,6 +549,10 @@ The status and context never report no work while restore is incomplete.
   graphical Emacs, preserves the chat windows and composer, and dismisses
   without ending the run.  The visual default is a small, focusless top-right
   HUD; the full inspector appears only after =Details= is chosen.
+- A graphical chat with xwidget support automatically shows the HUD when its
+  Board binding is ready, including when no run is active.  Dismissal is
+  respected until an explicit status activation; missing xwidget support does
+  not automatically open the native full activity view.
 - The indicator distinguishes chat-turn idleness from an active Board run,
   names the most actionable run, counts runs rather than workers, and opens
   the one Board activity surface focused on that run.
