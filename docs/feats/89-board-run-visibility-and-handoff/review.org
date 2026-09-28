@@ -108,6 +108,10 @@ later passes followed their corrections and focused regressions.
   matched.  =wasm-pack= is absent on this host, so this was not a fresh build.
   The source guard now checks native =xwidget-internal= rather than the Lisp
   WebKit command, which exists even in builds without xwidgets.
+- The four selected restart checks re-passed 4/4 on the integrated checkout
+  after the xwidget rebuild.  They verify separate queue, required/optional,
+  pending-delivery FIFO, and outcome-backfill boundaries; they do not join
+  every crash point into one continuous scenario.
 
 * Findings
 
