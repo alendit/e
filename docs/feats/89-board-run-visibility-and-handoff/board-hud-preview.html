@@ -11,10 +11,29 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       width: 100%;
     }
+    #board-hud-preview .workspace {
+      box-sizing: border-box;
+      width: 100%;
+      background: var(--board-chat);
+      color: var(--board-chat-text);
+    }
+    #board-hud-preview .daily {
+      box-sizing: border-box;
+      height: 205px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--board-rule);
+      font-size: 12px;
+    }
+    #board-hud-preview .daily strong {
+      display: block;
+      margin-bottom: 15px;
+      font-weight: 500;
+    }
+    #board-hud-preview .daily div { margin: 7px 0; }
     #board-hud-preview .chat {
       position: relative;
       box-sizing: border-box;
-      min-height: 360px;
+      min-height: 245px;
       padding: 20px;
       background: var(--board-chat);
       color: var(--board-chat-text);
@@ -40,8 +59,8 @@
     }
     #board-hud-preview .hud {
       position: absolute;
-      top: 18px;
-      right: 18px;
+      top: 12px;
+      right: 12px;
       box-sizing: border-box;
       width: min(300px, calc(100% - 36px));
       min-height: 145px;
@@ -78,25 +97,35 @@
     #board-hud-preview .value { font-weight: 500; }
     @media (max-width: 520px) {
       #board-hud-preview .chat-line { max-width: 100%; }
-      #board-hud-preview .hud { top: 64px; }
+      #board-hud-preview .chat { min-height: 350px; }
+      #board-hud-preview .hud { top: 125px; }
     }
   </style>
-  <div class="chat">
-    <div class="chat-line">Start the Daily update and let me know when the required tasks finish.</div>
-    <div class="chat-line">I’m working on your request now.</div>
-    <div class="composer">Message the agent…</div>
-    <div class="hud" role="group" aria-label="Chat responding, no delegated Board work">
-      <div class="hud-header">
-        <strong>Activity</strong>
-        <div class="hud-actions"><span>×</span></div>
-      </div>
-      <div class="section">
-        <div class="section-name">Chat</div>
-        <div class="value">Responding</div>
-      </div>
-      <div class="section">
-        <div class="section-name">Board work</div>
-        <div class="value">No delegated work</div>
+  <div class="workspace">
+    <div class="daily" aria-label="Daily document in another Emacs window">
+      <strong>Daily 2026-09-28</strong>
+      <div>▸ Summary</div>
+      <div>▸ Today’s TODO</div>
+      <div>▸ Standup</div>
+      <div>▸ Projects</div>
+    </div>
+    <div class="chat" aria-label="Chat output window">
+      <div class="chat-line">Start the Daily update and let me know when the required tasks finish.</div>
+      <div class="chat-line">I’m working on your request now.</div>
+      <div class="composer">Message the agent…</div>
+      <div class="hud" role="group" aria-label="Chat responding, no delegated Board work">
+        <div class="hud-header">
+          <strong>Activity</strong>
+          <div class="hud-actions"><span>×</span></div>
+        </div>
+        <div class="section">
+          <div class="section-name">Chat</div>
+          <div class="value">Responding</div>
+        </div>
+        <div class="section">
+          <div class="section-name">Board work</div>
+          <div class="value">No delegated work</div>
+        </div>
       </div>
     </div>
   </div>

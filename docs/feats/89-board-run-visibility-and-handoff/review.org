@@ -169,8 +169,24 @@ later passes followed their corrections and focused regressions.
   =streaming= and =done= chat states while Board work remained empty.  Its
   two-task and handoff phases also passed.  The user's Emacs was only probed;
   it was not reloaded.
+- After the user's split-window screenshot, the private WebKit gate opened a
+  chat with an unrelated pane beside it, then moved the chat below another
+  pane.  The compact HUD followed the output window's right and upper edges
+  in both layouts, while the submitted chat turn, two-task view, and native
+  handoff phases still passed.  Focused Board shell and visual ERT passed
+  31/31.  The user's Emacs was not reloaded.
 
 * Findings
+
+** DONE Medium: The HUD floated over an unrelated Daily pane
+
+The screenshot showed the chat output in the lower portion of the frame, but
+the HUD stayed at the frame's upper-right corner over the Daily document.
+The popup shell now anchors its compact child frame to the visible owner-chat
+output window.  It fits within that window and schedules a position refresh
+when the window layout changes.  Dismissal removes the window observer.  A
+private graphical test moves the chat below an unrelated pane and checks the
+HUD's edges against the chat output, not the outer frame.
 
 ** DONE Medium: The idle HUD implied every chat message should create a run
 
@@ -341,9 +357,11 @@ controls; visual ERT passed 16/16.
    its first snapshot and is page-local.
    Cleared queue ownership lasts only until SQL confirms drain.
 9. Indexed reads return bounded pages.  Floating presentation adds one child
-   frame on open and no Board query.  The ready request backs off to a
-   four-second interval only while the first snapshot is missing.  Chat status
-   changes coalesce one visual snapshot without a Board query.  A
+   frame on open and no Board query.  Window changes compare one visible chat
+   window's edges and schedule a move only when they differ.  The ready request
+   backs off to a four-second interval only while the first snapshot is
+   missing.  Chat status changes coalesce one visual snapshot without a Board
+   query.  A
    1024-fact append witness took 187 ms
    (0.183 ms/fact), but representative interactive latency and per-Board-write
    production cost are unmeasured.
@@ -358,9 +376,9 @@ controls; visual ERT passed 16/16.
     the graphical shell.  Isolated graphical tests and the paired private
     current-configuration cold start cover their joins.  The graphical native
     and phased xwidget tests cover floating frame ownership, dismissal,
-    initial idle state delivery, an ordinary submitted chat turn, and
-    state/action exchange; pointer pixels and the full restart scenario remain
-    necessary.
+    initial idle state delivery, an ordinary submitted chat turn, split-window
+    HUD placement, and state/action exchange; pointer pixels and the full
+    restart scenario remain necessary.
 
 * UX and performance playthrough
 

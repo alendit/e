@@ -27,8 +27,9 @@ The main session publishes the run and ends its turn without waiting for the ful
 The composer becomes ready at once.
 A persistent status area shows that the run is active and provides a bounded summary.
 On an xwidget-capable graphical Emacs, displaying the chat automatically opens
-a small, focusless Board HUD near its top-right corner once the Board binding
-is ready.  An empty Board shows an idle HUD.  When a run exists, it lists the
+a small, focusless Board HUD at the chat output window's upper-right edge once
+the Board binding is ready.  It follows that window when other panes move or
+resize it.  An empty Board shows an idle HUD.  When a run exists, it lists the
 selected run's required and optional task states, including tasks that have
 not admitted a participant yet.  An explicit =Details= action opens the full
 visual activity view with participants and controls.
@@ -182,7 +183,8 @@ Board activity offers an =emacs-egui= visualization of the same Board-owned
 run-focused page as its native text view.  The chat status opens the selected
 run in this one activity surface.  The visual renderer occupies an xwidget
 buffer in a floating child frame over the owner chat.  Its default form is a
-roughly 300-pixel-wide, top-right HUD that leaves the chat focused.  It shows
+roughly 300-pixel-wide HUD inside the chat output window, aligned to its
+upper-right edge and leaving the chat focused.  It shows
 the selected run label, lifecycle, attention or completion cue, and short
 required and optional task rows.  =Details= opens the larger focused view;
 =HUD= returns to the small view.  Both forms have a close control.  A user can
@@ -414,10 +416,12 @@ reopened durable activity page.
 - Route semantic UI events through Elisp to the existing Board activity and
   participant-control services.  Refresh from Board notifications, preserving
   focus by durable identity and rejecting stale or unavailable controls.
-- Gate: a graphical chat automatically opens the focusless top-right HUD
-  after Board readiness, even with no active run.  Closing it is respected;
-  the chat status can reopen it.  The HUD leaves chat focus and the composer
-  responsive.  It opens the large visual view only through =Details=.
+- Gate: a graphical chat automatically opens the focusless HUD inside its
+  output window's upper-right edge, and the HUD follows that window when
+  another pane opens beside or above it.  It must not cover unrelated panes.
+  It opens after Board readiness, even with no active run.  Closing it is
+  respected; the chat status can reopen it.  The HUD leaves chat focus and the
+  composer responsive.  It opens the large visual view only through =Details=.
   The WebKit page receives its first snapshot while the Board is still idle,
   before a run notification or a test-driven state push.
   Returning with =HUD= restores
@@ -560,8 +564,9 @@ The status and context never report no work while restore is incomplete.
 - The owner chat shows a persistent board-run indicator derived from durable board state.
 - Opening Board activity from that indicator floats over the owner chat on
   graphical Emacs, preserves the chat windows and composer, and dismisses
-  without ending the run.  The visual default is a small, focusless top-right
-  HUD; the full inspector appears only after =Details= is chosen.
+  without ending the run.  The visual default is a small, focusless HUD
+  aligned within the chat output window; the full inspector appears only after
+  =Details= is chosen.
 - A graphical chat with xwidget support automatically shows the HUD when its
   Board binding is ready, including when no run is active.  Dismissal is
   respected until an explicit status activation; missing xwidget support does
