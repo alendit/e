@@ -149,7 +149,7 @@
          (ui-directory (e-board-activity-visual--ui-directory))
          (runtime (locate-library "emacs-egui")))
     (cond
-     ((not (fboundp 'xwidget-webkit-browse-url))
+     ((not (featurep 'xwidget-internal))
       "Emacs has no xwidget-webkit support")
      ((null runtime)
       (format "the emacs-egui submodule is unavailable under %s; initialize it with git submodule update --init emacs-egui"

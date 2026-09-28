@@ -8,6 +8,16 @@
 (require 'ert)
 (require 'e-board-activity-visual-shell)
 
+(ert-deftest e-board-activity-visual-test-unavailable-without-native-xwidget ()
+  "The Lisp WebKit command does not imply native xwidget support."
+  (let ((native-featurep (symbol-function 'featurep)))
+    (cl-letf (((symbol-function 'featurep)
+               (lambda (feature &optional subfeature)
+                 (and (not (eq feature 'xwidget-internal))
+                      (funcall native-featurep feature subfeature)))))
+      (should (equal (e-board-activity-visual-unavailable-reason)
+                     "Emacs has no xwidget-webkit support")))))
+
 (defun e-board-activity-visual-test--control-payload
     (action &optional revision attempt participant-id &rest fields)
   "Return a task control payload for ACTION and optional coordinates."

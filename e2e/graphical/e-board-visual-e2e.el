@@ -1,0 +1,317 @@
+;;; e-board-visual-e2e.el --- Cross-callback WebKit Board acceptance -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Dimitri Vorona
+;; SPDX-License-Identifier: MIT
+
+;;; Commentary:
+
+;; WebKit navigation and script callbacks require the server eval that opened
+;; the xwidget to return.  The shell runner drives these bounded phases through
+;; separate requests against one private graphical Emacs process.
+
+;;; Code:
+
+(require 'json)
+(load (expand-file-name "e-board-activity-behavior-test.el"
+                        (file-name-directory load-file-name)) nil nil t)
+
+(defvar e-board-visual-e2e--fixture nil)
+(defvar e-board-visual-e2e--buffer nil)
+(defvar e-board-visual-e2e--web-state nil)
+(defvar e-board-visual-e2e--delivery nil)
+(defvar e-board-visual-e2e--child-store nil)
+(defvar e-board-visual-e2e--child-directory nil)
+(defvar e-board-visual-e2e--original-live nil)
+
+(defun e-board-visual-e2e--widget ()
+  "Return the live WebKit widget owned by the accepted Board buffer."
+  (let ((widget
+         (with-current-buffer e-board-visual-e2e--buffer
+           (plist-get e-board-activity-visual--egui-session :xwidget))))
+    (unless (xwidget-live-p widget)
+      (error "Board WebKit widget is not live"))
+    widget))
+
+(defun e-board-visual-e2e-start ()
+  "Open a disposable owner chat and its real WebKit Board view."
+  (unless (featurep 'xwidget-internal)
+    (error "This Emacs has no native xwidget support"))
+  (setq e-board-visual-e2e--fixture (e-chat-behavior-test--open-surface))
+  (let* ((fixture e-board-visual-e2e--fixture)
+         (harness (plist-get fixture :harness))
+         (session-id (plist-get fixture :session-id))
+         (transcript (plist-get fixture :transcript))
+         (binding (e-chat-service-binding harness session-id))
+         (target (e-chat-service-publication-target binding))
+         (board-id (e-chat-service-binding-board-id binding))
+         (composer-window
+          (cdr (e-chat-behavior-test--fixture-windows fixture)))
+         (live (e-subagent-live-create))
+         (capture (list nil))
+         child-harness run-bound)
+    (when-let* ((reason (e-board-activity-visual-unavailable-reason)))
+      (error "Board visual assets unavailable: %s" reason))
+    (setq e-board-visual-e2e--child-directory
+          (make-temp-file "e-board-visual-child-" t)
+          e-board-visual-e2e--child-store
+          (e-session-sqlite-store-create
+           e-board-visual-e2e--child-directory :asynchronous t)
+          e-board-visual-e2e--original-live e-subagent-actions-default-live
+          e-subagent-actions-default-live live)
+    (e-harness-instance-register
+     :id :visual-e2e-worker :kind 'reviewer :subagent t
+     :factory (lambda ()
+                (setq child-harness
+                      (e-harness-create
+                       :backend (e-backend-fake-create :items nil)
+                       :sessions e-board-visual-e2e--child-store))))
+    (setq run-bound
+          (e-subagent-spawn
+           live harness session-id
+           :source-turn-id "visual-parent-turn"
+           :type :visual-e2e-worker
+           :prompt "Hold a run-bound visual child turn."
+           :label "Slack" :run-id "visual-run" :task-key "slack" :attempt 0
+           :runner (e-board-activity-behavior-test--runner capture)))
+    (unless (stringp (plist-get run-bound :participant-id))
+      (error "Visual run-bound child was not admitted"))
+    (e-board-activity-behavior-test--publish-fact
+     target
+     '(:version 1 :type manifest :idempotency-key "manifest:visual-run"
+       :payload (:run-id "visual-run" :descriptor (:label "Daily update")
+                 :tasks ((:task-key "calendar" :required t
+                           :accepted-attempt 0)
+                         (:task-key "slack" :required nil
+                           :accepted-attempt 0))
+                 :deadline (:kind none))))
+    (e-board-activity-behavior-test--publish-fact
+     target
+     '(:version 1 :type task-attempt
+       :idempotency-key "attempt:visual-run:calendar:0:queued"
+       :payload (:run-id "visual-run" :task-key "calendar"
+                 :attempt 0 :status queued)))
+    (e-board-activity-behavior-test--publish-fact
+     target
+     '(:version 1 :type task-attempt
+       :idempotency-key "attempt:visual-run:slack:0:running"
+       :payload (:run-id "visual-run" :task-key "slack"
+                 :attempt 0 :status running)))
+    (e-graphical-test-wait-until
+     (lambda ()
+       (e-subagent-live-get live board-id
+                            (plist-get run-bound :participant-id)))
+     5.0 "visual child live admission")
+    (e-board-activity-behavior-test--append-assignment-input
+     target "visual-run" "slack" 0
+     (plist-get run-bound :participant-id) "Slack")
+    (e-graphical-test-wait-until
+     (lambda ()
+       (with-current-buffer transcript
+         (and (equal (plist-get e-chat-surface--board-status
+                                :selected-run-id)
+                     "visual-run")
+              (functionp e-chat-surface--board-status-action))))
+     5.0 "visual run in public chat status")
+    (setq e-board-visual-e2e--buffer
+          (with-current-buffer transcript
+            (funcall e-chat-surface--board-status-action)))
+    (unless (and (eq (window-buffer (selected-window))
+                     e-board-visual-e2e--buffer)
+                 (equal (buffer-name e-board-visual-e2e--buffer)
+                        e-board-activity-visual-buffer-name))
+      (error "Chat status did not display the visual Board buffer"))
+    (e-board-visual-e2e--widget)
+    (unless (and (window-live-p composer-window)
+                 (with-current-buffer (window-buffer composer-window)
+                   (e-chat-composer-active-p)))
+      (error "Owner chat composer is not active beside the visual Board"))
+    (with-selected-window composer-window
+      (e-graphical-test-type-text "draft while visual Board is open")
+      (unless (string-suffix-p
+               "draft while visual Board is open"
+               (buffer-substring-no-properties (point-min) (point-max)))
+        (error "Composer did not accept input beside the visual Board")))
+    (e-workspace-pop-to-buffer e-board-visual-e2e--buffer)
+    (e-graphical-test-wait-until
+     (lambda ()
+       (with-current-buffer e-board-visual-e2e--buffer
+         (and (eq e-board-activity-visual--detail-state 'ready)
+              (equal e-board-activity-visual--selected-run-id "visual-run")
+              (= (length (plist-get e-board-activity-visual--detail-page
+                                    :tasks))
+                 2))))
+     5.0 "visual Board durable task page")
+    (let* ((snapshot
+            (with-current-buffer e-board-visual-e2e--buffer
+              (e-board-activity-visual--snapshot)))
+           (detail (alist-get 'detail snapshot))
+           (required (alist-get 'requiredTasks detail))
+           (optional (alist-get 'optionalTasks detail)))
+      (unless (and (= (length required) 1)
+                   (= (length optional) 1)
+                   (equal (alist-get 'taskKey (aref required 0)) "calendar")
+                   (null (alist-get 'participantId (aref required 0)))
+                   (equal (alist-get 'taskKey (aref optional 0)) "slack")
+                   (equal (alist-get 'participantId (aref optional 0))
+                          (plist-get run-bound :participant-id))
+                   (eq (alist-get
+                        'canSteer (alist-get 'controls (aref optional 0)))
+                       t))
+        (error "Visual Board snapshot lost pending or optional task")))
+    t))
+
+(defun e-board-visual-e2e-probe-web ()
+  "Request one asynchronous WebKit bootstrap observation."
+  (setq e-board-visual-e2e--web-state nil)
+  (xwidget-webkit-execute-script
+   (e-board-visual-e2e--widget)
+   (concat
+    "JSON.stringify({url:location.href,ready:document.readyState,"
+    "push:!!window.eguiPushState,"
+    "canvas:!!document.getElementById('egui-canvas'),"
+    "drawn:!!document.querySelector('#egui-canvas.ready')})")
+   (lambda (value)
+     (when (stringp value)
+       (setq e-board-visual-e2e--web-state
+             (json-read-from-string value)))))
+  t)
+
+(defun e-board-visual-e2e-web-ready-p ()
+  "Return whether WebKit loaded the Board WASM app and its canvas."
+  (let ((state e-board-visual-e2e--web-state))
+    (and (string-prefix-p "http://127.0.0.1:"
+                          (or (alist-get 'url state) ""))
+         (equal (alist-get 'ready state) "complete")
+         (eq (alist-get 'push state) t)
+         (eq (alist-get 'canvas state) t)
+         (eq (alist-get 'drawn state) t))))
+
+(defun e-board-visual-e2e-install-state-observer ()
+  "Capture the next real Emacs-to-WebKit Board snapshot."
+  (xwidget-webkit-execute-script
+   (e-board-visual-e2e--widget)
+   (concat
+    "window.__eBoardStates=[];"
+    "window.__eBoardOriginalPush=window.eguiPushState;"
+    "window.eguiPushState=function(json){"
+    "window.__eBoardStates.push(JSON.parse(json));"
+    "return window.__eBoardOriginalPush(json);};"))
+  t)
+
+(defun e-board-visual-e2e-send-state ()
+  "Send the current coherent Board snapshot over the real WebKit bridge."
+  (with-current-buffer e-board-visual-e2e--buffer
+    (e-board-activity-visual--push-snapshot))
+  t)
+
+(defun e-board-visual-e2e-probe-delivery ()
+  "Request one asynchronous observation of the WebKit snapshot."
+  (setq e-board-visual-e2e--delivery nil)
+  (xwidget-webkit-execute-script
+   (e-board-visual-e2e--widget)
+   (concat
+    "(function(){const states=window.__eBoardStates||[];"
+    "const s=states[states.length-1];"
+    "return JSON.stringify({count:states.length,"
+    "run:s&&s.selectedRunId,"
+    "required:s&&s.detail.requiredTasks[0].taskKey,"
+    "participant:s&&s.detail.requiredTasks[0].participantId,"
+    "optional:s&&s.detail.optionalTasks[0].taskKey,"
+    "optionalParticipant:s&&s.detail.optionalTasks[0].participantId,"
+    "canSteer:s&&s.detail.optionalTasks[0].controls.canSteer});})()")
+   (lambda (value)
+     (when (stringp value)
+       (setq e-board-visual-e2e--delivery
+             (json-read-from-string value)))))
+  t)
+
+(defun e-board-visual-e2e-delivered-p ()
+  "Return whether WebKit received the selected run and both task groups."
+  (let ((delivery e-board-visual-e2e--delivery))
+    (and (> (or (alist-get 'count delivery) 0) 0)
+         (equal (alist-get 'run delivery) "visual-run")
+         (equal (alist-get 'required delivery) "calendar")
+         (null (alist-get 'participant delivery))
+         (equal (alist-get 'optional delivery) "slack")
+         (stringp (alist-get 'optionalParticipant delivery))
+         (eq (alist-get 'canSteer delivery) t))))
+
+(defun e-board-visual-e2e-select-pending-task ()
+  "Send one WebKit-to-Emacs task selection through the egui event route."
+  (let* ((session
+          (with-current-buffer e-board-visual-e2e--buffer
+            e-board-activity-visual--egui-session))
+         (snapshot
+          (with-current-buffer e-board-visual-e2e--buffer
+            (e-board-activity-visual--snapshot)))
+         (detail (alist-get 'detail snapshot))
+         (payload
+          (json-encode
+           `((action . "select-task")
+             (boardId . ,(alist-get 'boardId snapshot))
+             (runSetEpoch . ,(alist-get 'runSetEpoch snapshot))
+             (generation . ,(alist-get 'generation detail))
+             (revision . ,(alist-get 'revision detail))
+             (runId . "visual-run") (taskKey . "calendar")
+             (attempt . 0)))))
+    (xwidget-webkit-execute-script
+     (e-board-visual-e2e--widget)
+     (format
+      "fetch('/api/event?session=%s&action=ui-action&payload='+encodeURIComponent(%S))"
+      (plist-get session :id) payload))
+    t))
+
+(defun e-board-visual-e2e-pending-task-selected-p ()
+  "Return whether the WebKit action selected the pending task."
+  (with-current-buffer e-board-visual-e2e--buffer
+    (equal e-board-activity-visual--selected-task
+           '(:run-task "visual-run" "calendar" 0))))
+
+(defun e-board-visual-e2e-publish-update ()
+  "Publish a Board notification and verify the selected task survives it."
+  (let* ((fixture e-board-visual-e2e--fixture)
+         (binding
+          (e-chat-service-binding
+           (plist-get fixture :harness) (plist-get fixture :session-id)))
+         (target (e-chat-service-publication-target binding)))
+    (e-board-activity-behavior-test--publish-fact
+     target
+     '(:version 1 :type task-attempt
+       :idempotency-key "attempt:visual-run:calendar:0:running"
+       :payload (:run-id "visual-run" :task-key "calendar"
+                 :attempt 0 :status running)))
+    (e-graphical-test-wait-until
+     (lambda ()
+       (with-current-buffer e-board-visual-e2e--buffer
+         (let* ((page e-board-activity-visual--detail-page)
+                (calendar
+                 (cl-find "calendar" (plist-get page :tasks)
+                          :key (lambda (task) (plist-get task :task-key))
+                          :test #'equal)))
+           (and (eq e-board-activity-visual--detail-state 'ready)
+                (eq (plist-get calendar :state) 'running)
+                (e-board-visual-e2e-pending-task-selected-p)))))
+     5.0 "selected visual task after Board update")
+    t))
+
+(defun e-board-visual-e2e-finish ()
+  "Release the disposable chat and its private SQL runtime."
+  (when e-board-visual-e2e--fixture
+    (e-chat-behavior-test--cleanup
+     e-board-visual-e2e--fixture
+     (current-window-configuration)
+     (cons (frame-width) (frame-height))))
+  (when e-board-visual-e2e--child-store
+    (ignore-errors
+      (e-session-sqlite-store-close e-board-visual-e2e--child-store)))
+  (when (and e-board-visual-e2e--child-directory
+             (file-directory-p e-board-visual-e2e--child-directory))
+    (delete-directory e-board-visual-e2e--child-directory t))
+  (setq e-subagent-actions-default-live e-board-visual-e2e--original-live
+        e-board-visual-e2e--fixture nil
+        e-board-visual-e2e--child-store nil
+        e-board-visual-e2e--child-directory nil)
+  t)
+
+(provide 'e-board-visual-e2e)
+;;; e-board-visual-e2e.el ends here
