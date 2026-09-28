@@ -38,6 +38,24 @@
     (error "This Emacs has no native xwidget support"))
   (setq e-board-visual-e2e--fixture (e-chat-behavior-test--open-surface))
   (let* ((fixture e-board-visual-e2e--fixture)
+         (transcript (plist-get fixture :transcript))
+         (chat-frame (selected-frame)))
+    (when-let* ((reason (e-board-activity-visual-unavailable-reason)))
+      (error "Board visual assets unavailable: %s" reason))
+    (let ((auto-hud (get-buffer e-board-activity-visual-buffer-name)))
+      (unless (and (buffer-live-p auto-hud)
+                   (e-board-activity-visual-visible-for-owner-p transcript)
+                   (eq (selected-frame) chat-frame)
+                   (with-current-buffer auto-hud
+                     (and e-board-activity-visual--compact
+                          (null e-board-activity-visual--selected-run-id))))
+        (error "Opening the chat did not automatically show its empty Board HUD"))
+      (setq e-board-visual-e2e--buffer auto-hud))
+    t))
+
+(defun e-board-visual-e2e-populate ()
+  "Dismiss the empty HUD, then reopen it for a two-task Board run."
+  (let* ((fixture e-board-visual-e2e--fixture)
          (harness (plist-get fixture :harness))
          (session-id (plist-get fixture :session-id))
          (transcript (plist-get fixture :transcript))
@@ -50,24 +68,14 @@
          (live (e-subagent-live-create))
          (capture (list nil))
          child-harness run-bound)
-    (when-let* ((reason (e-board-activity-visual-unavailable-reason)))
-      (error "Board visual assets unavailable: %s" reason))
-    (let ((auto-hud (get-buffer e-board-activity-visual-buffer-name)))
-      (unless (and (buffer-live-p auto-hud)
-                   (e-board-activity-visual-visible-for-owner-p transcript)
-                   (eq (selected-frame) chat-frame)
-                   (with-current-buffer auto-hud
-                     (and e-board-activity-visual--compact
-                          (null e-board-activity-visual--selected-run-id))))
-        (error "Opening the chat did not automatically show its empty Board HUD"))
-      (with-current-buffer auto-hud
+    (with-current-buffer e-board-visual-e2e--buffer
         (e-board-activity-shell-dismiss))
-      (unless (and (with-current-buffer transcript
-                     e-chat--board-hud-dismissed)
-                   (not (with-current-buffer auto-hud
-                          (frame-visible-p
-                           e-board-activity-shell--popup-frame))))
-        (error "Dismissing the automatic Board HUD did not honor chat preference")))
+    (unless (and (with-current-buffer transcript
+                   e-chat--board-hud-dismissed)
+                 (not (with-current-buffer e-board-visual-e2e--buffer
+                        (frame-visible-p
+                         e-board-activity-shell--popup-frame))))
+      (error "Dismissing the automatic Board HUD did not honor chat preference"))
     (setq e-board-visual-e2e--child-directory
           (make-temp-file "e-board-visual-child-" t)
           e-board-visual-e2e--child-store
@@ -154,9 +162,7 @@
                                19))
                        12)
                    (eq (window-buffer (frame-root-window popup))
-                       e-board-visual-e2e--buffer)
-                 (equal (buffer-name e-board-visual-e2e--buffer)
-                        e-board-activity-visual-buffer-name))
+                       e-board-visual-e2e--buffer))
         (error "Chat status did not open a compact focusless top-right Board HUD: %S"
                (list :selected (selected-frame)
                      :popup popup :position (frame-position popup)
@@ -210,7 +216,8 @@
     "JSON.stringify({url:location.href,ready:document.readyState,"
     "push:!!window.eguiPushState,"
     "canvas:!!document.getElementById('egui-canvas'),"
-    "drawn:!!document.querySelector('#egui-canvas.ready')})")
+    "drawn:!!document.querySelector('#egui-canvas.ready'),"
+    "stateReceived:!!window.eguiBoardStateReady})")
    (lambda (value)
      (when (stringp value)
        (setq e-board-visual-e2e--web-state
@@ -225,7 +232,8 @@
          (equal (alist-get 'ready state) "complete")
          (eq (alist-get 'push state) t)
          (eq (alist-get 'canvas state) t)
-         (eq (alist-get 'drawn state) t))))
+         (eq (alist-get 'drawn state) t)
+         (eq (alist-get 'stateReceived state) t))))
 
 (defun e-board-visual-e2e-install-state-observer ()
   "Capture the next real Emacs-to-WebKit Board snapshot."

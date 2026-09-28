@@ -57,7 +57,7 @@
   :type 'integer
   :group 'e-board-activity)
 
-(defcustom e-board-activity-hud-height 310
+(defcustom e-board-activity-hud-height 230
   "Target height of the compact Board activity HUD in pixels."
   :type 'integer
   :group 'e-board-activity)

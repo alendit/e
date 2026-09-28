@@ -371,6 +371,30 @@
       (should (equal e-board-activity-visual--selected-task
                      '(:run-task "run-1" "calendar" 1))))))
 
+(ert-deftest e-board-activity-visual-test-ready-pushes-current-snapshot ()
+  "A loaded WebKit page receives state from its current visual session."
+  (let ((buffer (generate-new-buffer " *e-board-ready-test*"))
+        (session (list :id "current"))
+        ready-callback pushes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'emacs-egui-on)
+                   (lambda (_session action callback)
+                     (when (equal action "ui-ready")
+                       (setq ready-callback callback))))
+                  ((symbol-function 'e-board-activity-visual--push-snapshot)
+                   (lambda (target) (push target pushes))))
+          (with-current-buffer buffer
+            (setq-local e-board-activity-visual--egui-session session))
+          (e-board-activity-visual--wire-actions session buffer)
+          (funcall ready-callback nil)
+          (should (equal pushes (list buffer)))
+          (with-current-buffer buffer
+            (setq-local e-board-activity-visual--egui-session
+                        (list :id "replacement")))
+          (funcall ready-callback nil)
+          (should (equal pushes (list buffer))))
+      (kill-buffer buffer))))
+
 (ert-deftest e-board-activity-visual-test-rebind-never-reuses-old-control-epoch ()
   "An old same-Board control stays stale after rebinding the same buffer."
   (let* ((e-board-activity-visual-buffer-name

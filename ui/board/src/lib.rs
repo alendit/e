@@ -196,23 +196,27 @@ pub struct BoardApp {
     steer_prompt: String,
     steer_reason: String,
     send_prompt: String,
-    readable_fonts_applied: bool,
+    fonts_for_compact: Option<bool>,
 }
 
 impl BoardApp {
     pub fn new() -> Self {
         Self {
-            state: BoardState::default(),
+            state: BoardState {
+                compact: true,
+                ..BoardState::default()
+            },
             selected_task: None,
             steer_prompt: String::new(),
             steer_reason: String::new(),
             send_prompt: String::new(),
-            readable_fonts_applied: false,
+            fonts_for_compact: None,
         }
     }
 
     fn apply_readable_fonts(&mut self, ctx: &egui::Context) {
-        if self.readable_fonts_applied {
+        let compact = self.state.compact;
+        if self.fonts_for_compact == Some(compact) {
             return;
         }
 
@@ -220,26 +224,46 @@ impl BoardApp {
         style.override_text_style = Some(egui::TextStyle::Body);
         style.text_styles.insert(
             egui::TextStyle::Heading,
-            egui::FontId::new(22.0, egui::FontFamily::Proportional),
+            egui::FontId::new(
+                if compact { 13.0 } else { 22.0 },
+                egui::FontFamily::Proportional,
+            ),
         );
         style.text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(16.0, egui::FontFamily::Proportional),
+            egui::FontId::new(
+                if compact { 12.0 } else { 16.0 },
+                egui::FontFamily::Proportional,
+            ),
         );
         style.text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+            egui::FontId::new(
+                if compact { 11.0 } else { 15.0 },
+                egui::FontFamily::Proportional,
+            ),
         );
         style.text_styles.insert(
             egui::TextStyle::Small,
-            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            egui::FontId::new(
+                if compact { 11.0 } else { 14.0 },
+                egui::FontFamily::Proportional,
+            ),
         );
         style.text_styles.insert(
             egui::TextStyle::Monospace,
-            egui::FontId::new(15.0, egui::FontFamily::Monospace),
+            egui::FontId::new(
+                if compact { 11.0 } else { 15.0 },
+                egui::FontFamily::Monospace,
+            ),
         );
+        style.spacing.item_spacing = if compact {
+            egui::vec2(4.0, 3.0)
+        } else {
+            egui::vec2(8.0, 6.0)
+        };
         ctx.set_style(style);
-        self.readable_fonts_applied = true;
+        self.fonts_for_compact = Some(compact);
     }
 
     fn detail_contains_task(&self, identity: &TaskIdentity) -> bool {
@@ -417,7 +441,7 @@ impl BoardApp {
     }
 
     fn render_hud_tasks(ui: &mut egui::Ui, tasks: &[TaskCard], title: &str) {
-        ui.label(egui::RichText::new(title).strong().size(13.0));
+        ui.label(egui::RichText::new(title).weak().size(11.0));
         if tasks.is_empty() {
             ui.small("None");
         }
@@ -428,93 +452,115 @@ impl BoardApp {
                 .or(task.task_key.as_deref())
                 .unwrap_or("Task");
             let state = task.state.as_deref().unwrap_or("unknown");
-            ui.label(format!("{label} · {state}"));
+            ui.horizontal(|ui| {
+                let label_width = (ui.available_width() - 82.0).max(60.0);
+                ui.add_sized(
+                    [label_width, 0.0],
+                    egui::Label::new(format!("• {label}")).truncate(),
+                );
+                ui.label(egui::RichText::new(state).weak().size(11.0));
+            });
             if task.participant_id.is_none() {
-                ui.small(if matches!(state, "queued" | "pending") {
-                    "Admission pending"
-                } else {
-                    "No participant admitted"
-                });
+                ui.label(
+                    egui::RichText::new(if matches!(state, "queued" | "pending") {
+                        "Admission pending"
+                    } else {
+                        "No participant admitted"
+                    })
+                    .weak()
+                    .size(11.0),
+                );
             }
         }
     }
 
     fn render_hud(&self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Board activity").strong().size(14.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
-                        self.send_action("dismiss", json!({}));
-                    }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Board activity").strong().size(12.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new("×").frame(false)).clicked() {
+                            self.send_action("dismiss", json!({}));
+                        }
+                        if ui.add(egui::Button::new("Details").frame(false)).clicked() {
+                            self.send_action("show-details", json!({}));
+                        }
+                    });
                 });
-            });
-            ui.separator();
+                ui.separator();
 
-            let selected = self.state.run_set.runs.iter().find(|run| {
-                run.run_id.as_deref() == self.state.selected_run_id.as_deref()
-            });
-            let label = self
-                .state
-                .detail
-                .label
-                .as_deref()
-                .or_else(|| selected.and_then(|run| run.label.as_deref()))
-                .or(self.state.selected_run_id.as_deref())
-                .unwrap_or("No run selected");
-            ui.label(egui::RichText::new(label).strong());
-            if let Some(run) = selected {
-                let lifecycle = run.lifecycle.as_deref().unwrap_or("unknown");
-                ui.small(format!(
-                    "{lifecycle} · {} required · {} optional",
-                    run.required_count, run.optional_count
-                ));
-                if run.attention || run.conflict_count > 0 {
-                    ui.label("Attention required");
+                let selected = self
+                    .state
+                    .run_set
+                    .runs
+                    .iter()
+                    .find(|run| run.run_id.as_deref() == self.state.selected_run_id.as_deref());
+                let label = self
+                    .state
+                    .detail
+                    .label
+                    .as_deref()
+                    .or_else(|| selected.and_then(|run| run.label.as_deref()))
+                    .or(self.state.selected_run_id.as_deref())
+                    .unwrap_or("No active run");
+                ui.label(egui::RichText::new("Run").weak().size(11.0));
+                ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate());
+                if let Some(run) = selected {
+                    let lifecycle = run.lifecycle.as_deref().unwrap_or("unknown");
+                    ui.small(format!(
+                        "{lifecycle} · {} required · {} optional",
+                        run.required_count, run.optional_count
+                    ));
+                    if run.attention || run.conflict_count > 0 {
+                        ui.label("Attention required");
+                    }
+                    if let Some(delivery) = &run.completion_delivery_state {
+                        ui.small(format!("Completion: {delivery}"));
+                    }
+                } else if let Some(status) = &self.state.detail.terminal_status {
+                    ui.small(format!("Completion: {status}"));
                 }
-                if let Some(delivery) = &run.completion_delivery_state {
-                    ui.small(format!("Completion: {delivery}"));
-                }
-            } else if let Some(status) = &self.state.detail.terminal_status {
-                ui.small(format!("Completion: {status}"));
-            }
 
-            ui.separator();
-            match self.state.detail.state.as_deref() {
-                Some("ready") => {
-                    egui::ScrollArea::vertical()
-                        .max_height(155.0)
-                        .show(ui, |ui| {
-                            Self::render_hud_tasks(
-                                ui,
-                                &self.state.detail.required_tasks,
-                                "Required",
-                            );
-                            ui.add_space(4.0);
-                            Self::render_hud_tasks(
-                                ui,
-                                &self.state.detail.optional_tasks,
-                                "Optional",
-                            );
-                        });
+                ui.separator();
+                match self.state.detail.state.as_deref() {
+                    Some("ready") => {
+                        egui::ScrollArea::vertical()
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                Self::render_hud_tasks(
+                                    ui,
+                                    &self.state.detail.required_tasks,
+                                    "Required",
+                                );
+                                ui.add_space(4.0);
+                                Self::render_hud_tasks(
+                                    ui,
+                                    &self.state.detail.optional_tasks,
+                                    "Optional",
+                                );
+                            });
+                    }
+                    Some("empty") => {
+                        ui.small("No active Board runs");
+                    }
+                    Some("error") => {
+                        ui.label("Activity unavailable");
+                        ui.small(
+                            self.state
+                                .detail
+                                .error
+                                .as_deref()
+                                .unwrap_or("Unknown error"),
+                        );
+                    }
+                    _ => {
+                        ui.spinner();
+                        ui.small("Loading Board activity…");
+                    }
                 }
-                Some("empty") => {
-                    ui.small("No active Board runs");
-                }
-                Some("error") => {
-                    ui.label("Activity unavailable");
-                    ui.small(self.state.detail.error.as_deref().unwrap_or("Unknown error"));
-                }
-                _ => {
-                    ui.spinner();
-                    ui.small("Loading Board activity…");
-                }
-            }
-            ui.separator();
-            if ui.button("Details ↗").clicked() {
-                self.send_action("show-details", json!({}));
-            }
-        });
+            });
     }
 
     fn render_run_selector(&mut self, ui: &mut egui::Ui) {
@@ -798,7 +844,7 @@ impl EguiEmacsApp for BoardApp {
     }
 
     fn on_theme_update(&mut self, _theme: ThemeColors) {
-        self.readable_fonts_applied = false;
+        self.fonts_for_compact = None;
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -898,9 +944,20 @@ pub fn start_app(canvas_id: &str) -> Result<(), wasm_bindgen::JsValue> {
     emacs_egui_sdk::launch_simple(canvas_id, BoardApp::new())
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn announce_ready() {
+    emacs_post_message("ui-ready", json!({}));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_state_uses_the_compact_hud_before_emacs_connects() {
+        assert!(BoardApp::new().state.compact);
+    }
 
     fn ready_state(revision: i64) -> BoardState {
         serde_json::from_value(json!({

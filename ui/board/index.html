@@ -12,7 +12,7 @@
 <body>
   <canvas id="egui-canvas"></canvas>
   <script type="module">
-    import init, { start_app, egui_push_state, egui_push_theme } from "./pkg/e_board.js";
+    import init, { start_app, announce_ready, egui_push_state, egui_push_theme } from "./pkg/e_board.js";
 
     function parseHashParams() {
       const hash = window.location.hash.replace(/^#/, "");
@@ -40,8 +40,22 @@
         }));
       }
       canvas.classList.add("ready");
-      window.eguiPushState = (json) => egui_push_state(json);
+      let receivedState = false;
+      window.eguiBoardStateReady = false;
+      window.eguiPushState = (json) => {
+        receivedState = true;
+        window.eguiBoardStateReady = true;
+        egui_push_state(json);
+      };
       window.eguiPushTheme = (json) => egui_push_theme(json);
+      let retryDelay = 250;
+      function requestInitialState() {
+        if (receivedState) return;
+        announce_ready();
+        window.setTimeout(requestInitialState, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 4000);
+      }
+      requestInitialState();
     }
 
     run();

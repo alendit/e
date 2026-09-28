@@ -61,10 +61,13 @@ eldev prepare emacs
 emacs --daemon="$server_name" --load "$e2e_dir/e-e2e-bootstrap.el"
 
 expect_true "(let ((frame (make-frame '((name . \"e Board visual E2E\") (window-system . ns) (width . 140) (height . 48) (left . -10000) (top . -10000) (alpha . (0 . 0)) (no-accept-focus . t) (no-focus-on-map . t) (skip-taskbar . t) (undecorated . t))))) (with-selected-frame frame (load \"$test_file\" nil nil t) (e-board-visual-e2e-start)))"
-echo 'Board visual E2E: chat auto-opened the empty HUD, then the public status reopened its two-task view'
+echo 'Board visual E2E: chat auto-opened its empty HUD'
 
 wait_for '(e-board-visual-e2e-probe-web)' \
-  '(e-board-visual-e2e-web-ready-p)' 'WebKit loaded the Board WASM canvas'
+  '(e-board-visual-e2e-web-ready-p)' 'WebKit loaded the HUD and received its initial empty state'
+
+expect_true '(e-board-visual-e2e-populate)'
+echo 'Board visual E2E: public status reopened the HUD for a two-task run'
 
 expect_true '(e-board-visual-e2e-install-state-observer)'
 sleep 0.25

@@ -775,6 +775,14 @@
 
 (defun e-board-activity-visual--wire-actions (session buffer)
   "Register SESSION's UI action callback for BUFFER."
+  (emacs-egui-on session "ui-ready"
+                 (lambda (_payload)
+                   (when (and (buffer-live-p buffer)
+                              (eq session
+                                  (buffer-local-value
+                                   'e-board-activity-visual--egui-session
+                                   buffer)))
+                     (e-board-activity-visual--push-snapshot buffer))))
   (emacs-egui-on session "ui-action"
                  (lambda (payload)
                    (when (buffer-live-p buffer)
