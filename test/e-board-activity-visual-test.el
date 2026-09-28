@@ -18,6 +18,32 @@
       (should (equal (e-board-activity-visual-unavailable-reason)
                      "Emacs has no xwidget-webkit support")))))
 
+(ert-deftest e-board-activity-visual-test-webkit-rename-retains-owner ()
+  "WebKit's buffer rename must not orphan the singleton or its chat owner."
+  (let* ((e-board-activity-visual--current-buffer nil)
+         (e-board-activity-visual-buffer-name
+          (generate-new-buffer-name "*e-board-visual-rename*"))
+         (buffer (get-buffer-create e-board-activity-visual-buffer-name))
+         (owner (get-buffer-create
+                 (generate-new-buffer-name "*e-board-owner-rename*"))))
+    (unwind-protect
+        (progn
+          (setq e-board-activity-visual--current-buffer buffer)
+          (with-current-buffer buffer
+            (setq-local e-board-activity-visual--owner-chat owner)
+            (add-hook 'kill-buffer-hook
+                      #'e-board-activity-visual--cleanup nil t)
+            (rename-buffer
+             (generate-new-buffer-name "*xwidget-webkit: e-board*") t))
+          (should (eq (e-board-activity-visual--buffer) buffer))
+          (e-board-activity-visual-close-for-owner owner)
+          (should-not (buffer-live-p buffer))
+          (should-not e-board-activity-visual--current-buffer))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (buffer-live-p owner)
+        (kill-buffer owner)))))
+
 (defun e-board-activity-visual-test--control-payload
     (action &optional revision attempt participant-id &rest fields)
   "Return a task control payload for ACTION and optional coordinates."

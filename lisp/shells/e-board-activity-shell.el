@@ -66,6 +66,8 @@
   "Child frame currently displaying this Board activity buffer.")
 (defvar-local e-board-activity-shell--popup-parent nil
   "Outer chat frame to refocus after Board activity closes.")
+(defvar-local e-board-activity-shell--dismiss-action nil
+  "Optional presentation callback after this Board popup is dismissed.")
 
 (defvar e-board-activity-shell-popup-mode-map
   (let ((map (make-sparse-keymap)))
@@ -108,7 +110,9 @@
   "Delete the child frame when its Board activity buffer is killed."
   (when (and e-board-activity-shell--popup-frame
              (fboundp 'posframe-delete-frame))
-    (posframe-delete-frame (current-buffer))))
+    (posframe-delete-frame (current-buffer))
+    (when (frame-live-p e-board-activity-shell--popup-frame)
+      (delete-frame e-board-activity-shell--popup-frame))))
 
 (defun e-board-activity-shell--hud-position (info)
   "Place the HUD described by INFO near its parent frame's top right."
@@ -167,9 +171,13 @@ COMPACT places a focusless status HUD at the top right; full detail is focused."
            (frame-live-p e-board-activity-shell--popup-frame))
       (let ((parent e-board-activity-shell--popup-parent))
         (posframe-hide (current-buffer))
+        (when (frame-visible-p e-board-activity-shell--popup-frame)
+          (make-frame-invisible e-board-activity-shell--popup-frame))
         (when (frame-live-p parent)
           (select-frame-set-input-focus parent)))
-    (quit-window)))
+    (quit-window))
+  (when (functionp e-board-activity-shell--dismiss-action)
+    (funcall e-board-activity-shell--dismiss-action)))
 
 (defconst e-board-activity-shell-buffer-name "*e-board-activity*"
   "Name of the bounded Board participant activity buffer.")

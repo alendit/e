@@ -61,7 +61,7 @@ eldev prepare emacs
 emacs --daemon="$server_name" --load "$e2e_dir/e-e2e-bootstrap.el"
 
 expect_true "(let ((frame (make-frame '((name . \"e Board visual E2E\") (window-system . ns) (width . 140) (height . 48) (left . -10000) (top . -10000) (alpha . (0 . 0)) (no-accept-focus . t) (no-focus-on-map . t) (skip-taskbar . t) (undecorated . t))))) (with-selected-frame frame (load \"$test_file\" nil nil t) (e-board-visual-e2e-start)))"
-echo 'Board visual E2E: public chat opened WebKit Board with two durable tasks'
+echo 'Board visual E2E: chat auto-opened the empty HUD, then the public status reopened its two-task view'
 
 wait_for '(e-board-visual-e2e-probe-web)' \
   '(e-board-visual-e2e-web-ready-p)' 'WebKit loaded the Board WASM canvas'
@@ -86,6 +86,9 @@ echo 'Board visual E2E: task selection survived a Board update'
 expect_true '(e-board-visual-e2e-send-presentation-action "show-hud")'
 wait_for 't' '(e-board-visual-e2e-hud-open-p)' \
   'HUD action restored the compact focusless Board view'
+
+expect_true '(e-board-visual-e2e-open-native-fallback)'
+echo 'Board visual E2E: explicit native fallback hid the visual HUD'
 
 expect_true '(e-board-visual-e2e-finish)'
 echo 'Board visual E2E complete: all phases passed.'

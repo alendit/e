@@ -148,6 +148,8 @@ into the other's state.")
   "Current detached Board run-set compact status for this chat surface.")
 (defvar-local e-chat-surface--board-status-action nil
   "Function invoked when the compact Board status link is activated.")
+(defvar-local e-chat-surface-after-display-hook nil
+  "Functions called in a transcript buffer after its chat surface is shown.")
 (defvar-local e-chat-surface--running-status-bounds nil
   "Current transient activity bounds published by the activity owner.")
 
@@ -1278,7 +1280,9 @@ WINDOW defaults to an arbitrary visible window for the current transcript."
         (e-chat-surface--surface-display-composer))
       (e-chat-surface--enter-composer-input-state))
     (when (window-live-p transcript-window)
-      (e-chat-surface--activate-surface (cons buffer transcript-window))))
+      (e-chat-surface--activate-surface (cons buffer transcript-window)))
+    (with-current-buffer buffer
+      (run-hooks 'e-chat-surface-after-display-hook)))
   buffer)
 
 (defun e-chat-surface--side-window-p (&optional window)

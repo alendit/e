@@ -190,7 +190,9 @@
                    (e-harness-create
                     :backend (e-backend-fake-create :items nil)
                     :sessions child-store))))
-          (setq fixture (e-chat-behavior-test--open-surface))
+          (cl-letf (((symbol-function 'e-chat--maybe-open-board-hud)
+                     #'ignore))
+            (setq fixture (e-chat-behavior-test--open-surface)))
           (setq composer-window
                 (cdr (e-chat-behavior-test--fixture-windows fixture)))
           (let* ((harness (plist-get fixture :harness))

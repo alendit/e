@@ -36,6 +36,15 @@
 (defconst e-board-activity-visual-buffer-name "*e-board-activity-visual*"
   "Name of the singleton visual Board activity buffer.")
 
+(defvar e-board-activity-visual--current-buffer nil
+  "Live visual Board buffer, including after WebKit renames it.")
+
+(defun e-board-activity-visual--buffer ()
+  "Return the live visual Board buffer, if any."
+  (or (and (buffer-live-p e-board-activity-visual--current-buffer)
+           e-board-activity-visual--current-buffer)
+      (get-buffer e-board-activity-visual-buffer-name)))
+
 (defconst e-board-activity-visual-page-limit 64
   "Maximum number of active runs on one visual selector page.")
 
@@ -56,6 +65,9 @@
 
 (defvar-local e-board-activity-visual--egui-session nil
   "emacs-egui session associated with the current visual buffer.")
+
+(defvar-local e-board-activity-visual--owner-chat nil
+  "Chat transcript whose Board HUD is displayed by this buffer.")
 
 (defvar-local e-board-activity-visual--compact t
   "Non-nil while the visual Board uses the compact chat HUD.")
@@ -771,10 +783,34 @@
 
 (defun e-board-activity-visual--cleanup ()
   "Retire current subscriptions and detached requests when the buffer closes."
-  (e-board-activity-visual--retire-current))
+  (e-board-activity-visual--retire-current)
+  (when (eq e-board-activity-visual--current-buffer (current-buffer))
+    (setq e-board-activity-visual--current-buffer nil)))
+
+(defun e-board-activity-visual-visible-for-owner-p (owner-chat)
+  "Return non-nil when OWNER-CHAT already has a visible visual Board view."
+  (when-let* ((buffer (e-board-activity-visual--buffer)))
+    (with-current-buffer buffer
+      (and (eq e-board-activity-visual--owner-chat owner-chat)
+           (frame-live-p e-board-activity-shell--popup-frame)
+           (frame-visible-p e-board-activity-shell--popup-frame)))))
+
+(defun e-board-activity-visual-close-for-owner (owner-chat)
+  "Close the visual Board buffer owned by OWNER-CHAT."
+  (when-let* ((buffer (e-board-activity-visual--buffer)))
+    (when (eq (buffer-local-value 'e-board-activity-visual--owner-chat buffer)
+              owner-chat)
+      (let ((popup (buffer-local-value
+                    'e-board-activity-shell--popup-frame buffer)))
+        (let ((kill-buffer-query-functions nil))
+          (unless (kill-buffer buffer)
+            (error "Could not close the visual Board buffer")))
+        (when (frame-live-p popup)
+          (delete-frame popup))))))
 
 (cl-defun e-board-activity-visual-open-buffer
-    (&key target binding (live e-subagent-actions-default-live) run-id)
+    (&key target binding (live e-subagent-actions-default-live) run-id
+          owner-chat on-dismiss)
   "Open the egui Board activity renderer for TARGET and BINDING.
 RUN-ID selects the detailed activity page while BINDING supplies the shared
 Board run-set observer."
@@ -787,7 +823,7 @@ Board run-set observer."
     (signal 'wrong-type-argument
             (list 'board-binding-matching-target-p binding target)))
   (e-board-activity-visual--ensure-runtime)
-  (let* ((existing (get-buffer e-board-activity-visual-buffer-name))
+  (let* ((existing (e-board-activity-visual--buffer))
          (existing-session
           (and existing
                (buffer-local-value
@@ -805,12 +841,15 @@ Board run-set observer."
                      (and existing-session existing))))
     (unless (buffer-live-p buffer)
       (error "emacs-egui did not create a live Board activity buffer"))
+    (setq e-board-activity-visual--current-buffer buffer)
     (with-current-buffer buffer
       (e-board-activity-visual--retire-current)
       (setq-local e-board-activity-visual--target target
                   e-board-activity-visual--binding binding
                   e-board-activity-visual--live live
                   e-board-activity-visual--egui-session session
+                  e-board-activity-visual--owner-chat owner-chat
+                  e-board-activity-shell--dismiss-action on-dismiss
                   e-board-activity-visual--compact t
                   e-board-activity-visual--run-set-projection nil
                   e-board-activity-visual--selector-browsing nil
@@ -842,8 +881,12 @@ Board run-set observer."
     buffer))
 
 (defun e-board-activity-visual--open-text-fallback
-    (target run-id live reason)
+    (target run-id live reason &optional owner-chat on-dismiss)
   "Open the native text view for TARGET and RUN-ID after REASON."
+  (when owner-chat
+    (e-board-activity-visual-close-for-owner owner-chat)
+    (when (functionp on-dismiss)
+      (funcall on-dismiss)))
   (message (concat "Visual Board activity unavailable: %s. Open the "
                    "native text view with M-x "
                    "e-chat-open-board-activity-text.")
@@ -852,7 +895,7 @@ Board run-set observer."
                                       :run-id run-id))
 
 (defun e-board-activity-visual-open-or-text
-    (target binding run-id &optional live)
+    (target binding run-id &optional live owner-chat on-dismiss)
   "Open the visual view when available, falling back to native text on failure."
   (unless (e-board-sqlite-publication-target-valid-p target)
     (signal 'wrong-type-argument
@@ -860,15 +903,17 @@ Board run-set observer."
   (setq live (or live e-subagent-actions-default-live))
   (if-let* ((reason (e-board-activity-visual-unavailable-reason)))
       (e-board-activity-visual--open-text-fallback
-       target run-id live reason)
+       target run-id live reason owner-chat on-dismiss)
     (condition-case error
         (e-board-activity-visual-open-buffer
-         :target target :binding binding :live live :run-id run-id)
+         :target target :binding binding :live live :run-id run-id
+         :owner-chat owner-chat :on-dismiss on-dismiss)
       (error
        (e-board-activity-visual--open-text-fallback
         target run-id live
         (format "visual renderer failed to open: %s"
-                (error-message-string error)))))))
+                (error-message-string error))
+        owner-chat on-dismiss)))))
 
 (provide 'e-board-activity-visual-shell)
 

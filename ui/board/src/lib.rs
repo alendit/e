@@ -498,6 +498,9 @@ impl BoardApp {
                             );
                         });
                 }
+                Some("empty") => {
+                    ui.small("No active Board runs");
+                }
                 Some("error") => {
                     ui.label("Activity unavailable");
                     ui.small(self.state.detail.error.as_deref().unwrap_or("Unknown error"));

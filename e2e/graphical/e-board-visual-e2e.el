@@ -52,6 +52,22 @@
          child-harness run-bound)
     (when-let* ((reason (e-board-activity-visual-unavailable-reason)))
       (error "Board visual assets unavailable: %s" reason))
+    (let ((auto-hud (get-buffer e-board-activity-visual-buffer-name)))
+      (unless (and (buffer-live-p auto-hud)
+                   (e-board-activity-visual-visible-for-owner-p transcript)
+                   (eq (selected-frame) chat-frame)
+                   (with-current-buffer auto-hud
+                     (and e-board-activity-visual--compact
+                          (null e-board-activity-visual--selected-run-id))))
+        (error "Opening the chat did not automatically show its empty Board HUD"))
+      (with-current-buffer auto-hud
+        (e-board-activity-shell-dismiss))
+      (unless (and (with-current-buffer transcript
+                     e-chat--board-hud-dismissed)
+                   (not (with-current-buffer auto-hud
+                          (frame-visible-p
+                           e-board-activity-shell--popup-frame))))
+        (error "Dismissing the automatic Board HUD did not honor chat preference")))
     (setq e-board-visual-e2e--child-directory
           (make-temp-file "e-board-visual-child-" t)
           e-board-visual-e2e--child-store
@@ -264,24 +280,16 @@
          (eq (alist-get 'canSteer delivery) t))))
 
 (defun e-board-visual-e2e-send-presentation-action (action)
-  "Send ACTION over the real WebKit event route for this Board snapshot."
-  (let* ((session
-          (with-current-buffer e-board-visual-e2e--buffer
-            e-board-activity-visual--egui-session))
-         (snapshot
-          (with-current-buffer e-board-visual-e2e--buffer
-            (e-board-activity-visual--snapshot)))
-         (payload
-          (json-encode
-           `((action . ,action)
-             (boardId . ,(alist-get 'boardId snapshot))
-             (runSetEpoch . ,(alist-get 'runSetEpoch snapshot))))))
-    (xwidget-webkit-execute-script
-     (e-board-visual-e2e--widget)
-     (format
-      "fetch('/api/event?session=%s&action=ui-action&payload='+encodeURIComponent(%S))"
-      (plist-get session :id) payload))
-    t))
+  "Apply ACTION through the visual shell's semantic event handler.
+The transparent focusless off-screen test frame can defer WebKit fetches; the
+focused task-selection phase below checks the real inbound HTTP route."
+  (with-current-buffer e-board-visual-e2e--buffer
+    (let ((snapshot (e-board-activity-visual--snapshot)))
+      (e-board-activity-visual--handle-ui-action
+       `((action . ,action)
+         (boardId . ,(alist-get 'boardId snapshot))
+         (runSetEpoch . ,(alist-get 'runSetEpoch snapshot))))))
+  t)
 
 (defun e-board-visual-e2e-details-open-p ()
   "Return whether the explicit Details action opened the large view."
@@ -360,6 +368,33 @@
                 (eq (plist-get calendar :state) 'running)
                 (e-board-visual-e2e-pending-task-selected-p)))))
      5.0 "selected visual task after Board update")
+    t))
+
+(defun e-board-visual-e2e-open-native-fallback ()
+  "Check that explicit native activity replaces this chat's visual HUD."
+  (let* ((transcript (plist-get e-board-visual-e2e--fixture :transcript))
+         (visual-popup
+          (with-current-buffer e-board-visual-e2e--buffer
+            e-board-activity-shell--popup-frame))
+         (native
+          (with-current-buffer transcript
+            (cl-letf (((symbol-function
+                         'e-board-activity-visual-unavailable-reason)
+                        (lambda () "forced native fallback")))
+              (funcall e-chat-surface--board-status-action)))))
+    (unless (and (buffer-live-p native)
+                 (not (buffer-live-p e-board-visual-e2e--buffer))
+                 (not (frame-live-p visual-popup))
+                 (with-current-buffer transcript e-chat--board-hud-dismissed)
+                 (eq (window-buffer (selected-window)) native))
+      (error "Native activity did not replace the automatic Board HUD: %S"
+             (list :native native :frame-live (frame-live-p visual-popup)
+                   :buffer-live (buffer-live-p e-board-visual-e2e--buffer)
+                   :dismissed (with-current-buffer transcript
+                                e-chat--board-hud-dismissed)
+                   :selected (window-buffer (selected-window)))))
+    (with-current-buffer native
+      (e-board-activity-shell-dismiss))
     t))
 
 (defun e-board-visual-e2e-finish ()

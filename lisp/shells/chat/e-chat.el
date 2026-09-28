@@ -101,7 +101,18 @@
 (declare-function e-chat-surface-clear-board-status "e-chat-surface")
 (declare-function e-chat-surface-board-status "e-chat-surface" (&optional buffer))
 (declare-function e-board-activity-visual-open-or-text
-                  "e-board-activity-visual-shell" (target binding run-id &optional live))
+                  "e-board-activity-visual-shell"
+                  (target binding run-id &optional live owner-chat on-dismiss))
+(declare-function e-board-activity-visual-open-buffer
+                  "e-board-activity-visual-shell" (&rest args))
+(declare-function e-board-activity-visual-unavailable-reason
+                  "e-board-activity-visual-shell")
+(declare-function e-board-activity-visual-visible-for-owner-p
+                  "e-board-activity-visual-shell" (owner-chat))
+(declare-function e-board-activity-visual-close-for-owner
+                  "e-board-activity-visual-shell" (owner-chat))
+(declare-function e-board-activity-shell--popup-available-p
+                  "e-board-activity-shell")
 (declare-function e-board-activity-shell-open-buffer "e-board-activity-shell"
                   (&rest args))
 (declare-function e-chat-surface-window-reaches-output-p "e-chat-surface")
@@ -664,6 +675,9 @@ those owner ports into the host hook lists."
 (defvar-local e-chat--board-run-set-unsubscribe nil
   "Unsubscribe function for this chat surface's Board run-set status.")
 
+(defvar-local e-chat--board-hud-dismissed nil
+  "Non-nil after this chat's automatically opened Board HUD is dismissed.")
+
 (defvar-local e-chat--session-query-work nil
   "Request-scoped persistent SQLite chat-view work for this buffer.")
 
@@ -835,6 +849,9 @@ and / expands available prompts."
   (e-chat-surface-mark-transcript)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe nil t)
   (add-hook 'kill-buffer-hook #'e-chat--unsubscribe-board-run-set nil t)
+  (add-hook 'kill-buffer-hook #'e-chat--close-board-hud nil t)
+  (add-hook 'e-chat-surface-after-display-hook
+            #'e-chat--maybe-open-board-hud nil t)
   (add-hook 'kill-buffer-hook #'e-chat-surface-kill-composer nil t)
   (add-hook 'kill-buffer-hook #'e-chat-activity-stop-progress nil t)
   (add-hook 'kill-buffer-hook #'e-chat-composer-cancel-pending-references nil t)
@@ -1207,6 +1224,56 @@ context insertions from the chat buffer the user is looking at."
   (setq e-chat--board-run-set-unsubscribe nil)
   (e-chat-surface-clear-board-status))
 
+(defun e-chat--close-board-hud ()
+  "Close the visual Board owned by the chat buffer being killed."
+  (when (fboundp 'e-board-activity-visual-close-for-owner)
+    (e-board-activity-visual-close-for-owner (current-buffer))))
+
+(defun e-chat--board-hud-on-dismiss (chat)
+  "Return a callback that records CHAT's explicit HUD dismissal."
+  (lambda ()
+    (when (buffer-live-p chat)
+      (with-current-buffer chat
+        (setq-local e-chat--board-hud-dismissed t)))))
+
+(defun e-chat--board-status-action (chat target binding run-id)
+  "Return CHAT's explicit activity action for TARGET, BINDING, and RUN-ID."
+  (lambda ()
+    (when (buffer-live-p chat)
+      (with-current-buffer chat
+        (setq-local e-chat--board-hud-dismissed nil)))
+    (require 'e-board-activity-visual-shell)
+    (e-board-activity-visual-open-or-text
+     target binding run-id nil chat (e-chat--board-hud-on-dismiss chat))))
+
+(defun e-chat--maybe-open-board-hud ()
+  "Open this displayed chat's visual Board HUD when its binding is ready."
+  (when (and (not e-chat--board-hud-dismissed)
+             (functionp e-chat--board-run-set-unsubscribe)
+             (featurep 'xwidget-internal))
+    (let* ((chat (current-buffer))
+           (binding (e-chat-service-binding e-chat-harness e-chat-session-id))
+           (window (get-buffer-window chat t)))
+      (when (and (e-chat-service-binding-p binding)
+                 (window-live-p window)
+                 (eq (window-frame window) (selected-frame)))
+        (require 'e-board-activity-visual-shell)
+        (when (and (not (e-board-activity-visual-unavailable-reason))
+                   (e-board-activity-shell--popup-available-p)
+                   (not (e-board-activity-visual-visible-for-owner-p chat)))
+          (condition-case error
+              (with-selected-window window
+                (e-board-activity-visual-open-buffer
+                 :target (e-chat-service-publication-target binding)
+                 :binding binding
+                 :run-id (plist-get (e-chat-surface-board-status)
+                                    :selected-run-id)
+                 :owner-chat chat
+                 :on-dismiss (e-chat--board-hud-on-dismiss chat)))
+            (error
+             (message "Board HUD could not open: %s"
+                      (error-message-string error)))))))))
+
 (defun e-chat--attach-board-run-set (binding)
   "Attach BINDING's compact Board run status to the current chat surface."
   (e-chat--unsubscribe-board-run-set)
@@ -1220,15 +1287,12 @@ context insertions from the chat buffer the user is looking at."
         (lambda (status)
           (when (buffer-live-p buffer)
             (with-current-buffer buffer
-              (let* ((link (plist-get status :activity-link))
-                     (run-id (plist-get link :run-id))
-                     (action
-                      (when (and link run-id)
-                        (lambda ()
-                          (require 'e-board-activity-visual-shell)
-                          (e-board-activity-visual-open-or-text
-                           target binding run-id)))))
-                (e-chat-surface-set-board-status status action))))))))))
+              (e-chat-surface-set-board-status
+               status
+               (e-chat--board-status-action
+                buffer target binding
+                (plist-get status :selected-run-id))))))))
+      (e-chat--maybe-open-board-hud))))
 
 ;;;###autoload
 (defun e-chat-open-board-activity-text ()
@@ -1241,6 +1305,9 @@ context insertions from the chat buffer the user is looking at."
          (run-id (plist-get status :selected-run-id)))
     (unless (e-chat-service-binding-p binding)
       (user-error "The current chat has no ready Board activity binding"))
+    (setq-local e-chat--board-hud-dismissed t)
+    (when (fboundp 'e-board-activity-visual-close-for-owner)
+      (e-board-activity-visual-close-for-owner (current-buffer)))
     (require 'e-board-activity-shell)
     (e-board-activity-shell-open-buffer
      :target (e-chat-service-publication-target binding)
