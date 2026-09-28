@@ -149,8 +149,30 @@ later passes followed their corrections and focused regressions.
   there.  Pointer clicks and visible pixels remain unverified.  One earlier
   combined native test stalled with an auto-open WebKit frame and was stopped;
   the isolated native scenario and phased cross-renderer handoff then passed.
+- After the user's screenshot exposed the unbound inspector, Board activity
+  ERT passed 30/30 and Rust tests passed 8/8.  The rebuilt WASM passed the
+  phased WebKit test with a separate idle phase: the chat opened the compact
+  frame and WebKit received an initial snapshot before any run facts were
+  published or a test-driven push occurred.  The later two-task, Details,
+  task-action, HUD, and native-handoff phases also passed.  The private
+  current-configuration cold start passed 8/8.  The final button styling
+  rebuild passed the WebKit test again.  The preview is illustrative; corrected
+  visible pixels and real pointer clicks have not been checked.
 
 * Findings
+
+** DONE High: An idle WebKit canvas displayed the full inspector
+
+The user's screenshot showed the =HUD= button, large inspector headings, and
+=Waiting for Board run state= inside the chat overlay.  Rust initialized with
+=compact=false=, while the first Elisp snapshot could be sent before WebKit
+installed its state bridge.  The canvas now starts in compact mode and asks
+Elisp for the current snapshot after its bridge is ready, retrying until state
+arrives.  The compact renderer uses smaller type, tighter rows, and a 230-pixel
+frame height.  The private WebKit test now waits for the first idle snapshot
+before publishing any Board task facts; the [[file:board-hud-preview.html][layout preview]] records the
+intended compact proportions.  The user's screenshot proves the earlier
+failure, not the corrected pixels; a visible playthrough is still needed.
 
 ** DONE High: The HUD required a separate status click after opening chat
 
@@ -292,9 +314,12 @@ controls; visual ERT passed 16/16.
    the reducer and visual view model map committed facts.
 8. Schema v9 stores the run index and queue facts because restart requires
    them.  Selection, cursors, focus, popup frame, and progress stay transient.
+   The WebKit ready retry ends at its first snapshot and is page-local.
    Cleared queue ownership lasts only until SQL confirms drain.
 9. Indexed reads return bounded pages.  Floating presentation adds one child
-   frame on open and no Board query.  A 1024-fact append witness took 187 ms
+   frame on open and no Board query.  The ready request backs off to a
+   four-second interval only while the first snapshot is missing.  A
+   1024-fact append witness took 187 ms
    (0.183 ms/fact), but representative interactive latency and per-Board-write
    production cost are unmeasured.
 10. The Board page, queue assignment identity, and keyed input have concrete
@@ -307,9 +332,9 @@ controls; visual ERT passed 16/16.
 14. Reducer, SQL, queue, admission, and action-fence tests prove behavior below
     the graphical shell.  Isolated graphical tests and the paired private
     current-configuration cold start cover their joins.  The graphical native
-    and phased xwidget tests cover floating frame ownership, dismissal, and
-    state/action exchange; pointer pixels and the full restart scenario remain
-    necessary.
+    and phased xwidget tests cover floating frame ownership, dismissal,
+    initial idle state delivery, and state/action exchange; pointer pixels and
+    the full restart scenario remain necessary.
 
 * UX and performance playthrough
 

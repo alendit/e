@@ -32,6 +32,10 @@ is ready.  An empty Board shows an idle HUD.  When a run exists, it lists the
 selected run's required and optional task states, including tasks that have
 not admitted a participant yet.  An explicit =Details= action opens the full
 visual activity view with participants and controls.
+The WebKit canvas starts in compact mode and requests its first Board snapshot
+after its state bridge is ready, so an idle chat never shows an unbound full
+inspector.  HUD typography and rows stay dense at the compact frame width;
+the current layout preview is [[file:board-hud-preview.html][board-hud-preview.html]].
 If the user sends another message, the model receives the same active-run summary in context and therefore knows that work is still pending.
 When the required work settles, the board queues one completion input for the same session.
 That input waits while a model turn is active and starts only after the session reaches an idle boundary.
@@ -407,6 +411,8 @@ reopened durable activity page.
   after Board readiness, even with no active run.  Closing it is respected;
   the chat status can reopen it.  The HUD leaves chat focus and the composer
   responsive.  It opens the large visual view only through =Details=.
+  The WebKit page receives its first snapshot while the Board is still idle,
+  before a run notification or a test-driven state push.
   Returning with =HUD= restores
   the small frame and chat focus.  The visual view shows a dispatch-pending
   task without a participant beside a running task with one.  A Board update

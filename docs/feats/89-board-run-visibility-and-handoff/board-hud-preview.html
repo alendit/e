@@ -1,0 +1,117 @@
+<div id="board-hud-preview" aria-label="Compact Board HUD layout preview">
+  <style>
+    #board-hud-preview {
+      color-scheme: light dark;
+      --board-chat: light-dark(#f2f1ec, #202126);
+      --board-chat-text: light-dark(#5f625d, #a5a8ad);
+      --board-hud: light-dark(#f7f4dc, #25272b);
+      --board-text: light-dark(#4c5048, #d5d7d8);
+      --board-muted: light-dark(#888d80, #94999c);
+      --board-rule: light-dark(#dddcc8, #3b3e42);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      width: 100%;
+    }
+    #board-hud-preview .chat {
+      position: relative;
+      box-sizing: border-box;
+      min-height: 360px;
+      padding: 20px;
+      background: var(--board-chat);
+      color: var(--board-chat-text);
+      overflow: hidden;
+    }
+    #board-hud-preview .chat-line {
+      max-width: 55%;
+      padding: 12px 0;
+      font-size: 13px;
+    }
+    #board-hud-preview .chat-line + .chat-line {
+      border-top: 1px solid var(--board-rule);
+    }
+    #board-hud-preview .composer {
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      bottom: 18px;
+      padding: 10px 12px;
+      border: 1px solid var(--board-rule);
+      color: var(--board-muted);
+      font-size: 12px;
+    }
+    #board-hud-preview .hud {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      box-sizing: border-box;
+      width: min(300px, calc(100% - 36px));
+      min-height: 225px;
+      padding: 9px 11px;
+      background: var(--board-hud);
+      color: var(--board-text);
+      box-shadow: 0 5px 20px light-dark(#37392922, #00000055);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    #board-hud-preview .hud-header,
+    #board-hud-preview .task-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 9px;
+    }
+    #board-hud-preview .hud-header strong { font-weight: 500; }
+    #board-hud-preview .hud-actions { white-space: nowrap; }
+    #board-hud-preview .hud-actions span {
+      padding: 0 0 0 8px;
+      color: var(--board-muted);
+      text-decoration: underline;
+    }
+    #board-hud-preview .section {
+      margin-top: 9px;
+      padding-top: 6px;
+      border-top: 1px solid var(--board-rule);
+    }
+    #board-hud-preview .section-name,
+    #board-hud-preview .secondary,
+    #board-hud-preview .task-row span:last-child {
+      color: var(--board-muted);
+      font-size: 11px;
+    }
+    #board-hud-preview .section-name { margin-bottom: 3px; }
+    #board-hud-preview .run-label { font-weight: 500; }
+    #board-hud-preview .task-row { margin-top: 3px; }
+    #board-hud-preview .task-row span:first-child {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    #board-hud-preview .secondary { padding-left: 13px; }
+    @media (max-width: 520px) {
+      #board-hud-preview .chat-line { max-width: 100%; }
+      #board-hud-preview .hud { top: 64px; }
+    }
+  </style>
+  <div class="chat">
+    <div class="chat-line">Start the Daily update and let me know when the required tasks finish.</div>
+    <div class="chat-line">The Board run is active. You can keep chatting while it works.</div>
+    <div class="composer">Message the agent…</div>
+    <div class="hud" role="group" aria-label="Board activity, active run">
+      <div class="hud-header">
+        <strong>Board activity</strong>
+        <div class="hud-actions"><span>Details</span><span>×</span></div>
+      </div>
+      <div class="section">
+        <div class="section-name">Run</div>
+        <div class="run-label">Daily update</div>
+        <div class="secondary">active · 1 required · 1 optional</div>
+      </div>
+      <div class="section">
+        <div class="section-name">Required</div>
+        <div class="task-row"><span>• Calendar</span><span>queued</span></div>
+        <div class="secondary">Admission pending</div>
+        <div class="section-name">Optional</div>
+        <div class="task-row"><span>• Slack</span><span>running</span></div>
+      </div>
+    </div>
+  </div>
+</div>
