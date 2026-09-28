@@ -19,6 +19,7 @@
 (require 'e-board-orchestration)
 (require 'e-board-sqlite-service)
 (require 'e-chat-service)
+(require 'e-chat-surface)
 (require 'e-subagent-actions)
 (require 'e-subagent-live)
 (require 'e-work)
@@ -68,6 +69,12 @@
 
 (defvar-local e-board-activity-visual--owner-chat nil
   "Chat transcript whose Board HUD is displayed by this buffer.")
+
+(defvar-local e-board-activity-visual--chat-status-listener nil
+  "Listener installed on the owning chat's transient status.")
+
+(defvar-local e-board-activity-visual--displayed-hud-height nil
+  "Height requested for the currently visible compact frame.")
 
 (defvar-local e-board-activity-visual--compact t
   "Non-nil while the visual Board uses the compact chat HUD.")
@@ -203,6 +210,12 @@
 
 (defun e-board-activity-visual--retire-current ()
   "Detach subscriptions and requests owned by the current buffer."
+  (when (and (buffer-live-p e-board-activity-visual--owner-chat)
+             e-board-activity-visual--chat-status-listener)
+    (let ((listener e-board-activity-visual--chat-status-listener))
+      (with-current-buffer e-board-activity-visual--owner-chat
+        (remove-hook 'e-chat-surface-status-changed-hook listener t))))
+  (setq e-board-activity-visual--chat-status-listener nil)
   (when (functionp e-board-activity-visual--run-set-unsubscribe)
     (funcall e-board-activity-visual--run-set-unsubscribe))
   (setq e-board-activity-visual--run-set-unsubscribe nil)
@@ -234,6 +247,10 @@
     (e-board-activity-visual-view-model-snapshot
      :board-id (e-board-activity-visual--target-id)
      :compact e-board-activity-visual--compact
+     :chat-status (when (buffer-live-p e-board-activity-visual--owner-chat)
+                    (or (e-chat-surface-status
+                         e-board-activity-visual--owner-chat)
+                        "idle"))
      :projection projection
      :selected-run-id e-board-activity-visual--selected-run-id
      :selected-task e-board-activity-visual--selected-task
@@ -279,6 +296,37 @@
                      (setq e-board-activity-visual--push-timer nil))
                    (e-board-activity-visual--push-snapshot target)))
                buffer))))))
+
+(defun e-board-activity-visual--subscribe-chat-status (buffer owner-chat)
+  "Refresh visual BUFFER when OWNER-CHAT changes its transient status."
+  (when (buffer-live-p owner-chat)
+    (let ((listener
+           (lambda (_status)
+             (when (buffer-live-p buffer)
+               (e-board-activity-visual--schedule-push buffer)))))
+      (setq-local e-board-activity-visual--chat-status-listener listener)
+      (with-current-buffer owner-chat
+        (add-hook 'e-chat-surface-status-changed-hook listener nil t)))))
+
+(defun e-board-activity-visual--hud-height ()
+  "Return the compact height appropriate for the current Board selection."
+  (if e-board-activity-visual--selected-run-id
+      e-board-activity-hud-height
+    e-board-activity-hud-idle-height))
+
+(defun e-board-activity-visual--resize-visible-hud ()
+  "Resize an open HUD when Board work appears or disappears."
+  (let ((height (e-board-activity-visual--hud-height))
+        (popup e-board-activity-shell--popup-frame)
+        (parent e-board-activity-shell--popup-parent))
+    (when (and e-board-activity-visual--compact
+               (frame-live-p popup) (frame-visible-p popup)
+               (frame-live-p parent)
+               (not (equal height
+                           e-board-activity-visual--displayed-hud-height)))
+      (setq e-board-activity-visual--displayed-hud-height height)
+      (with-selected-frame parent
+        (e-board-activity-shell-display (current-buffer) t height)))))
 
 (defun e-board-activity-visual--page-task-id (run-id task)
   "Return TASK's stable identity within RUN-ID."
@@ -481,6 +529,7 @@
                       (copy-tree projection t)
                       e-board-activity-visual--selector-error nil)
                 (e-board-activity-visual--selected-run-from-projection)
+                (e-board-activity-visual--resize-visible-hud)
                 (if e-board-activity-visual--selector-browsing
                     (e-board-activity-visual--start-selector-page
                      e-board-activity-visual--selector-cursor)
@@ -622,7 +671,10 @@
         ('show-hud
          (unless e-board-activity-visual--compact
            (setq e-board-activity-visual--compact t)
-           (e-board-activity-shell-display (current-buffer) t)))
+           (setq e-board-activity-visual--displayed-hud-height
+                 (e-board-activity-visual--hud-height))
+           (e-board-activity-shell-display
+            (current-buffer) t e-board-activity-visual--displayed-hud-height)))
         ('dismiss
          (e-board-activity-shell-dismiss))
         ('browse-runs
@@ -857,6 +909,7 @@ Board run-set observer."
                   e-board-activity-visual--live live
                   e-board-activity-visual--egui-session session
                   e-board-activity-visual--owner-chat owner-chat
+                  e-board-activity-visual--displayed-hud-height nil
                   e-board-activity-shell--dismiss-action on-dismiss
                   e-board-activity-visual--compact t
                   e-board-activity-visual--run-set-projection nil
@@ -878,6 +931,7 @@ Board run-set observer."
       (unless e-board-activity-visual--actions-wired
         (e-board-activity-visual--wire-actions session buffer)
         (setq e-board-activity-visual--actions-wired t))
+      (e-board-activity-visual--subscribe-chat-status buffer owner-chat)
       (e-board-activity-visual--push-snapshot buffer)
       (setq e-board-activity-visual--run-set-unsubscribe
             (e-board-run-set-subscribe
@@ -885,7 +939,12 @@ Board run-set observer."
              (lambda (status)
                (e-board-activity-visual--run-set-updated
                 buffer target binding status)))))
-    (e-board-activity-shell-display buffer t)
+    (with-current-buffer buffer
+      (setq e-board-activity-visual--displayed-hud-height
+            (e-board-activity-visual--hud-height)))
+    (e-board-activity-shell-display
+     buffer t (buffer-local-value
+               'e-board-activity-visual--displayed-hud-height buffer))
     buffer))
 
 (defun e-board-activity-visual--open-text-fallback

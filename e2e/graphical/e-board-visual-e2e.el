@@ -18,6 +18,7 @@
 (defvar e-board-visual-e2e--fixture nil)
 (defvar e-board-visual-e2e--buffer nil)
 (defvar e-board-visual-e2e--web-state nil)
+(defvar e-board-visual-e2e--chat-state nil)
 (defvar e-board-visual-e2e--delivery nil)
 (defvar e-board-visual-e2e--child-store nil)
 (defvar e-board-visual-e2e--child-directory nil)
@@ -48,7 +49,12 @@
                    (eq (selected-frame) chat-frame)
                    (with-current-buffer auto-hud
                      (and e-board-activity-visual--compact
-                          (null e-board-activity-visual--selected-run-id))))
+                          (null e-board-activity-visual--selected-run-id)
+                          (<= (frame-pixel-height
+                               e-board-activity-shell--popup-frame)
+                              (+ e-board-activity-hud-idle-height
+                                 (frame-char-height
+                                  e-board-activity-shell--popup-frame))))))
         (error "Opening the chat did not automatically show its empty Board HUD"))
       (setq e-board-visual-e2e--buffer auto-hud))
     t))
@@ -246,6 +252,66 @@
     "window.__eBoardStates.push(JSON.parse(json));"
     "return window.__eBoardOriginalPush(json);};"))
   t)
+
+(defun e-board-visual-e2e-submit-chat-message ()
+  "Submit an ordinary message through the chat composer."
+  (e-chat-behavior-test--submit e-board-visual-e2e--fixture
+                                "Show a short answer")
+  (with-current-buffer e-board-visual-e2e--buffer
+    (unless (null e-board-activity-visual--selected-run-id)
+      (error "Ordinary chat submission selected Board work")))
+  t)
+
+(defun e-board-visual-e2e-stream-chat-reply ()
+  "Stream a provider reply to the submitted chat message."
+  (e-graphical-test-stream-emit
+   (plist-get e-board-visual-e2e--fixture :stream)
+   '(:type assistant-delta :content "An ordinary chat reply"))
+  (e-graphical-test-wait-until
+   (lambda ()
+     (with-current-buffer
+         (plist-get e-board-visual-e2e--fixture :transcript)
+       (equal (e-chat-surface-status) "streaming")))
+   2.0 "chat streaming status")
+  t)
+
+(defun e-board-visual-e2e-finish-chat-reply ()
+  "Settle the ordinary chat turn without creating Board work."
+  (e-chat-behavior-test--finish e-board-visual-e2e--fixture
+                                "An ordinary chat reply")
+  t)
+
+(defun e-board-visual-e2e-probe-chat-status ()
+  "Read the most recent chat status delivered to the real WebKit page."
+  (setq e-board-visual-e2e--chat-state nil)
+  (xwidget-webkit-execute-script
+   (e-board-visual-e2e--widget)
+   (concat
+    "(function(){const states=window.__eBoardStates||[];"
+    "const s=states[states.length-1];"
+    "return JSON.stringify({status:s&&s.chatStatus,"
+    "run:s&&s.selectedRunId,detail:s&&s.detail.state});})()")
+   (lambda (value)
+     (when (stringp value)
+       (setq e-board-visual-e2e--chat-state
+             (json-read-from-string value)))))
+  t)
+
+(defun e-board-visual-e2e-chat-responding-p ()
+  "Return whether an ordinary chat status reached the idle HUD."
+  (and (equal (alist-get 'status e-board-visual-e2e--chat-state)
+              "streaming")
+       (null (alist-get 'run e-board-visual-e2e--chat-state))
+       (equal (alist-get 'detail e-board-visual-e2e--chat-state)
+              "empty")))
+
+(defun e-board-visual-e2e-chat-ready-p ()
+  "Return whether the settled chat status reached the idle HUD."
+  (and (equal (alist-get 'status e-board-visual-e2e--chat-state)
+              "done")
+       (null (alist-get 'run e-board-visual-e2e--chat-state))
+       (equal (alist-get 'detail e-board-visual-e2e--chat-state)
+              "empty")))
 
 (defun e-board-visual-e2e-send-state ()
   "Send the current coherent Board snapshot over the real WebKit bridge."

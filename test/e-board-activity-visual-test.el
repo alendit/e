@@ -395,6 +395,39 @@
           (should (equal pushes (list buffer))))
       (kill-buffer buffer))))
 
+(ert-deftest e-board-activity-visual-test-owner-chat-status-refreshes-hud ()
+  "A chat status change reaches its HUD without a Board run notification."
+  (let ((owner (generate-new-buffer " *e-board-chat-status*"))
+        (visual (generate-new-buffer " *e-board-visual-status*"))
+        pushes)
+    (unwind-protect
+        (cl-letf (((symbol-function 'e-board-activity-visual--target-id)
+                   (lambda () "board-1"))
+                  ((symbol-function 'e-board-activity-visual--schedule-push)
+                   (lambda (buffer) (push buffer pushes))))
+          (with-current-buffer owner
+            (e-chat-surface-mark-transcript owner)
+            (e-chat-surface-set-status "idle"))
+          (with-current-buffer visual
+            (setq-local e-board-activity-visual--owner-chat owner)
+            (e-board-activity-visual--subscribe-chat-status visual owner)
+            (should (equal (alist-get 'chatStatus
+                                      (e-board-activity-visual--snapshot))
+                           "idle")))
+          (with-current-buffer owner
+            (e-chat-surface-set-status "streaming"))
+          (should (equal pushes (list visual)))
+          (with-current-buffer visual
+            (should (equal (alist-get 'chatStatus
+                                      (e-board-activity-visual--snapshot))
+                           "streaming"))
+            (e-board-activity-visual--retire-current))
+          (with-current-buffer owner
+            (e-chat-surface-set-status "done"))
+          (should (equal pushes (list visual))))
+      (kill-buffer visual)
+      (kill-buffer owner))))
+
 (ert-deftest e-board-activity-visual-test-rebind-never-reuses-old-control-epoch ()
   "An old same-Board control stays stale after rebinding the same buffer."
   (let* ((e-board-activity-visual-buffer-name

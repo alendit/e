@@ -49,6 +49,21 @@
       (e-chat-owner-test--kill-buffer second)
       (e-chat-owner-test--kill-buffer first))))
 
+(ert-deftest e-chat-surface-owner-notifies-only-status-changes ()
+  "Transient status listeners receive changes without duplicate refreshes."
+  (let ((transcript (e-chat-owner-test--buffer " *surface status hook*"))
+        changes)
+    (unwind-protect
+        (with-current-buffer transcript
+          (e-chat-surface-mark-transcript transcript)
+          (add-hook 'e-chat-surface-status-changed-hook
+                    (lambda (status) (push status changes)) nil t)
+          (e-chat-surface-set-status "streaming")
+          (e-chat-surface-set-status "streaming" t)
+          (e-chat-surface-set-status "done")
+          (should (equal changes '("done" "streaming"))))
+      (e-chat-owner-test--kill-buffer transcript))))
+
 (ert-deftest e-chat-surface-owner-unbind-clears-both-ends ()
   "Unbinding a surface removes only its ephemeral pairing state."
   (let ((transcript (e-chat-owner-test--buffer " *surface unbind transcript*"))

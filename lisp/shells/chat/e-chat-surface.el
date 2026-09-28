@@ -144,6 +144,8 @@ into the other's state.")
   "Caller-owned semantic mode-line status cache for this surface.")
 (defvar-local e-chat-surface--status nil
   "Current chat status text shown in the header line.")
+(defvar-local e-chat-surface-status-changed-hook nil
+  "Functions called with the chat status when its value changes.")
 (defvar-local e-chat-surface--board-status nil
   "Current detached Board run-set compact status for this chat surface.")
 (defvar-local e-chat-surface--board-status-action nil
@@ -409,7 +411,10 @@ window callbacks loadable before the composition root is evaluated."
              :metadata (list :status status
                              :refresh-mode-line (and refresh-mode-line t)))
        (lambda ()
-         (setq e-chat-surface--status status)
+         (let ((changed (not (equal status e-chat-surface--status))))
+           (setq e-chat-surface--status status)
+           (when changed
+             (run-hook-with-args 'e-chat-surface-status-changed-hook status)))
          (setq header-line-format
                (e-chat-surface--header-line-text status))
          (when refresh-mode-line

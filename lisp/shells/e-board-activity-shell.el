@@ -62,6 +62,11 @@
   :type 'integer
   :group 'e-board-activity)
 
+(defcustom e-board-activity-hud-idle-height 145
+  "Target height of the HUD before any Board work is selected."
+  :type 'integer
+  :group 'e-board-activity)
+
 (defvar-local e-board-activity-shell--popup-frame nil
   "Child frame currently displaying this Board activity buffer.")
 (defvar-local e-board-activity-shell--popup-parent nil
@@ -124,9 +129,10 @@
   "Fit PIXELS to CHAR-PIXELS units within FRAME-SIZE."
   (max 1 (min (floor (/ pixels (max 1 char-pixels))) frame-size)))
 
-(defun e-board-activity-shell-display (buffer &optional compact)
+(defun e-board-activity-shell-display (buffer &optional compact hud-height)
   "Show Board activity BUFFER over the current frame when possible.
-COMPACT places a focusless status HUD at the top right; full detail is focused."
+COMPACT places a focusless status HUD at the top right; full detail is focused.
+HUD-HEIGHT overrides the compact frame height in pixels."
   (if (e-board-activity-shell--popup-available-p)
       (let* ((parent (e-board-activity-shell--root-frame (selected-frame)))
              (frame
@@ -144,7 +150,8 @@ COMPACT places a focusless status HUD at the top right; full detail is focused."
                            e-board-activity-popup-width (frame-width parent)))
                  :height (if compact
                              (e-board-activity-shell--hud-dimension
-                              e-board-activity-hud-height (frame-char-height parent)
+                              (or hud-height e-board-activity-hud-height)
+                              (frame-char-height parent)
                               (frame-height parent))
                            (e-board-activity-shell--popup-dimension
                             e-board-activity-popup-height (frame-height parent)))

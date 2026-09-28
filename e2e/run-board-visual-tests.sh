@@ -66,6 +66,17 @@ echo 'Board visual E2E: chat auto-opened its empty HUD'
 wait_for '(e-board-visual-e2e-probe-web)' \
   '(e-board-visual-e2e-web-ready-p)' 'WebKit loaded the HUD and received its initial empty state'
 
+expect_true '(e-board-visual-e2e-install-state-observer)'
+expect_true '(e-board-visual-e2e-submit-chat-message)'
+expect_true '(e-board-visual-e2e-stream-chat-reply)'
+wait_for '(e-board-visual-e2e-probe-chat-status)' \
+  '(e-board-visual-e2e-chat-responding-p)' \
+  'submitted chat reply reached the HUD without Board work'
+expect_true '(e-board-visual-e2e-finish-chat-reply)'
+wait_for '(e-board-visual-e2e-probe-chat-status)' \
+  '(e-board-visual-e2e-chat-ready-p)' \
+  'settled chat status reached the HUD without Board work'
+
 expect_true '(e-board-visual-e2e-populate)'
 echo 'Board visual E2E: public status reopened the HUD for a two-task run'
 

@@ -8,6 +8,7 @@ pub struct BoardState {
     pub board_id: Option<String>,
     #[serde(default)]
     pub compact: bool,
+    pub chat_status: Option<String>,
     #[serde(default)]
     pub run_set_epoch: u64,
     #[serde(default)]
@@ -440,6 +441,24 @@ impl BoardApp {
         }
     }
 
+    fn chat_status_label(status: &str) -> &str {
+        if status.starts_with("running ") {
+            return "Working";
+        }
+        match status {
+            "idle" | "done" => "Ready",
+            "waiting for provider" => "Waiting for model",
+            "streaming" => "Responding",
+            "reasoning" => "Thinking",
+            "tool" | "tool done" | "tool output" => "Using a tool",
+            "action" | "action done" => "Using an action",
+            "persistence pending" => "Saving",
+            "error" | "input failed" | "compaction failed" => "Needs attention",
+            "cancelled" => "Cancelled",
+            _ => status,
+        }
+    }
+
     fn render_hud_tasks(ui: &mut egui::Ui, tasks: &[TaskCard], title: &str) {
         ui.label(egui::RichText::new(title).weak().size(11.0));
         if tasks.is_empty() {
@@ -479,16 +498,23 @@ impl BoardApp {
             .frame(egui::Frame::none().inner_margin(egui::Margin::same(8.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Board activity").strong().size(12.0));
+                    ui.label(egui::RichText::new("Activity").strong().size(12.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(egui::Button::new("×").frame(false)).clicked() {
                             self.send_action("dismiss", json!({}));
                         }
-                        if ui.add(egui::Button::new("Details").frame(false)).clicked() {
+                        if self.state.selected_run_id.is_some()
+                            && ui.add(egui::Button::new("Details").frame(false)).clicked()
+                        {
                             self.send_action("show-details", json!({}));
                         }
                     });
                 });
+                if let Some(status) = &self.state.chat_status {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Chat").weak().size(11.0));
+                    ui.add(egui::Label::new(Self::chat_status_label(status)).truncate());
+                }
                 ui.separator();
 
                 let selected = self
@@ -504,8 +530,8 @@ impl BoardApp {
                     .as_deref()
                     .or_else(|| selected.and_then(|run| run.label.as_deref()))
                     .or(self.state.selected_run_id.as_deref())
-                    .unwrap_or("No active run");
-                ui.label(egui::RichText::new("Run").weak().size(11.0));
+                    .unwrap_or("No delegated work");
+                ui.label(egui::RichText::new("Board work").weak().size(11.0));
                 ui.add(egui::Label::new(egui::RichText::new(label).strong()).truncate());
                 if let Some(run) = selected {
                     let lifecycle = run.lifecycle.as_deref().unwrap_or("unknown");
@@ -523,41 +549,43 @@ impl BoardApp {
                     ui.small(format!("Completion: {status}"));
                 }
 
-                ui.separator();
-                match self.state.detail.state.as_deref() {
-                    Some("ready") => {
-                        egui::ScrollArea::vertical()
-                            .max_height(120.0)
-                            .show(ui, |ui| {
-                                Self::render_hud_tasks(
-                                    ui,
-                                    &self.state.detail.required_tasks,
-                                    "Required",
-                                );
-                                ui.add_space(4.0);
-                                Self::render_hud_tasks(
-                                    ui,
-                                    &self.state.detail.optional_tasks,
-                                    "Optional",
-                                );
-                            });
-                    }
-                    Some("empty") => {
-                        ui.small("No active Board runs");
-                    }
-                    Some("error") => {
-                        ui.label("Activity unavailable");
-                        ui.small(
-                            self.state
-                                .detail
-                                .error
-                                .as_deref()
-                                .unwrap_or("Unknown error"),
-                        );
-                    }
-                    _ => {
-                        ui.spinner();
-                        ui.small("Loading Board activity…");
+                if self.state.selected_run_id.is_some() {
+                    ui.separator();
+                    match self.state.detail.state.as_deref() {
+                        Some("ready") => {
+                            egui::ScrollArea::vertical()
+                                .max_height(120.0)
+                                .show(ui, |ui| {
+                                    Self::render_hud_tasks(
+                                        ui,
+                                        &self.state.detail.required_tasks,
+                                        "Required",
+                                    );
+                                    ui.add_space(4.0);
+                                    Self::render_hud_tasks(
+                                        ui,
+                                        &self.state.detail.optional_tasks,
+                                        "Optional",
+                                    );
+                                });
+                        }
+                        Some("empty") => {
+                            ui.small("No tasks to show");
+                        }
+                        Some("error") => {
+                            ui.label("Activity unavailable");
+                            ui.small(
+                                self.state
+                                    .detail
+                                    .error
+                                    .as_deref()
+                                    .unwrap_or("Unknown error"),
+                            );
+                        }
+                        _ => {
+                            ui.spinner();
+                            ui.small("Loading Board activity…");
+                        }
                     }
                 }
             });
@@ -957,6 +985,13 @@ mod tests {
     #[test]
     fn boot_state_uses_the_compact_hud_before_emacs_connects() {
         assert!(BoardApp::new().state.compact);
+    }
+
+    #[test]
+    fn chat_activity_labels_hide_turn_ids_and_distinguish_board_work() {
+        assert_eq!(BoardApp::chat_status_label("running turn-42"), "Working");
+        assert_eq!(BoardApp::chat_status_label("streaming"), "Responding");
+        assert_eq!(BoardApp::chat_status_label("done"), "Ready");
     }
 
     fn ready_state(revision: i64) -> BoardState {
