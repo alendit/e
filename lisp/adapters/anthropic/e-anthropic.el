@@ -813,29 +813,57 @@ rather than follows, the individual call/result entries in transcript order."
 
 (defun e-anthropic--cache-breakpoint-selection (messages options)
   "Return the stable breakpoint in current MESSAGES described by OPTIONS.
-The result contains a system-block :index and, when selected by a segment, its
-:segment.  Segment messages locate the boundary; they never supply wire text."
+Match segment system messages only as an ordered prefix, stopping before an
+ambiguous repeated content value.  The result contains a system-block :index
+and, when selected by a segment, its :segment.  Segments never supply wire text."
   (let* ((instructions (plist-get options :instructions))
          (instruction-p (and (stringp instructions)
                              (not (string-empty-p instructions))))
          (system-messages (seq-filter #'e-anthropic--system-message-p messages))
          (segments (plist-get options :segments))
-         (message-cursor 0)
+         (segment-entries nil)
+         (segment-content-counts (make-hash-table :test #'equal))
+         (message-content-counts (make-hash-table :test #'equal))
          (selection (and instruction-p (list :index 0))))
     (if segments
-        (dolist (segment segments)
-          (dolist (segment-message (plist-get segment :messages))
-            (when (e-anthropic--system-message-p segment-message)
-              (when-let* ((position
-                           (cl-position
-                            segment-message system-messages
-                            :start message-cursor
-                            :test #'equal)))
-                (setq message-cursor (1+ position))
-                (when (e-anthropic--stable-cache-segment-p segment)
-                  (setq selection
-                        (list :index (+ (if instruction-p 1 0) position)
-                              :segment segment)))))))
+        (progn
+          (dolist (message system-messages)
+            (let ((content (plist-get message :content)))
+              (puthash content
+                       (1+ (gethash content message-content-counts 0))
+                       message-content-counts)))
+          (dolist (segment segments)
+            (dolist (segment-message (plist-get segment :messages))
+              (when (e-anthropic--system-message-p segment-message)
+                (let ((content (plist-get segment-message :content)))
+                  (push (list segment segment-message) segment-entries)
+                  (puthash content
+                           (1+ (gethash content segment-content-counts 0))
+                           segment-content-counts)))))
+          (setq segment-entries (nreverse segment-entries))
+          ;; Equal content can occur in a retired stable segment and current
+          ;; state; unequal occurrence counts leave that match ambiguous.
+          (let ((message-cursor 0)
+                (entries segment-entries)
+                (current-messages system-messages)
+                (prefix-matches-p t))
+            (while (and prefix-matches-p entries current-messages)
+              (let* ((entry (pop entries))
+                     (segment (car entry))
+                     (segment-message (cadr entry))
+                     (current-message (car current-messages))
+                     (content (plist-get segment-message :content)))
+                (if (or (not (equal segment-message current-message))
+                        (/= (gethash content segment-content-counts 0)
+                            (gethash content message-content-counts 0)))
+                    (setq prefix-matches-p nil)
+                  (when (e-anthropic--stable-cache-segment-p segment)
+                    (setq selection
+                          (list :index (+ (if instruction-p 1 0)
+                                          message-cursor)
+                                :segment segment)))
+                  (setq message-cursor (1+ message-cursor)
+                        current-messages (cdr current-messages)))))))
       (when (and (not instruction-p) system-messages)
         (setq selection (list :index (1- (length system-messages))))))
     selection))

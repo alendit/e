@@ -600,6 +600,74 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
     (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
                    "live-prefix"))))
 
+(ert-deftest e-anthropic-test-request-body-does-not-cache-ambiguous-duplicate-segment ()
+  "Repeated retired text cannot move the stable cache boundary into current state."
+  (let ((stable-message '(:role system :content "Stable guidance."))
+        (same-message '(:role system :content "Same text")))
+    (cl-labels
+        ((render (suffix)
+           (let* ((suffix-message (list :role 'system :content suffix))
+                  (messages (list stable-message same-message suffix-message
+                                  '(:role user :content "hello")))
+                  (options
+                   (list :model "claude-test"
+                         :max-tokens 1024
+                         :prompt-cache t
+                         :prompt-cache-ttl "5m"
+                         :segments
+                         (list (list :kind 'static-prefix
+                                     :id 'live-prefix
+                                     :fingerprint "live-prefix-fp"
+                                     :messages (list stable-message))
+                               (list :kind 'stable-context
+                                     :id 'retired-same-text
+                                     :fingerprint "retired-same-text-fp"
+                                     :messages (list same-message))
+                               (list :kind 'current-state
+                                     :id 'current-state
+                                     :fingerprint "current-state-fp"
+                                     :messages (list same-message
+                                                     suffix-message)))))
+                  (uncached-options (copy-sequence options)))
+             (cl-remf uncached-options :prompt-cache)
+             (let* ((cached (e-anthropic-request-body
+                             :messages messages :options options))
+                    (uncached (e-anthropic-request-body
+                               :messages messages :options uncached-options)))
+               (list :cached cached
+                     :uncached uncached
+                     :suffix suffix
+                     :metadata (e-anthropic--request-metadata
+                                options cached messages))))))
+      (let ((first (render "Dynamic suffix one."))
+            (second (render "Dynamic suffix two.")))
+        (dolist (result (list first second))
+          (let* ((cached (plist-get result :cached))
+                 (uncached (plist-get result :uncached))
+                 (system (plist-get cached :system))
+                 (metadata (plist-get result :metadata)))
+            (should (equal (e-anthropic-test--system-text cached)
+                           (e-anthropic-test--system-text uncached)))
+            (should (equal (mapcar (lambda (block) (plist-get block :text))
+                                   (append system nil))
+                           (list "Stable guidance."
+                                 "Same text"
+                                 (plist-get result :suffix))))
+            (should-not (plist-member (aref system 1) :cache_control))
+            (should-not (plist-member (aref system 2) :cache_control))
+            (should (equal (plist-get (aref system 0) :cache_control)
+                           '(:type "ephemeral" :ttl "5m")))
+            (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
+                           "live-prefix"))))
+        (should (equal (e-anthropic-test--stable-cache-prefix
+                        (plist-get first :cached))
+                       (e-anthropic-test--stable-cache-prefix
+                        (plist-get second :cached))))
+        (should-not (equal (e-anthropic-test--system-text
+                           (plist-get first :cached))
+                           (e-anthropic-test--system-text
+                            (plist-get second :cached))))))))
+
 (ert-deftest e-anthropic-test-request-body-cache-prefix-excludes-dynamic-suffix ()
   "Dynamic changes leave the cached prefix stable; stable changes replace it."
   (cl-labels
