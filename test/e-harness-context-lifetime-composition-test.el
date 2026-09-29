@@ -10,6 +10,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-anthropic)
+(require 'e-json)
 (require 'e-openai-decoder)
 (require 'e-openai-responses)
 (require 'e-sqlite-test-store-support
@@ -19,6 +21,94 @@
 (load (expand-file-name "e-harness-composition-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
+
+(defun e-harness-context-lifetime-composition-test--anthropic-stream
+    (blocks stop-reason)
+  "Return a complete SSE response for native content BLOCKS and STOP-REASON."
+  (let ((events
+         (list '(:type "message_start"
+                :message (:role "assistant" :content []))))
+        (index 0))
+    (dolist (block blocks)
+      (let ((type (plist-get block :type)))
+        (setq events
+              (append
+               events
+               (pcase type
+                 ("thinking"
+                  (append
+                   (list (list :type "content_block_start"
+                               :index index
+                               :content_block
+                               (list :type "thinking" :thinking ""))
+                         (list :type "content_block_delta"
+                               :index index
+                               :delta (list :type "thinking_delta"
+                                            :thinking
+                                            (plist-get block :thinking))))
+                   (when-let* ((signature (plist-get block :signature)))
+                     (list (list :type "content_block_delta"
+                                 :index index
+                                 :delta (list :type "signature_delta"
+                                              :signature signature))))
+                   (list (list :type "content_block_stop" :index index))))
+                 ("text"
+                  (list (list :type "content_block_start"
+                              :index index
+                              :content_block '(:type "text" :text ""))
+                        (list :type "content_block_delta"
+                              :index index
+                              :delta (list :type "text_delta"
+                                           :text (plist-get block :text)))
+                        (list :type "content_block_stop" :index index)))
+                 (_
+                  (list (list :type "content_block_start"
+                              :index index :content_block block)
+                        (list :type "content_block_stop" :index index))))))
+        (setq index (1+ index))))
+    (setq events
+          (append events
+                  (list (list :type "message_delta"
+                              :delta (list :stop_reason stop-reason))
+                        '(:type "message_stop"))))
+    (mapconcat (lambda (event)
+                 (format "event: %s\ndata: %s\n\n"
+                         (plist-get event :type)
+                         (e-json-serialize event)))
+               events "")))
+
+(defun e-harness-context-lifetime-composition-test--anthropic-tool-result-marker
+    (body tool-use-id)
+  "Return BODY's text marker immediately before TOOL-USE-ID's result."
+  (seq-some
+   (lambda (message)
+     (let* ((blocks (append (plist-get message :content) nil))
+            (result-index
+             (cl-position-if
+              (lambda (block)
+                (and (equal (plist-get block :type) "tool_result")
+                     (equal (plist-get block :tool_use_id) tool-use-id)))
+              blocks)))
+       (when (and result-index (> result-index 0))
+         (let ((marker (nth (1- result-index) blocks)))
+           (and (equal (plist-get marker :type) "text")
+                (string-match-p
+                 "\\[ephemeral context source [0-9]+,"
+                 (plist-get marker :text))
+                (plist-get marker :text))))))
+   (append (plist-get body :messages) nil)))
+
+(defun e-harness-context-lifetime-composition-test--source-markers (body)
+  "Return current-state source marker blocks rendered in BODY's system text."
+  (let ((printed (format "%s" (plist-get body :system)))
+        (offset 0)
+        markers)
+    (while (string-match
+            "\\[ephemeral context source [0-9]+, ~[0-9]+ tokens, erase-ineligible\\]"
+            printed offset)
+      (push (list :type "text" :text (match-string 0 printed)) markers)
+      (setq offset (match-end 0)))
+    (nreverse markers)))
 
 (ert-deftest e-harness-test-context-lifetime-tool-bundle-curates-and-forgets ()
   "A normal opted-in tool turn exposes a paired bundle once and keeps its curation."
@@ -51,12 +141,12 @@
                          :name "remember-fact"
                          :arguments (:value "canvas marker")))
                       (setq curation-input
-                            (list :type 'context-curate
-                                  :arguments
-                                  '(:keep []
-                                    :summaries
-                                    [(:sources [1]
-                                      :text "selected durable fact")])))
+                            (e-openai-decoder--context-curation-effect
+                             '(:keep []
+                               :summaries
+                               [(:sources [1]
+                                 :text "selected durable fact")])
+                             "curation-call-tool-bundle"))
                       (funcall on-item curation-input)
                       (funcall on-item '(:type done :reason tool-use)))
                   (funcall on-item
@@ -101,6 +191,13 @@
              (first-messages (plist-get first-request :messages))
              (first-options (plist-get first-request :options))
              (second-messages (plist-get second-request :messages))
+             (tool-message
+              (seq-find (lambda (message)
+                          (eq (plist-get message :role) 'tool))
+                        second-messages))
+             (tool-replay-items
+              (plist-get (plist-get tool-message :metadata)
+                         :provider-replay-items))
              (roles (mapcar (lambda (message) (plist-get message :role))
                             second-messages)))
         (should (plist-get first-options :context-lifetime-enabled))
@@ -119,14 +216,12 @@
                    1))
         (should (member 'tool-call roles))
         (should (member 'tool roles))
+        (should
+         (equal tool-replay-items
+                (plist-get curation-input :provider-replay-items)))
         (should (equal
                  (plist-get
-                  (plist-get
-                   (seq-find
-                    (lambda (message)
-                      (eq (plist-get message :role) 'tool))
-                    second-messages)
-                   :content)
+                  (plist-get tool-message :content)
                   :tool-call-id)
                  "call-context-lifetime")))
       (let ((e-context-lifetime-shadow-projection-enabled t))
@@ -500,24 +595,12 @@
                    (funcall on-item '(:type done :reason tool-use)))
                   (2
                    (setq curation-input
-                         (list :type 'context-curate
-                               :arguments
-                               '(:keep []
-                                 :summaries
-                                 [(:sources [2]
-                                   :text "selected from tool result")])
-                               :provider-replay-items
-                               '((:type provider-replay-item
-                                 :provider-id openai
-                                 :item (:type "function_call"
-                                        :call_id "curation-call"
-                                        :name "context-curate"
-                                        :arguments "{}"))
-                                (:type provider-replay-item
-                                 :provider-id openai
-                                 :item (:type "function_call_output"
-                                        :call_id "curation-call"
-                                        :output "")))))
+                         (e-openai-decoder--context-curation-effect
+                          '(:keep []
+                            :summaries
+                            [(:sources [1]
+                              :text "selected from tool result")])
+                          "curation-call"))
                    (funcall on-item curation-input)
                    (funcall on-item '(:type done :reason stop)))
                   (3
@@ -613,13 +696,13 @@
                                           :role)
                                'system))
                 (should (string-match-p
-                         "\\[ephemeral context source 2, ~[0-9]+ tokens, erase-eligible\\]"
+                         "\\[ephemeral context source 1, ~[0-9]+ tokens, erase-eligible\\]"
                          (plist-get (nth (1- tool-position) messages-b)
                                     :content))))
               (should (equal curation-arguments
                              '(:keep []
                                :summaries
-                               [(:sources [2]
+                               [(:sources [1]
                                  :text "selected from tool result")])))
               (should tool-message-c)
               (should (equal (mapcar (lambda (item)
@@ -628,7 +711,10 @@
                              '("function_call" "function_call_output")))
               (should (integerp curation-call-position))
               (should (integerp curation-ack-position))
-              (should (< curation-call-position curation-ack-position)))
+              (should (< curation-call-position curation-ack-position))
+              (should (equal replay-items-c
+                             (plist-get curation-input
+                                        :provider-replay-items))))
             (should (equal (mapcar (lambda (message) (plist-get message :role))
                                    (e-harness-messages harness "session-1"))
                            '(user tool-call tool assistant)))
@@ -745,7 +831,297 @@
                 (should-not (string-match-p raw-result-marker fork-text))
                 (should-not (string-match-p control-id fork-text))
                 (should-not (e-session-local-entry-by-id reopened fork-id control-id)))))
-        (delete-directory directory t)))))
+      (delete-directory directory t)))))
+
+(ert-deftest e-harness-test-anthropic-mixed-curation-composes-across-frames ()
+  "Messages composes mixed frame-A curation, frame-B curation, and a fresh turn."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((request-count 0)
+           (requests nil)
+           (events nil)
+           (source-phase 'frame-a)
+           (frame-b-label nil)
+           (frame-b-marker nil)
+           (process-environment
+            (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+           (e-anthropic-model-providers
+            '((test-gateway
+               :name "Test Anthropic gateway"
+               :base-url "https://gateway.example.test/v1"
+               :auth bearer
+               :env-key "ANTHROPIC_GATEWAY_KEY")))
+           (backend
+            (e-anthropic-backend-create
+             :provider 'test-gateway
+             :request-function
+             (cl-function
+              (lambda (&key body &allow-other-keys)
+                (let* ((request-body (e-json-parse-string body))
+                       (ordinal (cl-incf request-count)))
+                  (setq requests (append requests (list request-body)))
+                  (pcase ordinal
+                    (1
+                     (e-harness-context-lifetime-composition-test--anthropic-stream
+                      '((:type "thinking" :thinking "Inspect frame A."
+                         :signature "sig-frame-a")
+                        (:type "text"
+                         :text "Inspect the fresh result, then curate frame A.")
+                        (:type "tool_use" :id "toolu-inspect-frame-b"
+                         :name "inspect-source" :input (:path "frame-b"))
+                        (:type "tool_use" :id "toolu-curate-frame-a"
+                         :name "context-curate"
+                         :input
+                         (:keep [1]
+                          :summaries
+                          [(:sources [2] :text "FRAME-A-CURATED-SUMMARY")]
+                          :erase [])))
+                      "tool_use"))
+                    (2
+                     (setq frame-b-marker
+                           (e-harness-context-lifetime-composition-test--anthropic-tool-result-marker
+                            request-body "toolu-inspect-frame-b"))
+                     (setq frame-b-label
+                           (and frame-b-marker
+                                (string-match
+                                 "\\[ephemeral context source \\([0-9]+\\),"
+                                 frame-b-marker)
+                                (string-to-number
+                                 (match-string 1 frame-b-marker))))
+                     (unless frame-b-label
+                       (error "Frame B tool result has no parsed source label: %S"
+                              request-body))
+                     (e-harness-context-lifetime-composition-test--anthropic-stream
+                      (list
+                       '(:type "thinking" :thinking "Inspect frame B."
+                         :signature "sig-frame-b")
+                       (list :type "tool_use"
+                             :id "toolu-curate-frame-b"
+                             :name "context-curate"
+                             :input (list :keep []
+                                          :summaries []
+                                          :erase (vector frame-b-label))))
+                      "tool_use"))
+                    (3
+                     (e-harness-context-lifetime-composition-test--anthropic-stream
+                      '((:type "text" :text "FRAME-B-ANSWER")) "end_turn"))
+                    (4
+                     (e-harness-context-lifetime-composition-test--anthropic-stream
+                      '((:type "text" :text "FRESH-TURN-ANSWER")) "end_turn"))
+                    (_ (error "Unexpected Anthropic request %d" ordinal))))))))
+           (provider
+            (e-context-provider-create
+             :name 'anthropic-frame-a-sources
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      (when (eq source-phase 'frame-a)
+                        '((:role system :content "FRAME-A-KEPT-RAW")
+                          (:role system :content "FRAME-A-SUMMARIZED-RAW")
+                          (:role system :content "FRAME-A-OMITTED-RAW"))))))
+           (capability
+            (e-capability-create
+             :id 'anthropic-composed-curation-capability
+             :context-providers (list provider)
+             :tools
+             (list
+              (lambda (registry)
+                (e-tools-test-register
+                 registry
+                 :name "inspect-source"
+                 :description "Return frame B's raw result."
+                 :parameters '(:type "object"
+                               :properties (:path (:type "string")))
+                 :handler
+                 (lambda (_arguments)
+                   (setq source-phase 'after-frame-a)
+                   (concat "FRAME-B-RAW-TOOL-RESULT "
+                           (make-string 240 ?b))))))))
+           (harness (e-harness-create
+                     :backend backend
+                     :intrinsic-capabilities (list capability)))
+           (session-id "anthropic-composed-curation"))
+      (e-harness-create-session harness :id session-id)
+      (e-harness-activity-subscribe
+       harness (lambda (event) (setq events (append events (list event))))
+       :session-id session-id)
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-test-prompt-batch harness session-id "Inspect frame A.")
+        (e-harness-test-prompt-batch harness session-id "Fresh user turn."))
+      (let* ((body-a (car requests))
+             (body-b (cadr requests))
+             (body-after-b-curation (nth 2 requests))
+             (body-fresh (nth 3 requests))
+             (wire-b (append (plist-get body-b :messages) nil))
+             (a-markers
+              (e-harness-context-lifetime-composition-test--source-markers
+               body-a))
+             (a-marker-strings (mapcar (lambda (marker)
+                                         (plist-get marker :text))
+                                       a-markers))
+             (body-b-text (prin1-to-string body-b))
+             (body-after-b-text (prin1-to-string body-after-b-curation))
+             (body-fresh-text (prin1-to-string body-fresh))
+             (mixed-assistants
+              (seq-filter
+               (lambda (message)
+                 (and (equal (plist-get message :role) "assistant")
+                      (let ((ids
+                             (mapcar
+                              (lambda (block) (plist-get block :id))
+                              (seq-filter
+                               (lambda (block)
+                                 (equal (plist-get block :type) "tool_use"))
+                               (append (plist-get message :content) nil)))))
+                        (and (member "toolu-inspect-frame-b" ids)
+                             (member "toolu-curate-frame-a" ids)))))
+               wire-b))
+             (mixed-results
+              (seq-filter
+               (lambda (message)
+                 (and (equal (plist-get message :role) "user")
+                      (let ((ids
+                             (mapcar
+                              (lambda (block)
+                                (plist-get block :tool_use_id))
+                              (seq-filter
+                               (lambda (block)
+                                 (equal (plist-get block :type) "tool_result"))
+                               (append (plist-get message :content) nil)))))
+                        (and (member "toolu-inspect-frame-b" ids)
+                             (member "toolu-curate-frame-a" ids)))))
+               wire-b))
+             (b-curation-assistant
+              (seq-find
+               (lambda (message)
+                 (and (equal (plist-get message :role) "assistant")
+                      (seq-some
+                       (lambda (block)
+                         (equal (plist-get block :id) "toolu-curate-frame-b"))
+                       (append (plist-get message :content) nil))))
+               (append (plist-get body-after-b-curation :messages) nil)))
+             (b-curation-result
+              (seq-find
+               (lambda (message)
+                 (and (equal (plist-get message :role) "user")
+                      (seq-some
+                       (lambda (block)
+                         (and (equal (plist-get block :type) "tool_result")
+                              (equal (plist-get block :tool_use_id)
+                                     "toolu-curate-frame-b")))
+                       (append (plist-get message :content) nil))))
+               (append (plist-get body-after-b-curation :messages) nil)))
+             (consumed-events
+              (seq-filter
+               (lambda (event)
+                 (eq (plist-get event :type) 'context-frame-consumed))
+               events))
+             (curation-events
+              (seq-filter
+               (lambda (event)
+                 (plist-get (plist-get event :payload) :curation))
+               consumed-events))
+             (curation-a
+              (plist-get (plist-get (car curation-events) :payload) :curation))
+             (curation-b
+              (plist-get (plist-get (cadr curation-events) :payload) :curation)))
+        (should (= request-count 4))
+        (should (= (length a-markers) 3))
+        (should (string-match-p "FRAME-A-KEPT-RAW"
+                                (prin1-to-string body-a)))
+        (should (string-match-p "FRAME-A-SUMMARIZED-RAW"
+                                (prin1-to-string body-a)))
+        (should (string-match-p "FRAME-A-OMITTED-RAW"
+                                (prin1-to-string body-a)))
+        (should (stringp frame-b-marker))
+        (should (integerp frame-b-label))
+        (should-not (member frame-b-marker a-marker-strings))
+        (should (= (length mixed-assistants) 1))
+        (should (= (length mixed-results) 1))
+        (should
+         (equal (append (plist-get (car mixed-assistants) :content) nil)
+                '((:type "thinking" :thinking "Inspect frame A."
+                   :signature "sig-frame-a")
+                  (:type "text"
+                   :text "Inspect the fresh result, then curate frame A.")
+                  (:type "tool_use" :id "toolu-inspect-frame-b"
+                   :name "inspect-source" :input (:path "frame-b"))
+                  (:type "tool_use" :id "toolu-curate-frame-a"
+                   :name "context-curate"
+                   :input
+                   (:keep [1]
+                    :summaries
+                    [(:sources [2] :text "FRAME-A-CURATED-SUMMARY")]
+                    :erase [])))))
+        (let ((result-blocks
+               (seq-filter
+                (lambda (block)
+                  (equal (plist-get block :type) "tool_result"))
+                (append (plist-get (car mixed-results) :content) nil))))
+          (should
+           (equal (mapcar (lambda (block)
+                            (plist-get block :tool_use_id))
+                          result-blocks)
+                  '("toolu-inspect-frame-b" "toolu-curate-frame-a")))
+          (should
+           (equal (plist-get (car result-blocks) :content)
+                  (concat "FRAME-B-RAW-TOOL-RESULT "
+                          (make-string 240 ?b))))
+          (should (equal (plist-get (cadr result-blocks) :content)
+                         "Curation applied.")))
+        (should b-curation-assistant)
+        (should b-curation-result)
+        (should
+         (equal
+          (append (plist-get b-curation-assistant :content) nil)
+          (list '(:type "thinking" :thinking "Inspect frame B."
+                  :signature "sig-frame-b")
+                (list :type "tool_use"
+                      :id "toolu-curate-frame-b"
+                      :name "context-curate"
+                      :input (list :keep []
+                                   :summaries []
+                                   :erase (vector frame-b-label))))))
+        (should
+         (equal
+          (seq-filter
+           (lambda (block)
+             (and (equal (plist-get block :type) "tool_result")
+                  (equal (plist-get block :tool_use_id)
+                         "toolu-curate-frame-b")))
+           (append (plist-get b-curation-result :content) nil))
+          '((:type "tool_result" :tool_use_id "toolu-curate-frame-b"
+             :content "Curation applied."))))
+        (dolist (marker a-marker-strings)
+          (should-not (string-match-p (regexp-quote marker) body-b-text))
+          (should-not
+           (string-match-p (regexp-quote marker) body-after-b-text))
+          (should-not (string-match-p (regexp-quote marker) body-fresh-text)))
+        (should-not (string-match-p (regexp-quote frame-b-marker)
+                                    body-after-b-text))
+        (should-not (string-match-p (regexp-quote frame-b-marker)
+                                    body-fresh-text))
+        (should (= (length curation-events) 2))
+        (should
+         (equal curation-a
+                '(:kept-source-count 1
+                  :summary-count 1
+                  :summarized-source-count 1
+                  :erased-source-count 0
+                  :source-stubs
+                  ((:disposition kept :source-kind "current-state")
+                   (:disposition summarized :source-kind "current-state")))))
+        (should
+         (equal curation-b
+                '(:kept-source-count 0
+                  :summary-count 0
+                  :summarized-source-count 0
+                  :erased-source-count 1
+                  :source-stubs
+                  ((:disposition erased :source-kind "tool-result"
+                    :tool-name "inspect-source")))))
+        (should (string-match-p "FRAME-A-KEPT-RAW" body-fresh-text))
+        (should (string-match-p "FRAME-A-CURATED-SUMMARY" body-fresh-text))
+        (should-not (string-match-p "FRAME-A-OMITTED-RAW" body-fresh-text))
+        (should-not (string-match-p "FRAME-B-RAW-TOOL-RESULT" body-fresh-text))))))
 
 (ert-deftest e-harness-test-invalid-curation-returns-provider-error-before-append ()
   "Rejected mixed calls recover without entering session or branch history."
@@ -1054,6 +1430,9 @@
   (e-harness-test--with-empty-layer-registry
     (let* ((directory (make-temp-file "e-harness-response-id-" t))
            (store (e-session-persistent-store-create directory))
+           (request-count 0)
+           (requests nil)
+           (curation-input nil)
            (captured-frame nil)
            (consumed-frame nil)
            (events nil)
@@ -1066,13 +1445,26 @@
                :reserved-effect-carrier context-curate-wire)
              :stream
              (cl-function
-              (lambda (&key on-item &allow-other-keys)
-                (funcall on-item
-                         '(:type context-curate
-                           :arguments (:keep [1] :summaries [])))
-                (funcall on-item
-                         '(:type assistant-message :content "selected"))
-                (funcall on-item '(:type done :reason stop))))))
+              (lambda (&key messages options on-item &allow-other-keys)
+                (push (list :messages (copy-tree messages)
+                            :options (copy-tree options))
+                      requests)
+                (setq request-count (1+ request-count))
+                (pcase request-count
+                  (1
+                   (setq curation-input
+                         (e-openai-decoder--context-curation-effect
+                          '(:keep [1] :summaries [])
+                          "curation-call-response-id"))
+                   (funcall on-item curation-input)
+                   (funcall on-item
+                            '(:type assistant-message :content "selected"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (2
+                   (funcall on-item
+                            '(:type assistant-message :content "continued"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (_ (error "Unexpected request %d" request-count)))))))
            (provider
             (e-context-provider-create
              :name 'assistant-response-id-source
@@ -1111,10 +1503,22 @@
                  harness "assistant-response-id" "curate this source")))
             (e-session-flush-write-queue store)
             (let* ((messages (e-harness-messages harness "assistant-response-id"))
-                   (assistant (car (last (seq-filter
-                                          (lambda (message)
-                                            (eq (plist-get message :role) 'assistant))
-                                          messages))))
+                   (assistant
+                    (seq-find
+                     (lambda (message)
+                       (and (eq (plist-get message :role) 'assistant)
+                            (equal (plist-get message :content) "selected")))
+                     messages))
+                   (ack-request (cadr (reverse requests)))
+                   (ack-message
+                    (seq-find
+                     (lambda (message)
+                       (and (eq (plist-get message :role) 'assistant)
+                            (equal (plist-get message :content) "selected")))
+                     (plist-get ack-request :messages)))
+                   (ack-items
+                    (plist-get (plist-get ack-message :metadata)
+                               :provider-replay-items))
                    (record (car (e-session-local-context-curations
                                  store "assistant-response-id")))
                    (event (seq-find
@@ -1124,6 +1528,16 @@
                            events))
                    (response-id (plist-get assistant :id))
                    (reopened (e-session-persistent-store-create directory)))
+              (should (= request-count 2))
+              (should ack-message)
+              (should (equal ack-items
+                             (plist-get curation-input
+                                        :provider-replay-items)))
+              (should
+               (equal (mapcar (lambda (item)
+                                (plist-get (plist-get item :item) :type))
+                              ack-items)
+                      '("function_call" "function_call_output")))
               (should (stringp response-id))
               (should (equal response-id (plist-get record :response-entry-id)))
               (should (equal response-id
@@ -1245,7 +1659,7 @@
   "Steering after a tool follow-up uses the fresh projection exactly once."
   (e-harness-test--with-empty-layer-registry
     (let (backend provider capability harness turn-id
-          (request-count 0) requests finish-b raw-result)
+          (request-count 0) requests finish-b raw-result curation-input)
       (setq raw-result "RAW-STEERING-RESULT")
       (setq backend
             (e-backend-create
@@ -1288,23 +1702,23 @@
                     ;; consumed frame has not yet been finalized.
                     (setq finish-b
                           (lambda ()
-                            (funcall
-                             on-item
-                             (list :type 'context-curate
-                                   :arguments
+                            (setq curation-input
+                                  (e-openai-decoder--context-curation-effect
                                    '(:keep []
                                      :summaries
-                                     [(:sources [2]
-                                       :text "selected after B")])))
-                              (funcall on-item
-                                       '(:type assistant-message
-                                         :content "B"))
-                              (funcall on-item
-                                       '(:type provider-anchor-candidate
-                                         :provider-id fake
-                                         :metadata (:response-id "resp-B")))
-                              (funcall on-item '(:type done :reason stop))
-                              (funcall on-done '(:status done)))))
+                                     [(:sources [1]
+                                       :text "selected after B")])
+                                   "curation-call-steering"))
+                            (funcall on-item curation-input)
+                            (funcall on-item
+                                     '(:type assistant-message
+                                       :content "B"))
+                            (funcall on-item
+                                     '(:type provider-anchor-candidate
+                                       :provider-id fake
+                                       :metadata (:response-id "resp-B")))
+                            (funcall on-item '(:type done :reason stop))
+                            (funcall on-done '(:status done)))))
                    ((= ordinal 3)
                     (funcall on-item
                              '(:type assistant-message :content "C"))
@@ -1359,6 +1773,15 @@
              (request-c (nth 2 ordered))
              (messages-b (plist-get request-b :messages))
              (messages-c (plist-get request-c :messages))
+             (curation-message
+              (seq-find
+               (lambda (message)
+                 (and (eq (plist-get message :role) 'assistant)
+                      (equal (plist-get message :content) "B")))
+               messages-c))
+             (curation-replay-items
+              (plist-get (plist-get curation-message :metadata)
+                         :provider-replay-items))
              (printed-b (prin1-to-string messages-b))
              (printed-c (prin1-to-string messages-c)))
         (should (= request-count 3))
@@ -1367,6 +1790,15 @@
         (should (string-match-p "REPLAY-STEERING" printed-b))
         (should (string-match-p "selected after B" printed-c))
         (should (string-match-p "steer now" printed-c))
+        (should curation-message)
+        (should (equal curation-replay-items
+                       (plist-get curation-input :provider-replay-items)))
+        (should
+         (equal (mapcar (lambda (item)
+                          (plist-get (plist-get item :item) :type))
+                        curation-replay-items)
+                '("function_call" "function_call_output")))
+        (should (string-match-p "curation-call-steering" printed-c))
         (dolist (marker (list raw-result "call-steering" "REPLAY-STEERING"
                                "resp-A" "resp-B"))
           (should-not (string-match-p marker printed-c)))

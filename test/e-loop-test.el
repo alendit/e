@@ -2322,6 +2322,7 @@
          (requests nil)
          (started-tools nil)
          (curation-payloads nil)
+         (curation-input nil)
          (backend
           (e-backend-create
            :name "curation-only-followup"
@@ -2335,14 +2336,14 @@
               (pcase request-count
                 (1
                  (funcall on-item
-                          '(:type tool-call :id "inspect-call"
+                          '(:type tool-call :id "inspect-call-a"
                             :name "inspect" :arguments nil))
                  (funcall on-item
                           (list :type 'provider-anchor-candidate
                                 :provider-id 'openai
                                 :metadata
                                 (list
-                                 :response-id "response-tool"
+                                 :response-id "response-tool-a"
                                  :prompt-layout-revision
                                  (e-openai-responses-prompt-layout-revision options)
                                  :reasoning-identity
@@ -2350,14 +2351,25 @@
                  (funcall on-item '(:type done :reason tool-use)))
                 (2
                  (funcall on-item
-                          '(:type context-curate
-                            :arguments (:keep [1] :summaries [])
-                            :provider-replay-item
-                            (:type provider-replay-item
-                             :provider-id openai
-                             :item (:type "function_call_output"
-                                    :call_id "curation-call"
-                                    :output ""))))
+                          '(:type tool-call :id "inspect-call-b"
+                            :name "inspect" :arguments nil))
+                 (funcall on-item
+                          (list :type 'provider-anchor-candidate
+                                :provider-id 'openai
+                                :metadata
+                                (list
+                                 :response-id "response-tool-b"
+                                 :prompt-layout-revision
+                                 (e-openai-responses-prompt-layout-revision options)
+                                 :reasoning-identity
+                                 (e-openai-responses-reasoning-identity options))))
+                 (funcall on-item '(:type done :reason tool-use)))
+                (3
+                 (setq curation-input
+                       (e-openai-decoder--context-curation-effect
+                        '(:keep [1] :summaries [])
+                        "curation-call"))
+                 (funcall on-item curation-input)
                  (funcall on-item
                           (list :type 'provider-anchor-candidate
                                 :provider-id 'openai
@@ -2369,7 +2381,7 @@
                                  :reasoning-identity
                                  (e-openai-responses-reasoning-identity options))))
                  (funcall on-item '(:type done :reason stop)))
-                (3
+                (4
                  (funcall on-item
                           '(:type assistant-message :content "answer"))
                  (funcall on-item '(:type done :reason stop))))))))
@@ -2410,13 +2422,33 @@
      (lambda (message)
        (setq durable-messages
              (append durable-messages (list (copy-tree message))))))
-    (should (= request-count 3))
-    (should (equal started-tools '("inspect")))
+    (should (= request-count 4))
+    (should (equal started-tools '("inspect" "inspect")))
     (should (= (length curation-payloads) 1))
-    (let* ((third (nth 2 (nreverse requests)))
+    (let* ((ordered-requests (nreverse requests))
+           (fourth (nth 3 ordered-requests))
+           (tool-result
+            (seq-find (lambda (message)
+                        (and (eq (plist-get message :role) 'tool)
+                             (equal (plist-get
+                                     (plist-get message :content)
+                                     :tool-call-id)
+                                    "inspect-call-b")))
+                      (plist-get fourth :messages)))
+           (earlier-tool-result
+            (seq-find (lambda (message)
+                        (and (eq (plist-get message :role) 'tool)
+                             (equal (plist-get
+                                     (plist-get message :content)
+                                     :tool-call-id)
+                                    "inspect-call-a")))
+                      (plist-get fourth :messages)))
+           (replay-items
+            (plist-get (plist-get tool-result :metadata)
+                       :provider-replay-items))
            (body (e-openai-codex-request-body
-                  :messages (plist-get third :messages)
-                  :options (plist-get third :options)
+                  :messages (plist-get fourth :messages)
+                  :options (plist-get fourth :options)
                   :tools nil))
            (input (append (plist-get body :input) nil))
            (ack (seq-find (lambda (item)
@@ -2427,6 +2459,14 @@
                          input)))
       (should (equal (plist-get body :previous_response_id)
                      "response-curation"))
+      (should tool-result)
+      (should earlier-tool-result)
+      (should-not (plist-get (plist-get earlier-tool-result :metadata)
+                             :provider-replay-items))
+      (should (equal replay-items
+                     (plist-get curation-input :provider-replay-items)))
+      (should-not (plist-get (plist-get fourth :options)
+                             :provider-request-replay-items))
       (should ack)
       (should (equal (plist-get ack :call_id) "curation-call"))
       (should (equal (plist-get ack :output) "")))
@@ -3058,6 +3098,101 @@
                    '((preflight "answer")
                      (append "answer")
                      (complete prepared-completion))))))
+
+(ert-deftest e-loop-test-buffered-tool-only-response-owns-entry-id-before-completion ()
+  "A buffered tool-only response has its tool entry ID before frame completion."
+  (let* ((order nil)
+         (request-count 0)
+         (preflight-id nil)
+         (completion-id nil)
+         (tool-call-entry-id nil)
+         (context-capabilities
+          '(:continuation none
+            :observation-delivery request-local-replaceable
+            :reserved-effect-carrier context-curate-wire))
+         (frame
+          (e-context-lifetime-frame-create
+           :id "frame-buffered-tool-only"
+           :generation-id "generation-buffered-tool-only"
+           :consumer-request-id "consumer-buffered-tool-only"
+           :observations
+           '((:observation-id "observation-buffered-tool-only"
+              :kind "current-state"
+              :source-entry-ref "external:buffered-tool-only"
+              :source-fingerprint "buffered-tool-only"
+              :effective-delivery "request-local-replaceable"
+              :body (:role system :content "BUFFERED-TOOL-SOURCE")))))
+         (backend
+          (e-backend-create
+           :name "buffered-tool-only-entry-id"
+           :context-capabilities context-capabilities
+           :stream
+           (cl-function
+            (lambda (&key on-item &allow-other-keys)
+              (setq request-count (1+ request-count))
+              (if (= request-count 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-buffered-tool-only"
+                               :name "buffered-tool-only"
+                               :arguments ()))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item
+                         '(:type assistant-message :content "Finished"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-test-register
+     tools
+     :name "buffered-tool-only"
+     :description "Complete the buffered tool-only turn."
+     :handler (lambda (_arguments)
+                (setq order (append order '(tool-handler)))
+                "TOOL-RESULT"))
+    (e-loop-run-turn-batch
+     :session-id "session-buffered-tool-only"
+     :turn-id "turn-buffered-tool-only"
+     :messages '((:role user :content "Inspect the source."))
+     :backend backend
+     :tools tools
+     :options (list :context-lifetime-enabled t
+                    :context-capabilities context-capabilities
+                    :reserved-effect-carrier 'context-curate-wire)
+     :lifetime-frame frame
+     :on-response-preflight
+     (lambda (payload)
+       (when (plist-get payload :tool-called)
+         (setq preflight-id (plist-get payload :response-entry-id)
+               order (append order '(preflight)))
+         (should (stringp preflight-id))
+         (should-not (plist-get payload :curation-effects)))
+       'preflighted)
+     :on-response-complete
+     (lambda (payload)
+       (when (plist-get payload :tool-called)
+         (setq completion-id (plist-get payload :response-entry-id)
+               order (append order '(complete)))
+         (should (equal completion-id preflight-id))
+         (e-context-lifetime-frame-complete-for-consumer
+          (plist-get payload :frame)
+          "consumer-buffered-tool-only"
+          completion-id)))
+     :on-tool-call-start
+     (lambda (&rest _)
+       (setq order (append order '(tool-start))))
+     :on-event #'ignore
+     :append-message
+     (lambda (message)
+       (when (eq (plist-get message :role) 'tool-call)
+         (setq tool-call-entry-id (plist-get message :id)
+               order (append order '(tool-call-admitted))))))
+    (should (= request-count 2))
+    (should (stringp preflight-id))
+    (should (equal preflight-id completion-id))
+    (should (equal completion-id tool-call-entry-id))
+    (should (equal order
+                   '(preflight complete tool-call-admitted tool-start
+                     tool-handler)))))
 
 (ert-deftest e-loop-test-tool-descendant-frame-survives-response-race ()
   "A tool bundle frame remains current whichever completion callback wins."

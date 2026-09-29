@@ -640,6 +640,7 @@ schedules it behind the owning session's active commit barrier."
                   (response-curation-effects nil)
                   (response-curation-rejection nil)
                   (response-entry-id nil)
+                  (pending-tool-call-entry-id nil)
                   (provider-request-causes next-request-causes)
                   (provider-request-projection-identity
                    (plist-get turn-options
@@ -902,7 +903,8 @@ schedules it behind the owning session's active commit barrier."
                               ;; the only historical results eligible to carry
                               ;; its acknowledgement.
                               (if response-curation-effects
-                                  next-request-causes
+                                  (or next-request-causes
+                                      provider-request-causes)
                                 (if provider-followup-messages
                                     next-request-causes
                                   provider-request-causes)))
@@ -922,10 +924,12 @@ schedules it behind the owning session's active commit barrier."
                                          (plist-get message :content)
                                          :tool-call-id)
                                         cause-ids)))
-                                    (if response-curation-effects
-                                        provider-followup-messages
-                                      (or provider-followup-messages
-                                          turn-messages)))))))
+                                    ;; A curation-only response to a tool
+                                    ;; follow-up has no request-local result
+                                    ;; list; its exact cause IDs select the
+                                    ;; eligible result from the turn transcript.
+                                    (or provider-followup-messages
+                                        turn-messages))))))
                         (when tool-message
                           (let* ((request-message (copy-tree tool-message))
                                  (metadata
@@ -1221,6 +1225,12 @@ schedules it behind the owning session's active commit barrier."
                      (tool-called
                       (when (response-commentary-p)
                         (append-response-commentary))
+                      (unless response-entry-id
+                        ;; Carrier buffering delays tool admission until this
+                        ;; terminal boundary. Reserve the entry identity now
+                        ;; and reuse it when the first tool call is admitted.
+                        (setq response-entry-id (e-session-generate-ulid)
+                              pending-tool-call-entry-id response-entry-id))
                       (notify-response-complete)
                       (start-next-tool))))
                    (merge-provider-followup-bundle
@@ -1443,11 +1453,13 @@ schedules it behind the owning session's active commit barrier."
                                         ;; completion callback must not query
                                         ;; session history merely to recover
                                         ;; an ID that the live turn can carry.
-                                        :id (e-session-generate-ulid)
+                                        :id (or pending-tool-call-entry-id
+                                                (e-session-generate-ulid))
                                         :content tool-call
                                         :metadata nil)))
                             (setq response-entry-id
                                   (plist-get tool-call-message :id))
+                            (setq pending-tool-call-entry-id nil)
                             (setq active-tool (list :token tool-token))
                             (setq turn-messages
                                   (append turn-messages

@@ -899,6 +899,7 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
         (marker-pairs (e-anthropic--tool-result-marker-indexes messages))
         (consumed (make-hash-table :test 'eq))
         (replay-groups (make-hash-table :test 'eq))
+        (curation-carrier-replay-bundles nil)
         (wire-messages-reversed nil)
         (position 0))
     (dolist (message messages)
@@ -937,8 +938,13 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
                                       (eq (plist-get record :replay-kind)
                                           'acknowledgement))
                                     records)))
+               (curation-only-tool-carrier-p
+                (and records
+                     (eq (plist-get message :role) 'tool)
+                     (e-anthropic--reserved-curation-only-replay-p blocks)))
                (group
                 (and records
+                     (not curation-only-tool-carrier-p)
                      (if (eq (plist-get message :role) 'assistant)
                          (list :first-call message
                                :messages
@@ -947,6 +953,12 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
                                :consumed (list message))
                        (e-anthropic--grouped-tool-followup
                         indexes blocks acknowledgements)))))
+          (when curation-only-tool-carrier-p
+            ;; This carrier represents a curation response that followed an
+            ;; already-sent ordinary tool result. Keep that result in the
+            ;; transcript and replay the reserved call plus acknowledgement
+            ;; once at the end of this request.
+            (push records curation-carrier-replay-bundles))
           (when group
             (let* ((members (plist-get group :consumed))
                    (first-call (plist-get group :first-call)))
@@ -988,6 +1000,11 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
         (signal 'e-anthropic-response-invalid
                 '("skipped calls have no curation replay bundle")))
       (append (nreverse wire-messages-reversed)
+              (mapcan
+               (lambda (records)
+                 (e-anthropic--context-curation-request-replay-messages
+                  records))
+               (nreverse curation-carrier-replay-bundles))
               (when provider-request-replay-items
                 (e-anthropic--context-curation-request-replay-messages
                  provider-request-replay-items
@@ -1006,6 +1023,17 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
 (defun e-anthropic--context-curation-name-p (name)
   "Return non-nil when NAME is the reserved curation carrier name."
   (member name '("context-curate" context-curate)))
+
+(defun e-anthropic--reserved-curation-only-replay-p (blocks)
+  "Return non-nil when native replay BLOCKS contain only curation calls."
+  (let ((tool-use-ids (e-anthropic--validate-native-replay-blocks blocks)))
+    (and tool-use-ids
+         (seq-every-p
+          (lambda (block)
+            (or (not (equal (plist-get block :type) "tool_use"))
+                (e-anthropic--context-curation-name-p
+                 (plist-get block :name))))
+          blocks))))
 
 (defun e-anthropic--context-curation-carrier-active-p (options)
   "Return non-nil when request OPTIONS enable the reserved curation carrier."
