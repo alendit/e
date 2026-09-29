@@ -290,6 +290,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
          (late-marker '(:role system
                         :content "[ephemeral context source 1, ~5 tokens]"))
          (late-source '(:role system :content "Current buffer source."))
+         (late-unsegmented
+          '(:role system :content "Late observation outside the segment snapshot."))
          (marker-one
           (e-anthropic-test--tool-source-marker
            "call-one" "[ephemeral context source 2, ~8 tokens]"))
@@ -324,6 +326,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
             :content (:tool-call-id "call-two" :content "result two")))
          (full-projection
           (list stable-one stable-two late-marker late-source
+                late-unsegmented
                 '(:role user :content "Inspect both sources.")
                 call-one marker-one result-one call-two marker-two result-two))
          (provider-followup-delta
@@ -373,11 +376,13 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                       (list "Stable instructions."
                             "Stable guidance."
                             "[ephemeral context source 1, ~5 tokens]"
-                            "Current buffer source.")))
+                            "Current buffer source."
+                            "Late observation outside the segment snapshot.")))
               (should (equal (plist-get (aref cached-system 1) :cache_control)
                              '(:type "ephemeral" :ttl "1h")))
               (should-not (plist-member (aref cached-system 2) :cache_control))
               (should-not (plist-member (aref cached-system 3) :cache_control))
+              (should-not (plist-member (aref cached-system 4) :cache_control))
               (should
                (equal (append (plist-get followup :content) nil)
                       (list '(:type "text"
@@ -539,6 +544,61 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
     (should (equal messages
                    [(:role "user"
                      :content [(:type "text" :text "hello")])]))))
+
+(ert-deftest e-anthropic-test-request-body-uses-current-system-with-stale-segments ()
+  "Stale segment sources do not replace current system content or its prefix."
+  (let* ((stable-message '(:role system :content "Stable guidance."))
+         (retired-stable-message
+          '(:role system :content "RETIRED STABLE SOURCE"))
+         (retired-dynamic-message
+          '(:role system :content "RETIRED DYNAMIC SOURCE"))
+         (late-message
+          '(:role system :content "Fresh context after retirement."))
+         (messages (list stable-message late-message
+                         '(:role user :content "hello")))
+         (options
+          (list :model "claude-test"
+                :max-tokens 1024
+                :prompt-cache t
+                :prompt-cache-ttl "5m"
+                :segments
+                (list (list :kind 'static-prefix
+                            :id 'live-prefix
+                            :fingerprint "live-prefix-fp"
+                            :messages (list stable-message))
+                      (list :kind 'stable-context
+                            :id 'retired-stable-source
+                            :fingerprint "retired-stable-fp"
+                            :messages (list retired-stable-message))
+                      (list :kind 'current-state
+                            :id 'retired-dynamic-source
+                            :fingerprint "retired-dynamic-fp"
+                            :messages (list retired-dynamic-message)))))
+         (uncached-options
+          (let ((copy (copy-sequence options)))
+            (cl-remf copy :prompt-cache)
+            copy))
+         (cached (e-anthropic-request-body
+                  :messages messages :options options))
+         (uncached (e-anthropic-request-body
+                    :messages messages :options uncached-options))
+         (cached-system (plist-get cached :system))
+         (metadata (e-anthropic--request-metadata options cached messages)))
+    (should (equal (e-anthropic-test--system-text cached)
+                   (e-anthropic-test--system-text uncached)))
+    (should (equal (e-anthropic-test--system-text cached)
+                   "Stable guidance.\n\nFresh context after retirement."))
+    (should-not (string-match-p "RETIRED" (e-anthropic-test--system-text cached)))
+    (should (equal (mapcar (lambda (block) (plist-get block :text))
+                           (append cached-system nil))
+                   '("Stable guidance." "Fresh context after retirement.")))
+    (should (equal (plist-get (aref cached-system 0) :cache_control)
+                   '(:type "ephemeral" :ttl "5m")))
+    (should-not (plist-member (aref cached-system 1) :cache_control))
+    (should (equal (e-anthropic-test--stable-cache-prefix cached)
+                   (list :tools nil :system (list (aref cached-system 0)))))
+    (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
+                   "live-prefix"))))
 
 (ert-deftest e-anthropic-test-request-body-cache-prefix-excludes-dynamic-suffix ()
   "Dynamic changes leave the cached prefix stable; stable changes replace it."

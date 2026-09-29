@@ -811,41 +811,70 @@ rather than follows, the individual call/result entries in transcript order."
   "Return non-nil when SEGMENT belongs to the cacheable stable prefix."
   (memq (plist-get segment :kind) '(static-prefix stable-context)))
 
-(defun e-anthropic--cache-breakpoint-segment (options)
-  "Return the stable segment that receives Anthropic cache control."
-  (let (candidate)
-    (dolist (segment (plist-get options :segments))
-      (when (and (e-anthropic--stable-cache-segment-p segment)
-                 (cl-some #'e-anthropic--system-message-p
-                          (plist-get segment :messages)))
-        (setq candidate segment)))
-    candidate))
+(defun e-anthropic--cache-breakpoint-selection (messages options)
+  "Return the stable breakpoint in current MESSAGES described by OPTIONS.
+The result contains a system-block :index and, when selected by a segment, its
+:segment.  Segment messages locate the boundary; they never supply wire text."
+  (let* ((instructions (plist-get options :instructions))
+         (instruction-p (and (stringp instructions)
+                             (not (string-empty-p instructions))))
+         (system-messages (seq-filter #'e-anthropic--system-message-p messages))
+         (segments (plist-get options :segments))
+         (message-cursor 0)
+         (selection (and instruction-p (list :index 0))))
+    (if segments
+        (dolist (segment segments)
+          (dolist (segment-message (plist-get segment :messages))
+            (when (e-anthropic--system-message-p segment-message)
+              (when-let* ((position
+                           (cl-position
+                            segment-message system-messages
+                            :start message-cursor
+                            :test #'equal)))
+                (setq message-cursor (1+ position))
+                (when (e-anthropic--stable-cache-segment-p segment)
+                  (setq selection
+                        (list :index (+ (if instruction-p 1 0) position)
+                              :segment segment)))))))
+      (when (and (not instruction-p) system-messages)
+        (setq selection (list :index (1- (length system-messages))))))
+    selection))
 
-(defun e-anthropic--system-blocks-from-segments (options cache-control)
-  "Return segment-aware system blocks from OPTIONS.
-When CACHE-CONTROL is non-nil, attach it to the last stable system block before
-volatile current-state/history/delta segments."
-  (let ((blocks nil)
-        (stable-index nil)
-        (instructions (plist-get options :instructions)))
-    (when (and (stringp instructions) (not (string-empty-p instructions)))
-      (push (e-anthropic--text-block instructions) blocks)
-      (setq stable-index 0))
-    (dolist (segment (plist-get options :segments))
-      (let ((stable-p (e-anthropic--stable-cache-segment-p segment)))
-        (dolist (message (plist-get segment :messages))
-          (when (e-anthropic--system-message-p message)
-            (push (e-anthropic--text-block (plist-get message :content))
-                  blocks)
-            (when stable-p
-              (setq stable-index (1- (length blocks))))))))
-    (when blocks
-      (let ((ordered (nreverse blocks)))
-        (when (and cache-control stable-index)
-          (let ((block (nth stable-index ordered)))
-            (setcar (nthcdr stable-index ordered)
-                    (append block (list :cache_control cache-control)))))
-        (vconcat ordered)))))
+(defun e-anthropic--cache-breakpoint-segment (options messages)
+  "Return the stable segment selected for current MESSAGES, or nil."
+  (plist-get (e-anthropic--cache-breakpoint-selection messages options)
+             :segment))
+
+(defun e-anthropic--system-blocks (messages options cache-control)
+  "Return cached system blocks from the current MESSAGES projection.
+OPTIONS segments choose the eligible stable CACHE-CONTROL position only."
+  (let* ((instructions (plist-get options :instructions))
+         (instruction-p (and (stringp instructions)
+                             (not (string-empty-p instructions))))
+         (system-messages (seq-filter #'e-anthropic--system-message-p messages))
+         (system-contents
+          (delq nil (mapcar (lambda (message)
+                              (plist-get message :content))
+                            system-messages))))
+    (if (and (null (plist-get options :segments)) (not instruction-p))
+        (vector
+         (append (e-anthropic--text-block
+                  (e-anthropic--system messages options))
+                 (list :cache_control cache-control)))
+      (let* ((blocks
+              (append (when instruction-p
+                        (list (e-anthropic--text-block instructions)))
+                      (mapcar #'e-anthropic--text-block system-contents)))
+             (selection (e-anthropic--cache-breakpoint-selection
+                         messages options)))
+        (when selection
+          (let* ((index (plist-get selection :index))
+                 (block (nth index blocks)))
+            (when block
+              (setcar (nthcdr index blocks)
+                      (append block (list :cache_control cache-control))))))
+        (when blocks
+          (vconcat blocks))))))
 
 (defun e-anthropic--thinking-type (options)
   "Return the `thinking.type' value for OPTIONS, or nil to omit thinking.
@@ -878,8 +907,8 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
          (system (e-anthropic--system messages options))
          (system-blocks (and cache-control
                              (not top-level-cache-p)
-                             (e-anthropic--system-blocks-from-segments
-                              options cache-control)))
+                             (e-anthropic--system-blocks
+                              messages options cache-control)))
          (turns (seq-remove #'e-anthropic--system-message-p messages))
          (tool-defs (and tools (e-anthropic--tool-definitions tools)))
          (body (list :model (or (plist-get options :model)
@@ -931,8 +960,9 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
       (setq body (append body (list :tools tool-defs))))
     body))
 
-(defun e-anthropic--request-metadata (options body)
-  "Return sanitized Anthropic request metadata for OPTIONS and BODY."
+(defun e-anthropic--request-metadata (options body &optional messages)
+  "Return sanitized Anthropic request metadata for OPTIONS and BODY.
+MESSAGES is the current neutral projection used to identify a stable segment."
   (let ((metadata (list :provider 'anthropic
                         :model (plist-get options :model))))
     (when (plist-get options :prompt-cache)
@@ -948,9 +978,17 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                          ((plist-member body :cache_control)
                           'provider-managed)
                          ((and (plist-member body :system)
-                               (vectorp (plist-get body :system)))
+                               (vectorp (plist-get body :system))
+                               (cl-some
+                                (lambda (block)
+                                  (plist-member block :cache_control))
+                                (append (plist-get body :system) nil)))
                           'system-stable-prefix)
-                         ((plist-member body :tools)
+                         ((and (plist-member body :tools)
+                               (cl-some
+                                (lambda (tool)
+                                  (plist-member tool :cache_control))
+                                (append (plist-get body :tools) nil)))
                           'tools)
                          (t 'none))))
         (setq metadata
@@ -960,7 +998,8 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                             :full-history t)))
         (when-let* ((breakpoint-segment
                     (and (eq breakpoint 'system-stable-prefix)
-                         (e-anthropic--cache-breakpoint-segment options))))
+                         (e-anthropic--cache-breakpoint-segment
+                          options messages))))
           (setq metadata
                 (append metadata
                         (list :anthropic-breakpoint-segment-id
@@ -1755,7 +1794,7 @@ request and backend-neutral context."
                        :options effective-options
                        :tools (plist-get effective-options :tools)))
            (metadata (e-anthropic--request-metadata
-                      effective-options body-data)))
+                      effective-options body-data messages)))
       (list :provider provider
             :url (e-anthropic-messages-url
                   (or base-url (e-anthropic--provider-base-url profile)))
