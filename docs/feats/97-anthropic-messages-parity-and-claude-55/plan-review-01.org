@@ -1,0 +1,63 @@
+#+title: Plan Review 01: Anthropic Messages Parity and Claude 5.5
+#+date: 2026-09-29
+#+startup: overview
+
+* Result
+
+The initial plan did not reach =implementation-plan-fixed-point=.  Independent
+read-only review covered =plan.org= blob
+=0c324533395cc35e55516cebf0d8c871556f53d1= at source revision
+=6fe4fd32dcc4d8b128fd28cbd2c2d1f585a13d23=.  No production edits were
+admitted from this review.  The direct composed =e= scenario remained
+unavailable; mechanism implementation had not started.
+
+* Findings
+
+** P1-01: effect admission precedes terminal validation
+
+=F97-C03= and =F97-DP4= require safe tool continuation and atomic curation,
+but the initial plan deferred terminal safety to =F97-DP5=.  The current
+Anthropic decoder emits a tool call at =content_block_stop= and can emit =done=
+without =message_stop= (=e-anthropic.el:980-1008=).  =e-loop= starts tools as
+their items arrive (=e-loop.el:1496-1504,1551-1571=).  =F97-DP2= must guard
+ordinary effects on a complete valid response; =F97-DP4= must consume that
+guard before semantic preflight.  =F97-DP5= can then add incremental text.
+
+** P1-02: late source markers lose their result pairing
+
+Feature 88 inserts each ephemeral marker immediately before its matching tool
+result in both projections (=e-harness-context-runtime.el:707-763=).  The
+Anthropic renderer hoists system messages into top-level =system= while tool
+results remain in =messages= (=e-anthropic.el:455-495=).  Initial =F97-C04=
+required marker visibility but not marker-to-source pairing.  The plan needs a
+gateway-valid request-local translation preserving that pairing with cache on
+and off.
+
+** P2-03: delivery-package closure is incomplete
+
+All six package records lacked explicit state/lifetime, transaction/recovery,
+public surface, safe deferred work, and causal split/combine decisions.  Those
+fields determine whether each package can be accepted without later work
+repairing an incomplete behavior.
+
+** P2-04: gateway evidence lacks a repeatable acceptance rule
+
+The 2026-09-29 gateway observations were a useful baseline but had no explicit
+reuse age or capability-identity rule.  =F97-S6= combined minimal endpoint
+proof with the configured composition and omitted =F97-C02= counter and
+metadata evidence.  Early =F97-DP3=/=F97-DP5= live probes lacked diagnostic
+versus acceptance classification.
+
+** P2-05: compatibility promise sits outside its contract row
+
+The initial compatibility section promised older profile availability and an
+unchanged GPT-6 default while =F97-C01=, the sole normative profile row, did
+not.  The promise needs to reside in =F97-C01= with later text referring to it.
+
+* Coverage decision
+
+The one-to-one =F97-C01=--=F97-C06= to =F97-DP1=--=F97-DP6= map, stated useful
+outcomes, telemetry role, and owner locality were present.  Contract boundary,
+marker pairing, terminal transaction, external freshness, full package closure,
+and aggregate split/combine review remained open.  A changed plan requires a
+new independent implementation-plan review before production edits.
