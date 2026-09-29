@@ -79,6 +79,14 @@ version-3 curation codec and its complete-record bound.")
 
 This covers labels, lifetime, size estimates, and erasure eligibility.")
 
+(defconst e-context-lifetime--request-local-source-marker-key
+  :context-lifetime-source-marker
+  "Message metadata key for a typed request-local source marker.")
+
+(defconst e-context-lifetime--request-local-tool-result-marker-kind
+  'tool-result
+  "Typed source-marker kind paired with one provider-neutral tool result.")
+
 (defconst e-context-lifetime-curation-max-sources 16
   "Maximum distinct frame-local sources disposed by one curation.
 

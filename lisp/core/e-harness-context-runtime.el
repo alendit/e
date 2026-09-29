@@ -721,13 +721,20 @@ continuation-delta requests expose the same label-to-frame binding."
          (source
           (nth previous-count
                (e-context-lifetime-frame-curation-presentation frame)))
+         (message (plist-get payload :message))
+         (tool-call-id
+          (plist-get (plist-get message :content) :tool-call-id))
          (marker (and source
                       (list :role 'system
                             :content (copy-sequence
-                                      (plist-get source :marker)))))
-         (message (plist-get payload :message))
-         (tool-call-id
-          (plist-get (plist-get message :content) :tool-call-id)))
+                                      (plist-get source :marker))
+                            :metadata
+                            (list
+                             e-context-lifetime--request-local-source-marker-key
+                             (list
+                              :kind
+                              e-context-lifetime--request-local-tool-result-marker-kind
+                              :tool-call-id tool-call-id))))))
     (unless (and marker (e-context-lifetime-frame-p frame))
       (signal 'e-context-lifetime-invalid-record
               (list 'curation-source :missing-tool-presentation)))

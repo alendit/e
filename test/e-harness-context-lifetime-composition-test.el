@@ -416,7 +416,7 @@
                  :previous-frame previous-frame
                  :message tool-message
                  :turn-messages messages
-                 :provider-followup-messages (copy-tree messages))))
+                 :provider-followup-messages (list tool-message))))
          (turn-messages (plist-get projection :turn-messages))
          (followup-messages (plist-get projection
                                       :provider-followup-messages)))
@@ -424,18 +424,36 @@
              (mapcar (lambda (source) (plist-get source :label))
                      (e-context-lifetime-frame-curation-presentation frame))
              '(1 2 3)))
-    (dolist (projected (list turn-messages followup-messages))
-      (let ((contents (mapcar (lambda (message)
-                                (plist-get message :content))
-                              projected)))
-        (should (equal (car contents) "STABLE"))
-        (should (string-match-p "\\[ephemeral context source 3, ~[0-9]+ tokens, erase-eligible\\]"
-                                (cadr contents)))
-        (should (equal
-                 (plist-get (plist-get (caddr projected) :content) :content)
-                 "DESCENDANT-TOOL-SOURCE"))
-        (should (= (cl-count (caddr projected) projected :test #'equal)
-                   1))))))
+    (should (= (length turn-messages) 3))
+    (should (= (length followup-messages) 2))
+    (should (equal (plist-get (car turn-messages) :content) "STABLE"))
+    (let ((turn-marker (cadr turn-messages))
+          (followup-marker (car followup-messages))
+          (turn-result (caddr turn-messages))
+          (followup-result (cadr followup-messages)))
+      (dolist (marker (list turn-marker followup-marker))
+        (should
+         (string-match-p
+          "\\[ephemeral context source 3, ~[0-9]+ tokens, erase-eligible\\]"
+          (plist-get marker :content)))
+        (should
+         (equal
+          (plist-get (plist-get marker :metadata)
+                     e-context-lifetime--request-local-source-marker-key)
+          (list :kind
+                e-context-lifetime--request-local-tool-result-marker-kind
+                :tool-call-id "call-descendant"))))
+      (dolist (result (list turn-result followup-result))
+        (should
+         (equal (plist-get (plist-get result :content) :content)
+                "DESCENDANT-TOOL-SOURCE"))
+        (should (= (cl-count result turn-messages :test #'equal) 1)))
+      (should (equal turn-result followup-result))
+      (should (= (cl-count followup-result followup-messages :test #'equal)
+                 1)))
+    (should-not
+     (plist-member (plist-get tool-message :metadata)
+                   e-context-lifetime--request-local-source-marker-key))))
 
 (ert-deftest e-harness-test-context-lifetime-tool-result-curates-on-follow-up ()
   "A tool result is observed by B, curated there, then forgotten afterward."

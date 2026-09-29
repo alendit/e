@@ -26,6 +26,7 @@
 (require 'e-harness)
 (require 'e-request)
 (require 'e-json)
+(require 'e-context-lifetime)
 (require 'e-tools)
 (require 'e-work)
 
@@ -452,7 +453,8 @@ Bearer providers send `x-api-key' (or `Authorization: Bearer' via
 
 (defun e-anthropic--system-message-p (message)
   "Return non-nil when MESSAGE is a backend-neutral system message."
-  (eq (plist-get message :role) 'system))
+  (and (eq (plist-get message :role) 'system)
+       (not (e-anthropic--request-local-source-marker message))))
 
 (defun e-anthropic--system (messages options)
   "Return the top-level system prompt string from MESSAGES and OPTIONS.
@@ -481,6 +483,17 @@ Anthropic requires an object; canonical nil is its empty object."
     (list :type "tool_result"
           :tool_use_id (plist-get content :tool-call-id)
           :content (e-tools-result-content-text (plist-get content :content)))))
+
+(defun e-anthropic--tool-result-presentation-blocks
+    (messages result-markers)
+  "Return marker and tool_result blocks for result MESSAGES.
+RESULT-MARKERS maps each marked tool result to its request-local marker."
+  (let (blocks)
+    (dolist (message messages)
+      (when-let* ((marker (gethash message result-markers)))
+        (push (e-anthropic--text-block (plist-get marker :content)) blocks))
+      (push (e-anthropic--tool-result-block message) blocks))
+    (nreverse blocks)))
 
 (defun e-anthropic--message (message)
   "Map backend-neutral MESSAGE to a Messages turn."
@@ -555,6 +568,65 @@ Ignore provider replay records belonging to another adapter."
            (setq tail (cddr tail)))
          valid)))
 
+(defun e-anthropic--request-local-source-marker (message)
+  "Return MESSAGE's supported typed request-local source marker, or nil.
+Malformed reserved marker metadata fails instead of being sent as a system
+message or silently detached from its source."
+  (let ((metadata (plist-get message :metadata)))
+    (when (and metadata (not (e-anthropic--json-object-p metadata)))
+      (signal 'e-anthropic-response-invalid
+              '("malformed message metadata")))
+    (when (plist-member metadata
+                        e-context-lifetime--request-local-source-marker-key)
+      (let ((marker (plist-get metadata
+                               e-context-lifetime--request-local-source-marker-key)))
+        (unless (and (e-anthropic--json-object-p marker)
+                     (= (length marker) 4)
+                     (plist-member marker :kind)
+                     (eq (plist-get marker :kind)
+                         e-context-lifetime--request-local-tool-result-marker-kind)
+                     (plist-member marker :tool-call-id)
+                     (stringp (plist-get marker :tool-call-id))
+                     (not (string-empty-p (plist-get marker :tool-call-id))))
+          (signal 'e-anthropic-response-invalid
+                  '("malformed request-local tool-result marker")))
+        marker))))
+
+(defun e-anthropic--tool-result-marker-indexes (messages)
+  "Return typed source-marker pair indexes for MESSAGES.
+Every marker must immediately precede its exact tool result."
+  (let ((marker-results (make-hash-table :test 'eq))
+        (result-markers (make-hash-table :test 'eq))
+        (seen-call-ids (make-hash-table :test 'equal)))
+    (cl-loop for tail on messages
+             for marker-message = (car tail)
+             for marker = (e-anthropic--request-local-source-marker
+                           marker-message)
+             when marker
+             do
+             (let* ((result (cadr tail))
+                    (result-content (and result (plist-get result :content)))
+                    (call-id (plist-get marker :tool-call-id)))
+               (unless (and (eq (plist-get marker-message :role) 'system)
+                            (stringp (plist-get marker-message :content))
+                            (not (string-empty-p
+                                  (plist-get marker-message :content)))
+                            (eq (plist-get result :role) 'tool)
+                            (e-anthropic--json-object-p result-content)
+                            (equal call-id
+                                   (plist-get result-content :tool-call-id)))
+                 (signal 'e-anthropic-response-invalid
+                         '("request-local tool-result marker is detached from its result")))
+               (when (or (gethash call-id seen-call-ids)
+                         (gethash result result-markers))
+                 (signal 'e-anthropic-response-invalid
+                         '("duplicate request-local tool-result marker")))
+               (puthash call-id t seen-call-ids)
+               (puthash marker-message result marker-results)
+               (puthash result marker-message result-markers)))
+    (list :marker-results marker-results
+          :result-markers result-markers)))
+
 (defun e-anthropic--validate-native-replay-blocks (blocks)
   "Validate required native fields in Anthropic replay BLOCKS.
 Return the tool-use ids in native order."
@@ -597,9 +669,11 @@ plist also lists message objects to suppress from ordinary per-call rendering."
   (let ((tool-use-ids (e-anthropic--validate-native-replay-blocks blocks))
         (calls-by-id (plist-get indexes :calls))
         (results-by-id (plist-get indexes :results))
+        (result-markers (plist-get indexes :result-markers))
         (positions (plist-get indexes :positions))
         (call-messages nil)
         (result-messages nil)
+        marker-messages
         first-call
         first-call-position)
     (unless tool-use-ids
@@ -629,15 +703,19 @@ plist also lists message objects to suppress from ordinary per-call rendering."
         (push result result-messages)))
     (setq call-messages (nreverse call-messages)
           result-messages (nreverse result-messages))
+    (setq marker-messages
+          (delq nil (mapcar (lambda (result)
+                              (gethash result result-markers))
+                            result-messages)))
     (list :first-call first-call
           :messages
           (list (list :role "assistant" :content (vconcat blocks))
                 (list :role "user"
                       :content
                       (vconcat
-                       (mapcar #'e-anthropic--tool-result-block
-                               result-messages))))
-          :consumed (append call-messages result-messages))))
+                       (e-anthropic--tool-result-presentation-blocks
+                        result-messages result-markers))))
+          :consumed (append call-messages marker-messages result-messages))))
 
 (defun e-anthropic--messages (messages)
   "Map backend-neutral MESSAGES to grouped native Messages turns.
@@ -646,6 +724,7 @@ rather than follows, the individual call/result entries in transcript order."
   (let ((positions (make-hash-table :test 'eq))
         (calls-by-id (make-hash-table :test 'equal))
         (results-by-id (make-hash-table :test 'equal))
+        (marker-pairs (e-anthropic--tool-result-marker-indexes messages))
         (consumed (make-hash-table :test 'eq))
         (replay-groups (make-hash-table :test 'eq))
         (wire-messages-reversed nil)
@@ -665,7 +744,9 @@ rather than follows, the individual call/result entries in transcript order."
            (puthash id (cons message matches) results-by-id)))))
     (let ((indexes (list :positions positions
                          :calls calls-by-id
-                         :results results-by-id)))
+                         :results results-by-id
+                         :result-markers
+                         (plist-get marker-pairs :result-markers))))
       (dolist (message messages)
         (when-let* ((blocks (e-anthropic--anthropic-replay-blocks message)))
           (let* ((group (e-anthropic--grouped-tool-followup indexes blocks))
@@ -689,6 +770,19 @@ rather than follows, the individual call/result entries in transcript order."
            (group
             (dolist (wire-message (plist-get group :messages))
               (push wire-message wire-messages-reversed)))
+           ((and (not (gethash message consumed))
+                 (gethash message (plist-get marker-pairs :marker-results)))
+            (let ((result (gethash message
+                                    (plist-get marker-pairs :marker-results))))
+              (push (list :role "user"
+                          :content
+                          (vconcat
+                           (e-anthropic--tool-result-presentation-blocks
+                            (list result)
+                            (plist-get marker-pairs :result-markers))))
+                    wire-messages-reversed)
+              (puthash message t consumed)
+              (puthash result t consumed)))
            ((not (gethash message consumed))
             (push (e-anthropic--message message) wire-messages-reversed)))))
       (nreverse wire-messages-reversed))))

@@ -105,6 +105,45 @@
                        '(tool-call provider-replay-item)))
                items))))
 
+(defun e-anthropic-test--tool-source-marker (tool-call-id text)
+  "Return a typed request-local source marker for TOOL-CALL-ID and TEXT."
+  (list :role 'system
+        :content text
+        :metadata
+        (list e-context-lifetime--request-local-source-marker-key
+              (list :kind
+                    e-context-lifetime--request-local-tool-result-marker-kind
+                    :tool-call-id tool-call-id))))
+
+(defun e-anthropic-test--system-text (body)
+  "Return the semantic system text from request BODY."
+  (let ((system (plist-get body :system)))
+    (cond
+     ((stringp system) system)
+     ((vectorp system)
+      (mapconcat (lambda (block) (plist-get block :text))
+                 (append system nil) "\n\n"))
+     (t nil))))
+
+(defun e-anthropic-test--stable-cache-prefix (body)
+  "Return BODY's cached tool and system prefix, excluding its dynamic suffix."
+  (let* ((system (append (plist-get body :system) nil))
+         (breakpoint
+          (cl-position-if (lambda (block)
+                            (plist-member block :cache_control))
+                          system)))
+    (when breakpoint
+      (list :tools (plist-get body :tools)
+            :system (seq-take system (1+ breakpoint))))))
+
+(defun e-anthropic-test--tool-definitions-without-cache-control (body)
+  "Return BODY's tool definitions without their cache boundary metadata."
+  (mapcar (lambda (tool)
+            (let ((copy (copy-sequence tool)))
+              (cl-remf copy :cache_control)
+              copy))
+          (append (plist-get body :tools) nil)))
+
 (ert-deftest e-anthropic-test-request-body-maps-neutral-messages ()
   "Anthropic request body uses Messages turns with explicit max_tokens."
   (should
@@ -240,9 +279,171 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                  :name "read"
                  :input (:uri "file://README.md"))])
      (:role "user"
-      :content [(:type "tool_result"
+     :content [(:type "tool_result"
                  :tool_use_id "call-1"
                  :content "{\"ok\":true}")])])))
+
+(ert-deftest e-anthropic-test-request-body-pairs-late-tool-markers-in-both-projections ()
+  "Full and result-only continuation projections preserve paired markers."
+  (let* ((stable-one '(:role system :content "Stable instructions."))
+         (stable-two '(:role system :content "Stable guidance."))
+         (late-marker '(:role system
+                        :content "[ephemeral context source 1, ~5 tokens]"))
+         (late-source '(:role system :content "Current buffer source."))
+         (marker-one
+          (e-anthropic-test--tool-source-marker
+           "call-one" "[ephemeral context source 2, ~8 tokens]"))
+         (marker-two
+          (e-anthropic-test--tool-source-marker
+           "call-two" "[ephemeral context source 3, ~9 tokens]"))
+         (call-one '(:role tool-call
+                     :content (:id "call-one" :name "inspect-one"
+                               :arguments (:path "one"))))
+         (call-two '(:role tool-call
+                     :content (:id "call-two" :name "inspect-two"
+                               :arguments (:path "two"))))
+         (result-one '(:role tool
+                       :content (:tool-call-id "call-one"
+                                 :content "result one")))
+         (result-two
+          '(:role tool
+            :content (:tool-call-id "call-two" :content "result two")
+            :metadata
+            (:provider-replay-items
+             ((:type provider-replay-item :provider-id anthropic
+               :item (:type "thinking" :thinking "Inspecting both."
+                      :signature "sig-markers"))
+              (:type provider-replay-item :provider-id anthropic
+               :item (:type "tool_use" :id "call-one"
+                      :name "inspect-one" :input (:path "one")))
+              (:type provider-replay-item :provider-id anthropic
+               :item (:type "tool_use" :id "call-two"
+                      :name "inspect-two" :input (:path "two")))))))
+         (continuation-result-two
+          '(:role tool
+            :content (:tool-call-id "call-two" :content "result two")))
+         (full-projection
+          (list stable-one stable-two late-marker late-source
+                '(:role user :content "Inspect both sources.")
+                call-one marker-one result-one call-two marker-two result-two))
+         (provider-followup-delta
+          (list marker-one result-one marker-two continuation-result-two))
+         (options
+          '(:model "claude-test" :max-tokens 1024 :prompt-cache t
+            :prompt-cache-ttl "1h"
+            :segments ((:kind static-prefix :id stable-instructions
+                        :fingerprint "stable-instructions-fp"
+                        :messages ((:role system
+                                    :content "Stable instructions.")
+                                   (:role system
+                                    :content "Stable guidance.")))
+                       (:kind current-state :id current-buffer
+                        :fingerprint "current-buffer-fp"
+                        :messages ((:role system
+                                    :content "[ephemeral context source 1, ~5 tokens]")
+                                   (:role system
+                                    :content "Current buffer source."))))))
+         (tools '((:name "inspect-one" :description "Inspect one source."
+                   :parameters (:type "object"))
+                  (:name "inspect-two" :description "Inspect another source."
+                   :parameters (:type "object"))))
+         (uncached-options (copy-sequence options)))
+    (cl-remf uncached-options :prompt-cache)
+    (dolist (projection (list full-projection provider-followup-delta))
+      (let* ((cached (e-anthropic-request-body
+                      :messages projection :options options :tools tools))
+             (uncached (e-anthropic-request-body
+                        :messages projection :options uncached-options
+                        :tools tools))
+             (cached-system (plist-get cached :system))
+             (cached-messages (plist-get cached :messages))
+             (cached-tools (plist-get cached :tools))
+             (uncached-tools (plist-get uncached :tools)))
+        (should (equal (e-anthropic-test--system-text cached)
+                       (e-anthropic-test--system-text uncached)))
+        (should (equal (plist-get cached :messages)
+                       (plist-get uncached :messages)))
+        (if (eq projection full-projection)
+            (let ((followup
+                   (aref cached-messages (1- (length cached-messages)))))
+              (should (equal cached-tools uncached-tools))
+              (should
+               (equal (mapcar (lambda (block) (plist-get block :text))
+                              (append cached-system nil))
+                      (list "Stable instructions."
+                            "Stable guidance."
+                            "[ephemeral context source 1, ~5 tokens]"
+                            "Current buffer source.")))
+              (should (equal (plist-get (aref cached-system 1) :cache_control)
+                             '(:type "ephemeral" :ttl "1h")))
+              (should-not (plist-member (aref cached-system 2) :cache_control))
+              (should-not (plist-member (aref cached-system 3) :cache_control))
+              (should
+               (equal (append (plist-get followup :content) nil)
+                      (list '(:type "text"
+                              :text "[ephemeral context source 2, ~8 tokens]")
+                            '(:type "tool_result" :tool_use_id "call-one"
+                              :content "result one")
+                            '(:type "text"
+                              :text "[ephemeral context source 3, ~9 tokens]")
+                            '(:type "tool_result" :tool_use_id "call-two"
+                              :content "result two")))))
+          (progn
+            (should-not cached-system)
+            (should
+             (equal
+              (e-anthropic-test--tool-definitions-without-cache-control cached)
+              (e-anthropic-test--tool-definitions-without-cache-control
+               uncached)))
+            (should-not (plist-member (aref cached-tools 0) :cache_control))
+            (should
+             (equal (plist-get (aref cached-tools 1) :cache_control)
+                    '(:type "ephemeral" :ttl "1h")))
+            (dolist (tool (append uncached-tools nil))
+              (should-not (plist-member tool :cache_control)))
+            (should
+             (equal
+              (mapcar (lambda (message)
+                        (append (plist-get message :content) nil))
+                      (append cached-messages nil))
+              (list (list '(:type "text"
+                            :text "[ephemeral context source 2, ~8 tokens]")
+                          '(:type "tool_result" :tool_use_id "call-one"
+                            :content "result one"))
+                    (list '(:type "text"
+                            :text "[ephemeral context source 3, ~9 tokens]")
+                          '(:type "tool_result" :tool_use_id "call-two"
+                            :content "result two")))))))))))
+
+(ert-deftest e-anthropic-test-request-body-rejects-detached-source-marker ()
+  "A typed marker that does not immediately precede its result fails clearly."
+  (should-error
+   (e-anthropic-request-body
+    :messages (list (e-anthropic-test--tool-source-marker
+                     "call-one" "[ephemeral source]")
+                    '(:role user :content "detached")
+                    '(:role tool
+                      :content (:tool-call-id "call-one" :content "result")))
+   :options '(:model "claude-test" :max-tokens 1024))
+   :type 'e-anthropic-response-invalid))
+
+(ert-deftest e-anthropic-test-request-body-pairs-unreplayed-tool-marker-and-result ()
+  "An ordinary result keeps its typed marker in the same user content array."
+  (let* ((marker (e-anthropic-test--tool-source-marker
+                  "call-one" "[ephemeral context source 1, ~5 tokens]"))
+         (result '(:role tool
+                   :content (:tool-call-id "call-one" :content "tool output")))
+         (body (e-anthropic-request-body
+                :messages (list marker result)
+                :options '(:model "claude-test" :max-tokens 1024))))
+    (should-not (plist-member body :system))
+    (should
+     (equal (plist-get body :messages)
+            [(:role "user"
+              :content [(:type "text"
+                         :text "[ephemeral context source 1, ~5 tokens]")
+                        (:type "tool_result" :tool_use_id "call-one"
+                         :content "tool output")])]))))
 
 (ert-deftest e-anthropic-test-request-body-ignores-call-carried-native-replay ()
   "A tool-call cannot extend provider replay beyond the settled result."
@@ -338,6 +539,63 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
     (should (equal messages
                    [(:role "user"
                      :content [(:type "text" :text "hello")])]))))
+
+(ert-deftest e-anthropic-test-request-body-cache-prefix-excludes-dynamic-suffix ()
+  "Dynamic changes leave the cached prefix stable; stable changes replace it."
+  (cl-labels
+      ((render (instructions suffix tool-schema)
+         (let* ((stable-message '(:role system :content "Stable guidance."))
+                (suffix-message (list :role 'system :content suffix))
+                (body-options
+                 (list :model "claude-test"
+                       :max-tokens 1024
+                       :instructions instructions
+                       :prompt-cache t
+                       :prompt-cache-ttl "5m"
+                       :segments
+                       (list (list :kind 'static-prefix
+                                   :id 'stable-guidance
+                                   :fingerprint "stable-guidance-fp"
+                                   :messages (list stable-message))
+                             (list :kind 'current-state
+                                   :id 'dynamic-suffix
+                                   :fingerprint
+                                   (secure-hash 'sha256 suffix)
+                                   :messages (list suffix-message))))))
+           (e-anthropic-request-body
+            :messages (list stable-message suffix-message
+                            '(:role user :content "hello"))
+            :options body-options
+            :tools (list (list :name "lookup"
+                               :description "Lookup."
+                               :parameters tool-schema))))))
+    (let* ((stable-schema
+            '(:type "object" :properties (:path (:type "string"))))
+           (changed-schema
+            '(:type "object" :properties (:uri (:type "string"))))
+           (base (render "Stable instructions." "Dynamic source A."
+                         stable-schema))
+           (dynamic-change (render "Stable instructions." "Dynamic source B."
+                                   stable-schema))
+           (instruction-change (render "Changed stable instructions."
+                                       "Dynamic source A." stable-schema))
+           (tool-change (render "Stable instructions." "Dynamic source A."
+                                changed-schema))
+           (base-system (plist-get base :system))
+           (dynamic-system (plist-get dynamic-change :system)))
+      (should (equal (e-anthropic-test--stable-cache-prefix base)
+                     (e-anthropic-test--stable-cache-prefix dynamic-change)))
+      (should (equal (aref base-system 0) (aref dynamic-system 0)))
+      (should (equal (aref base-system 1) (aref dynamic-system 1)))
+      (should-not (equal (aref base-system 2) (aref dynamic-system 2)))
+      (should (equal (plist-get (aref base-system 1) :cache_control)
+                     '(:type "ephemeral" :ttl "5m")))
+      (should-not (plist-member (aref dynamic-system 2) :cache_control))
+      (should-not (equal (e-anthropic-test--stable-cache-prefix base)
+                         (e-anthropic-test--stable-cache-prefix
+                          instruction-change)))
+      (should-not (equal (e-anthropic-test--stable-cache-prefix base)
+                         (e-anthropic-test--stable-cache-prefix tool-change))))))
 
 (ert-deftest e-anthropic-test-request-body-top-level-cache-control ()
   "Top-level automatic cache mode leaves system as plain content."
