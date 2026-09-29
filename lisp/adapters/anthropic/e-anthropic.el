@@ -193,8 +193,8 @@ Set this to nil to deliberately disable provider HTTP request timeouts."
 
 (defvar e-anthropic--context-window-cache (make-hash-table :test 'equal)
   "In-memory cache of provider model context windows.
-Keyed by provider symbol; each value is a model-name -> max-input-tokens hash
-populated from the gateway's `/models' catalog.  Cleared by
+Keyed by provider symbol; each value maps model names to a limit or nil.
+Entries come from the gateway's `/models' catalog.  Cleared by
 `e-anthropic-reset-context-window-cache'.  There is no static fallback: when
 the gateway is unavailable, context-window lookups return nil.")
 
@@ -304,7 +304,7 @@ condition list.  Return a cancellable `e-backend-request' handle."
    :on-error on-error))
 
 (defun e-anthropic--context-window-table-from-json (text)
-  "Return a model-name -> max-input-tokens hash parsed from model-list TEXT."
+  "Return a model-name -> max-input-tokens-or-nil hash parsed from TEXT."
   (let* ((payload (e-json-parse-string text))
          (data (plist-get payload :data))
          (table (make-hash-table :test 'equal)))
@@ -316,11 +316,11 @@ condition list.  Return a cancellable `e-backend-request' handle."
     (dolist (entry (append data nil))
       (let ((name (plist-get entry :id))
             (limit (plist-get entry :max_input_tokens)))
-        (when (and (stringp name) (integerp limit))
-          (puthash name limit table))))
+        (when (and (stringp name) (not (string-empty-p name)))
+          (puthash name (and (integerp limit) (>= limit 0) limit) table))))
     (when (zerop (hash-table-count table))
       (signal 'e-anthropic-backend-error
-              '("Model catalog contains no context-window metadata")))
+              '("Model catalog contains no valid model IDs")))
     table))
 
 (defun e-anthropic--context-window-failure-fresh-p (key)
@@ -774,17 +774,20 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
 INPUT-TOKENS, OUTPUT-TOKENS, CACHED-TOKENS (cache reads), and CREATED-TOKENS
 \(cache writes) come from Messages usage fields.  On the Messages API
 `input_tokens' excludes both cache reads and cache writes, so the total sums all
-three plus output.  Messages does not report a total itself; derive it here so
+three plus output.  The context-input count carries that sum for budgeting.
+Messages does not report a total itself; derive it here so
 downstream consumers see the same `:total-tokens' field the other adapters
 provide."
   (let* ((input (e-anthropic--number-or-nil input-tokens))
          (cached (e-anthropic--number-or-nil cached-tokens))
          (created (e-anthropic--number-or-nil created-tokens))
          (output (e-anthropic--number-or-nil output-tokens))
+         (context-input (and input (+ input (or cached 0) (or created 0))))
          (parts (delq nil (list input cached created output)))
          (total (and parts (apply #'+ parts))))
     (list :type 'token-usage
-          :usage (list :input-tokens input
+          :usage (list :context-input-tokens context-input
+                       :input-tokens input
                        :cached-input-tokens cached
                        :cache-creation-input-tokens created
                        :output-tokens output

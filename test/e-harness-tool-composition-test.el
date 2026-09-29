@@ -502,7 +502,8 @@
                    :items
                    '((:type assistant-message :content "answer")
                      (:type token-usage
-                      :usage (:input-tokens 202598
+                      :usage (:context-input-tokens 202598
+                              :input-tokens 202598
                               :cached-input-tokens 7552
                               :cache-creation-input-tokens 4096
                               :output-tokens 419
@@ -519,6 +520,7 @@
                       events)))
       (should usage-event)
       (let ((payload (plist-get usage-event :payload)))
+        (should (equal (plist-get payload :context-input-tokens) 202598))
         (should (equal (plist-get payload :input-tokens) 202598))
         (should (equal (plist-get payload :cached-input-tokens) 7552))
         (should (equal (plist-get payload :cache-creation-input-tokens) 4096))
@@ -555,7 +557,8 @@
               (funcall on-item '(:type assistant-message :content "answer"))
               (funcall on-item
                        '(:type token-usage
-                         :usage (:input-tokens 12 :output-tokens 3
+                         :usage (:context-input-tokens 12
+                                 :input-tokens 12 :output-tokens 3
                                  :total-tokens 15
                                  :unknown "disk-usage-secret")))
               (funcall on-item '(:type done :reason stop))
@@ -596,6 +599,7 @@
             (should-not (plist-member started-payload :request-shape))
             (should-not (plist-member
                          (plist-get started-payload :diagnostics) :unknown))
+            (should (= (plist-get usage-payload :context-input-tokens) 12))
             (should (= (plist-get usage-payload :input-tokens) 12))
             (should-not (plist-member usage-payload :unknown))))
       (delete-directory directory t))))

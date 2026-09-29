@@ -106,6 +106,32 @@
     (should (equal (e-context-budget-used-tokens harness "budget-usage")
                    202598))))
 
+(ert-deftest e-context-budget-test-full-context-usage-precedes-billing-input ()
+  "Context status uses full input while retaining cache billing counters."
+  (let* ((store (e-session-store-create))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :sessions store
+                   :default-options '(:model "claude-opus-5-5"))))
+    (e-session-create store :id "budget-full-context")
+    (e-session-append-message
+     store "budget-full-context" '(:role user :content "context question"))
+    (e-session-append-activity-event
+     store "budget-full-context" "turn-1" 'token-usage
+     '(:context-input-tokens 4819
+       :input-tokens 17
+       :cached-input-tokens 4802
+       :cache-creation-input-tokens 0
+       :output-tokens 5
+       :total-tokens 4824))
+    (let ((status (e-context-budget-status
+                   harness "budget-full-context"
+                   :prefer-token-usage t
+                   :estimate-context nil)))
+      (should (equal (plist-get status :used-tokens) 4819))
+      (should-not (plist-get status :approximate))
+      (should-not (plist-get status :window)))))
+
 (ert-deftest e-context-budget-test-used-tokens-ignores-usage-before-compaction ()
   "Provider usage before the latest valid compaction is treated as stale."
   (let* ((store (e-session-store-create))

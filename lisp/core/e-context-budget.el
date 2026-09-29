@@ -72,11 +72,14 @@ BYTES-PER-TOKEN defaults to `e-context-budget-estimate-bytes-per-token'."
                                            bytes-per-token)))
 
 (defun e-context-budget--token-usage-input-tokens (usage)
-  "Return input token count from provider-neutral USAGE."
-  (let ((tokens (or (plist-get usage :input-tokens)
+  "Return full-context input count from USAGE, with a legacy fallback."
+  (let ((context-tokens (plist-get usage :context-input-tokens))
+        (tokens (or (plist-get usage :input-tokens)
                     (plist-get usage :input_tokens))))
-    (when (and (integerp tokens) (>= tokens 0))
-      tokens)))
+    (or (and (integerp context-tokens) (>= context-tokens 0)
+             context-tokens)
+        (and (integerp tokens) (>= tokens 0)
+             tokens))))
 
 (defun e-context-budget--latest-token-usage-event (harness session-id)
   "Return latest durable provider token usage event for SESSION-ID."

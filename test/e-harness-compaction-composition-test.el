@@ -568,7 +568,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
         (should-not (string-match-p "fresh prompt" summary-prompt))))))
 
 (ert-deftest e-harness-test-auto-compaction-skips_unknown_window ()
-  "Unknown model windows do not trigger auto-compaction."
+  "Opus 5.5 usage cannot trigger compaction without a proved window."
   (let ((calls 0))
     (let* ((backend (e-backend-create
                      :name 'unknown-window
@@ -582,16 +582,24 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                         (funcall on-item '(:type done :reason stop))))))
            (harness (e-harness-create
                      :backend backend
-                     :default-options '(:model "unknown-model")))
+                     :default-options '(:model "claude-opus-5-5")))
            (store (e-harness-sessions harness))
-           (e-context-budget-model-token-limits nil)
            (e-harness-auto-compaction-reserve-tokens 10))
       (e-harness-create-session harness :id "session-1")
       (e-session-append-message store "session-1"
                                 '(:role user :content "old question"))
       (e-session-append-activity-event
        store "session-1" "turn-1" 'token-usage
-       '(:input-tokens 999999 :total-tokens 1000000))
+       '(:context-input-tokens 999999
+         :input-tokens 17
+         :cached-input-tokens 999982
+         :total-tokens 1000000))
+      (let ((status (e-context-budget-status
+                     harness "session-1"
+                     :prefer-token-usage t
+                     :estimate-context nil)))
+        (should (equal (plist-get status :used-tokens) 999999))
+        (should-not (plist-get status :window)))
       (e-harness-test-prompt-async harness "session-1" "fresh prompt")
       (should (equal (plist-get (e-harness-wait-batch harness "session-1" 1.0)
                                 :status)

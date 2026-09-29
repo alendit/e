@@ -297,7 +297,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
       (:type assistant-delta :content "llo")
       (:type assistant-message :content "hello")
       (:type token-usage
-       :usage (:input-tokens 10
+       :usage (:context-input-tokens 10
+               :input-tokens 10
                :cached-input-tokens nil
                :cache-creation-input-tokens nil
                :output-tokens 5
@@ -322,7 +323,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
       (:type done :reason stop)))))
 
 (ert-deftest e-anthropic-test-parse-stream-maps-cache-tokens ()
-  "Cache read and creation token counts map into neutral usage."
+  "Full-context input sums cache counters while preserving billing usage."
   (should
    (equal
     (seq-find (lambda (item) (eq (plist-get item :type) 'token-usage))
@@ -331,12 +332,23 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
     '(:type token-usage
-      :usage (:input-tokens 10
+      :usage (:context-input-tokens 20
+              :input-tokens 10
               :cached-input-tokens 4
               :cache-creation-input-tokens 6
               :output-tokens 5
               :reasoning-output-tokens nil
               :total-tokens 25)))))
+
+(ert-deftest e-anthropic-test-usage-full-context-count-preserves-billing-counters ()
+  "Fresh, cache-read, and cache-write input sum without changing billing fields."
+  (let* ((usage (plist-get (e-anthropic--usage-item 17 5 4802 0) :usage)))
+    (should (equal (plist-get usage :context-input-tokens) 4819))
+    (should (equal (plist-get usage :input-tokens) 17))
+    (should (equal (plist-get usage :cached-input-tokens) 4802))
+    (should (equal (plist-get usage :cache-creation-input-tokens) 0))
+    (should (equal (plist-get usage :output-tokens) 5))
+    (should (equal (plist-get usage :total-tokens) 4824))))
 
 (ert-deftest e-anthropic-test-emits-cache-anchor-candidate ()
   "Successful cached Anthropic responses emit a durable provider anchor candidate."
@@ -824,10 +836,42 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
   (should (equal (e-anthropic--models-url "https://gateway.test/v1/")
                  "https://gateway.test/v1/models")))
 
-(ert-deftest e-anthropic-test-model-catalog-rejects-empty-context-metadata ()
-  "An empty catalog is a failed lookup and must not become a valid cache."
+(ert-deftest e-anthropic-test-model-catalog-rejects-no-model-ids ()
+  "A catalog without valid model IDs is a failed lookup."
   (should-error (e-anthropic--context-window-table-from-json "{\"data\":[]}")
                 :type 'e-anthropic-backend-error))
+
+(ert-deftest e-anthropic-test-model-catalog-retains-unknown-window-models ()
+  "A valid listed model remains usable when the gateway omits its limit."
+  (let* ((table
+          (e-anthropic--context-window-table-from-json
+           "{\"data\":[{\"id\":\"claude-opus-5-5\"}]}"))
+         (missing 'missing))
+    (should (eq (gethash "claude-opus-5-5" table missing) nil))
+    (should-not (eq (gethash "claude-opus-5-5" table missing) missing))))
+
+(ert-deftest e-anthropic-test-refresh-context-window-cache-accepts-unknown-limit ()
+  "A listed model without a limit does not fail the asynchronous refresh."
+  (e-anthropic-reset-context-window-cache)
+  (let (done catalog)
+    (cl-letf (((symbol-function 'e-anthropic--headers) (lambda (&rest _) nil))
+              ((symbol-function 'e-anthropic--http-get-start)
+               (lambda (&rest args)
+                 (funcall (plist-get args :on-complete)
+                          "{\"data\":[{\"id\":\"claude-opus-5-5\"}]}")
+                 (e-backend-request-create :metadata '(:test immediate)))))
+      (should
+       (e-backend-request-p
+        (e-anthropic-refresh-context-window-cache
+         :on-done (lambda (table)
+                    (setq done t
+                          catalog table)))))
+      (should done)
+      (should-not (e-anthropic-context-window "claude-opus-5-5"))
+      (should (eq (gethash "claude-opus-5-5" catalog 'missing) nil))
+      (should-not (eq (gethash "claude-opus-5-5" catalog 'missing)
+                      'missing)))
+    (e-anthropic-reset-context-window-cache)))
 
 (ert-deftest e-anthropic-test-context-window-cache-only-before-refresh ()
   "Context-window lookup does not fetch the gateway catalog synchronously."

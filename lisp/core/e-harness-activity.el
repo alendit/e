@@ -502,7 +502,7 @@ fields outside that error contract."
 (defun e-harness-activity--token-usage-activity-projection (payload)
   "Return a narrow durable projection of token-usage PAYLOAD."
   (let (projected)
-    (dolist (key '(:input-tokens :cached-input-tokens
+    (dolist (key '(:context-input-tokens :input-tokens :cached-input-tokens
                    :cache-creation-input-tokens :output-tokens
                    :reasoning-output-tokens :total-tokens
                    :provider-request-ordinal))
