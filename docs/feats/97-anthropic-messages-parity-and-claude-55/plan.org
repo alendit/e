@@ -101,17 +101,31 @@ they preserve the observable result.
 
 | ID | Observable contract | Semantic owner | Establishing package | Deterministic evidence | External compatibility evidence | Status |
 |----+---------------------+----------------+----------------------+------------------------+---------------------------------+--------|
-| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Proposed |
+| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success.  Existing usable Opus 4.8 and Sonnet 5 profiles remain selectable, and the standard GPT-6 chat default does not change as part of this feature. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Proposed |
 | =F97-C02= | Provider usage reports full context input as fresh + cache-read + cache-creation input while preserving each original billing counter.  An absent gateway model limit is represented as unknown, so status and auto-compaction do not assume an unproved window. | Anthropic usage decoder and core context budget; catalog adapter owns model metadata | =F97-DP1= | Cache-hit fixture 17 + 4,802 = 4,819; budget/status and missing-limit fixtures | Gateway counter and model-metadata observations | Proposed |
-| =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Proposed |
-| =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message and late ephemeral marker in order, and allows a changing suffix without changing the stable prefix.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker visibility, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Proposed |
-| =F97-C05= | When a live frame is presented, =context-curate= is a reserved native Messages tool translated from one core-owned schema, guidance, and revision descriptor shared with OpenAI.  Valid keep/summary/erase/omission commits exactly once, supplies a valid immediate acknowledgement, retires consumed labels, and continues; a mixed ordinary/curation response groups all calls in one assistant array and their ID-matched result/acknowledgement in one following user array.  Invalid or duplicate effects follow Feature 88's bounded rules without ordinary-tool dispatch. | Core curation policy and loop sequencing; Anthropic and OpenAI translate the carrier descriptor into their own wire shapes | =F97-DP4= | Shared schema/guidance/revision parity, credential-free real-adapter curate/tool/curate/answer, mixed grouping, invalid/duplicate, reopen/branch projection | Opus 5.5 native curation and same-turn follow-up | Proposed |
+| =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing terminal completion or missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Proposed |
+| =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message in order, and presents each late ephemeral marker paired with its matching source, including each tool result, with caching on or off.  A changing suffix leaves the stable prefix unchanged.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment and marker meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker-to-result pairing in both request projections, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Proposed |
+| =F97-C05= | When a live frame is presented, =context-curate= is a reserved native Messages tool translated from one core-owned schema, guidance, and revision descriptor shared with OpenAI.  Only a complete valid response may commit keep/summary/erase/omission exactly once, supply a valid immediate acknowledgement, retire consumed labels, and continue; a mixed ordinary/curation response groups all calls in one assistant array and their ID-matched result/acknowledgement in one following user array.  Invalid or duplicate effects follow Feature 88's bounded rules without ordinary-tool dispatch. | Core curation policy and loop sequencing; Anthropic and OpenAI translate the carrier descriptor into their own wire shapes | =F97-DP4= | Shared schema/guidance/revision parity, credential-free real-adapter curate/tool/curate/answer, mixed grouping, invalid/duplicate, reopen/branch projection | Opus 5.5 native curation and same-turn follow-up | Proposed |
 | =F97-C06= | A Messages stream delivers text progress as complete events arrive, releases tool and curation effects only after a valid terminal response, and classifies EOF, HTTP, SSE, timeout, and cancellation failures without publishing partial success or replay. | Anthropic HTTP/SSE transport and decoder | =F97-DP5= | Split-chunk, terminal, truncated, error, idle-timeout, cancellation, no partial tool dispatch, and single-settlement fixtures | Bounded Opus 5.5 streamed turn and cancellation smoke probe | Proposed |
 
 Cache counters, latency, and token savings are observational except for the
 named live write/read compatibility check in =F97-C04=.  Exact hit size is not
 a product threshold.  The 4,802-token observation is a baseline probe, not a
 fixture for future gateway behavior.
+
+The 2026-09-29 gateway observations are diagnostic baselines, not final
+acceptance.  Final external evidence is collected after deterministic owner and
+composition checks, a commit, and an independent review of that exact commit.
+Each capability probe and the configured composition run records the gateway
+endpoint and team/profile, protocol and beta headers, exact model ID,
+transport, material options and tool-schema revision, UTC time, response
+status, counters where relevant, and failure class, without credentials or
+source content.  Evidence is reusable only on the same accepted commit and
+capability identity and only within 24 hours of its evidence-owner review; any
+material request-shape or owner change requires a new run.  Access denial,
+missing credentials, infrastructure failure, and timeout leave the capability
+unconfirmed; a valid contradictory response is a product-contract failure.
+The live probes during =F97-DP3= and =F97-DP5= are diagnostic only.
 
 * Supporting design and ownership
 
@@ -127,8 +141,17 @@ not establish =e='s opaque provider-compaction operation.  Do not claim
 request-local replacement or server-side continuation from cache hits.
 
 The harness already owns stable, dynamic, and ephemeral segment meaning.  The
-Anthropic adapter should render the entire ordered system projection first and
-use segment identities only to choose eligible =cache_control= positions.
+Anthropic adapter should render the complete leading system projection and use
+segment identities only to choose eligible =cache_control= positions.  Feature
+88's request-local ephemeral marker is informational and belongs next to its
+matching source.  Core should identify that generated marker as a typed
+request-local projection item; Anthropic should render it as a text block
+immediately before the corresponding =tool_result= in the same user content
+array, preserving both labels and result order.  It must not hoist these late
+markers into the top-level system prefix or parse marker text to recognize them.
+Other system content retains its order and the source value remains unchanged.
+The same translation applies to full and continuation projections, with cache
+on or off.
 Start with the last eligible stable system block and preserve the existing
 explicit =5m=/=1h= TTL option.  A later request for multiple distinct cache
 boundaries should use the same segment identities and Anthropic's documented
@@ -143,6 +166,12 @@ The Anthropic decoder should collect one assistant response's content blocks by
 native index until =message_stop=.  Keep exact signed =thinking= or
 =redacted_thinking= material and the relative order of thinking, text, and
 =tool_use= blocks in an opaque, provider-tagged request-local replay bundle.
+The collector must validate terminal completion and required replay before it
+emits any ordinary tool call.  Missing terminal completion, invalid block
+order, or absent signed material fails the response without dispatching tools;
+cancellation discards the bundle.  This applies to injected and buffered
+requests in =F97-DP2=.  =F97-DP5= later streams text incrementally but retains
+the same effect-admission guard.
 The renderer substitutes that bundle for the just-produced assistant tool
 envelopes, groups all calls in one assistant content array, and groups their
 ID-matched results in the following user content array.  It must not append
@@ -195,10 +224,13 @@ terminal validation.
 - =F97-S2=, signed ordinary tool continuation :: Decode interleaved thinking,
   text, and two native tool calls; submit results and inspect one assistant
   content array, one following user result array, exact call-ID pairing, and
-  one-shot replay lifetime.  Covers =F97-C03=.
+  one-shot replay lifetime.  Truncate before =message_stop= and cancel before
+  terminal completion; neither case dispatches a tool.  Covers =F97-C03=.
 - =F97-S3=, stable cache checkpoint :: Compare cached and uncached complete
-  system content, including late source markers; change only the dynamic
-  suffix, then change stable tools/instructions.  Covers =F97-C04=.
+  system content and two distinct ephemeral markers paired with their matching
+  tool results.  Exercise full and continuation projections with caching on and
+  off; change only the dynamic suffix, then change stable tools/instructions.
+  Covers =F97-C04=.
 - =F97-S4=, composed curation :: Run an injected Messages transport through
   ordinary tool, frame A curation/acknowledgement, later frame B curation,
   answer, and fresh user turn.  Include a response with an ordinary call and
@@ -211,13 +243,18 @@ terminal validation.
   non-stream error, provider error, timeout, and cancellation.  Observe ordered
   text progress, no tool dispatch on truncation, and one truthful terminal
   state.  Covers =F97-C06=.
-- =F97-S6=, configured gateway :: On the exact target revision, use the
-  authenticated catalog and Opus 5.5 Messages endpoint for basic answer,
-  native ordinary-tool follow-up, curation, and two stable-prefix cache
-  requests.  Record endpoint, model ID, transport, options, response status,
-  cache counters, and probe date without credentials or source content.  Probe
-  Sonnet 5.5 separately and activate it only on catalog plus Messages success.
-  Covers =F97-C01=, =F97-C03=--=F97-C06= as external compatibility evidence.
+- =F97-S6a=, gateway capability :: On the exact accepted revision, run separate
+  bounded catalog and minimal Opus 5.5 Messages probes for usage counters,
+  unknown model limit, signed ordinary-tool follow-up, reserved curation,
+  streamed completion/cancellation, and two stable-prefix cache requests.
+  Probe Sonnet 5.5 separately and activate it only after catalog and Messages
+  success.  Record the capability identity and failure class defined above.
+  Covers =F97-C01=--=F97-C06= as external compatibility evidence.
+- =F97-S6b=, configured composition :: On the same accepted revision, run the
+  checked-in Anthropic profile through the direct
+  =F97-ANTHROPIC-COMPOSED-TURN= scenario and record the same identity, the
+  exact composition result, and the first failing boundary if any.  Covers
+  =F97-C01=, =F97-C03=--=F97-C06= as external compatibility evidence.
 
 * Ordered delivery packages
 
@@ -231,6 +268,19 @@ terminal validation.
   window.
 - Evidence :: =F97-S1=, existing OpenAI budget regressions, focused
   Anthropic ERT, byte compilation.  Keep billing counters unchanged.
+- State and lifetime :: Completed usage remains in the existing session event;
+  the derived full-context count adds no separate store.  Catalog limits remain
+  an asynchronously refreshed adapter cache, where an absent limit is unknown.
+- Transaction and recovery :: Decode each response's counters together and
+  retain the original billing fields.  A valid catalog with no limit metadata
+  still refreshes successfully; a malformed catalog fails refresh without
+  fabricating a limit or failing an unrelated turn.
+- Surface :: The existing provider-neutral usage item, context budget/status,
+  and Anthropic model-catalog lookup; no new provider-specific core API.
+- Safe deferred work :: Native replay, cache layout, curation, transport, and
+  profile activation remain absent; their absence does not change accounting.
+- Split/combine decision :: Usage and limit truth has a complete consumer path
+  through budget/status and can be accepted before wire replay or caching.
 
 ** F97-DP2: exact native tool and thinking replay
 
@@ -245,18 +295,48 @@ terminal validation.
   calls in one assistant array with one user result array, cancellation and
   restart boundary, and focused loop/session tests.  Keep opaque replay
   request-local and remove any duplicate tool envelopes.
+- State and lifetime :: Native signed blocks and their order are an opaque
+  provider-tagged bundle for one causal follow-up only; durable session
+  projection keeps no signed replay authority.
+- Transaction and recovery :: Validate the complete response, including
+  =message_stop= and required signed blocks, before releasing ordinary tool
+  calls.  Missing terminal, malformed replay, or cancellation discards the
+  bundle without dispatch; a successful follow-up consumes it once.  This
+  guard covers injected and buffered requests before DP5 changes transport.
+- Surface :: Existing backend items and loop one-shot replay seam; no new
+  semantic tool or core curation policy.
+- Safe deferred work :: Curation and incremental text streaming wait for DP4
+  and DP5; buffered ordinary-tool continuation is already complete here.
+- Split/combine decision :: Native replay and its tool admission form one
+  valid ordinary-tool follow-up.  Curation adds a separate semantic effect,
+  while streaming progress is a separate transport outcome.
 
 ** F97-DP3: cache checkpoint layout without content loss
 
-- Owner :: Anthropic request renderer; harness segments remain semantic input.
+- Owner :: Anthropic request renderer and request-local marker projection;
+  harness segments and marker meaning remain core-owned semantic input.
 - Prerequisites :: Current Feature 88 segment projection; independent of DP2.
 - Establishes :: =F97-C04=.
 - Useful stopping point :: An opt-in cache checkpoint accelerates a stable
   prefix while every dynamic and ephemeral source still reaches the model.
-- Evidence :: =F97-S3=, exact JSON body comparison, warm-prefix gateway check.
+- Evidence :: =F97-S3=, exact JSON body comparison, diagnostic warm-prefix
+  gateway check.
   If the gateway ceases to accept =1h=, report the compatibility failure and
   leave that opt-in disabled until an accepted TTL is proven; do not silently
   retry with a different request shape.
+- State and lifetime :: Stable segment identities, typed source markers, and
+  checkpoint choice are request-local.  A provider cache anchor is a hint, not
+  a durable Feature 88 source disposition; source lifetime remains core-owned.
+- Transaction and recovery :: Render the complete source projection before
+  selecting a checkpoint; keep each typed late marker adjacent to its result
+  with cache on and off.  Invalid TTL or provider cache rejection surfaces at
+  the adapter, without silently changing the request or dropping source text.
+- Surface :: Existing prompt-cache options and Anthropic Messages body;
+  request-local typed marker metadata is not a session record or public API.
+- Safe deferred work :: Curation and incremental transport remain absent;
+  cache layout is useful for ordinary turns without either feature.
+- Split/combine decision :: Content-preserving checkpoint placement is one
+  cache outcome, independent of replay's tool admission and curation's commit.
 
 ** F97-DP4: reserved native curation carrier
 
@@ -271,17 +351,47 @@ terminal validation.
 - Evidence :: =F97-S4=, Feature 88 negative and multi-frame regressions,
   shared schema/guidance/revision parity, mixed ordinary/curation native
   grouping, and focused session reopen/branch tests.
+- State and lifetime :: The shared schema/guidance descriptor is core-owned
+  static policy.  The current frame opportunity and native acknowledgement
+  live for one request/turn; only accepted Feature 88 dispositions are durable.
+- Transaction and recovery :: DP2's terminal guard precedes curation preflight.
+  Core validates and atomically commits one disposition before the loop consumes
+  its frame and sends one ID-matched acknowledgement.  Invalid or duplicate
+  effects follow Feature 88's bounded recovery without ordinary-tool dispatch
+  or partial semantic mutation; cancellation discards uncommitted replay.
+- Surface :: One native reserved =context-curate= definition translated from
+  the core descriptor, existing loop effect seam, and immediate Messages
+  tool-result acknowledgement.  Application tools never receive this name.
+- Safe deferred work :: Incremental text progress waits for DP5; DP2's
+  buffered terminal guard already protects every effectful curation response.
+- Split/combine decision :: Schema parity, semantic commit, acknowledgement,
+  and duplicate recovery close one curation behavior.  Transport progress can
+  follow without changing that semantic transaction.
 
 ** F97-DP5: incremental and terminal-safe Messages transport
 
 - Owner :: Anthropic HTTP/SSE transport and decoder.
-- Prerequisites :: DP2's response block collector and DP4's reserved effect
-  shape, so partial delivery cannot commit an incomplete tool or curation
-  response.
+- Prerequisites :: DP2's terminal-validated response collector and DP4's
+  reserved effect shape.  Incremental delivery must retain their effect guard.
 - Establishes :: =F97-C06=.
 - Useful stopping point :: Long streamed turns show progress and malformed or
   interrupted streams fail without a false successful turn.
-- Evidence :: =F97-S5=, focused transport suite, real streamed smoke probe.
+- Evidence :: =F97-S5=, focused transport suite, diagnostic real streamed
+  smoke probe.
+- State and lifetime :: Bounded partial SSE lines/events and the idle deadline
+  live only on the cancellable request handle; neither partial replay nor
+  uncommitted effects enter durable context.
+- Transaction and recovery :: Emit text after complete SSE events, but release
+  effects and terminal anchor only after valid =message_stop=.  EOF, HTTP/SSE
+  errors, timeout, and cancellation settle exactly once and discard pending
+  effects/replay; late callbacks cannot turn failure into success.
+- Surface :: Existing asynchronous backend request handle and item stream;
+  the synchronous injected requester follows the same terminal decision.
+- Safe deferred work :: Profile activation waits for DP6.  Existing profiles
+  benefit from truthful progress and failure without that activation.
+- Split/combine decision :: Incremental delivery and single settlement are one
+  transport outcome.  DP2 and DP4 already close effect semantics on buffered
+  input; DP5 changes when text becomes visible, not when effects become valid.
 
 ** F97-DP6: gateway profile activation and composed acceptance
 
@@ -292,31 +402,58 @@ terminal validation.
 - Useful stopping point :: Opus 5.5 is a selectable validated Messages profile
   with an honest unknown gateway window.  Sonnet 5.5 stays pending until the
   team gains access, then uses the same gates before activation.
-- Evidence :: =F97-S6= plus the direct =F97-ANTHROPIC-COMPOSED-TURN= scenario,
-  isolated configured E2E, affected repository suites, clean compilation, and
+- Evidence :: =F97-S6a= and =F97-S6b=, isolated configured E2E, affected
+  repository suites, clean compilation, and
   =bash e2e/run-current-config-tests.sh= for any local configuration or startup
   change.  Report Opus and Sonnet external status separately.
+- State and lifetime :: Checked-in profile selection is static configuration;
+  provider access and model metadata are observed, not persisted as a false
+  limit or copied into the user's running Emacs.  A local Doom profile needs
+  its separate authorization and cold-start validation before local activation.
+- Transaction and recovery :: Activate the exact Opus 5.5 ID only after fresh
+  access and Messages proof.  A 403 or missing Sonnet catalog entry leaves
+  Sonnet 5.5 unavailable, without alias or model fallback; profile errors
+  surface normally and do not switch the GPT-6 default.
+- Surface :: Selectable Anthropic provider configuration and checked-in E2E
+  profile; no default-chat or generic backend contract change.
+- Safe deferred work :: Sonnet 5.5 and the local Doom change may remain pending
+  on their separate access/authorization conditions without weakening the
+  checked-in Opus 5.5 profile contract.  Report that boundary explicitly.
+- Split/combine decision :: Profile selection is useful only after DP1--DP5
+  compose.  One final exact-revision deterministic gate and independent review
+  decide repository acceptance; =F97-S6a= and =F97-S6b= then decide external
+  capability and direct behavior separately.
 
-Each package is a reviewable semantic slice.  Run focused tests at the owner
-boundary, then the relevant complete gates before accepting DP6.  Update this
-plan and the index only when an actual status transition occurs.  Adapter and
-core changes require an Emacs restart to take effect in the user's running
-process; no live reload is part of repository validation.
+Each package is a reviewable semantic slice.  Run focused tests at its owner
+boundary and the relevant complete deterministic gate once on the accepted
+composition before final independent review.  Update this plan and the index
+only when an actual status transition occurs.  Adapter and core changes require
+an Emacs restart to take effect in the user's running process; no live reload is
+part of repository validation.
 
 * Compatibility, uncertainty, and architecture check
 
-Keep existing Opus 4.8 and Sonnet 5 profiles selectable while they have real
-users; replace the denied local Opus 5 selection only when the 5.5 profile is
-validated.  Do not alias =claude-sonnet-5-5= to Sonnet 5, route Opus through
-the =-vertex= ID merely because it appears in the catalog, or turn a gateway
-403 into an adapter fallback.  Existing transcript and curation records need
-no migration.  Opaque signed blocks live only for the causal follow-up and are
-not a new durable context authority.  The added work is linear in the already
+Profile compatibility and denial behavior belong to =F97-C01=; replace the
+denied local Opus 5 selection only after the 5.5 profile is validated.  The
+=-vertex= ID appearing in a catalog is not evidence for substituting it for
+the selected Opus endpoint.  Existing transcript and curation records need no
+migration.  Opaque signed blocks live only for the causal follow-up and are not
+a new durable context authority.  The added work is linear in the already
 bounded response blocks and SSE bytes; no request-time catalog lookup, polling,
-or synchronous network call belongs in the interactive path.  Tool dispatch may
-wait until =message_stop= rather than =content_block_stop=: that delay is needed
-to avoid executing effects from a response that subsequently truncates or
-fails before terminal validation.
+or synchronous network call belongs in the interactive path.  Tool dispatch
+waits until =message_stop= rather than =content_block_stop= so a later stream
+failure cannot follow an already executed effect.
+
+The smallest faithful aggregate uses the existing backend capability and
+one-shot replay seams, one core-owned carrier descriptor for shared Feature 88
+meaning, and a typed request-local marker projection for Anthropic's native
+layout.  Keeping the schema literal separately in each adapter would reduce a
+small shared boundary but allow curation meaning to diverge.  Letting the
+Anthropic adapter infer markers from text or own source lifetime would remove
+the typed boundary at the cost of brittle classification or inverted ownership.
+The selected aggregate adds no durable state or generic checkpoint layer; its
+six delivery packages separate complete accounting, replay, cache, curation,
+transport, and profile outcomes with focused evidence before one composed gate.
 
 Before implementation, check that each chosen abstraction serves an actual
 cross-adapter contract: the existing backend capability values, core-owned
@@ -380,5 +517,6 @@ evidence must replace assumptions before a =Done= decision.
     malformed replay or inconsistent curation fails the turn visibly.
 14. What tests prove the core behavior independently of the full system?  If
     the design changed, would tests change narrowly, or would unrelated tests
-    need rewrites?  =F97-S1=--=F97-S5= prove owner boundaries; =F97-S6= and the
-    direct scenario prove composition.  Keep mechanism fixtures local.
+    need rewrites?  =F97-S1=--=F97-S5= prove owner boundaries;
+    =F97-S6a= and =F97-S6b= prove endpoint capability and composition
+    separately.  Keep mechanism fixtures local.
