@@ -1,0 +1,384 @@
+#+title: Anthropic Messages Parity and Claude 5.5 Gateway Models
+#+startup: overview
+
+* Status
+
+=Planned=.  This is a plan for adapter and profile work, not an implementation
+record.  Feature 88 remains the authority for provider-neutral context lifetime
+and =context-curate-v8=; this feature adds a native Anthropic Messages carrier
+and tests its composition.  The user's running Emacs and provider configuration
+are unchanged.
+
+* Behavioral goal
+
+- Goal ID :: =F97-ANTHROPIC-COMPOSED-TURN=.
+- Behavioral goal :: A user can select an accessible Claude 5.5 Messages model
+  through the engineering gateway, use ordinary tools and model-directed
+  ephemeral-source curation, continue with valid Anthropic tool history, and
+  reuse a stable prompt-cache prefix without changing what the model sees.
+- Direct scenario :: Select the gateway's =claude-opus-5-5=.  Present stable
+  instructions and a changing ephemeral source.  The model calls an ordinary
+  tool, then uses =context-curate= to keep one source and omit another.  The
+  immediate follow-up contains the exact signed thinking/tool blocks required
+  by Messages, a matching tool result and curation acknowledgement, but no
+  consumed source marker.  The model answers; a later user turn reconstructs
+  canonical context without the omitted raw source.  A repeated request with
+  the same stable prefix reports cache creation and then cache read tokens.
+- Product authority :: The user/operator through Feature 97.  A proposed
+  change to curation meaning, labels, limits, or durability returns to Feature
+  88's owning contract before this adapter plan changes.
+- Owning contracts :: =F97-C01=--=F97-C06= below.
+- Behavioral status :: Partial at the direct gateway boundary: Opus 5.5
+  accepts basic Messages, cache control, and native tool use.  The composed
+  =e= scenario is unavailable until the planned adapter packages exist.
+- Mechanism status :: Not started.
+
+Here a /semantic checkpoint/ means Feature 88's durable, provider-neutral
+context boundary.  An Anthropic /cache checkpoint/ is a =cache_control= marker
+on a wire prefix.  A cache hit accelerates a request; it never keeps or drops
+source content on behalf of =context-curate=.
+
+* Authority and prerequisites
+
+- [[file:../88-generational-context-ephemeral-frames/plan.org][Feature 88]]
+  and its [[file:../88-generational-context-ephemeral-frames/addendum8.org][Addendum 8]]
+  own active-frame eligibility, the optional =keep=/=summaries=/=erase=
+  disposition, omission, duplicate recovery, and the =context-curate-v8=
+  identity.  Feature 88 is =In-review=; rebaseline its older source anchors
+  against the current implementation rather than treating historical v4--v7
+  evidence as acceptance for this carrier.
+- [[file:../81-openai-gpt56-explicit-prompt-cache/plan.org][Feature 81]]
+  establishes the analogous stable-prefix/dynamic-suffix cache layout for
+  OpenAI Responses.  Anthropic uses its native Messages =cache_control= shape.
+- [[file:../91-improve-modularization/plan.org][Feature 91]] is =Done=.
+  Follow its current =e-harness-context-runtime=, =e-context-budget=,
+  =e-loop=, session, and decomposed OpenAI adapter boundaries.  Feature 94's
+  canonical JSON values and Feature 96's ordinary tool continuation are
+  regression contracts, not new behavior to reimplement here.
+- Anthropic's [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching][prompt caching]],
+  [[https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks][thinking block preservation]],
+  [[https://platform.claude.com/docs/en/models/overview][model catalog]], and
+  [[https://platform.claude.com/docs/en/models/opus-5-5/migration-guide][Opus 5.5 migration guide]]
+  describe the upstream API.  Gateway access and limits require separate
+  credentialed evidence.
+
+* Current evidence and diagnosis
+
+The 2026-09-29 authenticated engineering-gateway catalog probe returned 51
+models.  It listed =claude-opus-5-5= and =claude-opus-5-5-vertex= but not
+=claude-sonnet-5-5=.  A bounded Sonnet 5.5 Messages request returned HTTP 403
+=team_model_access_denied=.  Anthropic's public catalog lists Sonnet 5.5; that
+does not grant this gateway team access.  Opus 5.5 accepted =thinking: adaptive=,
+effort =high=, a one-hour =cache_control= checkpoint, and a native synthetic
+=context-curate= call.  Two requests sharing a static prefix reported 4,802
+cache creation tokens followed by 4,802 cache read tokens.  These probes
+establish wire capability, not the composed =e= scenario.
+
+The Opus 5.5 catalog records omitted input/output limits, and this credential
+received HTTP 401 from the single-model metadata endpoint.  Public Anthropic
+documentation says 1M context, but the gateway's effective client limit is
+unknown.  Do not put 1M into =e='s budget table on that evidence alone.
+
+| Area | Current source evidence | Consequence |
+|------+-------------------------+-------------|
+| Model selection | =lisp/adapters/anthropic/e-anthropic.el:152= defaults to Opus 4.8; =e2e/e-e2e-config-anthropic.el:25= also selects 4.8.  The local Doom Opus profile selects =claude-opus-5=, which the direct gateway probe denied with HTTP 403.  Standard Doom chat currently uses GPT-6. | Opus 5.5 must be selected deliberately in Anthropic profiles and tests; changing standard chat is a separate decision. |
+| Context capability | =e-anthropic-backend-create= supplies no =:context-capabilities=; =e-backend= therefore returns conservative defaults. | The harness cannot offer Anthropic the reserved curation effect or claim native prefix caching. |
+| Native replay | =e-anthropic-parse-stream= emits text, raw-thinking deltas, and tool calls but discards signed thinking blocks and their ordered content-block envelope; =e-anthropic--message= reconstructs bare =tool_use= messages. | A tool-result follow-up can lose the unchanged signed thinking blocks required by Messages. |
+| Cache layout | =e-anthropic--system-blocks-from-segments= rebuilds the system field only from =:segments= when explicit caching is on.  A local request-shape probe dropped a late ephemeral-source marker. | The cache option can change semantic input and make curation labels invisible. |
+| Curation | OpenAI decodes =context-curate= as a reserved effect with opaque call/output replay.  Anthropic currently emits it as an ordinary =tool-call=. | The harness can attempt to dispatch a non-existent application tool instead of committing the Feature 88 disposition. |
+| Usage and limits | Anthropic usage keeps fresh, cache-read, and cache-creation input separate; =e-context-budget--token-usage-input-tokens= reads only fresh input.  The observed hit was 17 fresh plus 4,802 read tokens.  Catalog parsing requires at least one model with =max_input_tokens=. | The context display would count 17 rather than 4,819 input tokens; missing gateway limit metadata must remain explicitly unknown. |
+| Transport | =e-anthropic--http-request-start= buffers SSE until HTTP completion; =e-anthropic-parse-stream= can return partial text without =message_stop= or an error. | Long turns hide progress and a truncated stream can look successful. |
+
+The existing Anthropic ERT gate passed 53/53 with
+=env -u E_E2E eldev test -B -f test/e-anthropic-test.el '^e-anthropic-test-'=.
+It covers current behavior and does not clear the gaps above.
+
+* Normative contract and evidence matrix
+
+This table is the sole normative Feature 97 authority.  Packages and scenarios
+below reference these IDs; provider-specific mechanisms remain changeable if
+they preserve the observable result.
+
+| ID | Observable contract | Semantic owner | Establishing package | Deterministic evidence | External compatibility evidence | Status |
+|----+---------------------+----------------+----------------------+------------------------+---------------------------------+--------|
+| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Proposed |
+| =F97-C02= | Provider usage reports full context input as fresh + cache-read + cache-creation input while preserving each original billing counter.  An absent gateway model limit is represented as unknown, so status and auto-compaction do not assume an unproved window. | Anthropic usage decoder and core context budget; catalog adapter owns model metadata | =F97-DP1= | Cache-hit fixture 17 + 4,802 = 4,819; budget/status and missing-limit fixtures | Gateway counter and model-metadata observations | Proposed |
+| =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Proposed |
+| =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message and late ephemeral marker in order, and allows a changing suffix without changing the stable prefix.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker visibility, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Proposed |
+| =F97-C05= | When a live frame is presented, =context-curate= is a reserved native Messages tool translated from one core-owned schema, guidance, and revision descriptor shared with OpenAI.  Valid keep/summary/erase/omission commits exactly once, supplies a valid immediate acknowledgement, retires consumed labels, and continues; a mixed ordinary/curation response groups all calls in one assistant array and their ID-matched result/acknowledgement in one following user array.  Invalid or duplicate effects follow Feature 88's bounded rules without ordinary-tool dispatch. | Core curation policy and loop sequencing; Anthropic and OpenAI translate the carrier descriptor into their own wire shapes | =F97-DP4= | Shared schema/guidance/revision parity, credential-free real-adapter curate/tool/curate/answer, mixed grouping, invalid/duplicate, reopen/branch projection | Opus 5.5 native curation and same-turn follow-up | Proposed |
+| =F97-C06= | A Messages stream delivers text progress as complete events arrive, releases tool and curation effects only after a valid terminal response, and classifies EOF, HTTP, SSE, timeout, and cancellation failures without publishing partial success or replay. | Anthropic HTTP/SSE transport and decoder | =F97-DP5= | Split-chunk, terminal, truncated, error, idle-timeout, cancellation, no partial tool dispatch, and single-settlement fixtures | Bounded Opus 5.5 streamed turn and cancellation smoke probe | Proposed |
+
+Cache counters, latency, and token savings are observational except for the
+named live write/read compatibility check in =F97-C04=.  Exact hit size is not
+a product threshold.  The 4,802-token observation is a baseline probe, not a
+fixture for future gateway behavior.
+
+* Supporting design and ownership
+
+** Capability declaration and context semantics
+
+Once its carrier and cache layout are proven, the Anthropic backend can declare
+=:continuation none=, =:observation-delivery inherited=,
+=:prefix-cache explicit= when enabled, =:provider-compaction none=, and
+=:reserved-effect-carrier context-curate-wire=.  Declare =:reasoning-state
+replayable= only for effective model/options whose signed blocks the adapter
+actually carries.  A configured beta =context_management= request alone does
+not establish =e='s opaque provider-compaction operation.  Do not claim
+request-local replacement or server-side continuation from cache hits.
+
+The harness already owns stable, dynamic, and ephemeral segment meaning.  The
+Anthropic adapter should render the entire ordered system projection first and
+use segment identities only to choose eligible =cache_control= positions.
+Start with the last eligible stable system block and preserve the existing
+explicit =5m=/=1h= TTL option.  A later request for multiple distinct cache
+boundaries should use the same segment identities and Anthropic's documented
+checkpoint rules, with a separate request-shape and gateway proof; Feature 97
+does not invent a generic checkpoint configuration surface.  Tool definitions
+precede system blocks in Anthropic's cache prefix, so changes to tool schemas
+must invalidate a previously warm prefix.
+
+** Native Messages replay and curation
+
+The Anthropic decoder should collect one assistant response's content blocks by
+native index until =message_stop=.  Keep exact signed =thinking= or
+=redacted_thinking= material and the relative order of thinking, text, and
+=tool_use= blocks in an opaque, provider-tagged request-local replay bundle.
+The renderer substitutes that bundle for the just-produced assistant tool
+envelopes, groups all calls in one assistant content array, and groups their
+ID-matched results in the following user content array.  It must not append
+duplicate synthetic =tool_use= blocks or split one native response into a
+series of assistant/user pairs.  A curation-only response has no ordinary tool
+entry, so its native =tool_use= and acknowledgement travel through the existing one-shot
+=:provider-request-replay-items= path.  For mixed ordinary and curation calls,
+one native assistant block sequence covers all calls in original order, and the
+ordinary result and reserved acknowledgement share the matching user array.
+
+The semantic =context-curate= arguments, label validation, commit, and
+duplicate budget stay in Feature 88's core/loop owners.  Before adding the
+Anthropic carrier, move OpenAI's current schema literal and guidance to a
+narrow core-owned carrier descriptor with the current revision and limits.
+OpenAI and Anthropic each map that descriptor to their own wire format and
+prove schema, guidance, and revision parity.  The Anthropic adapter builds ordinary =tool_use= definitions
+separately from the reserved carrier and filters the reserved name before
+application-tool dispatch.  Keep corrective/invalid acknowledgements provider
+local and one-shot.  Session projections already remove replay metadata from
+later durable context; test that boundary rather than persisting signed
+thinking as a new semantic record.
+
+** Usage and model limits
+
+The decoder should add one unambiguous full-context-input count to the
+provider-neutral usage event, while keeping Anthropic's fresh input, cache
+read, cache creation, output, and total counters separately available.  The
+core budget consumes that full-context value when present and retains its
+existing fallback for other adapters.  Model inventory must tolerate a listed
+model without =max_input_tokens= and return unknown for its window; it must not
+turn a successful catalog fetch into a fabricated limit.  A configured limit
+requires a gateway-specific contract or probe, not only public model claims.
+
+** Transport completion
+
+Keep the existing cancellable request handle and idle deadline.  Incremental
+SSE decoding belongs in the Anthropic transport/decoder, with bounded partial
+line/event buffering and exactly one completion/error/cancel transition.  Text
+may stream for display, but effectful tool and curation items wait for a valid
+terminal response.  Do not emit a =done= item or promote an anchor from a
+missing =message_stop=, a provider =error= event, or a truncated HTTP body.
+The synchronous injected requester remains a test seam but must obey the same
+terminal validation.
+
+* Scenario portfolio
+
+- =F97-S1=, accounting and inventory :: Parse fresh/cache-read/cache-write
+  usage and an Opus 5.5 catalog entry without limits; verify full-context
+  budget/status and unknown model window.  Covers =F97-C02=.
+- =F97-S2=, signed ordinary tool continuation :: Decode interleaved thinking,
+  text, and two native tool calls; submit results and inspect one assistant
+  content array, one following user result array, exact call-ID pairing, and
+  one-shot replay lifetime.  Covers =F97-C03=.
+- =F97-S3=, stable cache checkpoint :: Compare cached and uncached complete
+  system content, including late source markers; change only the dynamic
+  suffix, then change stable tools/instructions.  Covers =F97-C04=.
+- =F97-S4=, composed curation :: Run an injected Messages transport through
+  ordinary tool, frame A curation/acknowledgement, later frame B curation,
+  answer, and fresh user turn.  Include a response with an ordinary call and
+  =context-curate= together; inspect their single assistant array and the
+  matching user result/acknowledgement array.  Verify Feature 88 dispositions,
+  consumed-label retirement, signed replay, and no raw omitted source next turn.  Negative
+  variants reject invalid labels, duplicate closed-frame effects, and missing
+  acknowledgements without partial semantic commit.  Covers =F97-C03=--=F97-C05=.
+- =F97-S5=, transport lifecycle :: Feed split SSE chunks, missing terminal,
+  non-stream error, provider error, timeout, and cancellation.  Observe ordered
+  text progress, no tool dispatch on truncation, and one truthful terminal
+  state.  Covers =F97-C06=.
+- =F97-S6=, configured gateway :: On the exact target revision, use the
+  authenticated catalog and Opus 5.5 Messages endpoint for basic answer,
+  native ordinary-tool follow-up, curation, and two stable-prefix cache
+  requests.  Record endpoint, model ID, transport, options, response status,
+  cache counters, and probe date without credentials or source content.  Probe
+  Sonnet 5.5 separately and activate it only on catalog plus Messages success.
+  Covers =F97-C01=, =F97-C03=--=F97-C06= as external compatibility evidence.
+
+* Ordered delivery packages
+
+** F97-DP1: truthful usage and model-window accounting
+
+- Owner :: Anthropic usage/catalog adapter and =e-context-budget=.
+- Prerequisites :: Current canonical usage event and budget/status APIs.
+- Establishes :: =F97-C02=.
+- Useful stopping point :: Cached Anthropic turns display truthful context
+  use, while new catalog entries without limits remain usable with an unknown
+  window.
+- Evidence :: =F97-S1=, existing OpenAI budget regressions, focused
+  Anthropic ERT, byte compilation.  Keep billing counters unchanged.
+
+** F97-DP2: exact native tool and thinking replay
+
+- Owner :: Anthropic Messages decoder/renderer through the existing loop replay
+  seam; core policy stays unchanged.
+- Prerequisites :: Feature 94 canonical values and Feature 96 ordinary tool
+  continuation; no dependency on DP1.
+- Establishes :: =F97-C03=.
+- Useful stopping point :: Opus tool-result follow-up is valid with adaptive
+  thinking, independently of context curation or prompt caching.
+- Evidence :: =F97-S2=, malformed-signature/ordering fixtures, two ordinary
+  calls in one assistant array with one user result array, cancellation and
+  restart boundary, and focused loop/session tests.  Keep opaque replay
+  request-local and remove any duplicate tool envelopes.
+
+** F97-DP3: cache checkpoint layout without content loss
+
+- Owner :: Anthropic request renderer; harness segments remain semantic input.
+- Prerequisites :: Current Feature 88 segment projection; independent of DP2.
+- Establishes :: =F97-C04=.
+- Useful stopping point :: An opt-in cache checkpoint accelerates a stable
+  prefix while every dynamic and ephemeral source still reaches the model.
+- Evidence :: =F97-S3=, exact JSON body comparison, warm-prefix gateway check.
+  If the gateway ceases to accept =1h=, report the compatibility failure and
+  leave that opt-in disabled until an accepted TTL is proven; do not silently
+  retry with a different request shape.
+
+** F97-DP4: reserved native curation carrier
+
+- Owner :: Anthropic carrier codec; Feature 88 core/loop remain semantic owner.
+- Prerequisites :: DP2 native block replay and DP3 marker-preserving layout.
+  First extract the current OpenAI schema/guidance literal to a narrow
+  core-owned descriptor; then have both adapters translate it.
+- Establishes :: =F97-C05=.
+- Useful stopping point :: Anthropic can consume and curate an ephemeral frame
+  with the same semantic disposition as Responses, including valid immediate
+  acknowledgement and bounded duplicate recovery.
+- Evidence :: =F97-S4=, Feature 88 negative and multi-frame regressions,
+  shared schema/guidance/revision parity, mixed ordinary/curation native
+  grouping, and focused session reopen/branch tests.
+
+** F97-DP5: incremental and terminal-safe Messages transport
+
+- Owner :: Anthropic HTTP/SSE transport and decoder.
+- Prerequisites :: DP2's response block collector and DP4's reserved effect
+  shape, so partial delivery cannot commit an incomplete tool or curation
+  response.
+- Establishes :: =F97-C06=.
+- Useful stopping point :: Long streamed turns show progress and malformed or
+  interrupted streams fail without a false successful turn.
+- Evidence :: =F97-S5=, focused transport suite, real streamed smoke probe.
+
+** F97-DP6: gateway profile activation and composed acceptance
+
+- Owner :: Anthropic provider configuration, checked-in E2E profile, and
+  separately approved local Doom profile; no default GPT-6 chat switch.
+- Prerequisites :: DP1--DP5 and a fresh model-access probe.
+- Establishes :: =F97-C01=.
+- Useful stopping point :: Opus 5.5 is a selectable validated Messages profile
+  with an honest unknown gateway window.  Sonnet 5.5 stays pending until the
+  team gains access, then uses the same gates before activation.
+- Evidence :: =F97-S6= plus the direct =F97-ANTHROPIC-COMPOSED-TURN= scenario,
+  isolated configured E2E, affected repository suites, clean compilation, and
+  =bash e2e/run-current-config-tests.sh= for any local configuration or startup
+  change.  Report Opus and Sonnet external status separately.
+
+Each package is a reviewable semantic slice.  Run focused tests at the owner
+boundary, then the relevant complete gates before accepting DP6.  Update this
+plan and the index only when an actual status transition occurs.  Adapter and
+core changes require an Emacs restart to take effect in the user's running
+process; no live reload is part of repository validation.
+
+* Compatibility, uncertainty, and architecture check
+
+Keep existing Opus 4.8 and Sonnet 5 profiles selectable while they have real
+users; replace the denied local Opus 5 selection only when the 5.5 profile is
+validated.  Do not alias =claude-sonnet-5-5= to Sonnet 5, route Opus through
+the =-vertex= ID merely because it appears in the catalog, or turn a gateway
+403 into an adapter fallback.  Existing transcript and curation records need
+no migration.  Opaque signed blocks live only for the causal follow-up and are
+not a new durable context authority.  The added work is linear in the already
+bounded response blocks and SSE bytes; no request-time catalog lookup, polling,
+or synchronous network call belongs in the interactive path.  Tool dispatch may
+wait until =message_stop= rather than =content_block_stop=: that delay is needed
+to avoid executing effects from a response that subsequently truncates or
+fails before terminal validation.
+
+Before implementation, check that each chosen abstraction serves an actual
+cross-adapter contract: the existing backend capability values, core-owned
+curation schema, and one-shot replay seam suffice unless a concrete test shows
+otherwise.  Core must not import Anthropic fields; the adapter must not decide
+source lifetime.  Unexpected wire or replay errors surface as failed turns.
+External cache and Sonnet access remain explicit unknowns until fresh gateway
+evidence resolves them.  A completed mechanism package does not make the
+direct behavioral scenario pass.
+
+* Design self-check for implementation review
+
+Apply these questions to each package and again to their final composition.
+The planned answers identify the present design direction; implementation
+evidence must replace assumptions before a =Done= decision.
+
+1. If this work package stopped here, would the project be better off than if
+   it had not been built?  Each DP states a useful independently testable
+   outcome, even when the full scenario still waits for DP6.
+2. What final direction does this move toward?  One provider-neutral context
+   policy with native Messages and Responses adapters.
+3. Which decisions are likely to change, uncertain, or stable, and are
+   uncertain ones local and reversible instead of hidden behind speculative
+   abstraction?  Gateway access, TTL, and effective limits remain profile or
+   adapter evidence; Feature 88 disposition meaning stays stable.
+4. What component owns this behavior, and why?  Core owns curation and budget
+   semantics; Anthropic owns wire shape and SSE transport; configuration owns
+   model selection.
+5. Does this change increase or reduce coupling?  Are interfaces narrow,
+   consumer-shaped, and free of unused capabilities?  Use the existing backend
+   capability and one-shot replay seams; share only the real curation carrier
+   descriptor.
+6. Did any dependency start pointing the wrong way, especially from stable
+   policy toward concrete adapters, providers, UI, transport, persistence, or
+   tool clients?  Check that core imports no Anthropic or OpenAI module.
+7. Could any side effect be moved outward into an adapter or shell?  Catalog
+   HTTP, SSE, and provider acknowledgements stay in the Anthropic adapter;
+   semantic commits stay in the harness/session owner.
+8. What state does this change add or mutate?  Who owns it, how long should it
+   live, how often does it change, can it be rebuilt, and why is this the
+   smallest correct storage lifetime?  Signed replay and partial SSE state
+   last one causal request; semantic curation remains in existing durable
+   records; model metadata is refreshable adapter cache.
+9. What is the performance impact of this change?  Any regression must be
+   justified from first principles.  Parsing is linear; text streams sooner;
+   effectful dispatch may wait for =message_stop= to avoid truncated-response
+   side effects.  Measure that delay in the configured scenario.
+10. Are the abstractions and interfaces semantically real, and can
+    implementations substitute for each other without narrowed preconditions,
+    weakened behavior, ignored requirements, or unsupported-operation errors?
+    The shared carrier descriptor must express one Feature 88 disposition;
+    capability values describe only behavior the effective endpoint supports.
+11. What compatibility expectations apply, and were obsolete paths removed
+    unless required?  Preserve used older profiles; remove duplicate schema
+    literals and replace the denied Opus 5 selection after validation.
+12. What legacy code can we remove now?  Remove the Anthropic buffered-only
+    happy-path completion and any redundant cache/system renderer after its
+    replacement proves parity; do not retain dead compatibility branches.
+13. Where are expected errors handled, and where do unexpected errors surface?
+    Access denial and known transport errors are classified at the adapter;
+    malformed replay or inconsistent curation fails the turn visibly.
+14. What tests prove the core behavior independently of the full system?  If
+    the design changed, would tests change narrowly, or would unrelated tests
+    need rewrites?  =F97-S1=--=F97-S5= prove owner boundaries; =F97-S6= and the
+    direct scenario prove composition.  Keep mechanism fixtures local.
