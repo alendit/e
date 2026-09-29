@@ -34,7 +34,9 @@ running Emacs and provider configuration are unchanged.
   =e= scenario is unavailable until the planned adapter packages exist.
 - Mechanism status :: In progress.  =F97-DP1= is parent-accepted at
   =6a5f7155=, =F97-DP2= at =a077b513=, and =F97-DP3= at =d3b773ca=;
-  =F97-DP4=--=F97-DP6= remain unimplemented.
+  =F97-DP4= is committed but parent-unaccepted at =5c1558df= and is being
+  rebaselined in [[file:implementation-rebaseline-01.org][Implementation Rebaseline 01]].
+  =F97-DP5= and =F97-DP6= remain unimplemented.
 
 Here a /semantic checkpoint/ means Feature 88's durable, provider-neutral
 context boundary.  An Anthropic /cache checkpoint/ is a =cache_control= marker

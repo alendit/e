@@ -1,0 +1,66 @@
+#+title: Feature 97 DP4 Implementation Rebaseline 01
+
+* Decision
+
+=F97-DP4= remains unaccepted.  Keep =F97-DP5= and =F97-DP6= unassigned until
+the native curation path passes its composed, credential-free scenario and the
+Feature 88 consumed-source boundary.  The previous writer stopped with no
+active subprocesses or staged files.  The user's Emacs was not reloaded.
+
+* Preserved state
+
+| Classification | Revision or files | Evidence and disposition |
+|----------------+-------------------+--------------------------|
+| Accepted | =F97-DP1=--=F97-DP3= through =ab00c799= | Keep their accepted contracts and checks. |
+| Complete but unaccepted | =5c1558df=, nine DP4 source/test paths | Shared carrier and native codec are committed; parent review found the required real-Anthropic =F97-S4= composition witness absent.  Do not mark =F97-C05= accepted. |
+| Partial | Dirty =e-loop.el=, =e-loop-test.el=, and =e-harness-context-lifetime-composition-test.el= | Buffered tool-only response identity, curation acknowledgement attachment, the real-adapter =F97-S4= fixture, and older fake-backend fixture repairs.  =git diff --check= and batch =check-parens= pass.  The steering composition test still fails. |
+| Obsolete | None established | Preserve the partial edits for review. |
+
+The settled writer reported focused passes for buffered tool-only identity,
+curation acknowledgement attachment, the tool-result composition case, and
+the new real-Anthropic =F97-S4= test.  The full composition suite is not green.
+Those reported passes do not accept the dirty range.
+
+* Failed boundary
+
+Feature 88 =F88A3-SEM= requires the next ordinary request after a consumed
+observation to exclude its raw observation, call, replay item, result marker,
+and contaminated response IDs.  =F88A3-DELIVERY= disallows an
+observation-bearing response or descendant as a durable cross-turn anchor.
+The steering fixture's request C still contains =RAW-STEERING-RESULT= in its
+neutral messages.  A same-state OpenAI request-shape probe sent no network
+request: with a valid profile-matching anchor, C used
+=previous_response_id="resp-B"= and only =steer now= as literal input; without
+that anchor, the canonical body included =RAW-STEERING-RESULT= as a
+=function_call_output=.  The current request is therefore unsafe in either
+shape.  The direct evidence is
+[[file:../88-generational-context-ephemeral-frames/addendum3.org][Feature 88 Addendum 3]]
+contracts =F88A3-SEM= and =F88A3-DELIVERY=, plus the steering ERT in
+=test/e-harness-context-lifetime-composition-test.el=.
+
+=e-loop= currently drains queued steering in =start-request=, including the
+immediate provider request that carries a curation acknowledgement.  Separating
+that protocol request from the next ordinary request is a candidate recovery
+seam; verify it against native replay and canonical refresh before changing
+policy.  Keep the immediate acknowledgement request-local and one-shot.
+
+* Recovery order
+
+1. Settle the preserved DP4 identity and acknowledgement edits.  Keep the
+   tool-only response valid without invented assistant text, make each old
+   fake-backend curation fixture provide a real acknowledgement target, and
+   pass the full composition suite.  Prove the injected real-Anthropic
+   =F97-S4= flow, native ID pairing, multi-frame disposition, and later source
+   omission.  Commit this scoped recovery slice only after its checks pass;
+   it remains an intermediate DP4 checkpoint until the next slice is accepted.
+2. Correct the consumed-frame boundary for queued steering.  Distinguish the
+   immediate acknowledgement from the next ordinary request, rebuild that
+   ordinary request from session-owned durable and promoted context, and reject
+   contaminated anchor lineage.  Prove both stateless and valid-anchor wire
+   shapes, one-shot replay retirement, the steering ERT, and the real-Anthropic
+   =F97-S4= case.  Then review the full original =ab00c799= to final range
+   before accepting =F97-C05=.
+
+After =F97-C05= acceptance, continue with =F97-DP5=, then =F97-DP6=,
+repository gates, independent implementation review, and the plan's separate
+exact-revision gateway capability and configured-composition probes.
