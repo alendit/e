@@ -1,0 +1,41 @@
+#+title: Plan Review 03: Anthropic Messages Parity and Claude 5.5
+#+date: 2026-09-29
+#+startup: overview
+
+* Result
+
+Independent incremental review established =implementation-plan-fixed-point=
+for =plan.org= at commit
+=40fe2325199945b18eb612ee1ac8936df9c4e894=, Git blob
+=91700acd33763e5360359f2aa2b7eb851f952e76=, SHA-256
+=916e25ebe2e9fba3ba4648117e4d3e3481cb29eda6a8e64b92f6ca9f62dc404c=.
+All five findings from =plan-review-01.org= and =plan-review-02.org= are closed.
+This review was read-only and ran no gateway probe, test, or live Emacs command.
+
+* Closure and coverage
+
+- P1-01 :: DP2 validates =message_stop= and required signed replay before
+  emitting ordinary tool effects; DP4 consumes that guard before curation.
+- P1-02 :: C04 and DP3 preserve typed ephemeral markers next to their matching
+  tool results in both request projections with caching on and off.
+- P2-03 :: DP1--DP6 close state/lifetime, transaction and recovery, surface,
+  safe deferred work, and causal split/combine decisions.  DP4 preserves the
+  Feature 88 core prepare, session append, harness consume, loop acknowledge
+  sequence.
+- P2-04 :: External evidence is bound to the accepted commit and capability
+  identity, with its 24-hour reuse window starting at the probe's UTC
+  completion.  Minimal endpoint probes and configured composition are separate.
+- P2-05 :: C01 owns older-profile and GPT-6 default compatibility.
+
+The reviewer cleared the stable contract and delivery-plan cells, including
+the one-to-one =F97-C01=--=F97-C06= to =F97-DP1=--=F97-DP6= map, useful stopping
+points, dependency order, scenarios, evidence topology, and acceptance cost.
+No plan cell remains unknown at this identity.
+
+* Implementation and external status
+
+Production work has not begun.  =F97-ANTHROPIC-COMPOSED-TURN= remains
+unavailable in =e=.  =F97-S6a=/=F97-S6b= still require exact-revision gateway
+evidence after implementation review.  Sonnet 5.5 access and the gateway's
+effective model limit remain unknown.  A plan result does not establish
+deterministic implementation acceptance or external capability.
