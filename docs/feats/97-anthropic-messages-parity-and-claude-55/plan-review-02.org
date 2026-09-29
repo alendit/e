@@ -1,0 +1,38 @@
+#+title: Plan Review 02: Anthropic Messages Parity and Claude 5.5
+#+date: 2026-09-29
+#+startup: overview
+
+* Result
+
+The amended plan at commit =d34a1872=, SHA-256
+=e1db6e43f791b6c9467af35cf24ce20212bd5f2ad44ff823fa31e7a104c2dc62=,
+did not reach =implementation-plan-fixed-point=.  The same independent reviewer
+closed initial findings P1-01, P1-02, and P2-05 and found two local defects in
+the remaining plan cells.  No production edits were admitted.
+
+* Remaining findings
+
+** P2-03: DP4 assigns atomic append to the wrong owner
+
+=plan.org:357-359= says core atomically commits curation.  Feature 88 Addendum
+8 and =e-harness-context-runtime.el:976-1033= instead require core validation
+and detached preparation, session atomic append, harness frame consumption,
+then loop acknowledgement.  The plan must retain this exact ordering and
+ownership.
+
+** P2-04: gateway freshness starts at review rather than probe
+
+=plan.org:123-125= measures a 24-hour reuse window from evidence-owner review.
+That could make an arbitrarily old probe reusable.  The window must start at
+the probe's UTC completion time and remain bound to the same accepted commit
+and capability identity.
+
+* Coverage decision
+
+Single authority, behavioral trace, durable boundary, scenario diagnosis,
+evidence topology, telemetry, exact limits, defensive actionability, change
+locality, workflow boundary, contract-to-package mapping, useful stopping
+points, dependency order, package size, acceptance cost, and checkpoint
+distinction cleared.  Transaction closure and external freshness remain open
+only at the two locations above.  The direct composed =e= scenario is still
+unavailable; external capability remains unconfirmed.
