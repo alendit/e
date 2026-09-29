@@ -589,51 +589,48 @@ Return the tool-use ids in native order."
            (push id tool-use-ids)))))
     (nreverse tool-use-ids)))
 
-(defun e-anthropic--message-position (message messages)
-  "Return MESSAGE's position in MESSAGES by identity."
-  (cl-position message messages :test #'eq))
-
-(defun e-anthropic--grouped-tool-followup (messages blocks)
+(defun e-anthropic--grouped-tool-followup (indexes blocks)
   "Return native assistant and user messages for replay BLOCKS.
-MESSAGES must contain one neutral call and result for every native tool-use id.
-The returned plist also lists message objects to suppress from ordinary
-per-call rendering."
+INDEXES contains request-local call, result, and message-position indexes.
+Every native tool-use id must match one neutral call and result.  The returned
+plist also lists message objects to suppress from ordinary per-call rendering."
   (let ((tool-use-ids (e-anthropic--validate-native-replay-blocks blocks))
+        (calls-by-id (plist-get indexes :calls))
+        (results-by-id (plist-get indexes :results))
+        (positions (plist-get indexes :positions))
         (call-messages nil)
-        (result-messages nil))
+        (result-messages nil)
+        first-call
+        first-call-position)
     (unless tool-use-ids
       (signal 'e-anthropic-response-invalid
               '("native replay bundle has no tool_use block")))
     (dolist (id tool-use-ids)
-      (let* ((calls
-              (cl-remove-if-not
-               (lambda (message)
-                 (and (eq (plist-get message :role) 'tool-call)
-                      (equal (plist-get (plist-get message :content) :id) id)))
-               messages))
-             (results
-              (cl-remove-if-not
-               (lambda (message)
-                 (and (eq (plist-get message :role) 'tool)
-                      (equal (plist-get
-                              (plist-get message :content) :tool-call-id)
-                             id)))
-               messages)))
+      (let* ((calls (gethash id calls-by-id))
+             (results (gethash id results-by-id))
+             (call (car calls))
+             (result (car results))
+             (call-position (gethash call positions))
+             (result-position (gethash result positions)))
         (unless (= (length calls) 1)
           (signal 'e-anthropic-response-invalid
                   '("native tool_use does not have exactly one tool-call record")))
         (unless (= (length results) 1)
           (signal 'e-anthropic-response-invalid
                   '("native tool_use does not have exactly one tool result")))
-        (when (<= (or (e-anthropic--message-position (car results) messages) -1)
-                  (or (e-anthropic--message-position (car calls) messages) -1))
+        (when (<= result-position call-position)
           (signal 'e-anthropic-response-invalid
                   '("tool result precedes its tool-call record")))
-        (push (car calls) call-messages)
-        (push (car results) result-messages)))
+        (when (or (null first-call-position)
+                  (< call-position first-call-position))
+          (setq first-call call
+                first-call-position call-position))
+        (push call call-messages)
+        (push result result-messages)))
     (setq call-messages (nreverse call-messages)
           result-messages (nreverse result-messages))
-    (list :messages
+    (list :first-call first-call
+          :messages
           (list (list :role "assistant" :content (vconcat blocks))
                 (list :role "user"
                       :content
@@ -646,41 +643,55 @@ per-call rendering."
   "Map backend-neutral MESSAGES to grouped native Messages turns.
 Pre-scan each immediate tool-result carrier so its native response replaces,
 rather than follows, the individual call/result entries in transcript order."
-  (let ((consumed (make-hash-table :test 'eq))
+  (let ((positions (make-hash-table :test 'eq))
+        (calls-by-id (make-hash-table :test 'equal))
+        (results-by-id (make-hash-table :test 'equal))
+        (consumed (make-hash-table :test 'eq))
         (replay-groups (make-hash-table :test 'eq))
-        (wire-messages nil))
+        (wire-messages-reversed nil)
+        (position 0))
     (dolist (message messages)
-      (when-let* ((blocks (e-anthropic--anthropic-replay-blocks message)))
-        (let* ((group (e-anthropic--grouped-tool-followup messages blocks))
-               (members (plist-get group :consumed))
-               (first-call
-                (seq-find
-                 (lambda (candidate)
-                   (and (eq (plist-get candidate :role) 'tool-call)
-                        (memq candidate members)))
-                 messages)))
-          (unless first-call
-            (signal 'e-anthropic-response-invalid
-                    '("native replay bundle has no matching tool-call")))
-          (when (or (gethash first-call replay-groups)
-                    (seq-some (lambda (member-message)
-                                (gethash member-message consumed))
-                              members))
-            (signal 'e-anthropic-response-invalid
-                    '("overlapping Anthropic replay bundles in one request")))
-          (puthash first-call group replay-groups)
-          (dolist (member-message members)
-            (puthash member-message t consumed)))))
-    (dolist (message messages)
-      (cond
-       ((gethash message replay-groups)
-        (setq wire-messages
-              (nconc wire-messages
-                     (plist-get (gethash message replay-groups) :messages))))
-       ((not (gethash message consumed))
-        (setq wire-messages
-              (nconc wire-messages (list (e-anthropic--message message)))))))
-    wire-messages))
+      (unless (gethash message positions)
+        (puthash message position positions))
+      (setq position (1+ position))
+      (pcase (plist-get message :role)
+        ('tool-call
+         (let* ((id (plist-get (plist-get message :content) :id))
+                (matches (gethash id calls-by-id)))
+           (puthash id (cons message matches) calls-by-id)))
+        ('tool
+         (let* ((id (plist-get (plist-get message :content) :tool-call-id))
+                (matches (gethash id results-by-id)))
+           (puthash id (cons message matches) results-by-id)))))
+    (let ((indexes (list :positions positions
+                         :calls calls-by-id
+                         :results results-by-id)))
+      (dolist (message messages)
+        (when-let* ((blocks (e-anthropic--anthropic-replay-blocks message)))
+          (let* ((group (e-anthropic--grouped-tool-followup indexes blocks))
+                 (members (plist-get group :consumed))
+                 (first-call (plist-get group :first-call)))
+            (unless first-call
+              (signal 'e-anthropic-response-invalid
+                      '("native replay bundle has no matching tool-call")))
+            (when (or (gethash first-call replay-groups)
+                      (seq-some (lambda (member-message)
+                                  (gethash member-message consumed))
+                                members))
+              (signal 'e-anthropic-response-invalid
+                      '("overlapping Anthropic replay bundles in one request")))
+            (puthash first-call group replay-groups)
+            (dolist (member-message members)
+              (puthash member-message t consumed)))))
+      (dolist (message messages)
+        (let ((group (gethash message replay-groups)))
+          (cond
+           (group
+            (dolist (wire-message (plist-get group :messages))
+              (push wire-message wire-messages-reversed)))
+           ((not (gethash message consumed))
+            (push (e-anthropic--message message) wire-messages-reversed)))))
+      (nreverse wire-messages-reversed))))
 
 (defun e-anthropic--tool-definition (tool)
   "Map backend-neutral TOOL to a Messages tool definition."
@@ -1094,9 +1105,10 @@ Text deltas across blocks remain a single `assistant-message'.  Non-stream JSON
 errors are surfaced as `backend-error' items because gateways can return those
 instead of an SSE stream."
   (condition-case err
-      (let ((blocks nil)
+      (let ((blocks (make-hash-table :test 'eql))
             (block-order nil)
             (next-block-index 0)
+            (open-block-count 0)
             (progress-items nil)
             (input-tokens nil)
             (cached-tokens nil)
@@ -1113,12 +1125,12 @@ instead of an SSE stream."
             (reason &optional provider-event)
             (signal 'e-anthropic-response-invalid
                     (list reason provider-event)))
-           (block-entry (index blocks)
-            (assq index blocks))
+           (block-entry (index)
+            (gethash index blocks))
            (entry-block (entry)
-            (plist-get (cdr entry) :block))
-           (entry-set (entry key value)
-            (setcdr entry (plist-put (cdr entry) key value)))
+            (plist-get entry :block))
+           (entry-set (index entry key value)
+            (puthash index (plist-put entry key value) blocks))
            (absorb-usage
             (usage)
             (when usage
@@ -1166,23 +1178,26 @@ instead of an SSE stream."
                                 (stringp (plist-get block :type)))
                      (reject "content block start has malformed index or block"
                              event))
-                   (push (cons index
-                               (list :block (copy-tree block)
-                                     :partial-json ""
-                                     :stopped nil))
-                         blocks)
+                   (puthash index
+                            (list :block (copy-tree block)
+                                  :text-chunks nil
+                                  :thinking-chunks nil
+                                  :partial-json-chunks nil
+                                  :stopped nil)
+                            blocks)
                    (push index block-order)
-                   (setq next-block-index (1+ next-block-index))))
+                   (setq next-block-index (1+ next-block-index)
+                         open-block-count (1+ open-block-count))))
                 ("content_block_delta"
                  (when message-delta-seen
                    (reject "content block delta followed message_delta" event))
                  (let* ((index (plist-get event :index))
                         (entry (and (integerp index)
-                                    (block-entry index blocks)))
+                                    (block-entry index)))
                         (delta (plist-get event :delta))
                         (delta-type (plist-get delta :type)))
                    (unless (and entry
-                                (not (plist-get (cdr entry) :stopped))
+                                (not (plist-get entry :stopped))
                                 (e-anthropic--json-object-p delta)
                                 (stringp delta-type))
                      (reject "content block delta has invalid order or shape"
@@ -1197,10 +1212,8 @@ instead of an SSE stream."
                             (reject "text delta does not match its content block"
                                     event))
                           (entry-set
-                           entry :block
-                           (plist-put block :text
-                                      (concat (or (plist-get block :text) "")
-                                              text)))
+                           index entry :text-chunks
+                           (cons text (plist-get entry :text-chunks)))
                           (push (list :type 'assistant-delta :content text)
                                 progress-items)))
                        ("thinking_delta"
@@ -1212,28 +1225,36 @@ instead of an SSE stream."
                              "thinking delta does not match its content block"
                              event))
                           (entry-set
-                           entry :block
-                           (plist-put block :thinking
-                                      (concat (or (plist-get block :thinking) "")
-                                              thinking)))
+                           index entry :thinking-chunks
+                           (cons thinking (plist-get entry :thinking-chunks)))
                           (push (list :type 'reasoning-raw-delta
                                       :stream-kind 'raw
                                       :content thinking
                                       :content-index index)
                                 progress-items)))
                        ("signature_delta"
-                        (let ((signature (plist-get delta :signature)))
+                        (let* ((signature (plist-get delta :signature))
+                               (thinking
+                                (concat (or (plist-get block :thinking) "")
+                                        (mapconcat
+                                         #'identity
+                                         (nreverse
+                                          (plist-get entry :thinking-chunks))
+                                         ""))))
                           (unless (and (equal block-type "thinking")
-                                       (stringp (plist-get block :thinking))
-                                       (not (string-empty-p
-                                             (plist-get block :thinking)))
+                                       (stringp thinking)
+                                       (not (string-empty-p thinking))
                                        (stringp signature)
                                        (not (string-empty-p signature))
                                        (not (plist-member block :signature)))
                             (reject "signature delta is malformed or misplaced"
                                     event))
-                          (entry-set entry :block
-                                     (plist-put block :signature signature))))
+                          (entry-set index entry :block
+                                     (plist-put block :thinking thinking))
+                          (entry-set index entry :thinking-chunks nil)
+                          (entry-set index entry :block
+                                     (plist-put (entry-block entry)
+                                                :signature signature))))
                        ("input_json_delta"
                         (let ((partial-json (plist-get delta :partial_json)))
                           (unless (and (equal block-type "tool_use")
@@ -1242,9 +1263,9 @@ instead of an SSE stream."
                              "input JSON delta does not match a tool_use block"
                              event))
                           (entry-set
-                           entry :partial-json
-                           (concat (or (plist-get (cdr entry) :partial-json) "")
-                                   partial-json))))
+                           index entry :partial-json-chunks
+                           (cons partial-json
+                                 (plist-get entry :partial-json-chunks)))))
                        ("citations_delta"
                         (let ((citation (plist-get delta :citation)))
                           (unless (and (equal block-type "text")
@@ -1261,7 +1282,7 @@ instead of an SSE stream."
                                         (proper-list-p citations))
                               (reject "malformed text citations" event))
                             (entry-set
-                             entry :block
+                             index entry :block
                              (plist-put
                               block :citations
                               (vconcat (append citations (list citation))))))))
@@ -1275,30 +1296,59 @@ instead of an SSE stream."
                    (reject "content block stopped after message_delta" event))
                  (let* ((index (plist-get event :index))
                         (entry (and (integerp index)
-                                    (block-entry index blocks))))
+                                    (block-entry index))))
                    (unless (and entry
-                                (not (plist-get (cdr entry) :stopped)))
+                                (not (plist-get entry :stopped)))
                      (reject "content block stop has invalid order" event))
                    (let* ((block (entry-block entry))
                           (block-type (plist-get block :type)))
-                     (when (equal block-type "tool_use")
+                     (cond
+                      ((equal block-type "tool_use")
                        (let* ((partial-json
-                               (plist-get (cdr entry) :partial-json))
+                               (mapconcat
+                                #'identity
+                                (nreverse
+                                 (plist-get entry :partial-json-chunks))
+                                ""))
                               (input
                                (if (string-empty-p partial-json)
                                    (plist-get block :input)
                                  (e-anthropic--parse-tool-input partial-json))))
                          (unless (e-anthropic--json-object-p input)
                            (reject "tool_use input is not a JSON object" event))
-                         (entry-set entry :block (plist-put block :input input))))
-                   (entry-set entry :stopped t))))
+                         (entry-set index entry :block
+                                    (plist-put block :input input))))
+                      ((equal block-type "text")
+                       (when (plist-get entry :text-chunks)
+                         (entry-set
+                          index entry :block
+                          (plist-put
+                           block :text
+                           (concat (or (plist-get block :text) "")
+                                   (mapconcat
+                                    #'identity
+                                    (nreverse (plist-get entry :text-chunks))
+                                    ""))))
+                         (entry-set index entry :text-chunks nil)))
+                      ((equal block-type "thinking")
+                       (when (plist-get entry :thinking-chunks)
+                         (entry-set
+                          index entry :block
+                          (plist-put
+                           block :thinking
+                           (concat (or (plist-get block :thinking) "")
+                                   (mapconcat
+                                    #'identity
+                                    (nreverse
+                                     (plist-get entry :thinking-chunks))
+                                    ""))))
+                         (entry-set index entry :thinking-chunks nil))))
+                   (entry-set index entry :stopped t)
+                   (setq open-block-count (1- open-block-count)))))
                 ("message_delta"
                  (when message-delta-seen
                    (reject "duplicate message_delta event" event))
-                 (when (seq-some
-                        (lambda (entry)
-                          (not (plist-get (cdr entry) :stopped)))
-                        blocks)
+                 (when (> open-block-count 0)
                    (reject "message_delta arrived before content blocks stopped"
                            event))
                  (let ((delta (plist-get event :delta)))
@@ -1311,10 +1361,7 @@ instead of an SSE stream."
                  (absorb-usage (plist-get event :usage))
                  (setq message-delta-seen t))
                 ("message_stop"
-                 (when (seq-some
-                        (lambda (entry)
-                          (not (plist-get (cdr entry) :stopped)))
-                        blocks)
+                 (when (> open-block-count 0)
                    (reject "message_stop arrived before content blocks stopped"
                            event))
                  (setq terminal-seen t))
@@ -1339,7 +1386,7 @@ instead of an SSE stream."
            (t
             (let* ((ordered-blocks
                     (mapcar (lambda (index) (entry-block
-                                             (block-entry index blocks)))
+                                             (block-entry index)))
                             (nreverse block-order)))
                    (tool-use-blocks
                     (seq-filter

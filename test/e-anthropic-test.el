@@ -603,6 +603,64 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                       :items [(:empty nil :values [1 :json-false])])))
       (:type done :reason tool-use)))))
 
+(ert-deftest e-anthropic-test-parse-joins-split-content-block-deltas-in-order ()
+  "Text, thinking, and tool input survive many provider delta boundaries."
+  (let* ((items
+          (e-anthropic-parse-stream
+           (e-anthropic-test--sse-stream
+            '((:type "message_start" :message (:role "assistant" :content []))
+              (:type "content_block_start" :index 0
+               :content_block (:type "thinking" :thinking ""))
+              (:type "content_block_delta" :index 0
+               :delta (:type "thinking_delta" :thinking "Think "))
+              (:type "content_block_delta" :index 0
+               :delta (:type "thinking_delta" :thinking "in pieces."))
+              (:type "content_block_delta" :index 0
+               :delta (:type "signature_delta" :signature "split-signature"))
+              (:type "content_block_stop" :index 0)
+              (:type "content_block_start" :index 1
+               :content_block (:type "text" :text ""))
+              (:type "content_block_delta" :index 1
+               :delta (:type "text_delta" :text "split "))
+              (:type "content_block_delta" :index 1
+               :delta (:type "text_delta" :text "text"))
+              (:type "content_block_stop" :index 1)
+              (:type "content_block_start" :index 2
+               :content_block (:type "tool_use" :id "toolu-split"
+                              :name "inspect-split" :input nil))
+              (:type "content_block_delta" :index 2
+               :delta (:type "input_json_delta" :partial_json "{\"path\":"))
+              (:type "content_block_delta" :index 2
+               :delta (:type "input_json_delta" :partial_json "\"fragmented"))
+              (:type "content_block_delta" :index 2
+               :delta (:type "input_json_delta" :partial_json "\"}"))
+              (:type "content_block_stop" :index 2)
+              (:type "message_delta" :delta (:stop_reason "tool_use"))
+              (:type "message_stop")))))
+         (tool-call (seq-find (lambda (item)
+                                (eq (plist-get item :type) 'tool-call))
+                              items))
+         (replay-blocks
+          (mapcar (lambda (item) (plist-get item :item))
+                  (seq-filter
+                   (lambda (item)
+                     (eq (plist-get item :type) 'provider-replay-item))
+                   items))))
+    (should
+     (equal (plist-get (seq-find (lambda (item)
+                                   (eq (plist-get item :type)
+                                       'assistant-message))
+                                 items)
+                       :content)
+            "split text"))
+    (should (equal (plist-get tool-call :arguments) '(:path "fragmented")))
+    (should (equal replay-blocks
+                   '((:type "thinking" :thinking "Think in pieces."
+                      :signature "split-signature")
+                     (:type "text" :text "split text")
+                     (:type "tool_use" :id "toolu-split"
+                      :name "inspect-split" :input (:path "fragmented")))))))
+
 (ert-deftest e-anthropic-test-parse-signed-two-tool-response-retains-native-order ()
   "A complete response releases each tool call before its native replay blocks."
   (let* ((items (e-anthropic-parse-stream
@@ -1106,6 +1164,85 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (when reopened
         (ignore-errors (e-session-sqlite-store-close reopened)))
       (delete-directory directory t))))
+
+(ert-deftest e-anthropic-test-cancelled-partial-response-discards-late-tools ()
+  "Cancelling an in-flight Messages response discards its native tool replay."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (tools (e-tools-registry-create))
+         (harness
+          (e-harness-create
+           :backend (e-anthropic-backend-create :provider 'eng-anthropic)))
+         (request-buffer nil)
+         (url-callback nil)
+         (tool-runs 0)
+         (parse-count 0)
+         (parse-function (symbol-function 'e-anthropic-parse-stream)))
+    (e-tools-test-register
+     tools
+     :name "inspect-one"
+     :description "Inspect a path."
+     :parameters '(:type "object"
+                   :properties (:path (:type "string")))
+     :handler (lambda (_arguments)
+                (cl-incf tool-runs)
+                "result"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'url-retrieve)
+                   (lambda (_url callback &rest _args)
+                     (setq request-buffer
+                           (generate-new-buffer " *e-anthropic-cancel*"))
+                     (setq url-callback callback)
+                     request-buffer))
+                  ((symbol-function 'e-anthropic-parse-stream)
+                   (lambda (response)
+                     (cl-incf parse-count)
+                     (funcall parse-function response)))
+                  ((symbol-function 'e-harness-tools)
+                   (lambda (_harness &optional _session-id _turn-id)
+                     tools)))
+          (e-harness-create-session harness :id "anthropic-cancel")
+          (e-harness-test-prompt-async
+           harness "anthropic-cancel" "Inspect both paths.")
+          (should (e-anthropic-test--wait-until
+                   (lambda () url-callback) 1.0))
+          (with-current-buffer request-buffer
+            (insert "HTTP/1.1 200 OK\n\n"
+                    (e-anthropic-test--sse-stream
+                     (butlast e-anthropic-test--signed-two-tool-events))))
+          (should (e-harness-test-abort harness "anthropic-cancel"))
+          (should
+           (eq (plist-get (e-harness-wait-batch harness "anthropic-cancel" 0.5)
+                          :status)
+               'cancelled))
+          ;; A transport completion already queued when cancellation runs must
+          ;; not parse or release the now-complete response.
+          (let ((late-buffer
+                 (generate-new-buffer " *e-anthropic-cancel-late*")))
+            (unwind-protect
+                (with-current-buffer late-buffer
+                  (insert "HTTP/1.1 200 OK\n\n"
+                          (e-anthropic-test--sse-stream
+                           e-anthropic-test--signed-two-tool-events))
+                  (funcall url-callback nil))
+              (when (buffer-live-p late-buffer)
+                (kill-buffer late-buffer))))
+          (should (= parse-count 0))
+          (should (= tool-runs 0))
+          (should-not
+           (seq-some (lambda (message)
+                       (eq (plist-get message :role) 'tool-call))
+                     (e-harness-messages harness "anthropic-cancel"))))
+      (ignore-errors (e-harness-test-abort harness "anthropic-cancel"))
+      (when (buffer-live-p request-buffer)
+        (kill-buffer request-buffer)))))
 
 (ert-deftest e-anthropic-test-harness-streams-prompt-flow ()
   "The Anthropic harness helper runs prompt to persisted assistant message."
