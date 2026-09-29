@@ -32,7 +32,8 @@ running Emacs and provider configuration are unchanged.
 - Behavioral status :: Partial at the direct gateway boundary: Opus 5.5
   accepts basic Messages, cache control, and native tool use.  The composed
   =e= scenario is unavailable until the planned adapter packages exist.
-- Mechanism status :: Not started.
+- Mechanism status :: In progress.  =F97-DP1= is parent-accepted at
+  =6a5f7155=; =F97-DP2=--=F97-DP6= remain unimplemented.
 
 Here a /semantic checkpoint/ means Feature 88's durable, provider-neutral
 context boundary.  An Anthropic /cache checkpoint/ is a =cache_control= marker
@@ -103,7 +104,7 @@ they preserve the observable result.
 | ID | Observable contract | Semantic owner | Establishing package | Deterministic evidence | External compatibility evidence | Status |
 |----+---------------------+----------------+----------------------+------------------------+---------------------------------+--------|
 | =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success.  Existing usable Opus 4.8 and Sonnet 5 profiles remain selectable, and the standard GPT-6 chat default does not change as part of this feature. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Proposed |
-| =F97-C02= | Provider usage reports full context input as fresh + cache-read + cache-creation input while preserving each original billing counter.  An absent gateway model limit is represented as unknown, so status and auto-compaction do not assume an unproved window. | Anthropic usage decoder and core context budget; catalog adapter owns model metadata | =F97-DP1= | Cache-hit fixture 17 + 4,802 = 4,819; budget/status and missing-limit fixtures | Gateway counter and model-metadata observations | Proposed |
+| =F97-C02= | Provider usage reports full context input as fresh + cache-read + cache-creation input while preserving each original billing counter.  An absent gateway model limit is represented as unknown, so status and auto-compaction do not assume an unproved window. | Anthropic usage decoder and core context budget; catalog adapter owns model metadata | =F97-DP1= | Cache-hit fixture 17 + 4,802 = 4,819; budget/status and missing-limit fixtures | Gateway counter and model-metadata observations | Accepted |
 | =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing terminal completion or missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Proposed |
 | =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message in order, and presents each late ephemeral marker paired with its matching source, including each tool result, with caching on or off.  A changing suffix leaves the stable prefix unchanged.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment and marker meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker-to-result pairing in both request projections, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Proposed |
 | =F97-C05= | When a live frame is presented, =context-curate= is a reserved native Messages tool translated from one core-owned schema, guidance, and revision descriptor shared with OpenAI.  Only a complete valid response may commit keep/summary/erase/omission exactly once, supply a valid immediate acknowledgement, retire consumed labels, and continue; a mixed ordinary/curation response groups all calls in one assistant array and their ID-matched result/acknowledgement in one following user array.  Invalid or duplicate effects follow Feature 88's bounded rules without ordinary-tool dispatch. | Core curation policy and loop sequencing; Anthropic and OpenAI translate the carrier descriptor into their own wire shapes | =F97-DP4= | Shared schema/guidance/revision parity, credential-free real-adapter curate/tool/curate/answer, mixed grouping, invalid/duplicate, reopen/branch projection | Opus 5.5 native curation and same-turn follow-up | Proposed |
@@ -432,6 +433,18 @@ composition before final independent review.  Update this plan and the index
 only when an actual status transition occurs.  Adapter and core changes require
 an Emacs restart to take effect in the user's running process; no live reload is
 part of repository validation.
+
+* Implementation checkpoints
+
+- =F97-DP1= / =F97-C02= :: Parent-accepted at =6a5f7155=.  Anthropic emits
+  the full-context input count alongside its original counters; budget/status
+  prefers that count, and valid catalog entries without a limit remain listed
+  with an unknown window.  Durable activity projection retains the count.
+  Focused Anthropic ERT passed 56/56, context-budget ERT 11/11, four adjacent
+  composition/regression selectors passed, warning-as-error byte compilation
+  passed for changed production modules, and the committed diff passed
+  =git diff --check=.  This checkpoint does not establish the composed gateway
+  scenario or external capability.
 
 * Compatibility, uncertainty, and architecture check
 
