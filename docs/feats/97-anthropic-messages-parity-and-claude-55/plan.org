@@ -120,9 +120,9 @@ Each capability probe and the configured composition run records the gateway
 endpoint and team/profile, protocol and beta headers, exact model ID,
 transport, material options and tool-schema revision, UTC time, response
 status, counters where relevant, and failure class, without credentials or
-source content.  Evidence is reusable only on the same accepted commit and
-capability identity and only within 24 hours of its evidence-owner review; any
-material request-shape or owner change requires a new run.  Access denial,
+source content.  Evidence is reusable only for the same accepted commit and
+capability identity, within 24 hours after the probe's UTC completion time;
+any material request-shape or owner change requires a new run.  Access denial,
 missing credentials, infrastructure failure, and timeout leave the capability
 unconfirmed; a valid contradictory response is a product-contract failure.
 The live probes during =F97-DP3= and =F97-DP5= are diagnostic only.
@@ -355,9 +355,10 @@ terminal validation.
   static policy.  The current frame opportunity and native acknowledgement
   live for one request/turn; only accepted Feature 88 dispositions are durable.
 - Transaction and recovery :: DP2's terminal guard precedes curation preflight.
-  Core validates and atomically commits one disposition before the loop consumes
-  its frame and sends one ID-matched acknowledgement.  Invalid or duplicate
-  effects follow Feature 88's bounded recovery without ordinary-tool dispatch
+  Core validates the disposition and prepares one detached package; session
+  atomically appends it, the harness consumes the frame, and the loop sends one
+  ID-matched acknowledgement.  Invalid or duplicate effects follow Feature
+  88's bounded recovery without ordinary-tool dispatch
   or partial semantic mutation; cancellation discards uncommitted replay.
 - Surface :: One native reserved =context-curate= definition translated from
   the core descriptor, existing loop effect seam, and immediate Messages
