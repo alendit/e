@@ -520,9 +520,9 @@ RESULT-MARKERS maps each marked tool result to its request-local marker."
              :content (vector (e-anthropic--text-block content)))))))
 
 (defun e-anthropic--message-replay-items (message)
-  "Return provider replay records carried by tool-result MESSAGE metadata."
+  "Return native replay records carried by MESSAGE metadata."
   (let ((records
-         (and (eq (plist-get message :role) 'tool)
+         (and (memq (plist-get message :role) '(assistant tool))
               (plist-get (plist-get message :metadata)
                          :provider-replay-items))))
     (cond
@@ -534,27 +534,54 @@ RESULT-MARKERS maps each marked tool result to its request-local marker."
       (signal 'e-anthropic-response-invalid
               '("malformed provider replay bundle"))))))
 
-(defun e-anthropic--anthropic-replay-blocks (message)
-  "Return Anthropic native content blocks carried by result MESSAGE.
-Ignore provider replay records belonging to another adapter."
-  (when (eq (plist-get message :role) 'tool)
-    (let ((records
-           (seq-filter
-            (lambda (record)
-              (member (plist-get record :provider-id) '(anthropic "anthropic")))
-            (e-anthropic--message-replay-items message))))
-      (when records
-        (mapcar
-         (lambda (record)
-           (let ((block (plist-get record :item)))
-             (unless (and (member (plist-get record :type)
-                                  '(provider-replay-item "provider-replay-item"))
-                          (listp block)
-                          (stringp (plist-get block :type)))
-               (signal 'e-anthropic-response-invalid
-                       '("malformed Anthropic native replay block")))
-             (copy-tree block)))
-         records)))))
+(defun e-anthropic--anthropic-replay-records (records)
+  "Return detached Anthropic replay RECORDS from a provider replay sequence."
+  (let ((records
+         (cond
+          ((null records) nil)
+          ((and (vectorp records) (not (stringp records)))
+           (append records nil))
+          ((proper-list-p records) records)
+          (t
+           (signal 'e-anthropic-response-invalid
+                   '("malformed provider replay bundle")))))
+        result)
+    (dolist (record records)
+      (when (member (plist-get record :provider-id) '(anthropic "anthropic"))
+        (let ((block (plist-get record :item))
+              (kind (plist-get record :replay-kind)))
+          (unless (and (member (plist-get record :type)
+                               '(provider-replay-item "provider-replay-item"))
+                       (listp block)
+                       (stringp (plist-get block :type))
+                       (memq kind '(nil acknowledgement)))
+            (signal 'e-anthropic-response-invalid
+                    '("malformed Anthropic native replay item")))
+          (when (and (eq kind 'acknowledgement)
+                     (not (equal (plist-get block :type) "tool_result")))
+            (signal 'e-anthropic-response-invalid
+                    '("curation acknowledgement is not a tool_result")))
+          (push (copy-tree record) result))))
+    (nreverse result)))
+
+(defun e-anthropic--acknowledgement-index (blocks)
+  "Return the curation acknowledgement blocks in BLOCKS keyed by call id."
+  (let ((index (make-hash-table :test 'equal)))
+    (dolist (block blocks)
+      (let ((id (plist-get block :tool_use_id))
+            (content (plist-get block :content)))
+        (unless (and (e-anthropic--json-object-p block)
+                     (equal (plist-get block :type) "tool_result")
+                     (stringp id) (not (string-empty-p id))
+                     (or (stringp content)
+                         (and (vectorp content) (not (stringp content)))))
+          (signal 'e-anthropic-response-invalid
+                  '("malformed curation tool_result acknowledgement")))
+        (when (gethash id index)
+          (signal 'e-anthropic-response-invalid
+                  '("duplicate curation tool_result acknowledgement")))
+        (puthash id (copy-tree block) index)))
+    index))
 
 (defun e-anthropic--json-object-p (value)
   "Return non-nil when VALUE is a canonical JSON object plist."
@@ -661,66 +688,211 @@ Return the tool-use ids in native order."
            (push id tool-use-ids)))))
     (nreverse tool-use-ids)))
 
-(defun e-anthropic--grouped-tool-followup (indexes blocks)
+(defun e-anthropic--grouped-tool-followup
+    (indexes blocks acknowledgement-blocks)
   "Return native assistant and user messages for replay BLOCKS.
 INDEXES contains request-local call, result, and message-position indexes.
-Every native tool-use id must match one neutral call and result.  The returned
-plist also lists message objects to suppress from ordinary per-call rendering."
+Every ordinary native tool-use id must match one neutral call and result; the
+reserved curation call matches one opaque acknowledgement block instead.  The
+returned plist lists neutral messages to suppress from per-call rendering."
   (let ((tool-use-ids (e-anthropic--validate-native-replay-blocks blocks))
         (calls-by-id (plist-get indexes :calls))
         (results-by-id (plist-get indexes :results))
         (result-markers (plist-get indexes :result-markers))
         (positions (plist-get indexes :positions))
+        (tool-use-blocks (make-hash-table :test 'equal))
+        (acknowledgements
+         (e-anthropic--acknowledgement-index acknowledgement-blocks))
         (call-messages nil)
         (result-messages nil)
+        (result-blocks nil)
         marker-messages
         first-call
         first-call-position)
     (unless tool-use-ids
       (signal 'e-anthropic-response-invalid
               '("native replay bundle has no tool_use block")))
+    (dolist (block blocks)
+      (when (equal (plist-get block :type) "tool_use")
+        (puthash (plist-get block :id) block tool-use-blocks)))
     (dolist (id tool-use-ids)
-      (let* ((calls (gethash id calls-by-id))
-             (results (gethash id results-by-id))
-             (call (car calls))
-             (result (car results))
-             (call-position (gethash call positions))
-             (result-position (gethash result positions)))
-        (unless (= (length calls) 1)
-          (signal 'e-anthropic-response-invalid
-                  '("native tool_use does not have exactly one tool-call record")))
-        (unless (= (length results) 1)
-          (signal 'e-anthropic-response-invalid
-                  '("native tool_use does not have exactly one tool result")))
-        (when (<= result-position call-position)
-          (signal 'e-anthropic-response-invalid
-                  '("tool result precedes its tool-call record")))
-        (when (or (null first-call-position)
-                  (< call-position first-call-position))
-          (setq first-call call
-                first-call-position call-position))
-        (push call call-messages)
-        (push result result-messages)))
+      (let* ((native-call (gethash id tool-use-blocks))
+             (curation-p
+              (e-anthropic--context-curation-name-p
+               (plist-get native-call :name)))
+             (acknowledgement (gethash id acknowledgements)))
+        (if curation-p
+            (unless acknowledgement
+              (signal 'e-anthropic-response-invalid
+                      '("reserved curation call has no matching tool_result")))
+          (progn
+            (when acknowledgement
+              (signal 'e-anthropic-response-invalid
+                      '("ordinary tool_use has a curation acknowledgement")))
+            (let* ((calls (gethash id calls-by-id))
+                   (results (gethash id results-by-id))
+                   (call (car calls))
+                   (result (car results))
+                   (call-position (gethash call positions))
+                   (result-position (gethash result positions)))
+              (unless (= (length calls) 1)
+                (signal 'e-anthropic-response-invalid
+                        '("native tool_use does not have exactly one tool-call record")))
+              (unless (= (length results) 1)
+                (signal 'e-anthropic-response-invalid
+                        '("native tool_use does not have exactly one tool result")))
+              (when (<= result-position call-position)
+                (signal 'e-anthropic-response-invalid
+                        '("tool result precedes its tool-call record")))
+              (when (or (null first-call-position)
+                        (< call-position first-call-position))
+                (setq first-call call
+                      first-call-position call-position))
+              (push call call-messages)
+              (push result result-messages)
+              (setq result-blocks
+                    (append result-blocks
+                            (e-anthropic--tool-result-presentation-blocks
+                             (list result) result-markers))))))
+        (when acknowledgement
+          (remhash id acknowledgements)
+          (setq result-blocks (append result-blocks
+                                      (list acknowledgement))))))
     (setq call-messages (nreverse call-messages)
           result-messages (nreverse result-messages))
+    ;; Every acknowledgement must have been consumed by its reserved call.
+    (when (> (hash-table-count acknowledgements) 0)
+      (signal 'e-anthropic-response-invalid
+              '("curation acknowledgement has no matching reserved call")))
     (setq marker-messages
-          (delq nil (mapcar (lambda (result)
-                              (gethash result result-markers))
-                            result-messages)))
+          (delq nil
+                (mapcar (lambda (result-message)
+                          (gethash result-message result-markers))
+                        result-messages)))
     (list :first-call first-call
           :messages
           (list (list :role "assistant" :content (vconcat blocks))
                 (list :role "user"
                       :content
-                      (vconcat
-                       (e-anthropic--tool-result-presentation-blocks
-                        result-messages result-markers))))
-          :consumed (append call-messages marker-messages result-messages))))
+                      (vconcat result-blocks)))
+          :consumed
+          (append call-messages marker-messages result-messages))))
 
-(defun e-anthropic--messages (messages)
+(defconst e-anthropic--context-curation-skipped-tool-result
+  (concat "This tool did not run because its response also contained a "
+          "context-curate request that was not accepted. Continue without "
+          "assuming the tool ran.")
+  "Messages tool_result content for ordinary calls skipped during curation
+recovery.")
+
+(defun e-anthropic--skipped-call-index (calls)
+  "Return CALLS indexed by id after validating the request-local descriptors."
+  (let ((calls
+         (cond
+          ((null calls) nil)
+          ((and (vectorp calls) (not (stringp calls)))
+           (append calls nil))
+          ((proper-list-p calls) calls)
+          (t
+           (signal 'e-anthropic-response-invalid
+                   '("malformed skipped-call descriptor list")))))
+        (index (make-hash-table :test 'equal)))
+    (dolist (call calls)
+      (unless (and (listp call) (plist-member call :arguments))
+        (signal 'e-anthropic-response-invalid
+                '("malformed skipped-call descriptor")))
+      (let ((id (plist-get call :id))
+            (name (plist-get call :name)))
+        (unless (and (stringp id) (not (string-empty-p id))
+                     (stringp name) (not (string-empty-p name)))
+          (signal 'e-anthropic-response-invalid
+                  '("malformed skipped-call descriptor")))
+        (when (gethash id index)
+          (signal 'e-anthropic-response-invalid
+                  '("duplicate skipped-call id")))
+        (puthash id (copy-tree call) index)))
+    index))
+
+(defun e-anthropic--context-curation-request-replay-messages
+    (records &optional skipped-calls)
+  "Return the curation assistant/user pair represented by request RECORDS.
+SKIPPED-CALLS identify buffered ordinary calls that were not executed."
+  (let* ((records (e-anthropic--anthropic-replay-records records))
+         (blocks
+          (mapcar (lambda (record) (copy-tree (plist-get record :item)))
+                  (seq-remove (lambda (record)
+                                (eq (plist-get record :replay-kind)
+                                    'acknowledgement))
+                              records)))
+         (acknowledgements
+          (mapcar (lambda (record) (copy-tree (plist-get record :item)))
+                  (seq-filter (lambda (record)
+                                (eq (plist-get record :replay-kind)
+                                    'acknowledgement))
+                              records)))
+         (tool-use-ids (e-anthropic--validate-native-replay-blocks blocks))
+         (tool-use-blocks (make-hash-table :test 'equal))
+         (acknowledgements-by-id
+          (e-anthropic--acknowledgement-index acknowledgements))
+         (skipped-calls-by-id
+          (e-anthropic--skipped-call-index skipped-calls))
+         result-blocks)
+    (unless tool-use-ids
+      (signal 'e-anthropic-response-invalid
+              '("curation request replay has no native tool_use block")))
+    (dolist (block blocks)
+      (when (equal (plist-get block :type) "tool_use")
+        (puthash (plist-get block :id) block tool-use-blocks)))
+    (dolist (id tool-use-ids)
+      (let ((block (gethash id tool-use-blocks)))
+        (if (e-anthropic--context-curation-name-p
+             (plist-get block :name))
+            (let ((acknowledgement (gethash id acknowledgements-by-id)))
+              (unless acknowledgement
+                (signal 'e-anthropic-response-invalid
+                        '("curation request replay has no matching tool_result")))
+              (when (gethash id skipped-calls-by-id)
+                (signal 'e-anthropic-response-invalid
+                        '("curation call is marked as an ordinary skipped call")))
+              (remhash id acknowledgements-by-id)
+              (setq result-blocks
+                    (append result-blocks (list acknowledgement))))
+          (let ((skipped (gethash id skipped-calls-by-id)))
+            (unless skipped
+              (signal 'e-anthropic-response-invalid
+                      '("ordinary tool_use has no skipped-call descriptor")))
+            (unless (and (equal (plist-get block :name)
+                                (plist-get skipped :name))
+                         (equal (plist-get block :input)
+                                (plist-get skipped :arguments)))
+              (signal 'e-anthropic-response-invalid
+                      '("skipped-call descriptor does not match native tool_use")))
+            (remhash id skipped-calls-by-id)
+            (setq result-blocks
+                  (append
+                   result-blocks
+                   (list (list :type "tool_result"
+                               :tool_use_id id
+                               :content
+                               e-anthropic--context-curation-skipped-tool-result
+                               :is_error t))))))))
+    (when (> (hash-table-count acknowledgements-by-id) 0)
+      (signal 'e-anthropic-response-invalid
+              '("curation request replay has an unmatched tool_result")))
+    (when (> (hash-table-count skipped-calls-by-id) 0)
+      (signal 'e-anthropic-response-invalid
+              '("skipped-call descriptor has no native tool_use")))
+    (list (list :role "assistant" :content (vconcat blocks))
+          (list :role "user" :content (vconcat result-blocks)))))
+
+(defun e-anthropic--messages
+    (messages &optional provider-request-replay-items
+              provider-request-skipped-calls)
   "Map backend-neutral MESSAGES to grouped native Messages turns.
 Pre-scan each immediate tool-result carrier so its native response replaces,
-rather than follows, the individual call/result entries in transcript order."
+rather than follows, the individual call/result entries in transcript order.
+PROVIDER-REQUEST-REPLAY-ITEMS and PROVIDER-REQUEST-SKIPPED-CALLS carry the
+immediate curation recovery transcript and its unexecuted ordinary calls."
   (let ((positions (make-hash-table :test 'eq))
         (calls-by-id (make-hash-table :test 'equal))
         (results-by-id (make-hash-table :test 'equal))
@@ -748,22 +920,48 @@ rather than follows, the individual call/result entries in transcript order."
                          :result-markers
                          (plist-get marker-pairs :result-markers))))
       (dolist (message messages)
-        (when-let* ((blocks (e-anthropic--anthropic-replay-blocks message)))
-          (let* ((group (e-anthropic--grouped-tool-followup indexes blocks))
-                 (members (plist-get group :consumed))
-                 (first-call (plist-get group :first-call)))
-            (unless first-call
-              (signal 'e-anthropic-response-invalid
-                      '("native replay bundle has no matching tool-call")))
-            (when (or (gethash first-call replay-groups)
-                      (seq-some (lambda (member-message)
-                                  (gethash member-message consumed))
-                                members))
-              (signal 'e-anthropic-response-invalid
-                      '("overlapping Anthropic replay bundles in one request")))
-            (puthash first-call group replay-groups)
-            (dolist (member-message members)
-              (puthash member-message t consumed)))))
+        (let* ((records
+                (e-anthropic--anthropic-replay-records
+                 (e-anthropic--message-replay-items message)))
+               (blocks
+                (mapcar (lambda (record)
+                          (copy-tree (plist-get record :item)))
+                        (seq-remove (lambda (record)
+                                      (eq (plist-get record :replay-kind)
+                                          'acknowledgement))
+                                    records)))
+               (acknowledgements
+                (mapcar (lambda (record)
+                          (copy-tree (plist-get record :item)))
+                        (seq-filter (lambda (record)
+                                      (eq (plist-get record :replay-kind)
+                                          'acknowledgement))
+                                    records)))
+               (group
+                (and records
+                     (if (eq (plist-get message :role) 'assistant)
+                         (list :first-call message
+                               :messages
+                               (e-anthropic--context-curation-request-replay-messages
+                                records)
+                               :consumed (list message))
+                       (e-anthropic--grouped-tool-followup
+                        indexes blocks acknowledgements)))))
+          (when group
+            (let* ((members (plist-get group :consumed))
+                   (first-call (plist-get group :first-call)))
+              (unless first-call
+                (signal 'e-anthropic-response-invalid
+                        '("native replay bundle has no matching tool-call")))
+              (when (or (gethash first-call replay-groups)
+                        (seq-some (lambda (member-message)
+                                    (gethash member-message consumed))
+                                  members))
+                (signal 'e-anthropic-response-invalid
+                        '("overlapping Anthropic replay bundles in one request")))
+              (puthash first-call group replay-groups)
+              (dolist (member-message members)
+                (puthash member-message t consumed))))))
       (dolist (message messages)
         (let ((group (gethash message replay-groups)))
           (cond
@@ -785,7 +983,15 @@ rather than follows, the individual call/result entries in transcript order."
               (puthash result t consumed)))
            ((not (gethash message consumed))
             (push (e-anthropic--message message) wire-messages-reversed)))))
-      (nreverse wire-messages-reversed))))
+      (when (and provider-request-skipped-calls
+                 (not provider-request-replay-items))
+        (signal 'e-anthropic-response-invalid
+                '("skipped calls have no curation replay bundle")))
+      (append (nreverse wire-messages-reversed)
+              (when provider-request-replay-items
+                (e-anthropic--context-curation-request-replay-messages
+                 provider-request-replay-items
+                 provider-request-skipped-calls))))))
 
 (defun e-anthropic--tool-definition (tool)
   "Map backend-neutral TOOL to a Messages tool definition."
@@ -796,6 +1002,41 @@ rather than follows, the individual call/result entries in transcript order."
 (defun e-anthropic--tool-definitions (tools)
   "Map backend-neutral TOOLS to Messages tool definitions."
   (vconcat (mapcar #'e-anthropic--tool-definition tools)))
+
+(defun e-anthropic--context-curation-name-p (name)
+  "Return non-nil when NAME is the reserved curation carrier name."
+  (member name '("context-curate" context-curate)))
+
+(defun e-anthropic--context-curation-carrier-active-p (options)
+  "Return non-nil when request OPTIONS enable the reserved curation carrier."
+  (eq (if (plist-member options :reserved-effect-carrier)
+          (plist-get options :reserved-effect-carrier)
+        (plist-get (plist-get options :context-capabilities)
+                   :reserved-effect-carrier))
+      'context-curate-wire))
+
+(defun e-anthropic--context-curation-tool-definition ()
+  "Translate the shared curation carrier descriptor to Messages format."
+  (let ((carrier (e-context-lifetime-curation-carrier-descriptor)))
+    (list :name (plist-get carrier :name)
+          :description (plist-get carrier :guidance)
+          :input_schema (plist-get carrier :schema))))
+
+(defun e-anthropic--request-tool-definitions (tools options)
+  "Map application TOOLS and reserved curation for request OPTIONS."
+  (let* ((application-tools
+          (seq-remove
+           (lambda (tool)
+             (e-anthropic--context-curation-name-p
+              (plist-get tool :name)))
+           (or tools nil)))
+         (definitions (mapcar #'e-anthropic--tool-definition
+                              application-tools)))
+    (when (e-anthropic--context-curation-carrier-active-p options)
+      (setq definitions
+            (append definitions
+                    (list (e-anthropic--context-curation-tool-definition)))))
+    (and definitions (vconcat definitions))))
 
 (defun e-anthropic--cache-control (ttl)
   "Return an ephemeral cache_control block, including TTL when non-nil."
@@ -938,7 +1179,7 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                              (e-anthropic--system-blocks
                               messages options cache-control)))
          (turns (seq-remove #'e-anthropic--system-message-p messages))
-         (tool-defs (and tools (e-anthropic--tool-definitions tools)))
+         (tool-defs (e-anthropic--request-tool-definitions tools options))
          (body (list :model (or (plist-get options :model)
                                 e-anthropic-default-model)
                      :max_tokens (or (plist-get options :max-tokens)
@@ -968,7 +1209,14 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                       (list :cache_control cache-control)))))
     (setq body (append body
                         (list :messages (vconcat
-                                         (e-anthropic--messages turns)))))
+                                         (e-anthropic--messages
+                                          turns
+                                          (plist-get
+                                           options
+                                           :provider-request-replay-items)
+                                          (plist-get
+                                           options
+                                           :provider-request-skipped-calls))))))
     ;; Extended thinking is opt-outable per request: some gateway models (e.g.
     ;; Haiku) reject `adaptive' thinking outright.  `:anthropic-thinking' nil
     ;; omits the thinking + effort knobs entirely; absent it, keep the adaptive
@@ -1170,6 +1418,57 @@ provide."
   (if (and (stringp partial-json) (not (string-empty-p partial-json)))
       (e-anthropic--parse-json partial-json)
     nil))
+
+(defconst e-anthropic--context-curation-acknowledgement
+  "Curation applied."
+  "Messages tool_result content returned for accepted curation.")
+
+(defconst e-anthropic--context-curation-duplicate-correction
+  "Curation was already handled for the currently presented labeled sources. Continue normally; call context-curate again only after new labeled sources are presented."
+  "Messages tool_result content used for one duplicate-curation recovery.")
+
+(defconst e-anthropic--context-curation-invalid-correction
+  "Curation was rejected because its arguments are invalid for the currently presented labeled sources or exceed the bounded curation limits. Re-read the current labels and call context-curate again with valid, bounded arguments, or continue normally."
+  "Messages tool_result content returned for an invalid curation call.")
+
+(defun e-anthropic--context-curation-acknowledgement-record
+    (call-id content &optional error-p)
+  "Return an opaque Anthropic replay record for curation CALL-ID and CONTENT."
+  (list :type 'provider-replay-item
+        :provider-id 'anthropic
+        :replay-kind 'acknowledgement
+        :item (append (list :type "tool_result"
+                            :tool_use_id call-id
+                            :content content)
+                      (when error-p (list :is_error t)))))
+
+(defun e-anthropic--context-curation-effect (arguments call-id blocks)
+  "Return a core curation effect with Messages replay for CALL-ID.
+BLOCKS contains the complete ordered native assistant response content."
+  (let ((assistant-replay-items
+         (mapcar (lambda (block)
+                   (list :type 'provider-replay-item
+                         :provider-id 'anthropic
+                         :item (copy-tree block)))
+                 blocks)))
+    (list :type 'context-curate
+          :arguments (copy-tree arguments)
+          :provider-replay-items
+          (append assistant-replay-items
+                  (list
+                   (e-anthropic--context-curation-acknowledgement-record
+                    call-id e-anthropic--context-curation-acknowledgement)))
+          :provider-corrective-replay-items
+          (append assistant-replay-items
+                  (list
+                   (e-anthropic--context-curation-acknowledgement-record
+                    call-id e-anthropic--context-curation-duplicate-correction)))
+          :provider-invalid-replay-items
+          (append assistant-replay-items
+                  (list
+                   (e-anthropic--context-curation-acknowledgement-record
+                    call-id e-anthropic--context-curation-invalid-correction
+                    t))))))
 
 (defun e-anthropic--text-preview (text &optional limit)
   "Return a compact single-line preview of TEXT.
@@ -1558,6 +1857,18 @@ instead of an SSE stream."
                     (when tool-use-blocks
                       (e-anthropic--validate-native-replay-blocks
                        ordered-blocks)))
+                   (curation-blocks
+                    (seq-filter
+                     (lambda (block)
+                       (e-anthropic--context-curation-name-p
+                        (plist-get block :name)))
+                     tool-use-blocks))
+                   (ordinary-tool-blocks
+                    (seq-remove
+                     (lambda (block)
+                       (e-anthropic--context-curation-name-p
+                        (plist-get block :name)))
+                     tool-use-blocks))
                    (assistant-text
                     (apply #'concat
                            (mapcar (lambda (block)
@@ -1566,7 +1877,7 @@ instead of an SSE stream."
                                        ""))
                                    ordered-blocks)))
                    (replay-items
-                    (when tool-use-ids
+                    (when (and tool-use-ids (null curation-blocks))
                       (mapcar (lambda (block)
                                 (list :type 'provider-replay-item
                                       :provider-id 'anthropic
@@ -1578,7 +1889,14 @@ instead of an SSE stream."
                                     :id (plist-get block :id)
                                     :name (plist-get block :name)
                                     :arguments (plist-get block :input)))
-                            tool-use-blocks)))
+                            ordinary-tool-blocks))
+                   (curation-items
+                    (mapcar (lambda (block)
+                              (e-anthropic--context-curation-effect
+                               (plist-get block :input)
+                               (plist-get block :id)
+                               ordered-blocks))
+                            curation-blocks)))
               (when (and tool-use-ids
                          (equal stop-reason "max_tokens"))
                 (reject "tool_use response was truncated at max_tokens"))
@@ -1594,6 +1912,7 @@ instead of an SSE stream."
                  (list (list :type 'assistant-message
                              :content assistant-text)))
                tool-call-items
+               curation-items
                replay-items
                (when usage-seen
                  (list (e-anthropic--usage-item
@@ -1840,6 +2159,7 @@ MODEL is the backend-local default when turn options omit `:model'."
     (e-backend-create
      :name (or name (e-anthropic-provider-name provider))
      :normalize-error-details #'e-anthropic--normalize-error-details
+     :context-capabilities '(:reserved-effect-carrier context-curate-wire)
      :stream
      (cl-function
       (lambda (&key messages options on-item)

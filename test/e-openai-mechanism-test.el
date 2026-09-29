@@ -1557,10 +1557,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
 (ert-deftest e-openai-test-context-curation-v8-guidance-is-frame-scoped ()
   "Reserved carrier guidance states the complete per-frame invocation rule."
-  (let* ((tool (e-openai-responses-context-curation-tool-definition))
+  (let* ((carrier (e-context-lifetime-curation-carrier-descriptor))
+         (tool (e-openai-responses-context-curation-tool-definition))
          (description (plist-get tool :description)))
     (should (equal e-context-lifetime-curation-schema-revision
                    "context-curate-v8"))
+    (should (equal (plist-get tool :name) (plist-get carrier :name)))
+    (should (equal description (plist-get carrier :guidance)))
+    (should (equal (plist-get tool :parameters) (plist-get carrier :schema)))
     (dolist (meaning '("at most once"
                        "After its acknowledgement, continue"
                        "only after later tool work or context refresh"
@@ -1691,6 +1695,115 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (and (equal (plist-get item :type) "function_call")
              (equal (plist-get item :name) "context-curate")))
       incremental-input))))
+
+(ert-deftest e-openai-test-context-curation-skipped-mixed-call-replay-shapes ()
+  "Invalid and duplicate mixed calls replay truthful outputs in both modes."
+  (let* ((effect (e-openai-decoder--context-curation-effect
+                  '(:keep [1] :summaries [] :erase []) "curation-mixed"))
+         (skipped-calls
+          '((:id "ordinary-one" :name "inspect-one"
+             :arguments (:path "one"))
+            (:id "ordinary-two" :name "inspect-two"
+             :arguments (:path "two"))))
+         (base-options
+          (list :model "gpt-test"
+                :provider-continuation t
+                :response-store t
+                :provider-request-skipped-calls skipped-calls))
+         (anchor
+          (list :provider-id 'openai
+                :metadata
+                (list :response-id "resp-mixed"
+                      :prompt-layout-revision
+                      (e-openai-profile-prompt-layout-revision base-options)
+                      :reasoning-identity
+                      (e-openai-profile-reasoning-identity base-options))))
+         (anchored-options
+          (plist-put (copy-sequence base-options) :provider-anchor anchor)))
+    (dolist (recovery '(invalid duplicate))
+      (let* ((replay
+              (plist-get effect
+                         (if (eq recovery 'invalid)
+                             :provider-invalid-replay-items
+                           :provider-corrective-replay-items)))
+             (full-options
+              (append (copy-sequence base-options)
+                      (list :provider-request-replay-items replay)))
+             (continuation-options
+              (append (copy-sequence anchored-options)
+                      (list :provider-request-replay-items replay)))
+             (full
+              (e-openai-codex-request-body
+               :messages '((:role user :content "inspect"))
+               :options full-options :tools nil))
+             (continuation
+              (e-openai-codex-request-body
+               :messages nil :options continuation-options :tools nil))
+             (full-input (append (plist-get full :input) nil))
+             (continuation-input
+              (append (plist-get continuation :input) nil))
+             (full-functions
+              (seq-filter (lambda (item)
+                            (equal (plist-get item :type) "function_call"))
+                          full-input))
+             (full-outputs
+              (seq-filter (lambda (item)
+                            (equal (plist-get item :type)
+                                   "function_call_output"))
+                          full-input))
+             (continuation-functions
+              (seq-filter (lambda (item)
+                            (equal (plist-get item :type) "function_call"))
+                          continuation-input))
+             (continuation-outputs
+              (seq-filter (lambda (item)
+                            (equal (plist-get item :type)
+                                   "function_call_output"))
+                          continuation-input))
+             (curation-output
+              (seq-find (lambda (item)
+                          (equal (plist-get item :call_id)
+                                 "curation-mixed"))
+                        full-outputs)))
+        (should-not (plist-member full :previous_response_id))
+        (should (equal (sort (mapcar (lambda (item)
+                                       (plist-get item :call_id))
+                                     full-functions)
+                             #'string-lessp)
+                       '("curation-mixed" "ordinary-one" "ordinary-two")))
+        (should (= (length full-outputs) 3))
+        (should curation-output)
+        (should (equal (plist-get curation-output :output)
+                       (if (eq recovery 'invalid)
+                           e-openai-decoder--context-curation-invalid-correction
+                         e-openai-decoder--context-curation-duplicate-correction)))
+        (dolist (call-id '("ordinary-one" "ordinary-two"))
+          (let ((function-call
+                 (seq-find (lambda (item)
+                             (equal (plist-get item :call_id) call-id))
+                           full-functions))
+                (output
+                 (seq-find (lambda (item)
+                             (equal (plist-get item :call_id) call-id))
+                           full-outputs)))
+            (should function-call)
+            (should (equal (e-json-parse-string
+                            (plist-get function-call :arguments))
+                           (if (equal call-id "ordinary-one")
+                               '(:path "one")
+                             '(:path "two"))))
+            (should output)
+            (should (equal (plist-get output :output)
+                           e-openai-responses--context-curation-skipped-tool-output))))
+        (should (equal (plist-get continuation :previous_response_id)
+                       "resp-mixed"))
+        (should-not continuation-functions)
+        (should (= (length continuation-outputs) 3))
+        (should (equal
+                 (sort (mapcar (lambda (item) (plist-get item :call_id))
+                               continuation-outputs)
+                       #'string-lessp)
+                 '("curation-mixed" "ordinary-one" "ordinary-two")))))))
 
 
 (ert-deftest e-openai-test-responses-replays-assistant-phase ()

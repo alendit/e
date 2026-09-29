@@ -501,6 +501,63 @@ retained response already carries the stable segment and its earlier marker."
               (push replay-item items))
             (push input-message items)))))))
 
+(defconst e-openai-responses--context-curation-skipped-tool-output
+  "This tool did not run because its response also contained a context-curate request that was not accepted. Continue without assuming the tool ran."
+  "Responses output sent for an ordinary call skipped during curation recovery.")
+
+(defun e-openai-responses--skipped-call-replay-items (calls)
+  "Return Responses replay records for request-local skipped CALLS.
+Full stateless replay includes each function_call; an anchored continuation
+filters those records and retains only the matching outputs."
+  (let ((calls
+         (cond
+          ((null calls) nil)
+          ((and (vectorp calls) (not (stringp calls)))
+           (append calls nil))
+          ((proper-list-p calls) calls)
+          (t
+           (signal 'e-openai-provider-invalid
+                   '("malformed skipped-call descriptor list")))))
+        (seen (make-hash-table :test 'equal))
+        records)
+    (dolist (call calls)
+      (unless (and (listp call)
+                   (plist-member call :arguments)
+                   (stringp (plist-get call :id))
+                   (not (string-empty-p (plist-get call :id)))
+                   (stringp (plist-get call :name))
+                   (not (string-empty-p (plist-get call :name))))
+        (signal 'e-openai-provider-invalid
+                '("malformed skipped-call descriptor")))
+      (let ((id (plist-get call :id))
+            (name (plist-get call :name))
+            (arguments (plist-get call :arguments)))
+        (when (gethash id seen)
+          (signal 'e-openai-provider-invalid
+                  '("duplicate skipped-call id")))
+        (puthash id t seen)
+        (setq records
+              (append
+               records
+               (list
+                (list :type 'provider-replay-item
+                      :provider-id 'openai
+                      :full-replay-only t
+                      :item (list :type "function_call"
+                                  :call_id id
+                                  :name name
+                                  :arguments
+                                  (if arguments
+                                      (e-json-serialize arguments)
+                                    "{}")))
+                (list :type 'provider-replay-item
+                      :provider-id 'openai
+                      :item (list :type "function_call_output"
+                                  :call_id id
+                                  :output
+                                  e-openai-responses--context-curation-skipped-tool-output)))))))
+    records))
+
 (defun e-openai-responses--request-input-items
     (messages options continuation-response-id)
   "Return provider input items for MESSAGES under OPTIONS.
@@ -535,13 +592,18 @@ value selects full stateless replay."
         (request-replay-items
          (e-openai-responses--provider-replay-items
           (plist-get options :provider-request-replay-items)
+          continuation-response-id))
+        (skipped-call-replay-items
+         (e-openai-responses--provider-replay-items
+          (e-openai-responses--skipped-call-replay-items
+           (plist-get options :provider-request-skipped-calls))
           continuation-response-id)))
     ;; A curation-only response has no semantic message carrier.  Its opaque
     ;; call/output pair follows the ordinary stateless input; an anchored
     ;; acknowledgement filters the already-retained call and sends only the
     ;; immediate output delta.
     (e-openai-responses--normalize-input-items
-     (append ordinary-items request-replay-items))))
+     (append ordinary-items request-replay-items skipped-call-replay-items))))
 
 (defun e-openai-responses--without-provider-anchor (options)
   "Return OPTIONS without provider-anchor continuation state."
@@ -554,42 +616,11 @@ value selects full stateless replay."
 
 (defun e-openai-responses--context-curation-tool-definition ()
   "Return the wire carrier for the core-owned curation effect."
-  (list
-   :type "function"
-   :name "context-curate"
-   :description
-   "Call context-curate at most once for the currently presented set of labeled ephemeral sources. After its acknowledgement, continue with ordinary tools or a normal answer. Call it again only after later tool work or context refresh presents a new set of labeled ephemeral sources; labels belong only to the currently presented frame and cannot be reused for an earlier frame. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."
-   :parameters
-   (list
-    :type "object"
-    :additionalProperties :json-false
-    :properties
-    (list
-     :keep
-     (list
-      :type "array"
-      :maxItems 16
-      :items (list :type "integer" :minimum 1))
-     :summaries
-     (list
-      :type "array"
-      :maxItems 16
-      :items
-      (list
-       :type "object"
-       :additionalProperties :json-false
-       :required ["sources" "text"]
-       :properties
-       (list
-        :sources
-        (list :type "array" :minItems 1 :maxItems 16
-              :items (list :type "integer" :minimum 1))
-        :text
-        (list :type "string" :minLength 1))))
-     :erase
-     (list :type "array"
-           :maxItems 16
-           :items (list :type "integer" :minimum 1))))))
+  (let ((carrier (e-context-lifetime-curation-carrier-descriptor)))
+    (list :type "function"
+          :name (plist-get carrier :name)
+          :description (plist-get carrier :guidance)
+          :parameters (plist-get carrier :schema))))
 
 (defun e-openai-responses--text-verbosity (model options)
   "Return Responses text verbosity for MODEL under OPTIONS."

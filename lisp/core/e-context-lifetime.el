@@ -102,6 +102,54 @@ ordinary session command and storage adapters responsible for bounding their
 complete envelopes while allowing a content-bearing curation item to retain
 normal model or tool output plus its record metadata.")
 
+(defconst e-context-lifetime-curation-carrier-guidance
+  "Call context-curate at most once for the currently presented set of labeled ephemeral sources. After its acknowledgement, continue with ordinary tools or a normal answer. Call it again only after later tool work or context refresh presents a new set of labeled ephemeral sources; labels belong only to the currently presented frame and cannot be reused for an earlier frame. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."
+  "Shared model guidance for the reserved context-curation carrier.")
+
+(defun e-context-lifetime-curation-carrier-descriptor ()
+  "Return a detached shared descriptor for the model-facing curation carrier.
+
+Adapters translate this provider-neutral name, guidance, schema revision, and
+schema into their own wire format.  The schema describes local field bounds;
+the complete-disposition and durable-record limits remain enforced by core."
+  (list
+   :name (copy-sequence "context-curate")
+   :guidance (copy-sequence e-context-lifetime-curation-carrier-guidance)
+   :schema-revision
+   (copy-sequence e-context-lifetime-curation-schema-revision)
+   :limits (list :max-sources e-context-lifetime-curation-max-sources
+                 :max-record-bytes
+                 e-context-lifetime-curation-max-record-bytes)
+   :schema
+   (list
+    :type "object"
+    :additionalProperties :json-false
+    :properties
+    (list
+     :keep
+     (list :type "array"
+           :maxItems e-context-lifetime-curation-max-sources
+           :items (list :type "integer" :minimum 1))
+     :summaries
+     (list :type "array"
+           :maxItems e-context-lifetime-curation-max-sources
+           :items
+           (list
+            :type "object"
+            :additionalProperties :json-false
+            :required ["sources" "text"]
+            :properties
+            (list
+             :sources
+             (list :type "array" :minItems 1
+                   :maxItems e-context-lifetime-curation-max-sources
+                   :items (list :type "integer" :minimum 1))
+             :text (list :type "string" :minLength 1))))
+     :erase
+     (list :type "array"
+           :maxItems e-context-lifetime-curation-max-sources
+           :items (list :type "integer" :minimum 1))))))
+
 (defconst e-context-lifetime-curation-erasure-record-version 1
   "Version of the pure, content-free context-erasure record.")
 

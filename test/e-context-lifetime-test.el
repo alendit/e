@@ -1268,6 +1268,45 @@ the record-focused assertions concise without restoring the retired wrapper."
     (should (= e-context-lifetime-curation-max-record-bytes
                (* 1024 1024)))))
 
+(ert-deftest e-context-lifetime-test-curation-carrier-descriptor-is-detached ()
+  "The shared carrier descriptor exposes the current shape and core limits."
+  (let* ((descriptor (e-context-lifetime-curation-carrier-descriptor))
+         (schema (plist-get descriptor :schema))
+         (properties (plist-get schema :properties))
+         (keep (plist-get properties :keep))
+         (summaries (plist-get properties :summaries))
+         (summary-properties
+          (plist-get (plist-get summaries :items) :properties))
+         (sources (plist-get summary-properties :sources))
+         (erase (plist-get properties :erase)))
+    (should (equal (plist-get descriptor :name) "context-curate"))
+    (should (equal (plist-get descriptor :schema-revision)
+                   e-context-lifetime-curation-schema-revision))
+    (should (equal (plist-get (plist-get descriptor :limits) :max-sources)
+                   e-context-lifetime-curation-max-sources))
+    (should (equal (plist-get (plist-get descriptor :limits) :max-record-bytes)
+                   e-context-lifetime-curation-max-record-bytes))
+    (should (eq (plist-get schema :additionalProperties) :json-false))
+    (should-not (plist-member schema :required))
+    (should (equal (plist-get (plist-get summaries :items) :required)
+                   ["sources" "text"]))
+    (should (= (plist-get keep :maxItems)
+               e-context-lifetime-curation-max-sources))
+    (should (= (plist-get summaries :maxItems)
+               e-context-lifetime-curation-max-sources))
+    (should (= (plist-get sources :minItems) 1))
+    (should (= (plist-get sources :maxItems)
+               e-context-lifetime-curation-max-sources))
+    (should (= (plist-get erase :maxItems)
+               e-context-lifetime-curation-max-sources))
+    (plist-put keep :maxItems 1)
+    (let* ((fresh (e-context-lifetime-curation-carrier-descriptor))
+           (fresh-keep
+            (plist-get (plist-get (plist-get fresh :schema) :properties)
+                       :keep)))
+      (should (= (plist-get fresh-keep :maxItems)
+                 (plist-get (plist-get fresh :limits) :max-sources))))))
+
 (ert-deftest e-context-lifetime-test-curation-v3-codec-projects-literal-messages ()
   "The v3 codec preserves ordered exact/summary content and provenance."
   (let* ((record

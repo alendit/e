@@ -81,6 +81,21 @@ optional Responses assistant phase; older providers leave it absent."
       (plist-put message :id response-entry-id))
     message))
 
+(defun e-loop--without-provider-replay-items (messages)
+  "Return MESSAGES without one-shot provider replay metadata."
+  (mapcar
+   (lambda (message)
+     (let ((copy (copy-tree message)))
+       (dolist (slot '(content metadata))
+         (let ((value (plist-get copy slot)))
+           (when (and (listp value)
+                      (plist-member value :provider-replay-items))
+             (setq value (copy-sequence value))
+             (cl-remf value :provider-replay-items)
+             (setq copy (plist-put copy slot value)))))
+       copy))
+   messages))
+
 (cl-defun e-loop--emit (&key on-event type payload)
   "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
   (funcall on-event type payload))
@@ -416,6 +431,9 @@ schedules it behind the owning session's active commit barrier."
         ;; provider acknowledgement.  Hold that wire state only until the next
         ;; request captures it; each request receives its own options snapshot.
         (next-request-provider-replay-items nil)
+        ;; Buffered ordinary calls accompany a rejected or duplicate curation
+        ;; only as request-local truthful results; they never enter session state.
+        (next-request-provider-skipped-calls nil)
         ;; Only the immediately preceding model-facing tool failure matters.
         ;; This is live turn coordination and is discarded at settlement.
         (previous-tool-failure nil)
@@ -536,7 +554,16 @@ schedules it behind the owning session's active commit barrier."
           ()
           (unless (or settled (cancelled))
             (drain-pending)
-            (let ((tool-called nil)
+            (let ((request-messages
+                   (let ((snapshot (copy-tree turn-messages)))
+                     ;; Replay metadata belongs to one provider request.  Keep
+                     ;; it in that request's detached projection, then remove
+                     ;; it from the turn before any later continuation starts.
+                     (setq turn-messages
+                           (e-loop--without-provider-replay-items
+                            turn-messages))
+                     snapshot))
+                  (tool-called nil)
                   (tool-queue nil)
                   (active-tool nil)
                   (provider-done nil)
@@ -545,6 +572,7 @@ schedules it behind the owning session's active commit barrier."
                   (response-assistant-message nil)
                   (response-assistant-phase nil)
                   (response-commentary-appended-p nil)
+                  (response-text-appended-p nil)
                   (token-usage nil)
                   (done-reason nil)
                   (provider-anchor-candidate nil)
@@ -597,6 +625,14 @@ schedules it behind the owning session's active commit barrier."
                               (copy-tree
                                next-request-provider-replay-items)))
                        (setq next-request-provider-replay-items nil))
+                     (when next-request-provider-skipped-calls
+                       (setq request-options
+                             (plist-put
+                              request-options
+                              :provider-request-skipped-calls
+                              (copy-tree
+                               next-request-provider-skipped-calls)))
+                       (setq next-request-provider-skipped-calls nil))
                      request-options))
                   (response-complete-notified nil)
                   (response-preflight-run nil)
@@ -622,7 +658,8 @@ schedules it behind the owning session's active commit barrier."
                      ;; that call so an explicit replay retains the original
                      ;; assistant phase and causal order.  A curation-only
                      ;; response defers this append until its preflight below.
-                     (when (and (response-commentary-p)
+                     (when (and (not response-curation-rejection)
+                                (response-commentary-p)
                                 (not response-commentary-appended-p)
                                 (not (string-empty-p
                                       (or (response-text) ""))))
@@ -642,9 +679,37 @@ schedules it behind the owning session's active commit barrier."
                                response-assistant-phase)))
                          (setq turn-messages
                                (append turn-messages (list message))
-                               response-commentary-appended-p t)
+                               response-commentary-appended-p t
+                               response-text-appended-p t)
                          (funcall append-message message)
                          message)))
+                   (append-curation-response-text
+                    (replay-items)
+                    (when (and (not response-text-appended-p)
+                               (not (string-empty-p
+                                     (or (response-text) ""))))
+                      (unless response-entry-id
+                        (setq response-entry-id (e-session-generate-ulid)))
+                      (let* ((request-message
+                              (e-loop--assistant-message
+                               (response-text)
+                               (when replay-items
+                                 (list :provider-replay-items
+                                       (copy-tree replay-items)))
+                               response-entry-id response-assistant-phase))
+                             (durable-message
+                              (if replay-items
+                                  (e-loop--assistant-message
+                                   (response-text) nil response-entry-id
+                                   response-assistant-phase)
+                                request-message)))
+                        (setq turn-messages
+                              (append turn-messages (list request-message))
+                              response-text-appended-p t)
+                        (when (response-commentary-p)
+                          (setq response-commentary-appended-p t))
+                        (funcall append-message durable-message)
+                        request-message)))
                    (publish-provider-request
                     (request)
                     (setq provider-request request)
@@ -736,23 +801,26 @@ schedules it behind the owning session's active commit barrier."
                           :reason done-reason))
                   (run-response-preflight
                     ()
-                    (when (and on-response-preflight
-                               (not response-preflight-run))
-                      ;; Set the guard before entering the callback so a
-                      ;; callback that observes completion cannot prepare the
-                      ;; same response twice.
+                    (when (not response-preflight-run)
+                      ;; Staging curation text consumes the replay bundle
+                      ;; before completion notification asks for preflight.
                       (setq response-preflight-run t)
-                      (condition-case err
-                          (setq response-preflight-result
-                                (funcall on-response-preflight
-                                         (response-completion-payload)))
-                        (e-context-lifetime-invalid-record
-                         (if response-curation-effects
-                             (setq response-curation-rejection err
-                                   response-curation-effects nil
-                                   response-preflight-result nil
-                                   pending-provider-replay-items nil)
-                           (signal (car err) (cdr err))))))
+                      (when (and response-curation-effects
+                                 (not pending-provider-replay-items))
+                        (signal 'e-loop-empty-output
+                                (list 'curation :missing-ack-target)))
+                      (when on-response-preflight
+                        (condition-case err
+                            (setq response-preflight-result
+                                  (funcall on-response-preflight
+                                           (response-completion-payload)))
+                          (e-context-lifetime-invalid-record
+                           (if response-curation-effects
+                               (setq response-curation-rejection err
+                                     response-curation-effects nil
+                                     response-preflight-result nil
+                                     pending-provider-replay-items nil)
+                             (signal (car err) (cdr err)))))))
                     response-preflight-result)
                   (notify-response-complete
                     ()
@@ -833,9 +901,11 @@ schedules it behind the owning session's active commit barrier."
                               ;; current request's captured causes identify
                               ;; the only historical results eligible to carry
                               ;; its acknowledgement.
-                              (if provider-followup-messages
+                              (if response-curation-effects
                                   next-request-causes
-                                provider-request-causes))
+                                (if provider-followup-messages
+                                    next-request-causes
+                                  provider-request-causes)))
                              (cause-ids
                               (delq nil
                                     (mapcar (lambda (cause)
@@ -852,8 +922,10 @@ schedules it behind the owning session's active commit barrier."
                                          (plist-get message :content)
                                          :tool-call-id)
                                         cause-ids)))
-                                    (or provider-followup-messages
-                                        turn-messages))))))
+                                    (if response-curation-effects
+                                        provider-followup-messages
+                                      (or provider-followup-messages
+                                          turn-messages)))))))
                         (when tool-message
                           (let* ((request-message (copy-tree tool-message))
                                  (metadata
@@ -916,17 +988,19 @@ schedules it behind the owning session's active commit barrier."
                                (not settled)
                                (not (cancelled)))
                       (setq followup-started t)
-                      (if (response-commentary-p)
-                          (append-response-commentary)
-                        (when (not (string-empty-p
-                                    (or (response-text) "")))
-                          (e-loop--emit
-                           :on-event on-event
-                           :type 'reasoning-delta
-                           :payload
-                           (list :type 'reasoning-delta
-                                 :stream-kind 'summary
-                                 :content (response-text)))))
+                      (unless (or response-text-appended-p
+                                  response-curation-rejection)
+                        (if (response-commentary-p)
+                            (append-response-commentary)
+                          (when (not (string-empty-p
+                                      (or (response-text) "")))
+                            (e-loop--emit
+                             :on-event on-event
+                             :type 'reasoning-delta
+                             :payload
+                             (list :type 'reasoning-delta
+                                   :stream-kind 'summary
+                                   :content (response-text))))))
                       (if response-curation-rejection
                           (stage-curation-rejection)
                         (attach-pending-provider-replay-items))
@@ -941,14 +1015,6 @@ schedules it behind the owning session's active commit barrier."
                                (not settled)
                                (not (cancelled)))
                       (setq followup-started t)
-                      (when (not (string-empty-p (or (response-text) "")))
-                        (e-loop--emit
-                         :on-event on-event
-                         :type 'reasoning-delta
-                         :payload
-                         (list :type 'reasoning-delta
-                               :stream-kind 'summary
-                               :content (response-text))))
                       (stage-curation-rejection)
                       (promote-provider-anchor t)
                       (start-request)))
@@ -966,6 +1032,57 @@ schedules it behind the owning session's active commit barrier."
                        provider-request-lifetime-frame)
                       (e-context-lifetime-frame-id
                        last-curated-lifetime-frame))))
+                   (start-curation-duplicate-followup
+                    ()
+                    (discard-curation-tool-queue)
+                    (condition-case err
+                        (progn
+                          ;; Validate every ordinary frame-bound field before
+                          ;; ignoring a duplicate semantic effect.
+                          (e-context-lifetime-prepare-curation-disposition
+                           last-curated-lifetime-frame
+                           (plist-get (car response-curation-effects)
+                                      :arguments)
+                           provider-request-id)
+                          (if curation-duplicate-correction-used-p
+                              (progn
+                                (e-loop--emit
+                                 :on-event on-event
+                                 :type 'backend-empty-output
+                                 :payload (list :reason done-reason))
+                                (fail '(e-loop-empty-output)))
+                            (unless pending-provider-corrective-replay-items
+                              (signal 'e-loop-empty-output
+                                      (list 'curation
+                                            :missing-correction-target)))
+                            (e-loop--emit
+                             :on-event on-event
+                             :type 'context-curation-duplicate-ignored
+                             :payload '(:outcome duplicate-ignored))
+                            (setq followup-started t
+                                  curation-duplicate-correction-used-p t)
+                            (if (not (string-empty-p
+                                      (or (response-text) "")))
+                                (progn
+                                  (append-curation-response-text
+                                   pending-provider-corrective-replay-items)
+                                  (setq pending-provider-corrective-replay-items nil
+                                        pending-provider-invalid-replay-items nil
+                                        pending-provider-replay-items nil))
+                              (setq next-request-provider-replay-items
+                                    (copy-tree
+                                     pending-provider-corrective-replay-items)
+                                    pending-provider-replay-items nil
+                                    pending-provider-corrective-replay-items nil))
+                            ;; The duplicate response id is valid only for its
+                            ;; matching immediate corrective output.
+                            (promote-provider-anchor t)
+                            (start-request)))
+                      (e-context-lifetime-invalid-record
+                      (setq response-curation-rejection err
+                            response-curation-effects nil
+                            followup-started nil)
+                       (start-curation-rejection-followup))))
                    (maybe-start-curation-followup
                     ()
                     ;; A provider may return the reserved curation call as
@@ -982,51 +1099,7 @@ schedules it behind the owning session's active commit barrier."
                                (not settled)
                                (not (cancelled)))
                       (if (duplicate-curation-opportunity-p)
-                          (condition-case err
-                              (progn
-                            ;; A request against the already consumed frame has
-                            ;; no semantic work.  Preserve the ordinary
-                            ;; frame-bound strictness before selecting only
-                            ;; adapter-supplied opaque correction state; never
-                            ;; enter completion preflight or commit a package.
-                            (e-context-lifetime-prepare-curation-disposition
-                             last-curated-lifetime-frame
-                             (plist-get (car response-curation-effects)
-                                        :arguments)
-                             provider-request-id)
-                            (if curation-duplicate-correction-used-p
-                                (progn
-                                  (e-loop--emit
-                                   :on-event on-event
-                                   :type 'backend-empty-output
-                                   :payload (list :reason done-reason))
-                                  (fail '(e-loop-empty-output)))
-                              (unless pending-provider-corrective-replay-items
-                                (signal 'e-loop-empty-output
-                                        (list 'curation
-                                              :missing-correction-target)))
-                              (e-loop--emit
-                               :on-event on-event
-                               :type 'context-curation-duplicate-ignored
-                               :payload '(:outcome duplicate-ignored))
-                              (setq followup-started t
-                                    curation-duplicate-correction-used-p t
-                                    next-request-provider-replay-items
-                                    (copy-tree
-                                     pending-provider-corrective-replay-items)
-                                    pending-provider-replay-items nil
-                                    pending-provider-corrective-replay-items nil)
-                              ;; The duplicate response id is valid only for its
-                              ;; matching immediate corrective output.
-                              (promote-provider-anchor t)
-                              (start-request)))
-                            (e-context-lifetime-invalid-record
-                             (setq response-curation-rejection err
-                                   response-curation-effects nil
-                                   followup-started t)
-                             (stage-curation-rejection)
-                             (promote-provider-anchor t)
-                             (start-request)))
+                          (start-curation-duplicate-followup)
                         (unless pending-provider-replay-items
                           (signal 'e-loop-empty-output
                                   (list 'curation :missing-ack-target)))
@@ -1073,6 +1146,83 @@ schedules it behind the owning session's active commit barrier."
                          (and (plist-get content :tool-call-id)
                               (list role
                                     (plist-get content :tool-call-id)))))))
+                   (curation-buffering-enabled-p
+                    ()
+                    ;; The wire definition is request-scoped, but buffering
+                    ;; lasts through the turn so a stale duplicate can
+                    ;; invalidate calls that arrived before its control item.
+                    (eq (if (plist-member turn-options
+                                          :reserved-effect-carrier)
+                            (plist-get turn-options
+                                       :reserved-effect-carrier)
+                          (plist-get
+                           (plist-get turn-options :context-capabilities)
+                           :reserved-effect-carrier))
+                        'context-curate-wire))
+                   (discard-curation-tool-queue
+                    ()
+                    (setq next-request-provider-skipped-calls
+                          (append
+                           next-request-provider-skipped-calls
+                           (mapcar
+                            (lambda (entry)
+                              (let ((call (plist-get entry :tool-call)))
+                                (list :id (plist-get call :id)
+                                      :name (plist-get call :name)
+                                      :arguments
+                                      (copy-tree
+                                       (plist-get call :arguments)))))
+                            tool-queue))
+                          tool-queue nil
+                          tool-called nil))
+                   (start-curation-rejection-followup
+                    ()
+                    (discard-curation-tool-queue)
+                    (stage-curation-rejection)
+                    (setq followup-started t)
+                    (promote-provider-anchor t)
+                    (start-request))
+                   (handle-carrier-terminal-response
+                    ()
+                    (cond
+                     (response-curation-rejection
+                      (start-curation-rejection-followup))
+                     ((and response-curation-effects
+                           (duplicate-curation-opportunity-p))
+                      (start-curation-duplicate-followup))
+                     (response-curation-effects
+                      (unless response-entry-id
+                        (setq response-entry-id (e-session-generate-ulid)))
+                      (run-response-preflight)
+                      (if response-curation-rejection
+                          (start-curation-rejection-followup)
+                        (if tool-called
+                            (progn
+                              (append-curation-response-text nil)
+                              (notify-response-complete)
+                              (setq last-curated-lifetime-frame
+                                    provider-request-lifetime-frame)
+                              (start-next-tool))
+                          (if (not (string-empty-p
+                                    (or (response-text) "")))
+                              (progn
+                                (append-curation-response-text
+                                 pending-provider-replay-items)
+                                (setq pending-provider-replay-items nil
+                                      pending-provider-corrective-replay-items nil
+                                      pending-provider-invalid-replay-items nil
+                                      followup-started t)
+                                (notify-response-complete)
+                                (setq last-curated-lifetime-frame
+                                      provider-request-lifetime-frame)
+                                (promote-provider-anchor t)
+                                (start-request))
+                            (maybe-start-curation-followup)))))
+                     (tool-called
+                      (when (response-commentary-p)
+                        (append-response-commentary))
+                      (notify-response-complete)
+                      (start-next-tool))))
                    (merge-provider-followup-bundle
                     (bundle)
                     ;; Refresh projections are authoritative for later
@@ -1494,7 +1644,9 @@ schedules it behind the owning session's active commit barrier."
                                     (append pending-provider-replay-items
                                             (list (copy-tree item)))))
                              ('tool-call
-                              (when pending-provider-replay-items
+                              (when (and pending-provider-replay-items
+                                         (not (and response-curation-effects
+                                                   (curation-buffering-enabled-p))))
                                 (setq item (copy-sequence item))
                                 (plist-put
                                  item
@@ -1548,27 +1700,27 @@ schedules it behind the owning session's active commit barrier."
                                :payload item))))
                        (error
                         (fail-provider err)))))
-                  (enqueue-tool-call
-                   (item)
-                   ;; A curation is the terminal semantic decision for this
-                   ;; provider response.  Ordinary calls already observed
-                   ;; before it retain their existing queued/executing
-                   ;; behavior, but a later call would make the response
-                   ;; ordering ambiguous and must fail before dispatch.
-                   (when (or response-curation-effects
-                             response-curation-rejection)
-                     (signal 'e-context-lifetime-invalid-record
-                             (list 'curation-mixed-order
-                                   provider-request-id)))
-                   ;; A commentary preamble is an assistant message in the
-                   ;; provider transcript.  Admit it before the ordinary tool
-                   ;; call that follows it, preserving replay order.
-                   (append-response-commentary)
-                   (setq tool-called t)
-                   (setq tool-queue
-                         (append tool-queue
-                                 (list (list :tool-call item))))
-                   (start-next-tool)))
+                   (enqueue-tool-call
+                    (item)
+                    ;; Curation-capable turns hold calls until the complete
+                    ;; response can pass core preflight or duplicate checks.
+                    (when (and (or response-curation-effects
+                                   response-curation-rejection)
+                               (not (curation-buffering-enabled-p)))
+                      (signal 'e-context-lifetime-invalid-record
+                              (list 'curation-mixed-order
+                                    provider-request-id)))
+                    ;; A commentary preamble is an assistant message in the
+                    ;; provider transcript.  Admit it before the ordinary tool
+                    ;; call that follows it, preserving replay order.
+                    (unless (curation-buffering-enabled-p)
+                      (append-response-commentary))
+                    (setq tool-called t)
+                    (setq tool-queue
+                          (append tool-queue
+                                  (list (list :tool-call item))))
+                    (unless (curation-buffering-enabled-p)
+                      (start-next-tool))))
               (setq
                active-request
                (condition-case err
@@ -1592,7 +1744,7 @@ schedules it behind the owning session's active commit barrier."
                                   :backend (lambda (_arguments _context)
                                              backend)
                                   :messages (lambda (_arguments _context)
-                                              turn-messages)
+                                              request-messages)
                                   :options (lambda (_arguments _context)
                                              provider-request-options)
                                   :request-handler
@@ -1632,10 +1784,19 @@ schedules it behind the owning session's active commit barrier."
                                             (progn
                                            (finish-provider-request 'done)
                                            (setq provider-done t)
-                                           (if tool-called
-                                               (progn
-                                                 (notify-response-complete)
-                                                 (maybe-start-followup))
+                                           (if (or
+                                                (and (curation-buffering-enabled-p)
+                                                     (or tool-called
+                                                         response-curation-effects
+                                                         response-curation-rejection))
+                                                (and (not tool-called)
+                                                     (or response-curation-effects
+                                                         response-curation-rejection)))
+                                               (handle-carrier-terminal-response)
+                                             (if tool-called
+                                                 (progn
+                                                   (notify-response-complete)
+                                                   (maybe-start-followup))
                                              (progn
                                                (when (and
                                                       response-curation-effects
@@ -1645,16 +1806,9 @@ schedules it behind the owning session's active commit barrier."
                                                    (setq response-entry-id
                                                          (e-session-generate-ulid)))
                                                  (run-response-preflight))
-                                               (cond
+                                                (cond
                                                 (response-curation-rejection
-                                                 (if (response-commentary-p)
-                                                     (progn
-                                                       (append-response-commentary)
-                                                       (setq followup-started t)
-                                                       (stage-curation-rejection)
-                                                       (promote-provider-anchor t)
-                                                       (start-request))
-                                                   (maybe-start-curation-rejection-followup)))
+                                                 (maybe-start-curation-rejection-followup))
                                                 ((response-commentary-p)
                                                  ;; `commentary' is an
                                                  ;; intermediate assistant
@@ -1719,7 +1873,7 @@ schedules it behind the owning session's active commit barrier."
                                                  (if (drain-pending t)
                                                      (start-request)
                                                    (finish done-reason
-                                                           (response-text)))))))))
+                                                           (response-text))))))))))
                                           (error
                                            (fail-provider err)))))))
                                  :on-error
@@ -1739,7 +1893,7 @@ schedules it behind the owning session's active commit barrier."
                                   (not (eq request reported-request)))
                          (publish-provider-request request))
                        request))
-                 (error
+                (error
                   (fail-provider err)
                   nil))))))))
       (e-loop--emit :on-event on-event

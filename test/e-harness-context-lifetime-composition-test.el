@@ -748,12 +748,19 @@
         (delete-directory directory t)))))
 
 (ert-deftest e-harness-test-invalid-curation-returns-provider-error-before-append ()
-  "Completion validation returns a tool-style error and the same turn recovers."
+  "Rejected mixed calls recover without entering session or branch history."
   (e-harness-test--with-empty-layer-registry
     (dolist (case '((unknown-label . (:keep [2] :summaries []))
-                    (oversized-record . (:keep [1] :summaries []))))
-      (let* ((request-count 0)
+                    (oversized-record . (:keep [1] :summaries []))
+                    (commentary . (:keep [2] :summaries []))))
+      (let* ((response-phase
+              (and (eq (car case) 'commentary) "commentary"))
+             (directory (make-temp-file "e-harness-invalid-curation-" t))
+             (store (e-session-persistent-store-create directory))
+             reopened
+             (request-count 0)
              (requests nil)
+             (started-tools nil)
              (source-value "PREFLIGHT-SOURCE")
              (captured-frame nil)
              (prepared-bytes nil)
@@ -789,14 +796,25 @@
                                         (vector (list :sources [1]
                                                       :text text))))
                               (cdr case))))
+                       (funcall on-item
+                                '(:type tool-call
+                                  :id "skipped-before-invalid"
+                                  :name "skip-before"
+                                  :arguments (:path "before")))
                        (funcall
                         on-item
                         (e-openai-decoder--context-curation-effect
                          arguments "invalid-preflight-curation")))
                      (funcall on-item
-                              '(:type assistant-message
-                                :content "MUST-NOT-PERSIST"))
-                     (funcall on-item '(:type done :reason stop)))
+                              '(:type tool-call
+                                :id "skipped-after-invalid"
+                                :name "skip-after"
+                                :arguments (:path "after")))
+                     (funcall on-item
+                              (list :type 'assistant-message
+                                    :content "MUST-NOT-PERSIST"
+                                    :phase response-phase))
+                     (funcall on-item '(:type done :reason tool-use)))
                     (2
                      (funcall on-item
                               '(:type assistant-message
@@ -812,10 +830,27 @@
              (capability
               (e-capability-create
                :id 'completion-preflight-capability
-               :context-providers (list provider)))
+               :context-providers (list provider)
+               :tools
+               (list
+                (lambda (registry)
+                  (dolist (name '("skip-before" "skip-after"))
+                    (let ((tool-name name))
+                      (e-tools-test-register
+                       registry
+                       :name tool-name
+                       :description "A tool that must remain unstarted."
+                       :parameters '(:type "object"
+                                     :properties (:path (:type "string"))
+                                     :required ["path"])
+                       :handler
+                       (lambda (_arguments)
+                         (push tool-name started-tools)
+                         "unexpected"))))))))
              (harness
               (e-harness-create
                :backend backend
+               :sessions store
                :intrinsic-capabilities (list capability)))
              (make-frame (symbol-function
                           'e-context-lifetime-frame-create-from-segments)))
@@ -831,7 +866,9 @@
              :session-id "completion-preflight")
             (e-harness-test-prompt-batch
              harness "completion-preflight" "trigger curation")))
+        (e-session-flush-write-queue store)
         (should (= request-count 2))
+        (should-not started-tools)
         (when (eq (car case) 'oversized-record)
           (should (> prepared-bytes
                      e-context-lifetime-curation-max-record-bytes)))
@@ -847,7 +884,10 @@
                                        :context-capabilities)
                             :reserved-effect-carrier))
              'context-curate-wire))
-        (let* ((correction-items
+        (let* ((skipped-calls
+                (plist-get (nth 1 requests)
+                           :provider-request-skipped-calls))
+               (correction-items
                 (plist-get (nth 1 requests) :provider-request-replay-items))
                (correction-output
                 (seq-find
@@ -862,13 +902,54 @@
                  (e-harness-messages harness "completion-preflight"))))
           (should correction-output)
           (should
+           (equal skipped-calls
+                  '((:id "skipped-before-invalid" :name "skip-before"
+                     :arguments (:path "before"))
+                    (:id "skipped-after-invalid" :name "skip-after"
+                     :arguments (:path "after")))))
+          (should
            (equal
             (plist-get (plist-get correction-output :item) :output)
             e-openai-decoder--context-curation-invalid-correction))
           (should (equal (mapcar (lambda (message)
                                    (plist-get message :content))
                                  assistant-messages)
-                         '("RECOVERED-ANSWER"))))))))
+                         '("RECOVERED-ANSWER"))))
+        (setq reopened (e-session-persistent-store-create directory))
+        (let* ((root-messages
+                (e-session-local-messages reopened "completion-preflight"))
+               (root-records
+                (e-session-storage-read-session-records
+                 reopened "completion-preflight"))
+               (fork (e-session-fork reopened "completion-preflight"))
+               (fork-id (plist-get fork :id))
+               (fork-messages (e-session-local-messages reopened fork-id))
+               (fork-records
+                (e-session-storage-read-session-records reopened fork-id)))
+          (dolist (printed (list (prin1-to-string root-messages)
+                                 (prin1-to-string root-records)
+                                 (prin1-to-string fork-messages)
+                                 (prin1-to-string fork-records)))
+            (should-not
+             (string-match-p
+              "provider-request-skipped-calls\\|skipped-before-invalid\\|skipped-after-invalid\\|MUST-NOT-PERSIST"
+              printed)))
+          (should (equal (mapcar (lambda (message)
+                                  (plist-get message :role))
+                                root-messages)
+                         '(user assistant)))
+          (should
+           (equal (mapcar (lambda (message)
+                            (list (plist-get message :role)
+                                  (plist-get message :content)))
+                          root-messages)
+                  (mapcar (lambda (message)
+                            (list (plist-get message :role)
+                                  (plist-get message :content)))
+                          fork-messages))))
+        (e-session-storage-close store)
+        (e-session-storage-close reopened)
+        (delete-directory directory t)))))
 
 (ert-deftest e-harness-test-duplicate-curation-recovers-and-next-turn-is-usable ()
   "One duplicate correction settles normally and does not poison a fresh turn."

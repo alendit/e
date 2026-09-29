@@ -144,6 +144,16 @@
               copy))
           (append (plist-get body :tools) nil)))
 
+(defun e-anthropic-test--curation-effect-for-blocks (blocks)
+  "Return the decoded curation effect represented by native BLOCKS."
+  (let ((call (seq-find
+               (lambda (block)
+                 (and (equal (plist-get block :type) "tool_use")
+                      (equal (plist-get block :name) "context-curate")))
+               blocks)))
+    (e-anthropic--context-curation-effect
+     (plist-get call :input) (plist-get call :id) blocks)))
+
 (ert-deftest e-anthropic-test-request-body-maps-neutral-messages ()
   "Anthropic request body uses Messages turns with explicit max_tokens."
   (should
@@ -224,6 +234,46 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
     [(:name "read"
       :description "Read a URI."
       :input_schema (:type "object"))])))
+
+(ert-deftest e-anthropic-test-context-curation-carrier-shares-core-policy ()
+  "The reserved Messages tool translates the shared descriptor and capability."
+  (let* ((descriptor (e-context-lifetime-curation-carrier-descriptor))
+         (tool (e-anthropic--context-curation-tool-definition))
+         (backend (e-anthropic-backend-create))
+         (capabilities (e-backend-context-capabilities backend nil))
+         (body
+          (e-anthropic-request-body
+           :messages '((:role user :content "hello"))
+           :options '(:model "claude-test" :max-tokens 1024
+                      :reserved-effect-carrier context-curate-wire)
+           :tools '((:name "context-curate"
+                     :description "Application tool must not own this name."
+                     :parameters (:type "object")))))
+         (wire-tools (append (plist-get body :tools) nil)))
+    (should (equal (plist-get descriptor :schema-revision)
+                   e-context-lifetime-curation-schema-revision))
+    (should (equal (plist-get tool :name) (plist-get descriptor :name)))
+    (should (equal (plist-get tool :description)
+                   (plist-get descriptor :guidance)))
+    (should (equal (plist-get tool :input_schema)
+                   (plist-get descriptor :schema)))
+    (should (eq (plist-get capabilities :reserved-effect-carrier)
+                'context-curate-wire))
+    (should (= (length wire-tools) 1))
+    (should (equal (car wire-tools) (list :name "context-curate"
+                                          :description
+                                          (plist-get descriptor :guidance)
+                                          :input_schema
+                                          (plist-get descriptor :schema))))
+    (should-not
+     (plist-get
+      (e-anthropic-request-body
+       :messages '((:role user :content "hello"))
+       :options '(:model "claude-test" :max-tokens 1024)
+       :tools '((:name "context-curate"
+                 :description "Application tool must not own this name."
+                 :parameters (:type "object"))))
+      :tools))))
 
 (ert-deftest e-anthropic-test-request-body-retains-native-tool-schema ()
   "Messages carries the native operation schema without reinterpretation."
@@ -480,8 +530,174 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
       :content [(:type "tool_use" :id "call-1" :name "read"
                  :input (:uri "file://README.md"))])
      (:role "user"
-      :content [(:type "tool_result" :tool_use_id "call-1"
+     :content [(:type "tool_result" :tool_use_id "call-1"
                  :content "read result")])])))
+
+(ert-deftest e-anthropic-test-request-body-replaces-text-with-curation-replay ()
+  "The immediate curation follow-up replays native text once with its ack."
+  (let* ((blocks
+          '((:type "thinking" :thinking "Keep the important detail."
+             :signature "sig-curation-text")
+            (:type "text" :text "I will keep this source.")
+            (:type "tool_use" :id "curation-text-call"
+             :name "context-curate"
+             :input (:keep [1] :summaries [] :erase []))))
+         (effect (e-anthropic-test--curation-effect-for-blocks blocks))
+         (assistant
+          (list :role 'assistant :content "I will keep this source."
+                :metadata
+                (list :provider-replay-items
+                      (plist-get effect :provider-replay-items))))
+         (body
+          (e-anthropic-request-body
+           :messages (list '(:role user :content "Curate this source.") assistant)
+           :options '(:model "claude-test" :max-tokens 1024)))
+         (wire (append (plist-get body :messages) nil)))
+    (should
+     (equal wire
+            (list '(:role "user"
+                    :content [(:type "text" :text "Curate this source.")])
+                  (list :role "assistant" :content (vconcat blocks))
+                  '(:role "user"
+                    :content [(:type "tool_result"
+                               :tool_use_id "curation-text-call"
+                               :content "Curation applied.")]))))
+    (should (= (seq-count
+                (lambda (message)
+                  (and (equal (plist-get message :role) "assistant")
+                       (equal (plist-get (aref (plist-get message :content) 1)
+                                         :text)
+                              "I will keep this source.")))
+                wire)
+               1))))
+
+(ert-deftest e-anthropic-test-request-body-groups-mixed-curation-in-native-order ()
+  "Mixed assistant blocks and ID-matched user results follow native call order."
+  (let* ((tool-one
+          '(:type "tool_use" :id "toolu-one" :name "inspect-one"
+            :input (:path "one")))
+         (tool-two
+          '(:type "tool_use" :id "toolu-two" :name "inspect-two"
+            :input (:path "two")))
+         (thinking
+          '(:type "thinking" :thinking "Inspect both sources."
+            :signature "sig-mixed-curation"))
+         (text '(:type "text" :text "I will inspect both."))
+         (curation
+          '(:type "tool_use" :id "curation-mixed-call"
+            :name "context-curate"
+            :input (:keep [1] :summaries [] :erase []))))
+    (dolist (curation-first '(t nil))
+      (let* ((blocks
+              (if curation-first
+                  (list thinking text curation tool-one tool-two)
+                (list thinking tool-one text tool-two curation)))
+             (effect (e-anthropic-test--curation-effect-for-blocks blocks))
+             (messages
+              (list '(:role user :content "Inspect both sources.")
+                    '(:role tool-call
+                      :content (:id "toolu-one" :name "inspect-one"
+                                :arguments (:path "one")))
+                    '(:role tool-call
+                      :content (:id "toolu-two" :name "inspect-two"
+                                :arguments (:path "two")))
+                    '(:role tool
+                      :content (:tool-call-id "toolu-one"
+                                :content "result one"))
+                    (list :role 'tool
+                          :content '(:tool-call-id "toolu-two"
+                                     :content "result two")
+                          :metadata
+                          (list :provider-replay-items
+                                (plist-get effect :provider-replay-items)))))
+             (wire
+              (append
+               (plist-get
+                (e-anthropic-request-body
+                 :messages messages
+                 :options '(:model "claude-test" :max-tokens 1024))
+                :messages)
+               nil))
+             (result-blocks
+              (if curation-first
+                  [(:type "tool_result"
+                    :tool_use_id "curation-mixed-call"
+                    :content "Curation applied.")
+                   (:type "tool_result" :tool_use_id "toolu-one"
+                    :content "result one")
+                   (:type "tool_result" :tool_use_id "toolu-two"
+                    :content "result two")]
+                [(:type "tool_result" :tool_use_id "toolu-one"
+                   :content "result one")
+                 (:type "tool_result" :tool_use_id "toolu-two"
+                  :content "result two")
+                 (:type "tool_result"
+                  :tool_use_id "curation-mixed-call"
+                  :content "Curation applied.")])))
+        (should (= (length wire) 3))
+        (should (equal (plist-get (nth 1 wire) :role) "assistant"))
+        (should (equal (append (plist-get (nth 1 wire) :content) nil)
+                       blocks))
+        (should (equal (plist-get (nth 2 wire) :role) "user"))
+        (should (equal (plist-get (nth 2 wire) :content) result-blocks))))))
+
+(ert-deftest e-anthropic-test-request-body-replays-skipped-mixed-curation-calls ()
+  "Rejected and duplicate mixed responses return every matched native result."
+  (let ((blocks
+         '((:type "thinking" :thinking "Inspect the selected sources."
+            :signature "sig-skipped-mixed")
+           (:type "tool_use" :id "ordinary-before" :name "inspect-before"
+            :input (:path "before"))
+           (:type "tool_use" :id "curation-skipped"
+            :name "context-curate"
+            :input (:keep [1] :summaries [] :erase []))
+           (:type "tool_use" :id "ordinary-after" :name "inspect-after"
+            :input (:path "after")))))
+    (dolist (recovery '(invalid duplicate))
+      (let* ((effect
+              (e-anthropic--context-curation-effect
+               '(:keep [1] :summaries [] :erase [])
+               "curation-skipped" blocks))
+             (replay
+              (plist-get effect
+                         (if (eq recovery 'invalid)
+                             :provider-invalid-replay-items
+                           :provider-corrective-replay-items)))
+             (body
+              (e-anthropic-request-body
+               :messages '((:role user :content "Inspect both."))
+               :options
+               (list :model "claude-test" :max-tokens 1024
+                     :provider-request-replay-items replay
+                     :provider-request-skipped-calls
+                     '((:id "ordinary-before" :name "inspect-before"
+                        :arguments (:path "before"))
+                       (:id "ordinary-after" :name "inspect-after"
+                        :arguments (:path "after"))))))
+             (wire (append (plist-get body :messages) nil))
+             (assistant (nth 1 wire))
+             (results (append (plist-get (nth 2 wire) :content) nil))
+             (curation-result (nth 1 results)))
+        (should (= (length wire) 3))
+        (should (equal (plist-get assistant :role) "assistant"))
+        (should (equal (append (plist-get assistant :content) nil) blocks))
+        (should (equal (mapcar (lambda (block)
+                                 (plist-get block :tool_use_id))
+                               results)
+                       '("ordinary-before"
+                         "curation-skipped"
+                         "ordinary-after")))
+        (dolist (result (list (nth 0 results) (nth 2 results)))
+          (should (equal (plist-get result :type) "tool_result"))
+          (should (equal (plist-get result :content)
+                         e-anthropic--context-curation-skipped-tool-result))
+          (should (eq (plist-get result :is_error) t)))
+        (should (equal (plist-get curation-result :content)
+                       (if (eq recovery 'invalid)
+                           e-anthropic--context-curation-invalid-correction
+                         e-anthropic--context-curation-duplicate-correction)))
+        (should (eq (plist-get curation-result :is_error)
+                    (eq recovery 'invalid)))))))
 
 (ert-deftest e-anthropic-test-request-body-adds-cache-control-on-system ()
   "Prompt caching attaches a cache_control breakpoint to the system block."
@@ -988,6 +1204,70 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                       :flags [:json-false :json-null]
                       :items [(:empty nil :values [1 :json-false])])))
       (:type done :reason tool-use)))))
+
+(ert-deftest e-anthropic-test-parse-context-curation-as-reserved-effect ()
+  "A native context-curate call carries ordered blocks and bounded acks."
+  (let* ((items
+          (e-anthropic-parse-stream
+           (e-anthropic-test--sse-stream
+            '((:type "message_start" :message (:role "assistant" :content []))
+              (:type "content_block_start" :index 0
+               :content_block (:type "thinking" :thinking ""))
+              (:type "content_block_delta" :index 0
+               :delta (:type "thinking_delta" :thinking "Keep source one."))
+              (:type "content_block_delta" :index 0
+               :delta (:type "signature_delta"
+                      :signature "sig-curation-native"))
+              (:type "content_block_stop" :index 0)
+              (:type "content_block_start" :index 1
+               :content_block (:type "text" :text ""))
+              (:type "content_block_delta" :index 1
+               :delta (:type "text_delta" :text "I will keep this source."))
+              (:type "content_block_stop" :index 1)
+              (:type "content_block_start" :index 2
+               :content_block
+               (:type "tool_use" :id "curation-native-call"
+                :name "context-curate"
+                :input (:keep [1] :summaries [] :erase [])))
+              (:type "content_block_stop" :index 2)
+              (:type "message_delta" :delta (:stop_reason "tool_use"))
+              (:type "message_stop")))))
+         (effect (seq-find (lambda (item)
+                             (eq (plist-get item :type) 'context-curate))
+                           items))
+         (replay-items (plist-get effect :provider-replay-items))
+         (native-items
+          (seq-remove (lambda (item)
+                        (eq (plist-get item :replay-kind) 'acknowledgement))
+                      replay-items)))
+    (should effect)
+    (should-not (seq-find (lambda (item)
+                            (eq (plist-get item :type) 'tool-call))
+                          items))
+    (should (equal (plist-get effect :arguments)
+                   '(:keep [1] :summaries [] :erase [])))
+    (should (equal (mapcar (lambda (item) (plist-get item :item))
+                           native-items)
+                   '((:type "thinking" :thinking "Keep source one."
+                      :signature "sig-curation-native")
+                     (:type "text" :text "I will keep this source.")
+                     (:type "tool_use" :id "curation-native-call"
+                      :name "context-curate"
+                      :input (:keep [1] :summaries [] :erase [])))))
+    (should (equal (plist-get (car (last replay-items)) :item)
+                   '(:type "tool_result"
+                     :tool_use_id "curation-native-call"
+                     :content "Curation applied.")))
+    (should (equal (plist-get effect :provider-corrective-replay-items)
+                   (let ((records
+                          (copy-tree
+                           (plist-get effect :provider-replay-items))))
+                     (plist-put (car (last records)) :item
+                                '(:type "tool_result"
+                                  :tool_use_id "curation-native-call"
+                                  :content
+                                  "Curation was already handled for the currently presented labeled sources. Continue normally; call context-curate again only after new labeled sources are presented."))
+                     records)))))
 
 (ert-deftest e-anthropic-test-parse-joins-split-content-block-deltas-in-order ()
   "Text, thinking, and tool input survive many provider delta boundaries."
