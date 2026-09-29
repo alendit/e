@@ -3,11 +3,12 @@
 
 * Status
 
-=Planned=.  This is a plan for adapter and profile work, not an implementation
-record.  Feature 88 remains the authority for provider-neutral context lifetime
-and =context-curate-v8=; this feature adds a native Anthropic Messages carrier
-and tests its composition.  The user's running Emacs and provider configuration
-are unchanged.
+=In-progress=.  Independent plan review reached
+=implementation-plan-fixed-point= at the plan identity recorded in
+[[file:plan-review-03.org][Plan Review 03]].  Feature 88 remains the authority
+for provider-neutral context lifetime and =context-curate-v8=; this feature
+adds a native Anthropic Messages carrier and tests its composition.  The user's
+running Emacs and provider configuration are unchanged.
 
 * Behavioral goal
 
