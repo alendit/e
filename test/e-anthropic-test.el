@@ -17,7 +17,12 @@
 (require 'e-json)
 (require 'e-backend)
 (require 'e-harness)
+(require 'e-loop)
+(require 'e-session-codec)
+(require 'e-session-sqlite)
+(require 'e-tools)
 (load (expand-file-name "e-harness-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
+(load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-anthropic)
 
 (defun e-anthropic-test--wait-until (predicate &optional timeout)
@@ -28,6 +33,77 @@
                 (< (float-time) deadline))
       (accept-process-output nil 0.01))
     value))
+
+(defun e-anthropic-test--sse-stream (events)
+  "Encode canonical Messages EVENTS as an SSE response string."
+  (mapconcat (lambda (event)
+               (format "event: %s\ndata: %s\n\n"
+                       (plist-get event :type)
+                       (e-json-serialize event)))
+             events
+             ""))
+
+(defconst e-anthropic-test--signed-two-tool-events
+  '((:type "message_start"
+     :message (:role "assistant" :content [] :usage (:input_tokens 17)))
+    (:type "content_block_start" :index 0
+     :content_block (:type "thinking" :thinking ""))
+    (:type "content_block_delta" :index 0
+     :delta (:type "thinking_delta" :thinking "Checking both paths."))
+    (:type "content_block_delta" :index 0
+     :delta (:type "signature_delta" :signature "sig-native-0"))
+    (:type "content_block_stop" :index 0)
+    (:type "content_block_start" :index 1
+     :content_block (:type "text" :text ""))
+    (:type "content_block_delta" :index 1
+     :delta (:type "text_delta" :text "First, inspect both."))
+    (:type "content_block_stop" :index 1)
+    (:type "content_block_start" :index 2
+     :content_block (:type "redacted_thinking" :data "redacted-native-2"))
+    (:type "content_block_stop" :index 2)
+    (:type "content_block_start" :index 3
+     :content_block (:type "tool_use" :id "toolu-one"
+                    :name "inspect-one" :input (:path "one")))
+    (:type "content_block_stop" :index 3)
+    (:type "content_block_start" :index 4
+     :content_block (:type "tool_use" :id "toolu-two"
+                    :name "inspect-two" :input (:path "two")))
+    (:type "content_block_stop" :index 4)
+    (:type "message_delta" :delta (:stop_reason "tool_use")
+     :usage (:output_tokens 9))
+    (:type "message_stop"))
+  "An ordered signed/redacted response with two ordinary Messages tools.")
+
+(defconst e-anthropic-test--signed-follow-up-tool-events
+  '((:type "message_start"
+     :message (:role "assistant" :content [] :usage (:input_tokens 20)))
+    (:type "content_block_start" :index 0
+     :content_block (:type "thinking" :thinking ""))
+    (:type "content_block_delta" :index 0
+     :delta (:type "thinking_delta" :thinking "Checking the third path."))
+    (:type "content_block_delta" :index 0
+     :delta (:type "signature_delta" :signature "sig-native-next-0"))
+    (:type "content_block_stop" :index 0)
+    (:type "content_block_start" :index 1
+     :content_block (:type "tool_use" :id "toolu-three"
+                    :name "inspect-three" :input (:path "three")))
+    (:type "content_block_stop" :index 1)
+    (:type "message_delta" :delta (:stop_reason "tool_use")
+     :usage (:output_tokens 4))
+    (:type "message_stop"))
+  "A signed response with one tool for a subsequent follow-up round.")
+
+(defun e-anthropic-test--assert-invalid-tool-response (events)
+  "Assert EVENTS fail as one backend error before exposing any tool effects."
+  (let ((items (e-anthropic-parse-stream
+                (e-anthropic-test--sse-stream events))))
+    (should (= (length items) 1))
+    (should (eq (plist-get (car items) :type) 'backend-error))
+    (should-not
+     (seq-some (lambda (item)
+                 (memq (plist-get item :type)
+                       '(tool-call provider-replay-item)))
+               items))))
 
 (ert-deftest e-anthropic-test-request-body-maps-neutral-messages ()
   "Anthropic request body uses Messages turns with explicit max_tokens."
@@ -167,6 +243,39 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
       :content [(:type "tool_result"
                  :tool_use_id "call-1"
                  :content "{\"ok\":true}")])])))
+
+(ert-deftest e-anthropic-test-request-body-ignores-call-carried-native-replay ()
+  "A tool-call cannot extend provider replay beyond the settled result."
+  (should
+   (equal
+    (plist-get
+     (e-anthropic-request-body
+      :messages
+      '((:role tool-call
+         :content (:id "call-1"
+                   :name "read"
+                   :arguments (:uri "file://README.md")
+                   :provider-replay-items
+                   ((:type provider-replay-item
+                     :provider-id anthropic
+                     :item (:type "thinking"
+                            :thinking "Earlier thought."
+                            :signature "sig-earlier"))
+                    (:type provider-replay-item
+                     :provider-id anthropic
+                     :item (:type "tool_use" :id "call-1"
+                            :name "read"
+                            :input (:uri "file://README.md"))))))
+        (:role tool
+         :content (:tool-call-id "call-1" :content "read result")))
+      :options '(:model "claude-test" :max-tokens 1024))
+     :messages)
+    [(:role "assistant"
+      :content [(:type "tool_use" :id "call-1" :name "read"
+                 :input (:uri "file://README.md"))])
+     (:role "user"
+      :content [(:type "tool_result" :tool_use_id "call-1"
+                 :content "read result")])])))
 
 (ert-deftest e-anthropic-test-request-body-adds-cache-control-on-system ()
   "Prompt caching attaches a cache_control breakpoint to the system block."
@@ -483,7 +592,81 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                     :array []
                     :flags [:json-false :json-null]
                     :items [(:empty nil :values [1 :json-false])]))
+      (:type provider-replay-item
+       :provider-id anthropic
+       :item (:type "tool_use"
+              :id "toolu_1"
+              :name "inspect"
+              :input (:object nil
+                      :array []
+                      :flags [:json-false :json-null]
+                      :items [(:empty nil :values [1 :json-false])])))
       (:type done :reason tool-use)))))
+
+(ert-deftest e-anthropic-test-parse-signed-two-tool-response-retains-native-order ()
+  "A complete response releases each tool call before its native replay blocks."
+  (let* ((items (e-anthropic-parse-stream
+                 (e-anthropic-test--sse-stream
+                  e-anthropic-test--signed-two-tool-events)))
+         (types (mapcar (lambda (item) (plist-get item :type)) items))
+         (tool-calls (seq-filter (lambda (item)
+                                   (eq (plist-get item :type) 'tool-call))
+                                 items))
+         (replay-items
+          (seq-filter (lambda (item)
+                        (eq (plist-get item :type) 'provider-replay-item))
+                      items)))
+    (should (equal (mapcar (lambda (item) (plist-get item :id)) tool-calls)
+                   '("toolu-one" "toolu-two")))
+    (should (equal (mapcar (lambda (item)
+                             (plist-get (plist-get item :item) :type))
+                           replay-items)
+                   '("thinking" "text" "redacted_thinking"
+                     "tool_use" "tool_use")))
+    (should (< (cl-position 'tool-call types)
+               (cl-position 'provider-replay-item types)))
+    (should (equal (plist-get (car replay-items) :item)
+                   '(:type "thinking"
+                     :thinking "Checking both paths."
+                     :signature "sig-native-0")))
+    (should (eq (plist-get (car (last items)) :type) 'done))))
+
+(ert-deftest e-anthropic-test-parse-rejects-incomplete-native-tool-responses ()
+  "Missing terminal, signed material, or contiguous indices release no tools."
+  (e-anthropic-test--assert-invalid-tool-response
+   (butlast e-anthropic-test--signed-two-tool-events))
+  (e-anthropic-test--assert-invalid-tool-response
+   (seq-remove (lambda (event)
+                 (equal (plist-get (plist-get event :delta) :type)
+                        "signature_delta"))
+               e-anthropic-test--signed-two-tool-events))
+  (e-anthropic-test--assert-invalid-tool-response
+   (mapcar (lambda (event)
+             (if (and (equal (plist-get event :type) "content_block_start")
+                      (= (or (plist-get event :index) -1) 3))
+                 (plist-put (copy-sequence event) :index 5)
+               event))
+           e-anthropic-test--signed-two-tool-events)))
+
+(ert-deftest e-anthropic-test-parse-rejects-signature-before-thinking-text ()
+  "A signature delta cannot precede the thinking content it signs."
+  (let* ((events (copy-tree e-anthropic-test--signed-two-tool-events))
+         (signature (seq-find
+                     (lambda (event)
+                       (equal (plist-get (plist-get event :delta) :type)
+                              "signature_delta"))
+                     events))
+         (without-signature (delq signature events))
+         (thinking-delta-index
+          (cl-position-if
+           (lambda (event)
+             (equal (plist-get (plist-get event :delta) :type)
+                    "thinking_delta"))
+           without-signature)))
+    (e-anthropic-test--assert-invalid-tool-response
+     (append (cl-subseq without-signature 0 thinking-delta-index)
+             (list signature)
+             (cl-subseq without-signature thinking-delta-index)))))
 
 (ert-deftest e-anthropic-test-parse-max-tokens-stop-is-surfaced ()
   "A truncated turn surfaces a distinct max-tokens done reason."
@@ -492,6 +675,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
     (e-anthropic-parse-stream
      "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Writing now.\"}}\n\n\
+event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
     '((:type assistant-delta :content "Writing now.")
@@ -735,6 +919,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 (defconst e-anthropic-test--text-stream
   "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"gateway answer\"}}\n\n\
+event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
   "A minimal Messages text stream used by integration tests.")
@@ -771,6 +956,156 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                    "https://gateway.example.test/v1/messages"))
     (should (equal (cdr (assoc "x-api-key" (plist-get captured :headers)))
                    "test-token"))))
+
+(ert-deftest e-anthropic-test-multiple-tool-rounds-group-each-native-response ()
+  "Each tool round replays its native response once and stays ephemeral."
+  (let* ((directory (make-temp-file "e-anthropic-replay-" t))
+         (store (e-session-persistent-store-create directory))
+         (session-id "anthropic-replay")
+         reopened
+         (process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (request-count 0)
+         (captured-bodies nil)
+         (backend
+          (e-anthropic-backend-create
+           :provider 'eng-anthropic
+           :request-function
+           (cl-function
+            (lambda (&key body &allow-other-keys)
+              (cl-incf request-count)
+              (push (e-json-parse-string body) captured-bodies)
+              (pcase request-count
+                (1 (e-anthropic-test--sse-stream
+                    e-anthropic-test--signed-two-tool-events))
+                (2 (e-anthropic-test--sse-stream
+                    e-anthropic-test--signed-follow-up-tool-events))
+                (_ e-anthropic-test--text-stream))))))
+         (tools (e-tools-registry-create)))
+    (unwind-protect
+        (progn
+          (e-session-create store :id session-id)
+          (dolist (name '("inspect-one" "inspect-two" "inspect-three"))
+            (e-tools-test-register
+             tools
+             :name name
+             :description (format "Run %s." name)
+             :parameters '(:type "object"
+                           :properties (:path (:type "string")))
+             :handler (lambda (arguments)
+                        (format "result %s" (plist-get arguments :path)))))
+          (e-loop-run-turn-batch
+           :session-id session-id
+           :turn-id "turn-native-replay"
+           :messages '((:role user :content "Inspect both paths."))
+           :backend backend
+           :tools tools
+           :options '(:model "claude-test" :max-tokens 1024)
+           :on-event #'ignore
+           :append-message
+           (lambda (message)
+             (e-session-append-message store session-id message)))
+          (e-session-flush-write-queue store)
+          (e-session-sqlite-store-close store)
+          (setq reopened (e-session-persistent-store-create directory))
+          (let* ((bodies (nreverse captured-bodies))
+                 (first-follow-up-messages
+                  (plist-get (cadr bodies) :messages))
+                 (second-follow-up-messages
+                  (plist-get (nth 2 bodies) :messages))
+                 (expected-assistant
+                  '(:role "assistant"
+                    :content [(:type "thinking"
+                               :thinking "Checking both paths."
+                               :signature "sig-native-0")
+                              (:type "text"
+                               :text "First, inspect both.")
+                              (:type "redacted_thinking"
+                               :data "redacted-native-2")
+                              (:type "tool_use" :id "toolu-one"
+                               :name "inspect-one" :input (:path "one"))
+                              (:type "tool_use" :id "toolu-two"
+                               :name "inspect-two" :input (:path "two"))]))
+                 (expected-results
+                  '(:role "user"
+                    :content [(:type "tool_result"
+                               :tool_use_id "toolu-one"
+                               :content "result one")
+                              (:type "tool_result"
+                               :tool_use_id "toolu-two"
+                               :content "result two")]))
+                 (expected-second-assistant
+                  '(:role "assistant"
+                    :content [(:type "thinking"
+                               :thinking "Checking the third path."
+                               :signature "sig-native-next-0")
+                              (:type "tool_use" :id "toolu-three"
+                               :name "inspect-three" :input (:path "three"))]))
+                 (expected-second-results
+                  '(:role "user"
+                    :content [(:type "tool_result"
+                               :tool_use_id "toolu-three"
+                               :content "result three")]))
+                 (reopened-records
+                  (e-session-storage-read-session-records reopened session-id))
+                 (reopened-messages
+                  (mapcar
+                   (lambda (record)
+                     (plist-get (e-session-codec-decode-record record) :message))
+                   (seq-filter
+                    (lambda (record)
+                      (equal (plist-get record :type) "message"))
+                    reopened-records)))
+                 (later-body
+                  (e-anthropic-request-body
+                   :messages
+                   (append reopened-messages
+                           '((:role user :content "A later user turn.")))
+                   :options '(:model "claude-test" :max-tokens 1024))))
+            (should (= request-count 3))
+            (should (= (length bodies) 3))
+            (should
+             (equal (append first-follow-up-messages nil)
+                    (list
+                     '(:role "user"
+                       :content [(:type "text"
+                                  :text "Inspect both paths.")])
+                     expected-assistant
+                     expected-results)))
+            (should
+             (equal (append second-follow-up-messages nil)
+                    (list
+                     '(:role "user"
+                       :content [(:type "text"
+                                  :text "Inspect both paths.")])
+                     expected-assistant
+                     expected-results
+                     expected-second-assistant
+                     expected-second-results)))
+            (should-not
+             (seq-some (lambda (message)
+                         (string-match-p
+                          "provider-replay-items\\|sig-native-0\\|redacted-native-2\\|sig-native-next-0"
+                          (format "%S" message)))
+                       reopened-messages))
+            (should-not
+             (string-match-p
+              "provider-replay-items\\|sig-native-0\\|redacted-native-2\\|sig-native-next-0"
+              (format "%S" reopened-records)))
+            (should-not
+             (string-match-p
+              "sig-native-0\\|redacted-native-2\\|sig-native-next-0"
+              (e-json-serialize later-body)))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (when reopened
+        (ignore-errors (e-session-sqlite-store-close reopened)))
+      (delete-directory directory t))))
 
 (ert-deftest e-anthropic-test-harness-streams-prompt-flow ()
   "The Anthropic harness helper runs prompt to persisted assistant message."

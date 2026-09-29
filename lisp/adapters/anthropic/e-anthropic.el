@@ -35,6 +35,8 @@
 (define-error 'e-anthropic-unsupported "Anthropic adapter feature is not supported")
 (define-error 'e-anthropic-request-timeout "Anthropic request timed out")
 (define-error 'e-anthropic-backend-error "Anthropic backend request failed")
+(define-error 'e-anthropic-response-invalid
+  "Anthropic Messages response is invalid" 'e-anthropic-backend-error)
 
 (defconst e-anthropic--retryable-error-patterns
   '("rate limit" "rate_limit_error" "too many requests"
@@ -473,6 +475,13 @@ Return nil when neither an instructions option nor a system message is present."
 Anthropic requires an object; canonical nil is its empty object."
   arguments)
 
+(defun e-anthropic--tool-result-block (message)
+  "Return the Messages `tool_result' block for backend-neutral MESSAGE."
+  (let ((content (plist-get message :content)))
+    (list :type "tool_result"
+          :tool_use_id (plist-get content :tool-call-id)
+          :content (e-tools-result-content-text (plist-get content :content)))))
+
 (defun e-anthropic--message (message)
   "Map backend-neutral MESSAGE to a Messages turn."
   (let ((role (plist-get message :role))
@@ -496,6 +505,182 @@ Anthropic requires an object; canonical nil is its empty object."
       (_
        (list :role (symbol-name role)
              :content (vector (e-anthropic--text-block content)))))))
+
+(defun e-anthropic--message-replay-items (message)
+  "Return provider replay records carried by tool-result MESSAGE metadata."
+  (let ((records
+         (and (eq (plist-get message :role) 'tool)
+              (plist-get (plist-get message :metadata)
+                         :provider-replay-items))))
+    (cond
+     ((null records) nil)
+     ((and (vectorp records) (not (stringp records)))
+      (append records nil))
+     ((proper-list-p records) records)
+     (t
+      (signal 'e-anthropic-response-invalid
+              '("malformed provider replay bundle"))))))
+
+(defun e-anthropic--anthropic-replay-blocks (message)
+  "Return Anthropic native content blocks carried by result MESSAGE.
+Ignore provider replay records belonging to another adapter."
+  (when (eq (plist-get message :role) 'tool)
+    (let ((records
+           (seq-filter
+            (lambda (record)
+              (member (plist-get record :provider-id) '(anthropic "anthropic")))
+            (e-anthropic--message-replay-items message))))
+      (when records
+        (mapcar
+         (lambda (record)
+           (let ((block (plist-get record :item)))
+             (unless (and (member (plist-get record :type)
+                                  '(provider-replay-item "provider-replay-item"))
+                          (listp block)
+                          (stringp (plist-get block :type)))
+               (signal 'e-anthropic-response-invalid
+                       '("malformed Anthropic native replay block")))
+             (copy-tree block)))
+         records)))))
+
+(defun e-anthropic--json-object-p (value)
+  "Return non-nil when VALUE is a canonical JSON object plist."
+  (and (proper-list-p value)
+       (zerop (% (length value) 2))
+       (let ((tail value)
+             (valid t))
+         (while tail
+           (unless (keywordp (car tail))
+             (setq valid nil))
+           (setq tail (cddr tail)))
+         valid)))
+
+(defun e-anthropic--validate-native-replay-blocks (blocks)
+  "Validate required native fields in Anthropic replay BLOCKS.
+Return the tool-use ids in native order."
+  (let ((seen-ids (make-hash-table :test 'equal))
+        tool-use-ids)
+    (dolist (block blocks)
+      (pcase (plist-get block :type)
+        ("thinking"
+         (unless (and (stringp (plist-get block :thinking))
+                      (not (string-empty-p (plist-get block :thinking)))
+                      (stringp (plist-get block :signature))
+                      (not (string-empty-p (plist-get block :signature))))
+           (signal 'e-anthropic-response-invalid
+                   '("thinking block is missing signed replay material"))))
+        ("redacted_thinking"
+         (unless (and (stringp (plist-get block :data))
+                      (not (string-empty-p (plist-get block :data))))
+           (signal 'e-anthropic-response-invalid
+                   '("redacted thinking block is missing replay material"))))
+        ("tool_use"
+         (let ((id (plist-get block :id)))
+           (unless (and (stringp id) (not (string-empty-p id))
+                        (stringp (plist-get block :name))
+                        (not (string-empty-p (plist-get block :name)))
+                        (e-anthropic--json-object-p (plist-get block :input)))
+             (signal 'e-anthropic-response-invalid
+                     '("tool_use block has malformed id, name, or input")))
+           (when (gethash id seen-ids)
+             (signal 'e-anthropic-response-invalid
+                     '("duplicate tool_use id in native replay")))
+           (puthash id t seen-ids)
+           (push id tool-use-ids)))))
+    (nreverse tool-use-ids)))
+
+(defun e-anthropic--message-position (message messages)
+  "Return MESSAGE's position in MESSAGES by identity."
+  (cl-position message messages :test #'eq))
+
+(defun e-anthropic--grouped-tool-followup (messages blocks)
+  "Return native assistant and user messages for replay BLOCKS.
+MESSAGES must contain one neutral call and result for every native tool-use id.
+The returned plist also lists message objects to suppress from ordinary
+per-call rendering."
+  (let ((tool-use-ids (e-anthropic--validate-native-replay-blocks blocks))
+        (call-messages nil)
+        (result-messages nil))
+    (unless tool-use-ids
+      (signal 'e-anthropic-response-invalid
+              '("native replay bundle has no tool_use block")))
+    (dolist (id tool-use-ids)
+      (let* ((calls
+              (cl-remove-if-not
+               (lambda (message)
+                 (and (eq (plist-get message :role) 'tool-call)
+                      (equal (plist-get (plist-get message :content) :id) id)))
+               messages))
+             (results
+              (cl-remove-if-not
+               (lambda (message)
+                 (and (eq (plist-get message :role) 'tool)
+                      (equal (plist-get
+                              (plist-get message :content) :tool-call-id)
+                             id)))
+               messages)))
+        (unless (= (length calls) 1)
+          (signal 'e-anthropic-response-invalid
+                  '("native tool_use does not have exactly one tool-call record")))
+        (unless (= (length results) 1)
+          (signal 'e-anthropic-response-invalid
+                  '("native tool_use does not have exactly one tool result")))
+        (when (<= (or (e-anthropic--message-position (car results) messages) -1)
+                  (or (e-anthropic--message-position (car calls) messages) -1))
+          (signal 'e-anthropic-response-invalid
+                  '("tool result precedes its tool-call record")))
+        (push (car calls) call-messages)
+        (push (car results) result-messages)))
+    (setq call-messages (nreverse call-messages)
+          result-messages (nreverse result-messages))
+    (list :messages
+          (list (list :role "assistant" :content (vconcat blocks))
+                (list :role "user"
+                      :content
+                      (vconcat
+                       (mapcar #'e-anthropic--tool-result-block
+                               result-messages))))
+          :consumed (append call-messages result-messages))))
+
+(defun e-anthropic--messages (messages)
+  "Map backend-neutral MESSAGES to grouped native Messages turns.
+Pre-scan each immediate tool-result carrier so its native response replaces,
+rather than follows, the individual call/result entries in transcript order."
+  (let ((consumed (make-hash-table :test 'eq))
+        (replay-groups (make-hash-table :test 'eq))
+        (wire-messages nil))
+    (dolist (message messages)
+      (when-let* ((blocks (e-anthropic--anthropic-replay-blocks message)))
+        (let* ((group (e-anthropic--grouped-tool-followup messages blocks))
+               (members (plist-get group :consumed))
+               (first-call
+                (seq-find
+                 (lambda (candidate)
+                   (and (eq (plist-get candidate :role) 'tool-call)
+                        (memq candidate members)))
+                 messages)))
+          (unless first-call
+            (signal 'e-anthropic-response-invalid
+                    '("native replay bundle has no matching tool-call")))
+          (when (or (gethash first-call replay-groups)
+                    (seq-some (lambda (member-message)
+                                (gethash member-message consumed))
+                              members))
+            (signal 'e-anthropic-response-invalid
+                    '("overlapping Anthropic replay bundles in one request")))
+          (puthash first-call group replay-groups)
+          (dolist (member-message members)
+            (puthash member-message t consumed)))))
+    (dolist (message messages)
+      (cond
+       ((gethash message replay-groups)
+        (setq wire-messages
+              (nconc wire-messages
+                     (plist-get (gethash message replay-groups) :messages))))
+       ((not (gethash message consumed))
+        (setq wire-messages
+              (nconc wire-messages (list (e-anthropic--message message)))))))
+    wire-messages))
 
 (defun e-anthropic--tool-definition (tool)
   "Map backend-neutral TOOL to a Messages tool definition."
@@ -621,7 +806,7 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                       (list :cache_control cache-control)))))
     (setq body (append body
                         (list :messages (vconcat
-                                         (mapcar #'e-anthropic--message turns)))))
+                                         (e-anthropic--messages turns)))))
     ;; Extended thinking is opt-outable per request: some gateway models (e.g.
     ;; Haiku) reject `adaptive' thinking outright.  `:anthropic-thinking' nil
     ;; omits the thinking + effort knobs entirely; absent it, keep the adaptive
@@ -890,129 +1075,330 @@ visible rather than masked as empty assistant output."
                                  preview)
                 :payload (list :response-kind 'text :preview preview))))))))
 
+(defun e-anthropic--invalid-response-item (reason &optional provider-event)
+  "Return a backend error item for an invalid response REASON."
+  (list :type 'backend-error
+        :content (format "Invalid Anthropic Messages response: %s" reason)
+        :payload
+        (append '(:response-kind invalid-messages-stream
+                  :error-type "invalid_messages_response")
+                (when provider-event
+                  (list :provider-event provider-event)))))
+
 (defun e-anthropic-parse-stream (stream-text)
-  "Parse Anthropic Messages STREAM-TEXT into backend-neutral items.
+  "Parse Anthropic Messages STREAM-TEXT into validated backend-neutral items.
 
-Text deltas across every content block are concatenated into a single
-`assistant-message'; the turn loop keeps only the last assistant message, so
-emitting one merged message (rather than one per block) is what it expects.
-Tool calls are emitted per block index as their blocks complete.
-
-When STREAM-TEXT is a non-stream JSON error body (no SSE events parsed), it is
-surfaced as a single `backend-error' item — the gateway can return such a body
-instead of a stream (the failure mode this adapter was built to make visible)."
-  (let ((items nil)
-        (text-parts nil)
-        (blocks nil)
-        (input-tokens nil)
-        (cached-tokens nil)
-        (created-tokens nil)
-        (output-tokens nil)
-        (stop-reason nil)
-        (usage-seen nil)
-        (terminal-seen nil)
-        (event-count 0))
-    (cl-labels
-        ((emit-tool-call
-          (block)
-          (when (equal (plist-get block :type) "tool_use")
-            (push (list :type 'tool-call
-                        :id (plist-get block :id)
-                        :name (plist-get block :name)
-                        :arguments (e-anthropic--parse-tool-input
-                                    (plist-get block :partial-json)))
-                  items)))
-         (absorb-usage
-          (usage)
-          ;; Usage is cumulative and re-stated on message_delta; take the latest
-          ;; non-nil value for each field (last writer wins).
-          (when usage
-            (setq usage-seen t)
-            (when (plist-member usage :input_tokens)
-              (setq input-tokens (plist-get usage :input_tokens)))
-            (when (plist-member usage :cache_read_input_tokens)
-              (setq cached-tokens (plist-get usage :cache_read_input_tokens)))
-            (when (plist-member usage :cache_creation_input_tokens)
-              (setq created-tokens
-                    (plist-get usage :cache_creation_input_tokens)))
-            (when (plist-member usage :output_tokens)
-              (setq output-tokens (plist-get usage :output_tokens))))))
-      (dolist (event (e-anthropic--sse-data stream-text))
-      (setq event-count (1+ event-count))
-      (pcase (plist-get event :type)
-        ("message_start"
-         (absorb-usage (plist-get (plist-get event :message) :usage)))
-        ("content_block_start"
-         (let* ((index (plist-get event :index))
-                (block (plist-get event :content_block)))
-           (when (equal (plist-get block :type) "tool_use")
-             ;; :partial-json is seeded here so the input_json_delta `plist-put'
-             ;; mutates an existing key in place (a `plist-put' on a plist
-             ;; lacking the key would not persist through the alist cdr).
-             (push (cons index (list :type "tool_use"
-                                     :id (plist-get block :id)
-                                     :name (plist-get block :name)
-                                     :partial-json ""))
-                   blocks))))
-        ("content_block_delta"
-         (let* ((delta (plist-get event :delta))
-                (delta-type (plist-get delta :type)))
-           (pcase delta-type
-             ("text_delta"
-              (let ((text (plist-get delta :text)))
-                (when text
-                  (push text text-parts)
-                  (push (list :type 'assistant-delta :content text) items))))
-             ("thinking_delta"
-              (let ((thinking (plist-get delta :thinking)))
-                (when thinking
-                  (push (list :type 'reasoning-raw-delta
-                              :stream-kind 'raw
-                              :content thinking
-                              :content-index (plist-get event :index))
-                        items))))
-             ("input_json_delta"
-              (let* ((index (plist-get event :index))
-                     (entry (assoc index blocks)))
-                (when entry
-                  (let ((acc (cdr entry)))
-                    (plist-put acc :partial-json
-                               (concat (or (plist-get acc :partial-json) "")
-                                       (or (plist-get delta :partial_json)
-                                           ""))))))))))
-        ("content_block_stop"
-         (let ((entry (assoc (plist-get event :index) blocks)))
-           (when entry
-             (emit-tool-call (cdr entry)))))
-        ("message_delta"
-         (let ((delta (plist-get event :delta)))
-           (when (plist-member delta :stop_reason)
-             (setq stop-reason (plist-get delta :stop_reason)))
-           (absorb-usage (plist-get event :usage))))
-        ("message_stop"
-         (setq terminal-seen t))
-        ("error"
-         (let ((err (plist-get event :error)))
-           (push (list :type 'backend-error
-                       :content (or (plist-get err :message) (e-format-safe "%S" event))
-                       :payload event)
-                 items)))))
-      (when text-parts
-        (push (list :type 'assistant-message
-                    :content (apply #'concat (nreverse text-parts)))
-              items))
-      (when usage-seen
-        (push (e-anthropic--usage-item input-tokens output-tokens
-                                       cached-tokens created-tokens)
-              items))
-      (when (or terminal-seen stop-reason)
-        (push (list :type 'done
-                    :reason (e-anthropic--stop-reason-symbol stop-reason))
-              items))
-      (when (zerop event-count)
-        (when-let* ((error-item (e-anthropic--non-stream-error-item stream-text)))
-          (push error-item items)))
-      (nreverse items))))
+Content blocks are collected by native index.  A complete terminal response
+must be validated before any tool call or opaque native replay item is exposed.
+Text deltas across blocks remain a single `assistant-message'.  Non-stream JSON
+errors are surfaced as `backend-error' items because gateways can return those
+instead of an SSE stream."
+  (condition-case err
+      (let ((blocks nil)
+            (block-order nil)
+            (next-block-index 0)
+            (progress-items nil)
+            (input-tokens nil)
+            (cached-tokens nil)
+            (created-tokens nil)
+            (output-tokens nil)
+            (stop-reason nil)
+            (usage-seen nil)
+            (message-start-seen nil)
+            (message-delta-seen nil)
+            (terminal-seen nil)
+            (event-count 0))
+        (cl-labels
+          ((reject
+            (reason &optional provider-event)
+            (signal 'e-anthropic-response-invalid
+                    (list reason provider-event)))
+           (block-entry (index blocks)
+            (assq index blocks))
+           (entry-block (entry)
+            (plist-get (cdr entry) :block))
+           (entry-set (entry key value)
+            (setcdr entry (plist-put (cdr entry) key value)))
+           (absorb-usage
+            (usage)
+            (when usage
+              (unless (e-anthropic--json-object-p usage)
+                (reject "malformed usage object"))
+              ;; Usage is cumulative and re-stated on message_delta; take the
+              ;; latest non-nil value for each field (last writer wins).
+              (setq usage-seen t)
+              (when (plist-member usage :input_tokens)
+                (setq input-tokens (plist-get usage :input_tokens)))
+              (when (plist-member usage :cache_read_input_tokens)
+                (setq cached-tokens
+                      (plist-get usage :cache_read_input_tokens)))
+              (when (plist-member usage :cache_creation_input_tokens)
+                (setq created-tokens
+                      (plist-get usage :cache_creation_input_tokens)))
+              (when (plist-member usage :output_tokens)
+                (setq output-tokens (plist-get usage :output_tokens))))))
+          (dolist (event (e-anthropic--sse-data stream-text))
+            (setq event-count (1+ event-count))
+            (when terminal-seen
+              (reject "event received after message_stop" event))
+            (let ((event-type (plist-get event :type)))
+              (unless (stringp event-type)
+                (reject "event is missing its type" event))
+              (pcase event-type
+                ("message_start"
+                 (when (or message-start-seen message-delta-seen
+                           (> next-block-index 0))
+                   (reject "message_start is out of order" event))
+                 (setq message-start-seen t)
+                 (let ((message (plist-get event :message)))
+                   (when (and message
+                              (not (e-anthropic--json-object-p message)))
+                     (reject "malformed message_start object" event))
+                   (absorb-usage (plist-get message :usage))))
+                ("content_block_start"
+                 (when message-delta-seen
+                   (reject "content block started after message_delta" event))
+                 (let ((index (plist-get event :index))
+                       (block (plist-get event :content_block)))
+                   (unless (and (integerp index)
+                                (= index next-block-index)
+                                (e-anthropic--json-object-p block)
+                                (stringp (plist-get block :type)))
+                     (reject "content block start has malformed index or block"
+                             event))
+                   (push (cons index
+                               (list :block (copy-tree block)
+                                     :partial-json ""
+                                     :stopped nil))
+                         blocks)
+                   (push index block-order)
+                   (setq next-block-index (1+ next-block-index))))
+                ("content_block_delta"
+                 (when message-delta-seen
+                   (reject "content block delta followed message_delta" event))
+                 (let* ((index (plist-get event :index))
+                        (entry (and (integerp index)
+                                    (block-entry index blocks)))
+                        (delta (plist-get event :delta))
+                        (delta-type (plist-get delta :type)))
+                   (unless (and entry
+                                (not (plist-get (cdr entry) :stopped))
+                                (e-anthropic--json-object-p delta)
+                                (stringp delta-type))
+                     (reject "content block delta has invalid order or shape"
+                             event))
+                   (let* ((block (entry-block entry))
+                          (block-type (plist-get block :type)))
+                     (pcase delta-type
+                       ("text_delta"
+                        (let ((text (plist-get delta :text)))
+                          (unless (and (equal block-type "text")
+                                       (stringp text))
+                            (reject "text delta does not match its content block"
+                                    event))
+                          (entry-set
+                           entry :block
+                           (plist-put block :text
+                                      (concat (or (plist-get block :text) "")
+                                              text)))
+                          (push (list :type 'assistant-delta :content text)
+                                progress-items)))
+                       ("thinking_delta"
+                        (let ((thinking (plist-get delta :thinking)))
+                          (unless (and (equal block-type "thinking")
+                                       (stringp thinking)
+                                       (not (plist-member block :signature)))
+                            (reject
+                             "thinking delta does not match its content block"
+                             event))
+                          (entry-set
+                           entry :block
+                           (plist-put block :thinking
+                                      (concat (or (plist-get block :thinking) "")
+                                              thinking)))
+                          (push (list :type 'reasoning-raw-delta
+                                      :stream-kind 'raw
+                                      :content thinking
+                                      :content-index index)
+                                progress-items)))
+                       ("signature_delta"
+                        (let ((signature (plist-get delta :signature)))
+                          (unless (and (equal block-type "thinking")
+                                       (stringp (plist-get block :thinking))
+                                       (not (string-empty-p
+                                             (plist-get block :thinking)))
+                                       (stringp signature)
+                                       (not (string-empty-p signature))
+                                       (not (plist-member block :signature)))
+                            (reject "signature delta is malformed or misplaced"
+                                    event))
+                          (entry-set entry :block
+                                     (plist-put block :signature signature))))
+                       ("input_json_delta"
+                        (let ((partial-json (plist-get delta :partial_json)))
+                          (unless (and (equal block-type "tool_use")
+                                       (stringp partial-json))
+                            (reject
+                             "input JSON delta does not match a tool_use block"
+                             event))
+                          (entry-set
+                           entry :partial-json
+                           (concat (or (plist-get (cdr entry) :partial-json) "")
+                                   partial-json))))
+                       ("citations_delta"
+                        (let ((citation (plist-get delta :citation)))
+                          (unless (and (equal block-type "text")
+                                       (e-anthropic--json-object-p citation))
+                            (reject
+                             "citation delta does not match its text block"
+                             event))
+                          (let* ((citations (plist-get block :citations))
+                                 (citations
+                                  (if (vectorp citations)
+                                      (append citations nil)
+                                    citations)))
+                            (unless (or (null citations)
+                                        (proper-list-p citations))
+                              (reject "malformed text citations" event))
+                            (entry-set
+                             entry :block
+                             (plist-put
+                              block :citations
+                              (vconcat (append citations (list citation))))))))
+                       (_
+                        (reject
+                         (format "unsupported content block delta %s"
+                                 delta-type)
+                         event))))))
+                ("content_block_stop"
+                 (when message-delta-seen
+                   (reject "content block stopped after message_delta" event))
+                 (let* ((index (plist-get event :index))
+                        (entry (and (integerp index)
+                                    (block-entry index blocks))))
+                   (unless (and entry
+                                (not (plist-get (cdr entry) :stopped)))
+                     (reject "content block stop has invalid order" event))
+                   (let* ((block (entry-block entry))
+                          (block-type (plist-get block :type)))
+                     (when (equal block-type "tool_use")
+                       (let* ((partial-json
+                               (plist-get (cdr entry) :partial-json))
+                              (input
+                               (if (string-empty-p partial-json)
+                                   (plist-get block :input)
+                                 (e-anthropic--parse-tool-input partial-json))))
+                         (unless (e-anthropic--json-object-p input)
+                           (reject "tool_use input is not a JSON object" event))
+                         (entry-set entry :block (plist-put block :input input))))
+                   (entry-set entry :stopped t))))
+                ("message_delta"
+                 (when message-delta-seen
+                   (reject "duplicate message_delta event" event))
+                 (when (seq-some
+                        (lambda (entry)
+                          (not (plist-get (cdr entry) :stopped)))
+                        blocks)
+                   (reject "message_delta arrived before content blocks stopped"
+                           event))
+                 (let ((delta (plist-get event :delta)))
+                   (unless (e-anthropic--json-object-p delta)
+                     (reject "malformed message_delta object" event))
+                   (when (plist-member delta :stop_reason)
+                     (unless (stringp (plist-get delta :stop_reason))
+                       (reject "malformed stop_reason" event))
+                     (setq stop-reason (plist-get delta :stop_reason))))
+                 (absorb-usage (plist-get event :usage))
+                 (setq message-delta-seen t))
+                ("message_stop"
+                 (when (seq-some
+                        (lambda (entry)
+                          (not (plist-get (cdr entry) :stopped)))
+                        blocks)
+                   (reject "message_stop arrived before content blocks stopped"
+                           event))
+                 (setq terminal-seen t))
+                ("error"
+                 (let ((provider-error (plist-get event :error)))
+                   (reject (or (plist-get provider-error :message)
+                               "provider error event")
+                           event)))
+                ("ping" nil)
+                (_
+                 (reject (format "unsupported event type %s" event-type)
+                         event)))))
+          (cond
+           ((zerop event-count)
+            (if (string-match-p "\\`[[:space:]]*\\'" stream-text)
+                nil
+              (when-let* ((error-item
+                           (e-anthropic--non-stream-error-item stream-text)))
+                (list error-item))))
+           ((not terminal-seen)
+            (reject "stream ended before message_stop"))
+           (t
+            (let* ((ordered-blocks
+                    (mapcar (lambda (index) (entry-block
+                                             (block-entry index blocks)))
+                            (nreverse block-order)))
+                   (tool-use-blocks
+                    (seq-filter
+                     (lambda (block)
+                       (equal (plist-get block :type) "tool_use"))
+                     ordered-blocks))
+                   (tool-use-ids
+                    (when tool-use-blocks
+                      (e-anthropic--validate-native-replay-blocks
+                       ordered-blocks)))
+                   (assistant-text
+                    (apply #'concat
+                           (mapcar (lambda (block)
+                                     (if (equal (plist-get block :type) "text")
+                                         (or (plist-get block :text) "")
+                                       ""))
+                                   ordered-blocks)))
+                   (replay-items
+                    (when tool-use-ids
+                      (mapcar (lambda (block)
+                                (list :type 'provider-replay-item
+                                      :provider-id 'anthropic
+                                      :item block))
+                              ordered-blocks)))
+                   (tool-call-items
+                    (mapcar (lambda (block)
+                              (list :type 'tool-call
+                                    :id (plist-get block :id)
+                                    :name (plist-get block :name)
+                                    :arguments (plist-get block :input)))
+                            tool-use-blocks)))
+              (when (and tool-use-ids
+                         (equal stop-reason "max_tokens"))
+                (reject "tool_use response was truncated at max_tokens"))
+              (when (and tool-use-ids
+                         (not (equal stop-reason "tool_use")))
+                (reject "tool_use blocks require a tool_use stop_reason"))
+              (when (and (equal stop-reason "tool_use")
+                         (not tool-use-ids))
+                (reject "tool_use stop_reason has no tool_use block"))
+              (append
+               (nreverse progress-items)
+               (when (not (string-empty-p assistant-text))
+                 (list (list :type 'assistant-message
+                             :content assistant-text)))
+               tool-call-items
+               replay-items
+               (when usage-seen
+                 (list (e-anthropic--usage-item
+                        input-tokens output-tokens cached-tokens created-tokens)))
+               (list (list :type 'done
+                           :reason
+                           (e-anthropic--stop-reason-symbol stop-reason)))))))))
+    (e-anthropic-response-invalid
+     (list (e-anthropic--invalid-response-item
+            (or (cadr err) "malformed response") (caddr err))))
+    (e-json-error
+     (list (e-anthropic--invalid-response-item
+            "invalid JSON event or tool input")))))
 
 (defun e-anthropic--http-header-bytes (value)
   "Return VALUE as an ASCII byte string for `url-request-extra-headers'."
