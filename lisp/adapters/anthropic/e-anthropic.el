@@ -668,7 +668,6 @@ Return the tool-use ids in native order."
       (pcase (plist-get block :type)
         ("thinking"
          (unless (and (stringp (plist-get block :thinking))
-                      (not (string-empty-p (plist-get block :thinking)))
                       (stringp (plist-get block :signature))
                       (not (string-empty-p (plist-get block :signature))))
            (signal 'e-anthropic-response-invalid
@@ -1955,7 +1954,8 @@ errors are surfaced as `backend-error' items because gateways can return those
                                          ""))))
                           (unless (and (equal block-type "thinking")
                                        (stringp thinking)
-                                       (not (string-empty-p thinking))
+                                       (or (not (string-empty-p thinking))
+                                           (plist-get entry :thinking-chunks))
                                        (stringp signature)
                                        (not (string-empty-p signature))
                                        (or (not (plist-member block :signature))

@@ -1648,6 +1648,28 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                2))
     (should (eq (plist-get (car (last items)) :type) 'done))))
 
+(ert-deftest e-anthropic-test-parse-signed-empty-thinking-delta ()
+  "A signed empty thinking delta is valid native replay material."
+  (let* ((events (copy-tree e-anthropic-test--signed-two-tool-events))
+         (start (cadr events))
+         (delta (nth 2 events)))
+    (plist-put (plist-get start :content_block) :signature "")
+    (plist-put (plist-get delta :delta) :thinking "")
+    (let* ((items (e-anthropic-parse-stream
+                   (e-anthropic-test--sse-stream events)))
+           (replay
+            (seq-find (lambda (item)
+                        (eq (plist-get item :type) 'provider-replay-item))
+                      items)))
+      (should (equal (plist-get replay :item)
+                     '(:type "thinking" :thinking ""
+                       :signature "sig-native-0")))
+      (should (= (cl-count 'tool-call
+                           (mapcar (lambda (item) (plist-get item :type))
+                                   items))
+                 2))
+      (should (eq (plist-get (car (last items)) :type) 'done)))))
+
 (ert-deftest e-anthropic-test-parse-rejects-preset-thinking-signature-with-deltas ()
   "A nonempty start signature cannot be overwritten by later deltas."
   (let* ((events (copy-tree e-anthropic-test--signed-two-tool-events))
