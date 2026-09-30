@@ -108,8 +108,12 @@
                         (plist-get arguments :headers))
                        :body body
                        :status nil
+                       :response-events nil
+                       :response-event-count nil
+                       :response-bytes nil
                        :failure-class nil))
          (on-body-chunk (plist-get arguments :on-body-chunk))
+         (on-complete (plist-get arguments :on-complete))
          (on-http-error (plist-get arguments :on-http-error))
          (on-error (plist-get arguments :on-error)))
     (setf (plist-get capture-state :requests)
@@ -121,6 +125,25 @@
              (setf (plist-get record :status) status)
              (when on-body-chunk
                (funcall on-body-chunk chunk status)))))
+    (setq arguments
+          (plist-put
+           arguments :on-complete
+           (lambda (response)
+             (let* ((events
+                     (condition-case condition
+                         (mapcar (lambda (event) (plist-get event :type))
+                                 (e-anthropic--sse-data response))
+                       (error (list (car-safe condition)))))
+                    (count (length events)))
+               (setf (plist-get record :response-bytes) (length response)
+                     (plist-get record :response-event-count) count
+                     (plist-get record :response-events)
+                     (if (> count 40)
+                         (append (seq-take events 30)
+                                 '("...") (last events 10))
+                       events)))
+             (when on-complete
+               (funcall on-complete response)))))
     (setq arguments
           (plist-put
            arguments :on-http-error
@@ -159,6 +182,16 @@
   (seq-filter
    (lambda (block) (equal (plist-get block :type) "tool_result"))
    (e-current-config-anthropic-s7--content-blocks body)))
+
+(defun e-current-config-anthropic-s7--tool-result-value (result)
+  "Return RESULT's raw value from plain or source-labeled content."
+  (let ((content (plist-get result :content)))
+    (if (and (vectorp content)
+             (= (length content) 2)
+             (equal (plist-get (aref content 0) :type) "text")
+             (equal (plist-get (aref content 1) :type) "text"))
+        (plist-get (aref content 1) :text)
+      content)))
 
 (defun e-current-config-anthropic-s7--tool-names (body)
   "Return the offered tool names in BODY."
@@ -361,6 +394,9 @@ tool schema is a different prefix and must not be compared with open requests."
           :transport (plist-get record :transport)
           :headers (plist-get record :headers)
           :status (plist-get record :status)
+          :response-bytes (plist-get record :response-bytes)
+          :response-event-count (plist-get record :response-event-count)
+          :response-events (plist-get record :response-events)
           :failure-class (plist-get record :failure-class)
           :options
           (list :model (plist-get body :model)
@@ -398,6 +434,15 @@ tool schema is a different prefix and must not be compared with open requests."
 (defun e-current-config-anthropic-s7--utc-now ()
   "Return the current time in explicit UTC form."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+
+(defun e-current-config-anthropic-s7--safe-error (value)
+  "Return a bounded diagnostic for VALUE without the gateway credential."
+  (let ((text (format "%s" value))
+        (credential (getenv "ENG_AI_MODEL_GW_KEY")))
+    (when (and credential (not (string-empty-p credential)))
+      (setq text (replace-regexp-in-string
+                  (regexp-quote credential) "<redacted>" text t t)))
+    (substring text 0 (min 500 (length text)))))
 
 (ert-deftest e-current-config-e2e-test-f97-s7-anthropic-default ()
   "Run the opt-in Opus 5.5 current-Doom composition through :chat-default."
@@ -451,6 +496,7 @@ tool schema is a different prefix and must not be compared with open requests."
          session-id
          (started-at (e-current-config-anthropic-s7--utc-now))
          (failure-stage "registered-default")
+         (failure-detail nil)
          (composition-result "in-progress")
          (usage-events nil)
          (requests nil)
@@ -506,6 +552,10 @@ tool schema is a different prefix and must not be compared with open requests."
                           harness session-id
                           "Reply with exactly LIVE-S7-R0-READY. Do not call tools or context-curate, and do not repeat either observation source."
                           240.0)))
+                    (unless (eq (plist-get result :status) 'done)
+                      (setq failure-detail
+                            (e-current-config-anthropic-s7--safe-error
+                             (plist-get result :error))))
                     (should (eq (plist-get result :status) 'done))
                     (should (equal (string-trim
                                     (plist-get result :assistant-content))
@@ -517,6 +567,10 @@ tool schema is a different prefix and must not be compared with open requests."
                           (concat
                            "Call e2e_s7_deterministic exactly once. After its result arrives, call the reserved context-curate tool exactly once. In its keep array, include only the numeric label whose exact displayed source value is the result returned by e2e_s7_deterministic. Omit every other displayed source, including the source containing F97-S7-OMIT. Do not summarize or erase any source. Then reply with exactly LIVE-S7-R2-READY and no other text.")
                           300.0)))
+                    (unless (eq (plist-get result :status) 'done)
+                      (setq failure-detail
+                            (e-current-config-anthropic-s7--safe-error
+                             (plist-get result :error))))
                     (should (eq (plist-get result :status) 'done))
                     (should (equal (string-trim
                                     (plist-get result :assistant-content))
@@ -530,6 +584,10 @@ tool schema is a different prefix and must not be compared with open requests."
                           harness session-id
                           "Reply with exactly the current observation value from the latest context and no extra words. Do not call tools or context-curate."
                           240.0)))
+                    (unless (eq (plist-get result :status) 'done)
+                      (setq failure-detail
+                            (e-current-config-anthropic-s7--safe-error
+                             (plist-get result :error))))
                     (should (eq (plist-get result :status) 'done))
                     (should (equal (string-trim
                                     (plist-get result :assistant-content))
@@ -594,7 +652,8 @@ tool schema is a different prefix and must not be compared with open requests."
                               (seq-some
                                (lambda (result)
                                  (and (equal
-                                       (plist-get result :content)
+                                       (e-current-config-anthropic-s7--tool-result-value
+                                        result)
                                        tool-output)
                                       (let ((call
                                              (e-current-config-anthropic-s7--find-tool-use
@@ -723,6 +782,7 @@ tool schema is a different prefix and must not be compared with open requests."
                :composition-result composition-result
                :first-failing-boundary failure-stage
                :failure-class failure-class
+               :failure-detail failure-detail
                :request-count (length ordered-requests)
                :requests request-summaries
                :repo-head (getenv "E_CURRENT_CONFIG_F97_REPO_HEAD")

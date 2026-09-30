@@ -1413,6 +1413,27 @@ retry classifier sees the kind even when the message does not name it."
       (should (string-match-p "message_stop"
                               (plist-get (car items) :content))))))
 
+(ert-deftest e-anthropic-test-parse-allows-ping-after-message-stop-only ()
+  "A trailing gateway heartbeat does not invalidate a completed response."
+  (let* ((events '((:type "message_start"
+                    :message (:role "assistant" :content []))
+                   (:type "message_delta"
+                    :delta (:stop_reason "end_turn"))
+                   (:type "message_stop")))
+         (expected (e-anthropic-parse-stream
+                    (e-anthropic-test--sse-stream events)))
+         (with-ping (e-anthropic-parse-stream
+                     (e-anthropic-test--sse-stream
+                      (append events '((:type "ping"))))))
+         (with-content (e-anthropic-parse-stream
+                        (e-anthropic-test--sse-stream
+                         (append events '((:type "message_start")))))))
+    (should (equal with-ping expected))
+    (should (= (length with-content) 1))
+    (should (eq (plist-get (car with-content) :type) 'backend-error))
+    (should (string-match-p "after message_stop"
+                            (plist-get (car with-content) :content)))))
+
 (ert-deftest e-anthropic-test-parse-rejects-oversized-sse-event ()
   "The decoder bounds partial SSE event storage before parsing JSON."
   (let* ((line (make-string 900000 ?x))

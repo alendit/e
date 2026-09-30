@@ -1857,11 +1857,11 @@ errors are surfaced as `backend-error' items because gateways can return those
                 (setq output-tokens (plist-get usage :output_tokens))))))
           (dolist (event events)
             (setq event-count (1+ event-count))
-            (when terminal-seen
-              (reject "event received after message_stop" event))
             (let ((event-type (plist-get event :type)))
               (unless (stringp event-type)
                 (reject "event is missing its type" event))
+              (when (and terminal-seen (not (equal event-type "ping")))
+                (reject "event received after message_stop" event))
               (pcase event-type
                 ("message_start"
                  (when (or message-start-seen message-delta-seen
