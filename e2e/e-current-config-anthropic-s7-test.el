@@ -870,10 +870,10 @@ tool schema is a different prefix and must not be compared with open requests."
                               (e-current-config-anthropic-s7--tool-names
                                (car curation-ack-bodies)))
                   (ert-fail "F97-S7 consumed-frame continuation still offered context-curate"))
-                (unless (not (string-match-p
-                              (regexp-quote omitted-source)
-                              (prin1-to-string (car curation-ack-bodies))))
-                  (ert-fail "F97-S7 curation acknowledgement repeated an omitted source"))
+                (when (string-match-p
+                       (regexp-quote "[ephemeral context source")
+                       (prin1-to-string (car curation-ack-bodies)))
+                  (ert-fail "F97-S7 curation acknowledgement repeated a consumed source label"))
                 (unless (and (string-match-p
                               (regexp-quote new-current)
                               (prin1-to-string final-body))
