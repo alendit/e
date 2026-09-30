@@ -2250,6 +2250,7 @@ the body and status for a non-2xx response.  Return a cancellable
         request-buffer
         body-cursor
         timeout-timer
+        activity-timer
         settled
         error-notified)
     (cl-labels
@@ -2259,6 +2260,9 @@ the body and status for a non-2xx response.  Return a cancellable
            (setq timeout-timer nil))
          (cleanup (buffer)
            (cancel-timeout)
+           (when (timerp activity-timer)
+             (cancel-timer activity-timer))
+           (setq activity-timer nil)
            (when (markerp body-cursor)
              (set-marker body-cursor nil))
            (setq body-cursor nil)
@@ -2311,6 +2315,16 @@ the body and status for a non-2xx response.  Return a cancellable
              (condition-case err
                  (response-body-chunk)
                (error (settle-error err)))))
+         (schedule-activity (&rest _)
+           ;; url.el edits the buffer while decoding chunks.  Inspecting it
+           ;; inside that edit hook reenters its parser and corrupts its state.
+           (unless (or settled (timerp activity-timer))
+             (setq activity-timer
+                   (run-at-time
+                    0 nil
+                    (lambda ()
+                      (setq activity-timer nil)
+                      (note-activity))))))
          (handle-callback (status)
            (unless settled
              (setq settled t)
@@ -2357,7 +2371,7 @@ the body and status for a non-2xx response.  Return a cancellable
       ;; without depending on url internals.
       (when (buffer-live-p request-buffer)
         (with-current-buffer request-buffer
-          (add-hook 'after-change-functions #'note-activity nil t)))
+          (add-hook 'after-change-functions #'schedule-activity nil t)))
       (arm-timeout))
     (e-backend-request-create
      :cancel (lambda ()
@@ -2365,6 +2379,9 @@ the body and status for a non-2xx response.  Return a cancellable
                (when (timerp timeout-timer)
                  (cancel-timer timeout-timer))
                (setq timeout-timer nil)
+               (when (timerp activity-timer)
+                 (cancel-timer activity-timer))
+               (setq activity-timer nil)
                (e-anthropic--kill-request-buffer request-buffer)
                t)
      :metadata (append

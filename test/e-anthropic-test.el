@@ -184,6 +184,7 @@
          (format "event: %s\r\ndata: %s\r\n\r\n"
                  (plist-get event :type)
                  (e-json-serialize event))))
+      (should (e-anthropic-test--wait-until (lambda () items)))
       (should (equal (mapcar (lambda (item) (plist-get item :type))
                              (reverse items))
                      '(assistant-delta)))
@@ -2561,6 +2562,82 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (should (e-anthropic-test--wait-until (lambda () error) 0.5))
       (should (eq (car error) 'e-anthropic-request-timeout)))))
 
+(ert-deftest e-anthropic-test-http-chunked-url-parser-completes-with-keepalive ()
+  "A live url.el chunk parser completes a stream while the socket stays open."
+  (let* ((e-anthropic-request-timeout-seconds 0.5)
+         (url-proxy-services nil)
+         (server nil)
+         (clients nil)
+         (timers nil)
+         (chunks nil)
+         response
+         failure)
+    (cl-labels
+        ((send-chunk (client data)
+           (when (process-live-p client)
+             (process-send-string
+              client (format "%x\r\n%s\r\n" (string-bytes data) data))))
+         (serve-request (client data)
+           (when (string-match-p "\r\n\r\n" data)
+             (set-process-filter client #'ignore)
+             (process-send-string
+              client
+              (concat "HTTP/1.1 200 OK\r\n"
+                      "Content-Type: text/event-stream\r\n"
+                      "Transfer-Encoding: chunked\r\n"
+                      "Connection: keep-alive\r\n\r\n"))
+             (push (run-at-time
+                    0.02 nil #'send-chunk client
+                    "event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+                   timers)
+             (push (run-at-time
+                    0.04 nil #'send-chunk client
+                    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\n")
+                   timers)
+             (push (run-at-time
+                    0.06 nil #'send-chunk client
+                    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+                   timers)
+             (push (run-at-time
+                    0.08 nil
+                    (lambda ()
+                      (when (process-live-p client)
+                        (process-send-string client "0\r\n\r\n"))))
+                   timers))))
+      (unwind-protect
+          (progn
+            (setq server
+                  (make-network-process
+                   :name "e-anthropic-chunked-server"
+                   :server t
+                   :host 'local
+                   :service t
+                   :noquery t
+                   :log (lambda (_server client _message)
+                          (push client clients)
+                          (set-process-query-on-exit-flag client nil)
+                          (set-process-filter client #'serve-request))))
+            (e-anthropic--http-request-start
+             :url (format "http://127.0.0.1:%s/messages"
+                          (process-contact server :service))
+             :headers '(("Content-Type" . "application/json"))
+             :body "{}"
+             :on-body-chunk (lambda (chunk _status) (push chunk chunks))
+             :on-complete (lambda (value) (setq response value))
+             :on-error (lambda (err) (setq failure err)))
+            (should (e-anthropic-test--wait-until
+                     (lambda () (or response failure)) 2.0))
+            (should-not failure)
+            (should (string-match-p "message_stop" response))
+            (should (string-match-p "content_block_delta"
+                                    (apply #'concat (reverse chunks)))))
+        (dolist (timer timers)
+          (when (timerp timer) (cancel-timer timer)))
+        (dolist (client clients)
+          (when (process-live-p client) (delete-process client)))
+        (when (process-live-p server)
+          (delete-process server))))))
+
 (ert-deftest e-anthropic-test-http-cr-boundaries-preserve-progress-and-admission ()
   "Split CR delimiters preserve progress order and wait for terminal admission."
   (let ((output
@@ -2615,11 +2692,14 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
            buffer (e-anthropic-test--sse-stream (list event))))
         (e-anthropic-test--write-http-chunk
          buffer (substring text-event 0 split))
+        (should (e-anthropic-test--wait-until (lambda () items)))
         (should (equal (mapcar (lambda (item) (plist-get item :type))
                                (reverse items))
                        '(reasoning-raw-delta)))
         (e-anthropic-test--write-http-chunk
          buffer (substring text-event split))
+        (should (e-anthropic-test--wait-until
+                 (lambda () (= (length items) 2))))
         (should (equal (mapcar (lambda (item) (plist-get item :type))
                                (reverse items))
                        '(reasoning-raw-delta assistant-delta)))
@@ -2853,6 +2933,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (dolist (event (butlast e-anthropic-test--signed-two-tool-events))
         (e-anthropic-test--write-http-chunk
          buffer (e-anthropic-test--sse-stream (list event))))
+      (should (e-anthropic-test--wait-until (lambda () items)))
       (should (seq-some (lambda (item)
                           (eq (plist-get item :type) 'assistant-delta))
                         items))
