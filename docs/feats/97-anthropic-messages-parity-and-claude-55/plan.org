@@ -29,15 +29,15 @@ running Emacs and provider configuration are unchanged.
   change to curation meaning, labels, limits, or durability returns to Feature
   88's owning contract before this adapter plan changes.
 - Owning contracts :: =F97-C01=--=F97-C06= below.
-- Behavioral status :: Partial at the direct gateway boundary: Opus 5.5
-  accepts basic Messages, cache control, and native tool use.  The composed
-  =e= scenario is unavailable until the planned adapter packages exist.
+- Behavioral status :: The injected real-Anthropic =F97-S4= composition passes.
+  The configured Opus 5.5 gateway composition and final cache, streaming, and
+  cancellation probes remain unverified on the accepted revision.
 - Mechanism status :: In progress.  =F97-DP1= is parent-accepted at
   =6a5f7155=, =F97-DP2= at =a077b513=, =F97-DP3= at =d3b773ca=,
-  =F97-DP4= at =c656136c=, and =F97-DP5= at =bda84391=.  DP4's recovery is
-  recorded in
+  =F97-DP4= at =c656136c=, =F97-DP5= at =bda84391=, and =F97-DP6=
+  at =246c84ce=.  DP4's recovery is recorded in
   [[file:implementation-rebaseline-01.org][Implementation Rebaseline 01]].
-  =F97-DP6= remains unimplemented.
+  Independent implementation review and exact-revision external evidence remain.
 
 Here a /semantic checkpoint/ means Feature 88's durable, provider-neutral
 context boundary.  An Anthropic /cache checkpoint/ is a =cache_control= marker
@@ -68,7 +68,7 @@ source content on behalf of =context-curate=.
   describe the upstream API.  Gateway access and limits require separate
   credentialed evidence.
 
-* Current evidence and diagnosis
+* Baseline evidence and diagnosis
 
 The 2026-09-29 authenticated engineering-gateway catalog probe returned 51
 models.  It listed =claude-opus-5-5= and =claude-opus-5-5-vertex= but not
@@ -80,12 +80,20 @@ effort =high=, a one-hour =cache_control= checkpoint, and a native synthetic
 cache creation tokens followed by 4,802 cache read tokens.  These probes
 establish wire capability, not the composed =e= scenario.
 
+A fresh 2026-09-30 08:46:46--08:46:49 UTC prerequisite probe changed the
+Sonnet access result.  The gateway catalog listed both exact 5.5 IDs, and
+separate bounded Messages requests for =claude-opus-5-5= and
+=claude-sonnet-5-5= each returned HTTP 200 with the matching response model.
+Both catalog records still omitted =max_input_tokens=.  These minimal requests
+did not exercise streaming, curation, cache reuse, or the configured =e=
+scenario; =F97-S6a= and =F97-S6b= remain separate final probes.
+
 The Opus 5.5 catalog records omitted input/output limits, and this credential
 received HTTP 401 from the single-model metadata endpoint.  Public Anthropic
 documentation says 1M context, but the gateway's effective client limit is
 unknown.  Do not put 1M into =e='s budget table on that evidence alone.
 
-| Area | Current source evidence | Consequence |
+| Area | 2026-09-29 source evidence | Consequence |
 |------+-------------------------+-------------|
 | Model selection | =lisp/adapters/anthropic/e-anthropic.el:152= defaults to Opus 4.8; =e2e/e-e2e-config-anthropic.el:25= also selects 4.8.  The local Doom Opus profile selects =claude-opus-5=, which the direct gateway probe denied with HTTP 403.  Standard Doom chat currently uses GPT-6. | Opus 5.5 must be selected deliberately in Anthropic profiles and tests; changing standard chat is a separate decision. |
 | Context capability | =e-anthropic-backend-create= supplies no =:context-capabilities=; =e-backend= therefore returns conservative defaults. | The harness cannot offer Anthropic the reserved curation effect or claim native prefix caching. |
@@ -107,7 +115,7 @@ they preserve the observable result.
 
 | ID | Observable contract | Semantic owner | Establishing package | Deterministic evidence | External compatibility evidence | Status |
 |----+---------------------+----------------+----------------------+------------------------+---------------------------------+--------|
-| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success.  Existing usable Opus 4.8 and Sonnet 5 profiles remain selectable, and the standard GPT-6 chat default does not change as part of this feature. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Proposed |
+| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success.  Existing usable Opus 4.8 and Sonnet 5 profiles remain selectable, and the standard GPT-6 chat default does not change as part of this feature. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Accepted |
 | =F97-C02= | Provider usage reports full context input as fresh + cache-read + cache-creation input while preserving each original billing counter.  An absent gateway model limit is represented as unknown, so status and auto-compaction do not assume an unproved window. | Anthropic usage decoder and core context budget; catalog adapter owns model metadata | =F97-DP1= | Cache-hit fixture 17 + 4,802 = 4,819; budget/status and missing-limit fixtures | Gateway counter and model-metadata observations | Accepted |
 | =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing terminal completion or missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Accepted |
 | =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message in order, and presents each late ephemeral marker paired with its matching source, including each tool result, with caching on or off.  A changing suffix leaves the stable prefix unchanged.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment and marker meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker-to-result pairing in both request projections, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Accepted |
@@ -489,6 +497,16 @@ part of repository validation.
   34/34, provider-continuation integration 3/3, warning-as-error compilation,
   and committed diff hygiene.  The final exact-revision gateway stream and
   cancellation probes remain external compatibility evidence.
+- =F97-DP6= / =F97-C01= :: Parent-accepted at =246c84ce=.  The checked-in
+  Anthropic E2E profile selects exact Opus 5.5; Opus 4.8, Sonnet 5, and newly
+  accessible Sonnet 5.5 remain separately selectable.  No gateway context
+  window is fabricated, and standard GPT-6 chat and local Doom configuration
+  are unchanged.  Fresh catalog and minimal Messages checks returned HTTP 200
+  with exact response IDs for both 5.5 models.  Anthropic ERT passed 83/83,
+  isolated configured profile selection 1/1, and warnings-as-errors compilation
+  passed for the checked-in profile and Anthropic adapter.  The unrelated
+  pre-existing free =profile= warning in the full live E2E test file remains;
+  final exact-revision capability and configured composition probes are pending.
 
 * Compatibility, uncertainty, and architecture check
 
