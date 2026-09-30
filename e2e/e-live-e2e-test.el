@@ -55,6 +55,12 @@
 (defconst e-live-e2e--harness-id :chat-default
   "Registry id of the default chat harness exercised by live e2e tests.")
 
+(defconst e-live-e2e--checked-in-anthropic-config-file
+  (expand-file-name
+   "e-e2e-config-anthropic.el"
+   (file-name-directory (or load-file-name buffer-file-name)))
+  "Checked-in Anthropic E2E configuration used by profile selection tests.")
+
 (defvar e-live-e2e--config-loaded nil
   "Non-nil once the E_E2E_CONFIG backend configuration file has been loaded.")
 
@@ -4068,6 +4074,35 @@ is updated through BODY so an outer finalizer can observe later events."
            (ignore-errors (e-harness-activity-unsubscribe ,harness ,subscription))
            (ignore-errors (e-session-sqlite-store-close ,store))
            (ignore-errors (delete-directory ,root t)))))))
+
+(ert-deftest e-live-e2e-test-anthropic-profile-selection ()
+  "The checked-in Anthropic config selects exact Opus 5.5 in isolated state."
+  (let ((config-path (e-live-e2e--config-file)))
+    (unless (and config-path
+                 (file-readable-p config-path)
+                 (equal (file-truename config-path)
+                        (file-truename
+                         e-live-e2e--checked-in-anthropic-config-file)))
+      (ert-skip
+       "Set E_E2E_CONFIG=e2e/e-e2e-config-anthropic.el for this selection test.")))
+  (let ((e-live-e2e--config-loaded nil))
+    (cl-letf (((symbol-function 'e-live-e2e--require-enabled)
+               (lambda () (e-live-e2e--load-config))))
+      (e-live-e2e--with-harness (harness session-id)
+        (let* ((profile
+                (e-anthropic-provider-profile e-anthropic-default-provider))
+               (options (e-harness-display-options harness session-id)))
+          (should (eq e-anthropic-default-provider 'eng-ai-gateway-opus-5-5))
+          (should (equal e-anthropic-default-model "claude-opus-5-5"))
+          (should (equal (plist-get profile :default-model)
+                         "claude-opus-5-5"))
+          (should (equal (plist-get options :model) "claude-opus-5-5"))
+          (should (= (plist-get options :max-tokens)
+                     e-anthropic-default-max-tokens))
+          (should (equal (plist-get options :effort)
+                         e-anthropic-default-effort))
+          (should-not (plist-member profile :context-window))
+          (should-not (plist-member profile :max-input-tokens)))))))
 
 (defmacro e-live-e2e--with-responses-request-capture
     (profile request-bodies request-handles &rest body)

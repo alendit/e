@@ -25,6 +25,12 @@
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-anthropic)
 
+(defconst e-anthropic-test--e2e-config-file
+  (expand-file-name
+   "../e2e/e-e2e-config-anthropic.el"
+   (file-name-directory (or load-file-name buffer-file-name)))
+  "Checked-in Anthropic E2E profile used by profile selection tests.")
+
 (defun e-anthropic-test--wait-until (predicate &optional timeout)
   "Wait until PREDICATE returns non-nil or TIMEOUT seconds elapse."
   (let ((deadline (+ (float-time) (or timeout 1.0)))
@@ -241,6 +247,47 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                :messages '((:role user :content "hello"))
                :options '(:model "claude-test" :max-tokens 1024))))
     (should (equal (plist-get body :thinking) '(:type "adaptive")))))
+
+(ert-deftest e-anthropic-test-checked-in-gateway-profiles-use-exact-models ()
+  "The checked-in profiles preserve old IDs and emit exact Claude 5.5 bodies."
+  (require 'e-default-harnesses)
+  (let ((e-anthropic-default-model nil)
+        (e-anthropic-default-provider nil)
+        (e-anthropic-model-providers nil)
+        (e-default-harness-specs nil)
+        (process-environment
+         (cons "ENG_AI_MODEL_GW_KEY=test-profile-token" process-environment)))
+    (load e-anthropic-test--e2e-config-file nil nil t)
+    (should (eq e-anthropic-default-provider 'eng-ai-gateway-opus-5-5))
+    (should (equal e-anthropic-default-model "claude-opus-5-5"))
+    (dolist (case '((eng-ai-gateway-opus "claude-opus-4-8")
+                    (eng-ai-gateway-opus-5-5 "claude-opus-5-5")
+                    (eng-ai-gateway-sonnet "claude-sonnet-5")
+                    (eng-ai-gateway-sonnet-5-5 "claude-sonnet-5-5")))
+      (let* ((provider (car case))
+             (model (cadr case))
+             (profile (e-anthropic-provider-profile provider))
+             (context
+              (e-anthropic--request-context
+               :provider provider
+               :messages '((:role user :content "hello"))
+               :options '(:max-tokens 1024 :effort "high")))
+             (body (e-json-parse-string (plist-get context :body))))
+        (should (equal (plist-get profile :default-model) model))
+        (should (equal (plist-get context :url)
+                       (concat (plist-get profile :base-url) "/messages")))
+        (should (equal (plist-get body :model) model))
+        (should (equal body
+                       `(:model ,model
+                         :max_tokens 1024
+                         :stream t
+                         :messages [(:role "user"
+                                     :content [(:type "text" :text "hello")])]
+                         :thinking (:type "adaptive")
+                         :output_config (:effort "high"))))
+        (should-not (plist-member profile :context-window))
+        (should-not (plist-member profile :max-input-tokens))
+        (should-not (plist-member profile :max_input_tokens))))))
 
 (ert-deftest e-anthropic-test-request-body-maps-tool-definitions ()
   "Backend-neutral tools map to Messages tools with input_schema."
