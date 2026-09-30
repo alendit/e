@@ -495,8 +495,8 @@ RESULT-MARKERS maps each marked tool result to its request-local marker."
           (setq block
                 (plist-put
                  block :content
-                 (vector (e-anthropic--text-block (plist-get marker :content))
-                         (e-anthropic--text-block (plist-get block :content))))))
+                 (concat (plist-get marker :content) "\n\n"
+                         (plist-get block :content)))))
         (push block blocks)))
     (nreverse blocks)))
 

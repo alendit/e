@@ -665,13 +665,9 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
               (should
                (equal (append (plist-get followup :content) nil)
                       (list '(:type "tool_result" :tool_use_id "call-one"
-                              :content [(:type "text"
-                                         :text "[ephemeral context source 2, ~8 tokens]")
-                                        (:type "text" :text "result one")])
+                              :content "[ephemeral context source 2, ~8 tokens]\n\nresult one")
                             '(:type "tool_result" :tool_use_id "call-two"
-                              :content [(:type "text"
-                                         :text "[ephemeral context source 3, ~9 tokens]")
-                                        (:type "text" :text "result two")])))))
+                              :content "[ephemeral context source 3, ~9 tokens]\n\nresult two")))))
           (progn
             (should-not cached-system)
             (should
@@ -691,13 +687,9 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                         (append (plist-get message :content) nil))
                       (append cached-messages nil))
               (list (list '(:type "tool_result" :tool_use_id "call-one"
-                            :content [(:type "text"
-                                       :text "[ephemeral context source 2, ~8 tokens]")
-                                      (:type "text" :text "result one")]))
+                            :content "[ephemeral context source 2, ~8 tokens]\n\nresult one"))
                     (list '(:type "tool_result" :tool_use_id "call-two"
-                            :content [(:type "text"
-                                       :text "[ephemeral context source 3, ~9 tokens]")
-                                      (:type "text" :text "result two")])))))))))))
+                            :content "[ephemeral context source 3, ~9 tokens]\n\nresult two")))))))))))
 
 (ert-deftest e-anthropic-test-request-body-rejects-detached-source-marker ()
   "A typed marker that does not immediately precede its result fails clearly."
@@ -725,9 +717,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
      (equal (plist-get body :messages)
             [(:role "user"
               :content [(:type "tool_result" :tool_use_id "call-one"
-                         :content [(:type "text"
-                                    :text "[ephemeral context source 1, ~5 tokens]")
-                                   (:type "text" :text "tool output")])])]))))
+                         :content "[ephemeral context source 1, ~5 tokens]\n\ntool output")])]))))
 
 (ert-deftest e-anthropic-test-request-body-ignores-call-carried-native-replay ()
   "A tool-call cannot extend provider replay beyond the settled result."

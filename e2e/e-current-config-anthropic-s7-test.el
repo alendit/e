@@ -209,12 +209,14 @@
 
 (defun e-current-config-anthropic-s7--tool-result-value (result)
   "Return RESULT's raw value from plain or source-labeled content."
-  (let ((content (plist-get result :content)))
-    (if (and (vectorp content)
-             (= (length content) 2)
-             (equal (plist-get (aref content 0) :type) "text")
-             (equal (plist-get (aref content 1) :type) "text"))
-        (plist-get (aref content 1) :text)
+  (let* ((content (plist-get result :content))
+         (separator (and (stringp content)
+                         (string-match "\n\n" content))))
+    (if (and separator
+             (string-match-p
+              "\\`\\[ephemeral context source [0-9]+,"
+              (substring content 0 separator)))
+        (substring content (+ separator 2))
       content)))
 
 (defun e-current-config-anthropic-s7--tool-names (body)
@@ -319,6 +321,11 @@ Repeated transcript history is accepted only when its pair is unchanged."
                      (funcall make-body call-a result-a call-b result-b))))
       '(("e2e_s7_deterministic" . "call-a")
         ("context-curate" . "call-b"))))
+    (should
+     (equal
+      (e-current-config-anthropic-s7--tool-result-value
+       '(:content "[ephemeral context source 3, ~4 tokens, erase-eligible]\n\noutput-a"))
+      "output-a"))
     (should-error
      (e-current-config-anthropic-s7--tool-pairs-in-body
       (funcall make-body call-a call-a result-a)))
@@ -410,6 +417,20 @@ tool schema is a different prefix and must not be compared with open requests."
   "Return a content-free evidence summary for captured REQUEST RECORD."
   (let* ((body (plist-get record :body))
          (body-text (prin1-to-string body))
+         (ordinary-call
+          (e-current-config-anthropic-s7--find-tool-use
+           body "e2e_s7_deterministic"))
+         (ordinary-result
+          (and ordinary-call
+               (seq-find
+                (lambda (result)
+                  (equal (plist-get result :tool_use_id)
+                         (plist-get ordinary-call :id)))
+                (e-current-config-anthropic-s7--tool-results body))))
+         (ordinary-content (plist-get ordinary-result :content))
+         (curation-call
+          (e-current-config-anthropic-s7--find-tool-use
+           body "context-curate"))
          (checkpoint
           (e-current-config-anthropic-s7--cache-checkpoint body))
          (thinking (plist-get body :thinking))
@@ -424,6 +445,30 @@ tool schema is a different prefix and must not be compared with open requests."
           :response-events (plist-get record :response-events)
           :response-shapes (plist-get record :response-shapes)
           :failure-class (plist-get record :failure-class)
+          :ordinary-result-shape
+          (when ordinary-result
+            (list :content-kind (cond ((vectorp ordinary-content) 'blocks)
+                                      ((stringp ordinary-content) 'string)
+                                      (t 'other))
+                  :block-count (and (vectorp ordinary-content)
+                                    (length ordinary-content))
+                  :source-marker
+                  (and (string-match-p
+                        (regexp-quote "[ephemeral context source")
+                        (prin1-to-string ordinary-content))
+                       t)
+                  :raw-value
+                  (and (string-match-p "F97-S7-TOOL-"
+                                       (prin1-to-string ordinary-content))
+                       t)))
+          :curation-input-shape
+          (when curation-call
+            (let ((input (plist-get curation-call :input)))
+              (list :keep (plist-get input :keep)
+                    :summary-count
+                    (length (plist-get input :summaries))
+                    :erase-count
+                    (length (plist-get input :erase)))))
           :scenario-markers
           (list :r2-prompt (and (string-match-p "LIVE-S7-R2-READY" body-text) t)
                 :curation-marker

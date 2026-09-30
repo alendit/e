@@ -86,16 +86,12 @@
       (lambda (block)
         (when (and (equal (plist-get block :type) "tool_result")
                    (equal (plist-get block :tool_use_id) tool-use-id))
-          (seq-some
-           (lambda (content)
-             (let ((text (plist-get content :text)))
-               (and (equal (plist-get content :type) "text")
-                    (stringp text)
-                    (string-match-p
-                     "\\[ephemeral context source [0-9]+,"
-                     text)
-                    text)))
-           (append (plist-get block :content) nil))))
+          (let ((content (plist-get block :content)))
+            (and (stringp content)
+                 (string-match
+                  "\\`\\(\\[ephemeral context source [0-9]+, [^]\n]+\\]\\)\n\n"
+                  content)
+                 (match-string 1 content)))))
       (append (plist-get message :content) nil)))
    (append (plist-get body :messages) nil)))
 
@@ -1265,11 +1261,9 @@
                   '("toolu-inspect-frame-b" "toolu-curate-frame-a")))
           (should
            (equal (plist-get (car result-blocks) :content)
-                  (vector
-                   (list :type "text" :text frame-b-marker)
-                   (list :type "text"
-                         :text (concat "FRAME-B-RAW-TOOL-RESULT "
-                                       (make-string 240 ?b))))))
+                  (concat frame-b-marker "\n\n"
+                          "FRAME-B-RAW-TOOL-RESULT "
+                          (make-string 240 ?b))))
           (should (equal (plist-get (cadr result-blocks) :content)
                          "Curation applied.")))
         (should b-curation-assistant)
