@@ -1574,9 +1574,22 @@ consumer-bound frame at request construction time."
                (e-context-lifetime-generation-covered-session-boundary
                 generation))
             path))
-         (messages (delq nil
-                         (mapcar #'e-session-aggregate--context-lifetime-durable-message
-                                 generation-path)))
+         (durable-tail-entry-pairs
+          (let (pairs)
+            (dolist (entry generation-path (nreverse pairs))
+              (when-let* ((message
+                           (e-session-aggregate--context-lifetime-durable-message
+                            entry)))
+                (let ((entry-id (plist-get entry :id)))
+                  (unless (and (stringp entry-id)
+                               (not (string-empty-p entry-id)))
+                    (signal 'e-session-error
+                            (list "Context lifetime message has no entry ID"
+                                  session-id)))
+                  (push (cons (copy-sequence entry-id) message) pairs))))))
+         (messages (mapcar #'cdr durable-tail-entry-pairs))
+         (durable-tail-entry-ids
+          (mapcar #'car durable-tail-entry-pairs))
          (generation-id (and generation
                              (e-context-lifetime-generation-id generation)))
          ;; Promotions before a deliberate portable boundary are absorbed into
@@ -1631,6 +1644,7 @@ consumer-bound frame at request construction time."
                     promotion-message-entries)))
       (list :generation generation
             :durable-tail messages
+            :durable-tail-entry-ids durable-tail-entry-ids
             :promotions (nreverse promotions)
             :curations (nreverse curations)
             :promotion-messages promotion-messages

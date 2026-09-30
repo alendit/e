@@ -2574,10 +2574,15 @@ stand in for the pure curation preparation path."
     (let* ((projection (e-session-local-context-lifetime-projection
                         store session-id))
            (tail (plist-get projection :durable-tail))
+           (entry-ids (plist-get projection :durable-tail-entry-ids))
            (contents (mapcar (lambda (message)
                                (plist-get message :content))
                              tail)))
       (should (equal contents '("durable intent" "ordinary answer")))
+      (should (equal entry-ids '("prompt" "answer")))
+      (should (= (length entry-ids) (length tail)))
+      (should-not (seq-some (lambda (message) (plist-member message :id))
+                            tail))
       (should-not (seq-some
                    (lambda (content)
                      (string-match-p "BULKY-TOOL-RESULT"

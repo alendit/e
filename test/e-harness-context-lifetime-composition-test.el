@@ -244,12 +244,20 @@
                (context (e-harness-turn-context
                          harness "session-1" "next-consumer"))
                (messages (plist-get context :messages))
+               (message-entry-ids (plist-get context :message-entry-ids))
                (printed (prin1-to-string messages))
                (next-frame (plist-get context :lifetime-frame))
                (next-roles
                 (mapcar (lambda (message) (plist-get message :role))
                         messages)))
           (should (= (length curations) 1))
+          (should (vectorp message-entry-ids))
+          (should (= (length message-entry-ids) (length messages)))
+          (should
+           (equal (delq nil (append (copy-sequence message-entry-ids) nil))
+                  (plist-get projection :durable-tail-entry-ids)))
+          (should-not (plist-member (plist-get context :options)
+                                    :message-entry-ids))
           (let ((item (car (plist-get (car curations) :items))))
             (should (eq (plist-get item :kind) 'summary))
             (should (equal (plist-get item :text)
@@ -270,6 +278,92 @@
         (should-not (string-match-p
                        "frame:consumer\|observation:"
                        printed)))))))
+
+(ert-deftest e-harness-test-detached-context-lifetime-entry-identities-align ()
+  "Detached durable bodies omit IDs while the request projection retains them."
+  (let* ((path
+          '(:messages
+            ((:id "intent-entry" :type message :role user
+              :content "durable intent")
+             (:id "call-entry" :type message :role tool-call
+              :content (:id "call-1" :name "inspect" :arguments ()))
+             (:id "result-entry" :type message :role tool
+              :content (:tool-call-id "call-1" :content "tool result"))
+             (:id "answer-entry" :type message :role assistant
+              :content "durable answer"))
+            :message-path-indexes (0 1 2 3)
+            :context-records nil
+            :current-head-id "answer-entry"))
+         (projection
+          (e-harness-context-runtime--detached-lifetime-projection path))
+         (generation
+          (e-context-lifetime-generation-create
+           :id "generation:detached-identity-map"
+           :checkpoint nil
+           :covered-session-boundary "root"))
+         (projection (plist-put projection :generation generation))
+         (path-messages (plist-get path :messages))
+         (context
+          (list :messages path-messages
+                :segments (list (list :kind 'history
+                                      :messages path-messages))
+                :options nil))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (projected
+          (e-harness-context-lifetime-apply-projection
+           harness "detached-identity-map" "turn-1" context nil projection))
+         (tail (plist-get projection :durable-tail))
+         (tail-ids (plist-get projection :durable-tail-entry-ids))
+         (messages (plist-get projected :messages))
+         (message-entry-ids (plist-get projected :message-entry-ids)))
+    (should (equal tail-ids '("intent-entry" "answer-entry")))
+    (should (= (length tail) (length tail-ids)))
+    (should-not (seq-some (lambda (message) (plist-member message :id)) tail))
+    (should (equal messages tail))
+    (should (equal (append message-entry-ids nil) tail-ids))
+    (should (= (length messages) (length message-entry-ids)))
+    (should-not (plist-member (plist-get projected :options)
+                              :message-entry-ids))))
+
+(ert-deftest e-harness-test-turn-context-message-identities-reach-loop-and-refresh ()
+  "The turn owner forwards identity vectors outside backend options."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((harness (e-harness-create
+                     :backend (e-backend-fake-create :items nil)))
+           (initial
+            '(:messages ((:role user :content "initial"))
+              :message-entry-ids ["initial-entry"]
+              :options nil
+              :segments nil))
+           (fresh
+            '(:messages ((:role user :content "fresh")
+                         (:role assistant :content "answer"))
+              :message-entry-ids ["fresh-entry" "answer-entry"]
+              :options nil
+              :segments nil))
+           captured-arguments)
+      (e-harness-create-session harness :id "message-entry-map")
+      (cl-letf (((symbol-function 'e-harness-turn-context)
+                 (lambda (_harness _session-id _turn-id) fresh))
+                ((symbol-function 'e-loop-start-turn)
+                 (lambda (&rest arguments)
+                   (setq captured-arguments arguments)
+                   'started)))
+        (should
+         (eq (e-harness-turn--run-prompt-turn-async
+              harness "message-entry-map" "turn-1" :context initial)
+             'started))
+        (should (equal (plist-get captured-arguments :message-entry-ids)
+                       (plist-get initial :message-entry-ids)))
+        (should-not (plist-member (plist-get captured-arguments :options)
+                                  :message-entry-ids))
+        (let* ((refresh (plist-get captured-arguments :refresh-context))
+               (refreshed (funcall refresh)))
+          (should (equal (plist-get refreshed :message-entry-ids)
+                         (plist-get fresh :message-entry-ids)))
+          (should (= (length (plist-get refreshed :messages))
+                     (length (plist-get refreshed :message-entry-ids)))))))))
 
 (ert-deftest e-harness-test-context-lifetime-presents-multiple-sources-at-late-frontier ()
   "Multiple live sources are marked once behind the stable canonical prefix."
@@ -945,8 +1039,12 @@
                  :handler
                  (lambda (_arguments)
                    (setq source-phase 'after-frame-a)
-                   (concat "FRAME-B-RAW-TOOL-RESULT "
-                           (make-string 240 ?b))))))))
+                   (e-tools-result-create
+                    (plist-get (e-tools-current-context) :tool-call)
+                    'ok
+                    (concat "FRAME-B-RAW-TOOL-RESULT "
+                            (make-string 240 ?b))
+                    '(:refresh-context t))))))))
            (harness (e-harness-create
                      :backend backend
                      :intrinsic-capabilities (list capability)))
@@ -1082,6 +1180,7 @@
         (should (= durable-mixed-text-occurrences 1))
         (should-not (string-match-p ":provider-replay-response-id"
                                     durable-message-text))
+        (should-not (string-match-p "message-entry-ids" body-b-text))
         (should
          (equal (append (plist-get (car mixed-assistants) :content) nil)
                 '((:type "thinking" :thinking "Inspect frame A."

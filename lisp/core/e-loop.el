@@ -81,6 +81,31 @@ optional Responses assistant phase; older providers leave it absent."
       (plist-put message :id response-entry-id))
     message))
 
+(defun e-loop--copy-message-entry-ids (message-entry-ids messages)
+  "Return a detached identity vector aligned with MESSAGES.
+MESSAGE-ENTRY-IDS is request-local metadata and must identify each canonical
+entry at most once."
+  (unless (and (vectorp message-entry-ids)
+               (= (length message-entry-ids) (length messages)))
+    (signal 'wrong-type-argument
+            (list 'e-loop-message-entry-ids message-entry-ids messages)))
+  (let ((copy (make-vector (length message-entry-ids) nil))
+        (seen (make-hash-table :test #'equal)))
+    (dotimes (index (length message-entry-ids))
+      (let ((entry-id (aref message-entry-ids index)))
+        (when entry-id
+          (unless (and (stringp entry-id)
+                       (not (string-empty-p entry-id)))
+            (signal 'wrong-type-argument
+                    (list 'e-loop-message-entry-id entry-id)))
+          (when (gethash entry-id seen)
+            (signal 'wrong-type-argument
+                    (list 'e-loop-duplicate-message-entry-id entry-id)))
+          (puthash entry-id t seen)
+          (setq entry-id (copy-sequence entry-id)))
+        (aset copy index entry-id)))
+    copy))
+
 (cl-defun e-loop--emit (&key on-event type payload)
   "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
   (funcall on-event type payload))
@@ -357,7 +382,8 @@ CAUSES lists every completed tool call that induced a follow-up request."
                    (plist-get metadata :backend-request))))))
 
 (cl-defun e-loop-start-turn
-    (&key session-id turn-id messages backend tools tool-lifecycle options on-event
+    (&key session-id turn-id messages message-entry-ids
+          backend tools tool-lifecycle options on-event
             append-message refresh-context refresh-messages on-request-start
             on-done on-error callback-dispatcher
             cancelled-p drain-pending-input segments turn-work-handle
@@ -367,13 +393,17 @@ CAUSES lists every completed tool call that induced a follow-up request."
             on-tool-call-start)
   "Start one async agent turn for SESSION-ID and TURN-ID.
 MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, and OPTIONS describe the turn input.
+MESSAGE-ENTRY-IDS is a request-local vector aligned with MESSAGES when the
+context owner supplies canonical session identities.
 ON-EVENT, APPEND-MESSAGE, REFRESH-CONTEXT, REFRESH-MESSAGES, ON-REQUEST-START,
 ON-DONE, ON-ERROR, CANCELLED-P, and DRAIN-PENDING-INPUT receive turn progress,
 output, refreshed context, provider request handles, settlement, failures,
 cancellation state, and same-turn pending user input.  REFRESH-CONTEXT, when
 supplied, must return one atomic context projection containing at least
 `:messages' and `:options'; its `:segments' and observation metadata must be
-consistent with those options.  REFRESH-MESSAGES is retained as a legacy
+consistent with those options.  Its optional `:message-entry-ids' vector is
+validated and replaced with the same refreshed message projection.
+REFRESH-MESSAGES is retained as a legacy
 messages-only callback.  The provider request is started through
 `e-backend-start'.  Tool execution is started through TOOL-LIFECYCLE when
 supplied, otherwise through `e-tools-start'.  Provider I/O, tool I/O, and turn
@@ -388,6 +418,9 @@ metadata, before tool execution begins.  CALLBACK-DISPATCHER, when supplied,
 receives one already-admitted asynchronous callback and either runs it now or
 schedules it behind the owning session's active commit barrier."
   (let ((turn-messages (copy-sequence messages))
+        (turn-message-entry-ids
+         (and message-entry-ids
+              (e-loop--copy-message-entry-ids message-entry-ids messages)))
         ;; Session identity is runtime request context, not provider input.  It
         ;; lets stateful backend adapters isolate connection/request ownership
         ;; even when callers do not redundantly persist it in turn options.
@@ -491,6 +524,11 @@ schedules it behind the owning session's active commit barrier."
             (signal 'wrong-type-argument
                     (list 'e-loop-context-projection projection)))
           (let* ((new-messages (copy-tree (plist-get projection :messages)))
+                 (new-message-entry-ids
+                  (if (plist-member projection :message-entry-ids)
+                      (e-loop--copy-message-entry-ids
+                       (plist-get projection :message-entry-ids) new-messages)
+                    nil))
                  (new-options (copy-sequence (plist-get projection :options)))
                  (new-segments
                   (if (plist-member projection :segments)
@@ -511,6 +549,7 @@ schedules it behind the owning session's active commit barrier."
                     (plist-put new-options :observation-frontier
                                new-frontier)))
             (setq turn-messages new-messages
+                  turn-message-entry-ids new-message-entry-ids
                   turn-options new-options)
             (when (plist-member projection :lifetime-frame)
               (setq active-lifetime-frame
@@ -562,6 +601,7 @@ schedules it behind the owning session's active commit barrier."
                   (provider-anchor-candidate-immediate-only-p nil)
                   (pending-provider-replay-items nil)
                   (pending-provider-replay-response-id nil)
+                  (pending-provider-replay-assistant-entry-id nil)
                   (pending-provider-corrective-replay-items nil)
                   (pending-provider-invalid-replay-items nil)
                   (provider-followup-messages nil)
@@ -676,7 +716,9 @@ schedules it behind the owning session's active commit barrier."
                         (setq response-entry-id (e-session-generate-ulid)))
                       (when replay-response-id
                         (setq pending-provider-replay-response-id
-                              replay-response-id))
+                              replay-response-id
+                              pending-provider-replay-assistant-entry-id
+                              response-entry-id))
                       (let* ((request-message
                               (e-loop--assistant-message
                                (response-text)
@@ -1150,6 +1192,44 @@ schedules it behind the owning session's active commit barrier."
                          (and (plist-get content :tool-call-id)
                               (list role
                                     (plist-get content :tool-call-id)))))))
+                   (restore-provider-replay-assistant-correlation
+                    ()
+                    ;; A context refresh rebuilds this request from durable
+                    ;; messages without entry IDs. Restore the wire-only
+                    ;; correlation on the assistant selected by the aligned
+                    ;; request-local identity map.
+                    (when (and pending-provider-replay-response-id
+                               pending-provider-replay-assistant-entry-id
+                               turn-message-entry-ids)
+                      (unless (= (length turn-message-entry-ids)
+                                 (length turn-messages))
+                        (error "Context message identity map is misaligned"))
+                      (let (matches)
+                        (dotimes (index (length turn-message-entry-ids))
+                          (when (equal
+                                 (aref turn-message-entry-ids index)
+                                 pending-provider-replay-assistant-entry-id)
+                            (push index matches)))
+                        (unless (= (length matches) 1)
+                          (error "Replay assistant entry ID is not unique"))
+                        (let* ((index (car matches))
+                               (message (nth index turn-messages)))
+                          (unless (eq (plist-get message :role) 'assistant)
+                            (error "Replay entry ID maps to a non-assistant"))
+                          (unless (equal
+                                   (plist-get (plist-get message :metadata)
+                                              :provider-replay-response-id)
+                                   pending-provider-replay-response-id)
+                            (let* ((request-message (copy-tree message))
+                                   (metadata (copy-tree
+                                              (plist-get message :metadata))))
+                              (setq metadata
+                                    (plist-put
+                                     metadata :provider-replay-response-id
+                                     pending-provider-replay-response-id))
+                              (plist-put request-message :metadata metadata)
+                              (setcar (nthcdr index turn-messages)
+                                      request-message)))))))
                    (curation-buffering-enabled-p
                     ()
                     ;; The wire definition is request-scoped, but buffering
@@ -1239,6 +1319,10 @@ schedules it behind the owning session's active commit barrier."
                     ;; Refresh projections are authoritative for later
                     ;; context, but the current stateless follow-up still
                     ;; needs the runtime-only call/result bundle exactly once.
+                    (when (and turn-message-entry-ids
+                               (/= (length turn-message-entry-ids)
+                                   (length turn-messages)))
+                      (error "Context message identity map is misaligned"))
                     (dolist (message bundle)
                       (let ((key (provider-followup-message-key message)))
                         (unless (and key
@@ -1249,7 +1333,10 @@ schedules it behind the owning session's active commit barrier."
                                                 existing)))
                                       turn-messages))
                           (setq turn-messages
-                                (append turn-messages (list message)))))))
+                                (append turn-messages (list message)))
+                          (when turn-message-entry-ids
+                            (setq turn-message-entry-ids
+                                  (vconcat turn-message-entry-ids [nil])))))))
                    (publish-tool-request
                     (token request)
                     (when (and (current-tool-p token)
@@ -1321,7 +1408,8 @@ schedules it behind the owning session's active commit barrier."
                           (apply-context-refresh (funcall refresh-context))
                           (when (lifetime-projection-enabled-p)
                             (merge-provider-followup-bundle
-                             provider-followup-bundle))
+                             provider-followup-bundle)
+                            (restore-provider-replay-assistant-correlation))
                           (setq context-refreshed-p t))
                          (refresh-messages
                           ;; Compatibility for callers that have not yet
@@ -1335,7 +1423,8 @@ schedules it behind the owning session's active commit barrier."
                                             :observation-frontier)))
                           (when (lifetime-projection-enabled-p)
                             (merge-provider-followup-bundle
-                             provider-followup-bundle))
+                             provider-followup-bundle)
+                            (restore-provider-replay-assistant-correlation))
                           (setq context-refreshed-p t))))
                       ;; Refresh is a whole request projection.  Capture the
                       ;; tool/result bundle after it so a refreshed current
@@ -1918,7 +2007,8 @@ schedules it behind the owning session's active commit barrier."
       active-request)))
 
 (cl-defun e-loop-run-turn-batch
-    (&key session-id turn-id messages backend tools tool-lifecycle options on-event
+    (&key session-id turn-id messages message-entry-ids
+          backend tools tool-lifecycle options on-event
             append-message refresh-context refresh-messages on-request-start
             callback-dispatcher
             segments turn-work-handle
@@ -1928,10 +2018,10 @@ schedules it behind the owning session's active commit barrier."
             on-tool-call-start)
   "Synchronously run one agent turn from batch/test code.
 SESSION-ID and TURN-ID identify the turn.
-MESSAGES, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT, APPEND-MESSAGE,
-REFRESH-CONTEXT, and REFRESH-MESSAGES define the turn context and output
-callbacks.  CALLBACK-DISPATCHER preserves admitted asynchronous callback
-ordering across an owning persistence barrier.  REFRESH-CONTEXT returns one
+MESSAGES, MESSAGE-ENTRY-IDS, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT,
+APPEND-MESSAGE, REFRESH-CONTEXT, and REFRESH-MESSAGES define the turn context
+and output callbacks.  CALLBACK-DISPATCHER preserves admitted callback ordering
+across an owning persistence barrier.  REFRESH-CONTEXT returns one
 atomic request projection; the
 messages-only callback remains for compatibility.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
@@ -1946,6 +2036,7 @@ and returns the pure completion value passed to ON-RESPONSE-COMPLETE."
      :session-id session-id
      :turn-id turn-id
      :messages messages
+     :message-entry-ids message-entry-ids
      :backend backend
      :tools tools
      :tool-lifecycle tool-lifecycle

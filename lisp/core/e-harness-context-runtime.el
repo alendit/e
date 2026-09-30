@@ -340,14 +340,24 @@ This pure projection never consults or installs a session aggregate."
                (plist-get generation-entry :covered-boundary-index)))
          (message-indexes (plist-get path :message-path-indexes))
          (messages (plist-get path :messages))
-         durable-tail promotions curations promotion-groups frontier)
+         durable-tail durable-tail-entry-ids
+         promotions curations promotion-groups frontier)
+    (unless (= (length messages) (length message-indexes))
+      (error "Detached context path message indexes are misaligned"))
     (cl-mapc
      (lambda (message path-index)
        (when (or (null boundary-index) (> path-index boundary-index))
          (when-let* ((durable
                       (e-session-context-lifetime-durable-message message)))
-           (push durable durable-tail))))
+           (let ((entry-id (plist-get message :id)))
+             (unless (and (stringp entry-id)
+                          (not (string-empty-p entry-id)))
+               (error "Detached context message has no canonical entry ID"))
+             (push durable durable-tail)
+             (push (copy-sequence entry-id) durable-tail-entry-ids)))))
      messages message-indexes)
+    (unless (= (length durable-tail) (length durable-tail-entry-ids))
+      (error "Detached context durable tail identity map is misaligned"))
     (dolist (entry records)
       (let* ((type (plist-get entry :record-type))
              (record (plist-get entry :record))
@@ -385,6 +395,7 @@ This pure projection never consults or installs a session aggregate."
     (list :generation generation
           :current-head-id (plist-get path :current-head-id)
           :durable-tail (nreverse durable-tail)
+          :durable-tail-entry-ids (nreverse durable-tail-entry-ids)
           :promotions (nreverse promotions)
           :curations (nreverse curations)
           :promotion-messages
@@ -828,6 +839,8 @@ installed in the session store."
          (durable-tail
           (append (copy-tree (plist-get projection :durable-tail))
                   promotion-messages))
+         (durable-tail-entry-ids
+          (copy-tree (plist-get projection :durable-tail-entry-ids)))
          ;; `e-context' has always permitted a consumer-shaped result with
          ;; only `:messages'.  Keep that public contract valid when lifetime
          ;; projection is enabled by default: such a result is request-local
@@ -914,6 +927,39 @@ installed in the session store."
          (messages
           (cl-loop for segment in filtered-segments
                    append (copy-tree (plist-get segment :messages))))
+         (message-entry-ids
+          (let ((history-count 0)
+                identities)
+            (unless (= (length (plist-get projection :durable-tail))
+                       (length durable-tail-entry-ids))
+              (error "Context lifetime durable-tail identities are misaligned"))
+            (dolist (segment filtered-segments)
+              (let* ((segment-messages (plist-get segment :messages))
+                     (segment-entry-ids
+                      (if (eq (plist-get segment :kind) 'history)
+                          (progn
+                            (setq history-count (1+ history-count))
+                            (append (make-list (length checkpoint) nil)
+                                    (copy-sequence durable-tail-entry-ids)
+                                    (make-list (length promotion-messages) nil)))
+                        (make-list (length segment-messages) nil))))
+                (unless (= (length segment-messages)
+                           (length segment-entry-ids))
+                  (error "Context segment message identities are misaligned"))
+                (setq identities (nconc identities segment-entry-ids))))
+            (when (> history-count 1)
+              (error "Context projection contains multiple history segments"))
+            (unless (= (length messages) (length identities))
+              (error "Context message identity map is misaligned"))
+            (when (= history-count 1)
+              (let ((owned-ids (delq nil (copy-sequence identities))))
+                (unless (and (= (length owned-ids)
+                                (length durable-tail-entry-ids))
+                             (= (length owned-ids)
+                                (length (delete-dups
+                                         (copy-sequence owned-ids)))))
+                  (error "Context projection has ambiguous message identities"))))
+            (vconcat identities)))
          (semantic-projection
           (e-context-lifetime-project
            generation frame
@@ -928,6 +974,7 @@ installed in the session store."
                     append (copy-tree (plist-get segment :messages))))))
     (plist-put context :segments filtered-segments)
     (plist-put context :messages messages)
+    (plist-put context :message-entry-ids message-entry-ids)
     (plist-put context :context-lifetime-enabled t)
     (plist-put context :lifetime-generation generation)
     (plist-put context :lifetime-frame frame)
