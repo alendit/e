@@ -25,6 +25,10 @@
 (load (expand-file-name "e-tools-test-support.el" (file-name-directory (or load-file-name buffer-file-name))) nil nil t)
 (require 'e-anthropic)
 
+(defconst e-anthropic-test--test-directory
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing this Anthropic test file.")
+
 (defconst e-anthropic-test--e2e-config-file
   (expand-file-name
    "../e2e/e-e2e-config-anthropic.el"
@@ -64,6 +68,149 @@
    buffer
    (format "HTTP/1.1 %d Test\r\nContent-Type: text/event-stream\r\n\r\n"
            status)))
+
+(defun e-anthropic-test--run-bounded-emacs-form (form timeout)
+  "Run FORM in a fresh Emacs process bounded by TIMEOUT seconds."
+  (let* ((emacs (expand-file-name invocation-name invocation-directory))
+         (child-form
+          (list 'progn
+                (list 'load
+                      (expand-file-name "../lisp/core/e-loop.el"
+                                        e-anthropic-test--test-directory)
+                      nil nil t)
+                (list 'load
+                      (expand-file-name "../lisp/adapters/anthropic/e-anthropic.el"
+                                        e-anthropic-test--test-directory)
+                      nil nil t)
+                (list 'load
+                      (expand-file-name "e-anthropic-test.el"
+                                        e-anthropic-test--test-directory)
+                      nil nil t)
+                form))
+         (paths
+          (delete-dups
+           (append
+            (list e-anthropic-test--test-directory
+                  (expand-file-name "../lisp" e-anthropic-test--test-directory))
+            (cl-remove-if-not #'file-directory-p (copy-sequence load-path)))))
+         (command
+          (append (list emacs "-Q" "--batch")
+                  (cl-mapcan (lambda (path) (list "-L" path)) paths)
+                  (list "--eval" (prin1-to-string child-form))))
+         (output (generate-new-buffer " *e Anthropic bounded child*"))
+         (process
+          (make-process :name "e-anthropic-bounded-child"
+                        :buffer output
+                        :command command
+                        :noquery t))
+         (deadline (+ (float-time) timeout)))
+    (unwind-protect
+        (progn
+          (while (and (process-live-p process)
+                      (< (float-time) deadline))
+            (accept-process-output process 0.05))
+          (when (process-live-p process)
+            (signal-process process 'SIGKILL)
+            (ert-fail
+             (format "Bounded Emacs child timed out after %ss:\n%s"
+                     timeout (with-current-buffer output
+                               (buffer-string)))))
+          (unless (zerop (process-exit-status process))
+            (ert-fail
+             (format "Bounded Emacs child failed (exit %s):\n%s"
+                     (process-exit-status process)
+                     (with-current-buffer output (buffer-string)))))
+          (with-current-buffer output
+            (buffer-string)))
+      (when (process-live-p process)
+        (ignore-errors (signal-process process 'SIGKILL))
+        (delete-process process))
+      (kill-buffer output))))
+
+(defun e-anthropic-test--http-cr-boundary-case ()
+  "Exercise lone-CR and split-CRLF body chunks through the HTTP adapter."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (message-start '(:type "message_start"
+                          :message (:role "assistant" :content [])))
+         (text-start '(:type "content_block_start" :index 0
+                       :content_block (:type "text" :text "")))
+         (text-delta '(:type "content_block_delta" :index 0
+                       :delta (:type "text_delta" :text "progress")))
+         (text-stop '(:type "content_block_stop" :index 0))
+         (tool-start '(:type "content_block_start" :index 1
+                       :content_block
+                       (:type "tool_use" :id "toolu-cr-boundary"
+                        :name "inspect" :input (:path "object"))))
+         (tool-stop '(:type "content_block_stop" :index 1))
+         (message-delta '(:type "message_delta"
+                          :delta (:stop_reason "tool_use")))
+         (message-stop '(:type "message_stop"))
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-crlf*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (e-anthropic-test--http-backend-start
+       (lambda (item) (push item items))
+       (lambda (value) (push value done-values))
+       (lambda (err) (push err errors)))
+      (e-anthropic-test--write-http-headers buffer 200)
+      (e-anthropic-test--write-http-chunk buffer "event: message_start\r")
+      (e-anthropic-test--write-http-chunk
+       buffer
+       (format "data: %s\r\n\r\n" (e-json-serialize message-start)))
+      (e-anthropic-test--write-http-chunk
+       buffer "event: content_block_start\r")
+      (e-anthropic-test--write-http-chunk
+       buffer
+       (concat "\ndata: " (e-json-serialize text-start) "\r\n\r\n"))
+      (dolist (event (list text-delta text-stop tool-start tool-stop
+                           message-delta))
+        (e-anthropic-test--write-http-chunk
+         buffer
+         (format "event: %s\r\ndata: %s\r\n\r\n"
+                 (plist-get event :type)
+                 (e-json-serialize event))))
+      (should (equal (mapcar (lambda (item) (plist-get item :type))
+                             (reverse items))
+                     '(assistant-delta)))
+      (should-not done-values)
+      (should-not errors)
+      (e-anthropic-test--write-http-chunk
+       buffer
+       (format "event: %s\r\ndata: %s\r\n\r\n"
+               (plist-get message-stop :type)
+               (e-json-serialize message-stop)))
+      (should (equal (mapcar (lambda (item) (plist-get item :type))
+                             (reverse items))
+                     '(assistant-delta)))
+      (should-not done-values)
+      (with-current-buffer buffer
+        (funcall url-callback nil))
+      (should
+       (equal (mapcar (lambda (item) (plist-get item :type))
+                      (reverse items))
+              '(assistant-delta assistant-message tool-call
+                provider-replay-item provider-replay-item done)))
+      (should (= (cl-count 'tool-call
+                           (mapcar (lambda (item) (plist-get item :type))
+                                   items))
+                 1))
+      (should (= (length done-values) 1))
+      (should-not errors))))
 
 (defun e-anthropic-test--sse-stream (events)
   "Encode canonical Messages EVENTS as an SSE response string."
@@ -123,6 +270,15 @@
      :usage (:output_tokens 4))
     (:type "message_stop"))
   "A signed response with one tool for a subsequent follow-up round.")
+
+(defconst e-anthropic-test--tool-response-without-message-start-events
+  '((:type "content_block_start" :index 0
+     :content_block (:type "tool_use" :id "toolu-no-start"
+                    :name "inspect" :input (:path "object")))
+    (:type "content_block_stop" :index 0)
+    (:type "message_delta" :delta (:stop_reason "tool_use"))
+    (:type "message_stop"))
+  "A terminal native tool response missing its required Messages start.")
 
 (defun e-anthropic-test--assert-invalid-tool-response (events)
   "Assert EVENTS fail as one backend error before exposing any tool effects."
@@ -1094,7 +1250,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
   (should
    (equal
     (e-anthropic-parse-stream
-     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\
+     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"checking\"}}\n\n\
 event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
@@ -1111,7 +1268,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
    (equal
     (seq-find (lambda (item) (eq (plist-get item :type) 'token-usage))
               (e-anthropic-parse-stream
-               "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":6}}}\n\n\
+               "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":4,\"cache_creation_input_tokens\":6}}}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n\
 event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
     '(:type token-usage
@@ -1137,7 +1294,9 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
   "Successful cached Anthropic responses emit a durable provider anchor candidate."
   (let (items)
     (e-anthropic--emit-response-items-with-context
-     "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n\n\
+event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
+event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
      '(:metadata (:provider anthropic
                   :model "claude-test"
                   :anthropic-cache-mode explicit
@@ -1271,7 +1430,8 @@ retry classifier sees the kind even when the message does not name it."
   (should
    (equal
     (e-anthropic-parse-stream
-     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"inspect\",\"input\":{}}}\n\n\
+     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"inspect\",\"input\":{}}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"object\\\":{},\\\"array\\\":[],\\\"flags\\\":[false,null],\\\"items\\\":[{\\\"empty\\\":{},\\\"values\\\":[1,false]}]}\"}}\n\n\
 event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n\n\
@@ -1444,10 +1604,43 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                      :signature "sig-native-0")))
     (should (eq (plist-get (car (last items)) :type) 'done))))
 
+(ert-deftest e-anthropic-test-replay-correlation-mismatch-is-rejected ()
+  "Equal assistant text cannot replace an exact native replay identity."
+  (let* ((parsed
+          (e-anthropic-parse-stream
+           (e-anthropic-test--sse-stream
+            e-anthropic-test--signed-two-tool-events)))
+         (replay-items
+          (seq-filter (lambda (item)
+                        (eq (plist-get item :type) 'provider-replay-item))
+                      parsed))
+         (messages
+          (list
+           '(:role user :content "Inspect both paths.")
+           '(:role assistant :content "First, inspect both."
+             :metadata (:provider-replay-response-id "assistant-response"))
+           '(:role tool-call
+             :content (:id "toolu-one" :name "inspect-one"
+                       :arguments (:path "one")))
+           '(:role tool-call
+             :content (:id "toolu-two" :name "inspect-two"
+                       :arguments (:path "two")))
+           '(:role tool
+             :content (:tool-call-id "toolu-one" :content "result one"))
+           (list :role 'tool
+                 :content '(:tool-call-id "toolu-two" :content "result two")
+                 :metadata (list :provider-replay-items replay-items
+                                 :provider-replay-response-id
+                                 "native-bundle")))))
+    (should-error (e-anthropic--messages messages)
+                  :type 'e-anthropic-response-invalid)))
+
 (ert-deftest e-anthropic-test-parse-rejects-incomplete-native-tool-responses ()
   "Missing terminal, signed material, or contiguous indices release no tools."
   (e-anthropic-test--assert-invalid-tool-response
    (butlast e-anthropic-test--signed-two-tool-events))
+  (e-anthropic-test--assert-invalid-tool-response
+   e-anthropic-test--tool-response-without-message-start-events)
   (e-anthropic-test--assert-invalid-tool-response
    (seq-remove (lambda (event)
                  (equal (plist-get (plist-get event :delta) :type)
@@ -1486,7 +1679,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
   (should
    (equal
     (e-anthropic-parse-stream
-     "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Writing now.\"}}\n\n\
 event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n\
@@ -1730,7 +1924,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
      :type 'e-anthropic-unsupported)))
 
 (defconst e-anthropic-test--text-stream
-  "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+  "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}\n\n\
+event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
 event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"gateway answer\"}}\n\n\
 event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
 event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
@@ -2342,6 +2537,24 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (should (e-anthropic-test--wait-until (lambda () error) 0.5))
       (should (eq (car error) 'e-anthropic-request-timeout)))))
 
+(ert-deftest e-anthropic-test-http-cr-boundaries-preserve-progress-and-admission ()
+  "Split CR delimiters preserve progress order and wait for terminal admission."
+  (let ((output
+         (e-anthropic-test--run-bounded-emacs-form
+          '(condition-case err
+               (progn
+                 (require 'e-anthropic-test)
+                 (e-anthropic-test--http-cr-boundary-case)
+                 (princ "CR boundary case passed\n")
+                 (kill-emacs 0))
+             (error
+              (princ (format "CR boundary case failed: %S\n" err))
+              (kill-emacs 1)))
+          5.0)))
+    ;; The old decoder spun on a chunk ending in CR, so run this case in a
+    ;; child process that the parent test can terminate.
+    (should (string-match-p "CR boundary case passed" output))))
+
 (ert-deftest e-anthropic-test-http-streams-progress-before-terminal-and-effects-once ()
   "Complete SSE deltas stream early while native effects wait for HTTP success."
   (let* ((process-environment
@@ -2656,6 +2869,38 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
     (e-backend-stream-batch
      backend
      :messages '((:role user :content "Inspect both paths."))
+     :options '(:model "claude-test" :max-tokens 1024)
+     :on-item (lambda (item) (push item items)))
+    (should (equal (mapcar (lambda (item) (plist-get item :type))
+                           (reverse items))
+                   '(backend-error)))
+    (should-not
+     (seq-some (lambda (item)
+                 (memq (plist-get item :type)
+                       '(tool-call context-curate provider-replay-item done)))
+               items))))
+
+(ert-deftest e-anthropic-test-injected-requester-rejects-tools-before-message-start ()
+  "The injected requester must not release a terminal tool response without start."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (backend
+          (e-anthropic-backend-create
+           :provider 'eng-anthropic
+           :request-function
+           (lambda (&rest _arguments)
+             (e-anthropic-test--sse-stream
+              e-anthropic-test--tool-response-without-message-start-events))))
+         (items nil))
+    (e-backend-stream-batch
+     backend
+     :messages '((:role user :content "Inspect the object."))
      :options '(:model "claude-test" :max-tokens 1024)
      :on-item (lambda (item) (push item items)))
     (should (equal (mapcar (lambda (item) (plist-get item :type))

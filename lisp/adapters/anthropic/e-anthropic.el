@@ -899,6 +899,8 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
         (marker-pairs (e-anthropic--tool-result-marker-indexes messages))
         (consumed (make-hash-table :test 'eq))
         (replay-groups (make-hash-table :test 'eq))
+        (assistant-replay-response-ids (make-hash-table :test 'equal))
+        (grouped-replay-response-ids (make-hash-table :test 'equal))
         (curation-carrier-replay-bundles nil)
         (wire-messages-reversed nil)
         (position 0))
@@ -907,6 +909,18 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
         (puthash message position positions))
       (setq position (1+ position))
       (pcase (plist-get message :role)
+        ('assistant
+         (when-let* ((response-id
+                      (plist-get (plist-get message :metadata)
+                                 :provider-replay-response-id)))
+           (unless (and (stringp response-id)
+                        (not (string-empty-p response-id)))
+             (signal 'e-anthropic-response-invalid
+                     '("malformed provider replay response id")))
+           (puthash response-id
+                    (1+ (gethash response-id
+                                 assistant-replay-response-ids 0))
+                    assistant-replay-response-ids)))
         ('tool-call
          (let* ((id (plist-get (plist-get message :content) :id))
                 (matches (gethash id calls-by-id)))
@@ -953,6 +967,27 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
                                :consumed (list message))
                        (e-anthropic--grouped-tool-followup
                         indexes blocks acknowledgements)))))
+          (let ((response-id
+                 (plist-get (plist-get message :metadata)
+                            :provider-replay-response-id)))
+            (when (and response-id
+                       (not (eq (plist-get message :role) 'assistant)))
+              (unless (and group
+                           (eq (plist-get message :role) 'tool)
+                           (stringp response-id)
+                           (not (string-empty-p response-id)))
+                (signal 'e-anthropic-response-invalid
+                        '("provider replay response id has no tool replay group")))
+              (when (gethash response-id grouped-replay-response-ids)
+                (signal 'e-anthropic-response-invalid
+                        '("duplicate provider replay response id")))
+              (puthash response-id t grouped-replay-response-ids)))
+          (when (and group
+                     (eq (plist-get message :role) 'assistant)
+                     (plist-get (plist-get message :metadata)
+                                :provider-replay-response-id))
+            (signal 'e-anthropic-response-invalid
+                    '("provider replay response id is attached to its replay bundle")))
           (when curation-only-tool-carrier-p
             ;; This carrier represents a curation response that followed an
             ;; already-sent ordinary tool result. Keep that result in the
@@ -975,11 +1010,22 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
               (dolist (member-message members)
                 (puthash member-message t consumed))))))
       (dolist (message messages)
-        (let ((group (gethash message replay-groups)))
+        (let* ((group (gethash message replay-groups))
+               (response-id
+                (and (eq (plist-get message :role) 'assistant)
+                     (plist-get (plist-get message :metadata)
+                                :provider-replay-response-id))))
           (cond
            (group
             (dolist (wire-message (plist-get group :messages))
               (push wire-message wire-messages-reversed)))
+           (response-id
+            (unless (and (gethash response-id grouped-replay-response-ids)
+                         (= (gethash response-id
+                                     assistant-replay-response-ids 0)
+                            1))
+              (signal 'e-anthropic-response-invalid
+                      '("provider replay response id has no unique replay group"))))
            ((and (not (gethash message consumed))
                  (gethash message (plist-get marker-pairs :marker-results)))
             (let ((result (gethash message
@@ -995,6 +1041,19 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
               (puthash result t consumed)))
            ((not (gethash message consumed))
             (push (e-anthropic--message message) wire-messages-reversed)))))
+      (maphash
+       (lambda (response-id count)
+         (unless (and (= count 1)
+                      (gethash response-id grouped-replay-response-ids))
+           (signal 'e-anthropic-response-invalid
+                   '("provider replay response id has no unique tool replay group"))))
+       assistant-replay-response-ids)
+      (maphash
+       (lambda (response-id _grouped)
+         (unless (= (gethash response-id assistant-replay-response-ids 0) 1)
+           (signal 'e-anthropic-response-invalid
+                   '("provider replay response id has no unique assistant message"))))
+       grouped-replay-response-ids)
       (when (and provider-request-skipped-calls
                  (not provider-request-replay-items))
         (signal 'e-anthropic-response-invalid
@@ -1488,14 +1547,17 @@ SEPARATOR-BYTES counts the line ending that followed LINE."
                         chunk))
          (length (length input))
          (start 0)
-         (events nil))
+         (events nil)
+         (trailing-carriage-return nil))
     (setf (e-anthropic--sse-decoder-line-buffer decoder) "")
-    (while (string-match "\r\n\\|\n\\|\r" input start)
+    (while (and (not trailing-carriage-return)
+                (string-match "\r\n\\|\n\\|\r" input start))
       (let* ((line-end (match-beginning 0))
              (separator-end (match-end 0))
              (separator (substring input line-end separator-end)))
         (if (and (equal separator "\r") (= separator-end length))
-            (setq start line-end)
+            (setq start line-end
+                  trailing-carriage-return t)
           (let ((line (substring input start line-end)))
             (when (> (string-bytes line) e-anthropic--sse-line-byte-limit)
               (e-anthropic--sse-decoder-invalid
@@ -1766,6 +1828,10 @@ errors are surfaced as `backend-error' items because gateways can return those
             (plist-get entry :block))
            (entry-set (index entry key value)
             (puthash index (plist-put entry key value) blocks))
+           (require-message-start
+            (event)
+            (unless message-start-seen
+              (reject "Messages event arrived before message_start" event)))
            (absorb-usage
             (usage)
             (when usage
@@ -1796,13 +1862,16 @@ errors are surfaced as `backend-error' items because gateways can return those
                  (when (or message-start-seen message-delta-seen
                            (> next-block-index 0))
                    (reject "message_start is out of order" event))
-                 (setq message-start-seen t)
                  (let ((message (plist-get event :message)))
-                   (when (and message
-                              (not (e-anthropic--json-object-p message)))
+                   (unless (and (e-anthropic--json-object-p message)
+                                (equal (plist-get message :role) "assistant")
+                                (plist-member message :content)
+                                (vectorp (plist-get message :content)))
                      (reject "malformed message_start object" event))
+                   (setq message-start-seen t)
                    (absorb-usage (plist-get message :usage))))
                 ("content_block_start"
+                 (require-message-start event)
                  (when message-delta-seen
                    (reject "content block started after message_delta" event))
                  (let ((index (plist-get event :index))
@@ -1824,6 +1893,7 @@ errors are surfaced as `backend-error' items because gateways can return those
                    (setq next-block-index (1+ next-block-index)
                          open-block-count (1+ open-block-count))))
                 ("content_block_delta"
+                 (require-message-start event)
                  (when message-delta-seen
                    (reject "content block delta followed message_delta" event))
                  (let* ((index (plist-get event :index))
@@ -1927,6 +1997,7 @@ errors are surfaced as `backend-error' items because gateways can return those
                                  delta-type)
                          event))))))
                 ("content_block_stop"
+                 (require-message-start event)
                  (when message-delta-seen
                    (reject "content block stopped after message_delta" event))
                  (let* ((index (plist-get event :index))
@@ -1981,6 +2052,7 @@ errors are surfaced as `backend-error' items because gateways can return those
                    (entry-set index entry :stopped t)
                    (setq open-block-count (1- open-block-count)))))
                 ("message_delta"
+                 (require-message-start event)
                  (when message-delta-seen
                    (reject "duplicate message_delta event" event))
                  (when (> open-block-count 0)
@@ -1996,6 +2068,7 @@ errors are surfaced as `backend-error' items because gateways can return those
                  (absorb-usage (plist-get event :usage))
                  (setq message-delta-seen t))
                 ("message_stop"
+                 (require-message-start event)
                  (when (> open-block-count 0)
                    (reject "message_stop arrived before content blocks stopped"
                            event))

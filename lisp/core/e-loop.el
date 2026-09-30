@@ -81,21 +81,6 @@ optional Responses assistant phase; older providers leave it absent."
       (plist-put message :id response-entry-id))
     message))
 
-(defun e-loop--without-provider-replay-items (messages)
-  "Return MESSAGES without one-shot provider replay metadata."
-  (mapcar
-   (lambda (message)
-     (let ((copy (copy-tree message)))
-       (dolist (slot '(content metadata))
-         (let ((value (plist-get copy slot)))
-           (when (and (listp value)
-                      (plist-member value :provider-replay-items))
-             (setq value (copy-sequence value))
-             (cl-remf value :provider-replay-items)
-             (setq copy (plist-put copy slot value)))))
-       copy))
-   messages))
-
 (cl-defun e-loop--emit (&key on-event type payload)
   "Report internal turn descriptor TYPE and PAYLOAD through ON-EVENT."
   (funcall on-event type payload))
@@ -557,15 +542,7 @@ schedules it behind the owning session's active commit barrier."
             ;; it can use a projection rebuilt past the consumed source.
             (unless immediate-curation-followup-p
               (drain-pending))
-            (let ((request-messages
-                   (let ((snapshot (copy-tree turn-messages)))
-                     ;; Replay metadata belongs to one provider request.  Keep
-                     ;; it in that request's detached projection, then remove
-                     ;; it from the turn before any later continuation starts.
-                     (setq turn-messages
-                           (e-loop--without-provider-replay-items
-                            turn-messages))
-                     snapshot))
+            (let ((request-messages (copy-tree turn-messages))
                   (tool-called nil)
                   (tool-queue nil)
                   (active-tool nil)
@@ -584,6 +561,7 @@ schedules it behind the owning session's active commit barrier."
                   ;; again there so backend item order cannot weaken safety.
                   (provider-anchor-candidate-immediate-only-p nil)
                   (pending-provider-replay-items nil)
+                  (pending-provider-replay-response-id nil)
                   (pending-provider-corrective-replay-items nil)
                   (pending-provider-invalid-replay-items nil)
                   (provider-followup-messages nil)
@@ -690,21 +668,28 @@ schedules it behind the owning session's active commit barrier."
                          (funcall append-message message)
                          message)))
                    (append-curation-response-text
-                    (replay-items)
+                    (replay-items &optional replay-response-id)
                     (when (and (not response-text-appended-p)
                                (not (string-empty-p
                                      (or (response-text) ""))))
                       (unless response-entry-id
                         (setq response-entry-id (e-session-generate-ulid)))
+                      (when replay-response-id
+                        (setq pending-provider-replay-response-id
+                              replay-response-id))
                       (let* ((request-message
                               (e-loop--assistant-message
                                (response-text)
-                               (when replay-items
-                                 (list :provider-replay-items
-                                       (copy-tree replay-items)))
+                               (append
+                                (when replay-items
+                                  (list :provider-replay-items
+                                        (copy-tree replay-items)))
+                                (when replay-response-id
+                                  (list :provider-replay-response-id
+                                        replay-response-id)))
                                response-entry-id response-assistant-phase))
                              (durable-message
-                              (if replay-items
+                              (if (or replay-items replay-response-id)
                                   (e-loop--assistant-message
                                    (response-text) nil response-entry-id
                                    response-assistant-phase)
@@ -940,38 +925,46 @@ schedules it behind the owning session's active commit barrier."
                                  (metadata
                                   (copy-tree
                                    (plist-get request-message :metadata))))
-                            (setq metadata
-                                  (plist-put
-                                   metadata
-                                   :provider-replay-items
-                                   (copy-tree pending-provider-replay-items)))
-                            (setq request-message
-                                  (plist-put request-message
-                                             :metadata metadata))
-                            (setq turn-messages
-                                  (mapcar
-                                   (lambda (message)
-                                     (if (eq message tool-message)
-                                         request-message
-                                       message))
-                                   turn-messages))
-                            (setq provider-followup-messages
-                                  (if provider-followup-messages
-                                      (mapcar
-                                       (lambda (message)
-                                         (if (eq message tool-message)
-                                             request-message
-                                           message))
-                                       provider-followup-messages)
-                                    ;; A curation-only response can follow a
-                                    ;; completed tool request whose bundle was
-                                    ;; already folded into TURN-MESSAGES.  Keep
-                                    ;; the replaced result as the immediate
-                                    ;; delta so a retained connection receives
-                                    ;; the opaque acknowledgement too.
-                                    (list request-message)))
-                            (setq pending-provider-replay-items nil)
-                            t)))))
+                            ;; A response bundle and its correlation stay paired;
+                            ;; a later curation-only replay uses request options.
+                            (unless (plist-get metadata :provider-replay-items)
+                              (setq metadata
+                                    (plist-put
+                                     metadata
+                                     :provider-replay-items
+                                     (copy-tree pending-provider-replay-items)))
+                              (cl-remf metadata :provider-replay-response-id)
+                              (when pending-provider-replay-response-id
+                                (setq metadata
+                                      (plist-put
+                                       metadata
+                                       :provider-replay-response-id
+                                       pending-provider-replay-response-id)))
+                              (setq request-message
+                                    (plist-put request-message
+                                               :metadata metadata))
+                              (setq turn-messages
+                                    (mapcar
+                                     (lambda (message)
+                                       (if (eq message tool-message)
+                                           request-message
+                                         message))
+                                     turn-messages))
+                              (setq provider-followup-messages
+                                    (if provider-followup-messages
+                                        (mapcar
+                                         (lambda (message)
+                                           (if (eq message tool-message)
+                                               request-message
+                                             message))
+                                         provider-followup-messages)
+                                      ;; A curation-only response with no
+                                      ;; existing result bundle keeps its
+                                      ;; acknowledgement on this request delta.
+                                      (list request-message)))
+                              (setq pending-provider-replay-items nil)
+                              (setq pending-provider-replay-response-id nil)
+                              t))))))
                    (fail-provider
                     (err)
                     (finish-provider-request 'error)
@@ -1209,7 +1202,8 @@ schedules it behind the owning session's active commit barrier."
                           (start-curation-rejection-followup)
                         (if tool-called
                             (progn
-                              (append-curation-response-text nil)
+                              (append-curation-response-text
+                               nil provider-request-id)
                               (notify-response-complete)
                               (setq last-curated-lifetime-frame
                                     provider-request-lifetime-frame)

@@ -963,6 +963,13 @@
              (body-after-b-curation (nth 2 requests))
              (body-fresh (nth 3 requests))
              (wire-b (append (plist-get body-b :messages) nil))
+             (mixed-response-text
+              "Inspect the fresh result, then curate frame A.")
+             (all-assistant-messages
+              (seq-filter
+               (lambda (message)
+                 (equal (plist-get message :role) "assistant"))
+               wire-b))
              (a-markers
               (e-harness-context-lifetime-composition-test--source-markers
                body-a))
@@ -998,9 +1005,31 @@
                                (lambda (block)
                                  (equal (plist-get block :type) "tool_result"))
                                (append (plist-get message :content) nil)))))
-                        (and (member "toolu-inspect-frame-b" ids)
+                       (and (member "toolu-inspect-frame-b" ids)
                              (member "toolu-curate-frame-a" ids)))))
                wire-b))
+             (wire-mixed-text-occurrences
+              (cl-loop for message in all-assistant-messages
+                       for content = (plist-get message :content)
+                       sum (if (stringp content)
+                               (if (equal content mixed-response-text) 1 0)
+                             (cl-count-if
+                              (lambda (block)
+                                (and (equal (plist-get block :type) "text")
+                                     (equal (plist-get block :text)
+                                            mixed-response-text)))
+                              (append content nil)))))
+             (durable-messages
+              (e-session-local-messages
+               (e-harness-sessions harness) session-id))
+             (durable-mixed-text-occurrences
+              (cl-count-if
+               (lambda (message)
+                 (and (eq (plist-get message :role) 'assistant)
+                      (equal (plist-get message :content)
+                             mixed-response-text)))
+               durable-messages))
+             (durable-message-text (prin1-to-string durable-messages))
              (b-curation-assistant
               (seq-find
                (lambda (message)
@@ -1046,8 +1075,13 @@
         (should (stringp frame-b-marker))
         (should (integerp frame-b-label))
         (should-not (member frame-b-marker a-marker-strings))
+        (should (= (length all-assistant-messages) 1))
         (should (= (length mixed-assistants) 1))
         (should (= (length mixed-results) 1))
+        (should (= wire-mixed-text-occurrences 1))
+        (should (= durable-mixed-text-occurrences 1))
+        (should-not (string-match-p ":provider-replay-response-id"
+                                    durable-message-text))
         (should
          (equal (append (plist-get (car mixed-assistants) :content) nil)
                 '((:type "thinking" :thinking "Inspect frame A."
