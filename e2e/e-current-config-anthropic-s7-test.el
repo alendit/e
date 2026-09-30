@@ -159,6 +159,11 @@
    (lambda (block) (equal (plist-get block :type) "tool_result"))
    (e-current-config-anthropic-s7--content-blocks body)))
 
+(defun e-current-config-anthropic-s7--tool-names (body)
+  "Return the offered tool names in BODY."
+  (mapcar (lambda (tool) (plist-get tool :name))
+          (append (plist-get body :tools) nil)))
+
 (defun e-current-config-anthropic-s7--tool-pairs-in-body (body)
   "Return native call/result pairs in BODY, rejecting malformed pairs."
   (let ((calls (make-hash-table :test 'equal))
@@ -284,6 +289,55 @@ Repeated transcript history is accepted only when its pair is unchanged."
                     :system (cl-subseq system 0 (1+ index)))
               :suffix (cl-subseq system (1+ index)))))))
 
+(defun e-current-config-anthropic-s7--open-cache-pair (bodies checkpoints)
+  "Find two open-frame BODIES with one unchanged cache prefix and changed suffix.
+The curation acknowledgement intentionally closes the reserved carrier, so its
+tool schema is a different prefix and must not be compared with open requests."
+  (cl-loop for first from 0 below (length bodies)
+           for first-body = (nth first bodies)
+           for first-checkpoint = (nth first checkpoints)
+           when (member "context-curate"
+                        (e-current-config-anthropic-s7--tool-names first-body))
+           thereis
+           (cl-loop for second from (1+ first) below (length bodies)
+                    for second-body = (nth second bodies)
+                    for second-checkpoint = (nth second checkpoints)
+                    when (and
+                          (member "context-curate"
+                                  (e-current-config-anthropic-s7--tool-names
+                                   second-body))
+                          (equal (plist-get first-checkpoint :prefix)
+                                 (plist-get second-checkpoint :prefix))
+                          (not (equal (plist-get first-checkpoint :suffix)
+                                      (plist-get second-checkpoint :suffix))))
+                    return (list first-checkpoint second-checkpoint))))
+
+(ert-deftest e-current-config-anthropic-s7-open-cache-pair-helper ()
+  "Compare open-frame prefixes while allowing the consumed carrier to close."
+  (let* ((open-tools [(:name "e2e_s7_deterministic")
+                     (:name "context-curate")])
+         (closed-tools [(:name "e2e_s7_deterministic")])
+         (stable '(:type "text" :text "stable"
+                   :cache_control (:type "ephemeral" :ttl "1h")))
+         (make-body
+          (lambda (tools suffix)
+            (list :tools tools
+                  :system (vector stable (list :type "text" :text suffix)))))
+         (bodies (list (funcall make-body open-tools "old")
+                       (funcall make-body open-tools "changed")
+                       (funcall make-body closed-tools "after-curation")))
+         (checkpoints
+          (mapcar #'e-current-config-anthropic-s7--cache-checkpoint bodies))
+         (pair (e-current-config-anthropic-s7--open-cache-pair
+                bodies checkpoints)))
+    (should pair)
+    (should (equal (plist-get (car pair) :prefix)
+                   (plist-get (cadr pair) :prefix)))
+    (should-not (equal (plist-get (car pair) :suffix)
+                       (plist-get (cadr pair) :suffix)))
+    (should-not (equal (plist-get (car pair) :prefix)
+                       (plist-get (nth 2 checkpoints) :prefix)))))
+
 (defun e-current-config-anthropic-s7--request-summary (record)
   "Return a content-free evidence summary for captured REQUEST RECORD."
   (let* ((body (plist-get record :body))
@@ -331,6 +385,14 @@ Repeated transcript history is accepted only when its pair is unchanged."
   (when (getenv "CI")
     (ert-skip "Current-Doom gateway probes are disabled in CI."))
   (should-not (getenv "E_E2E_CONFIG"))
+  (should (string-match-p
+           "\\`[[:xdigit:]]\\{40\\}\\'"
+           (or (getenv "E_CURRENT_CONFIG_F97_REPO_HEAD") "")))
+  (dolist (name '("E_CURRENT_CONFIG_F97_DOOM_ORG_SHA256"
+                  "E_CURRENT_CONFIG_F97_DOOM_EL_SHA256"))
+    (should (string-match-p
+             "\\`[[:xdigit:]]\\{64\\}\\'"
+             (or (getenv name) ""))))
   (unless (and (stringp (getenv "ENG_AI_MODEL_GW_KEY"))
                (not (string-empty-p (getenv "ENG_AI_MODEL_GW_KEY"))))
     (e-current-config-e2e-test--print
@@ -369,8 +431,9 @@ Repeated transcript history is accepted only when its pair is unchanged."
          (usage-events nil)
          (requests nil)
          (prefix-hash nil)
-         (initial-suffix-hash nil)
-         (latest-suffix-hash nil)
+         (first-suffix-hash nil)
+         (second-suffix-hash nil)
+         (tool-schema-hash nil)
          (failure-class nil)
          (native-start (symbol-function 'e-anthropic--http-request-start)))
     (unwind-protect
@@ -464,14 +527,14 @@ Repeated transcript history is accepted only when its pair is unchanged."
                       (mapcar
                        #'e-current-config-anthropic-s7--cache-checkpoint
                        bodies))
-                     (prefixes (mapcar (lambda (checkpoint)
-                                         (plist-get checkpoint :prefix))
-                                       checkpoints))
                      (final-body (car (last bodies)))
-                     (initial-checkpoint (car checkpoints))
-                     (final-checkpoint (car (last checkpoints)))
-                     (initial-suffix (plist-get initial-checkpoint :suffix))
-                     (final-suffix (plist-get final-checkpoint :suffix))
+                     (cache-pair
+                      (e-current-config-anthropic-s7--open-cache-pair
+                       bodies checkpoints))
+                     (first-checkpoint (car cache-pair))
+                     (second-checkpoint (cadr cache-pair))
+                     (first-suffix (plist-get first-checkpoint :suffix))
+                     (second-suffix (plist-get second-checkpoint :suffix))
                      (tool-pairs
                       (e-current-config-anthropic-s7--captured-tool-pairs
                        bodies))
@@ -539,26 +602,22 @@ Repeated transcript history is accepted only when its pair is unchanged."
                       (e-current-config-anthropic-s7--sum-usage
                        usage-events :cached-input-tokens)))
                 (should (seq-every-p #'identity checkpoints))
-                (unless (cl-every (lambda (prefix)
-                                    (equal prefix (car prefixes)))
-                                  (cdr prefixes))
-                  (ert-fail "F97-S7 stable cache prefix changed across requests"))
-                (should (equal (plist-get initial-checkpoint :control)
+                (unless cache-pair
+                  (ert-fail "F97-S7 found no open-frame cache pair with a stable prefix and changed suffix"))
+                (should (equal (plist-get first-checkpoint :control)
                                '(:type "ephemeral" :ttl "1h")))
-              (unless (and (not (equal initial-suffix final-suffix))
-                             (string-match-p
-                              (regexp-quote old-current)
-                              (prin1-to-string initial-suffix))
-                             (string-match-p
-                              (regexp-quote new-current)
-                              (prin1-to-string final-suffix)))
-                  (ert-fail "F97-S7 did not preserve the cache prefix across its changing suffix"))
+                (should (equal (plist-get second-checkpoint :control)
+                               '(:type "ephemeral" :ttl "1h")))
                 (unless (and (equal tool-use-names
                                     '("e2e_s7_deterministic" "context-curate"))
                              (= (length tool-results) 2))
                   (ert-fail "F97-S7 transcript did not contain one ordinary tool and one curation call"))
                 (should curation-ack-bodies)
                 (should tool-result-body)
+                (when (member "context-curate"
+                              (e-current-config-anthropic-s7--tool-names
+                               (car curation-ack-bodies)))
+                  (ert-fail "F97-S7 consumed-frame continuation still offered context-curate"))
                 (unless (not (string-match-p
                               (regexp-quote omitted-source)
                               (prin1-to-string (car curation-ack-bodies))))
@@ -586,13 +645,20 @@ Repeated transcript history is accepted only when its pair is unchanged."
                 (should (> tool-read 0))
                 (setq prefix-hash
                       (secure-hash 'sha256
-                                   (e-json-serialize (car prefixes)))
-                      initial-suffix-hash
+                                   (e-json-serialize
+                                    (plist-get first-checkpoint :prefix)))
+                      first-suffix-hash
                       (secure-hash 'sha256
-                                   (e-json-serialize initial-suffix))
-                      latest-suffix-hash
+                                   (e-json-serialize first-suffix))
+                      second-suffix-hash
                       (secure-hash 'sha256
-                                   (e-json-serialize final-suffix))))
+                                   (e-json-serialize second-suffix))
+                      tool-schema-hash
+                      (secure-hash 'sha256
+                                   (e-json-serialize
+                                    (plist-get
+                                     (plist-get first-checkpoint :prefix)
+                                     :tools)))))
               (setq composition-result "pass"
                     failure-stage "none"))
           (error
@@ -629,9 +695,17 @@ Repeated transcript history is accepted only when its pair is unchanged."
                :failure-class failure-class
                :request-count (length ordered-requests)
                :requests request-summaries
+               :repo-head (getenv "E_CURRENT_CONFIG_F97_REPO_HEAD")
+               :doom-config-org-sha256
+               (getenv "E_CURRENT_CONFIG_F97_DOOM_ORG_SHA256")
+               :doom-config-el-sha256
+               (getenv "E_CURRENT_CONFIG_F97_DOOM_EL_SHA256")
+               :curation-schema-revision
+               e-context-lifetime-curation-schema-revision
+               :tool-schema-sha256 tool-schema-hash
                :stable-prefix-sha256 prefix-hash
-               :initial-dynamic-suffix-sha256 initial-suffix-hash
-               :latest-dynamic-suffix-sha256 latest-suffix-hash
+               :first-cache-pair-suffix-sha256 first-suffix-hash
+               :second-cache-pair-suffix-sha256 second-suffix-hash
                :cache-write-input-tokens
                (e-current-config-anthropic-s7--sum-usage
                 usage-events :cache-creation-input-tokens)

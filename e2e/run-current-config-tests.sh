@@ -29,6 +29,19 @@ if [[ ${E_CURRENT_CONFIG_F97_S7:-0} == 1 ]]; then
     echo "F97-S7 requires E_CURRENT_CONFIG_E2E_SELECTOR=$s7_selector." >&2
     exit 2
   fi
+  s7_doom_dir=${DOOMDIR:-$HOME/.doom.d}
+  s7_config_org=$s7_doom_dir/config.org
+  s7_config_el=$s7_doom_dir/config.el
+  [[ -f $s7_config_org && -f $s7_config_el ]] || {
+    echo "F97-S7 requires the current Doom config.org and config.el." >&2
+    exit 2
+  }
+  export E_CURRENT_CONFIG_F97_REPO_HEAD
+  E_CURRENT_CONFIG_F97_REPO_HEAD=$(git -C "$project_dir" rev-parse HEAD)
+  export E_CURRENT_CONFIG_F97_DOOM_ORG_SHA256
+  E_CURRENT_CONFIG_F97_DOOM_ORG_SHA256=$(shasum -a 256 "$s7_config_org" | cut -d' ' -f1)
+  export E_CURRENT_CONFIG_F97_DOOM_EL_SHA256
+  E_CURRENT_CONFIG_F97_DOOM_EL_SHA256=$(shasum -a 256 "$s7_config_el" | cut -d' ' -f1)
 elif [[ $selector == "$s7_selector" ]]; then
   echo "F97-S7 requires E_CURRENT_CONFIG_F97_S7=1." >&2
   exit 2
@@ -56,4 +69,18 @@ result=$(emacsclient --socket-name "$server_name" --eval "
       (load \"$s7_test_file\" nil nil t))
     (e-current-config-e2e-test-run-to-file \"$report_file\" \"$selector\"))")
 cat "$report_file"
+if [[ ${E_CURRENT_CONFIG_F97_S7:-0} == 1 ]]; then
+  [[ $E_CURRENT_CONFIG_F97_REPO_HEAD == "$(git -C "$project_dir" rev-parse HEAD)" ]] || {
+    echo "F97-S7 repository revision changed during the probe." >&2
+    exit 2
+  }
+  [[ $E_CURRENT_CONFIG_F97_DOOM_ORG_SHA256 == "$(shasum -a 256 "$s7_config_org" | cut -d' ' -f1)" ]] || {
+    echo "F97-S7 Doom config.org changed during the probe." >&2
+    exit 2
+  }
+  [[ $E_CURRENT_CONFIG_F97_DOOM_EL_SHA256 == "$(shasum -a 256 "$s7_config_el" | cut -d' ' -f1)" ]] || {
+    echo "F97-S7 Doom config.el changed during the probe." >&2
+    exit 2
+  }
+fi
 [[ $result == 0 ]]
