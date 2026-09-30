@@ -2,10 +2,11 @@
 
 * Decision
 
-=F97-DP4= remains unaccepted.  Keep =F97-DP5= and =F97-DP6= unassigned until
-the native curation path passes its composed, credential-free scenario and the
-Feature 88 consumed-source boundary.  The previous writer stopped with no
-active subprocesses or staged files.  The user's Emacs was not reloaded.
+=F97-DP4= was unaccepted at this checkpoint.  Keep =F97-DP5= and =F97-DP6=
+unassigned until the native curation path passes its composed, credential-free
+scenario and the Feature 88 consumed-source boundary.  The previous writer
+stopped with no active subprocesses or staged files.  The user's Emacs was not
+reloaded.
 
 * Preserved state
 
@@ -49,18 +50,30 @@ policy.  Keep the immediate acknowledgement request-local and one-shot.
 1. Settle the preserved DP4 identity and acknowledgement edits.  Keep the
    tool-only response valid without invented assistant text, make each old
    fake-backend curation fixture provide a real acknowledgement target, and
-   pass the full composition suite.  Prove the injected real-Anthropic
-   =F97-S4= flow, native ID pairing, multi-frame disposition, and later source
-   omission.  Commit this scoped recovery slice only after its checks pass;
+   pass every composition test except the known consumed-frame steering
+   regression.  Prove the injected real-Anthropic =F97-S4= flow, native ID
+   pairing, multi-frame disposition, and later source omission.  Commit this
+   scoped recovery slice only after its checks pass;
    it remains an intermediate DP4 checkpoint until the next slice is accepted.
 2. Correct the consumed-frame boundary for queued steering.  Distinguish the
    immediate acknowledgement from the next ordinary request, rebuild that
    ordinary request from session-owned durable and promoted context, and reject
    contaminated anchor lineage.  Prove both stateless and valid-anchor wire
-   shapes, one-shot replay retirement, the steering ERT, and the real-Anthropic
-   =F97-S4= case.  Then review the full original =ab00c799= to final range
-   before accepting =F97-C05=.
+   shapes, one-shot replay retirement, the full composition suite, and the
+   real-Anthropic =F97-S4= case.  Then review the full original =ab00c799=
+   to final range before accepting =F97-C05=.
 
 After =F97-C05= acceptance, continue with =F97-DP5=, then =F97-DP6=,
 repository gates, independent implementation review, and the plan's separate
 exact-revision gateway capability and configured-composition probes.
+
+* Closure
+
+The intermediate recovery slice =bbedf7e5= passed the injected Anthropic
+=F97-S4= case and every composition test except the known steering regression.
+The final slice =c656136c= deferred queued steering until the immediate
+curation acknowledgement settled, then rebuilt the ordinary request without
+the consumed source or contaminated anchor lineage.  Parent review accepted
+the full =ab00c799..c656136c= DP4 range and =F97-C05=.  The complete
+composition gate passed 411/411; focused loop, OpenAI, Anthropic, compilation,
+parenthesis, and diff checks passed.  The user's running Emacs remains unchanged.
