@@ -4,11 +4,11 @@
 
 * Status
 
-In-review.  The first independent implementation review found three High
-defects at =e1ea7549=.  =F97-S6a= and =F97-S6b= have not yet run on an accepted
-revision.
+In-review.  The second independent implementation Tick at =4fcfe95e= closed
+=F97-R01=--=F97-R03= and found =F97-R04= on structured tool-result context
+refresh.  =F97-S6a= and =F97-S6b= have not yet run on an accepted revision.
 
-* Scope and result
+* First Tick: scope and result at =e1ea7549=
 
 The read-only review compared the complete =F97-C01=--=F97-C06= implementation
 and direct =F97-ANTHROPIC-COMPOSED-TURN= scenario with =plan.org=, Feature 88's
@@ -19,9 +19,9 @@ findings below.  The injected =F97-S4= flow runs, but its literal native
 request repeats model-visible assistant text.  Gateway capability and
 configured composition remain unconfirmed.
 
-* Findings
+* First Tick findings
 
-** TODO High F97-R01: Require a complete Messages start before tool admission
+** DONE High F97-R01: Require a complete Messages start before tool admission
 
 =e-anthropic-parse-stream= accepts =content_block_start=, =message_delta=, and
 =message_stop= without =message_start=.  A batch probe containing a native
@@ -31,7 +31,7 @@ and =done=.  This violates =F97-C03= and =F97-C06='s complete valid response
 guard.  The Anthropic decoder must enforce start and terminal order before
 releasing effects; permissive fixtures must be brought to the same contract.
 
-** TODO High F97-R02: Emit mixed native assistant text only once
+** DONE High F97-R02: Emit mixed native assistant text only once
 
 The loop appends a neutral assistant text message before ordinary tool
 admission, while Anthropic's native replay substitutes the entire response,
@@ -43,7 +43,7 @@ assistant envelope and changes model-visible input.  Keep durable semantic
 text but remove only its proven redundant immediate wire copy.  Strengthen
 the public =F97-S4= request-body assertion to detect the extra message.
 
-** TODO High F97-R03: Advance the SSE decoder across a trailing CR
+** DONE High F97-R03: Advance the SSE decoder across a trailing CR
 
 =e-anthropic--sse-decoder-feed= repeats its scan at the same position when
 an HTTP chunk ends with a lone =\r=.  A bounded batch probe did not return
@@ -72,8 +72,61 @@ catalog and Messages requests, but exact-revision =F97-S6a=/=F97-S6b= evidence
 is pending.  No live reload was performed; core and adapter changes require a
 restart for use in the running Emacs.
 
-* Unresolved
+* First Tick unresolved at =e1ea7549=
 
 =F97-R01=--=F97-R03= block deterministic fixed point.  After remediation,
 rerun the complete gate on its commit and obtain an independent review of
 their closure and affected contract cells before external acceptance probes.
+
+* Second Tick: structured refresh at =4fcfe95e=
+
+The persistent independent reviewer found one new High defect.  The ordinary
+=F97-S4= path has one native assistant envelope and text occurrence, but the
+same public scenario fails before its second Anthropic request when the
+ordinary tool returns a structured result with =:refresh-context t=.
+
+** Prior findings
+
+- =F97-R01= closed: a valid ordered assistant =message_start= is required
+  before terminal tool admission.  The missing-start negative case emits only
+  =backend-error=.
+- =F97-R02= closed for the ordinary =F97-S4= path: the correlated assistant
+  text is sent once in native replay, remains once in durable semantic history,
+  and its provider metadata is absent after reopen.  =F97-R04= covers a
+  distinct refresh path through the correlation mechanism.
+- =F97-R03= closed: trailing =\r= stays buffered and the next chunk advances
+  the decoder.  A bounded HTTP case covers lone CR and split CRLF.
+
+** TODO High F97-R04: Preserve assistant replay correlation across context refresh
+
+The reviewer changed only the public =F97-S4= fixture's =inspect-source=
+handler to return the same content through =e-tools-result-create= with
+=(:refresh-context t)=.  The focused scenario failed 0/1 with
+=e-anthropic-response-invalid=: the provider replay response ID had no unique
+assistant message.  The loop's refresh rebuilds =turn-messages= from durable
+state, which has the assistant's text but not its request-local replay response
+ID.  It merges the tool call and result and attaches the replay ID to the
+result; the Anthropic renderer correctly rejects the unmatched group.  This
+violates =F97-C03= and =F97-C05=.  Reconcile the correlation onto the refreshed
+assistant by stable message identity for the active turn only, preserving its
+semantic content and the renderer's strict identity check.
+
+** Verification and coverage
+
+At =4fcfe95e= the full deterministic gate passed 2,829/2,829 in 375.1
+seconds, with no unexpected results.  The four test-fixture failures from the
+first full attempt reproduced on the pre-repair =570974f0= baseline; the
+separate =4fcfe95e= test-fixture commit repaired them and their focused cases
+passed 4/4.  The checked-in Anthropic profile selection passed 1/1.  The
+independent reviewer passed 13/13 earlier focused cases and reproduced
+=F97-R04= in the public composition variant.  Green suites do not cover that
+variant.  =F97-C01=, =F97-C02=, =F97-C04=, and =F97-C06= clear deterministic
+review; =F97-C03= and =F97-C05= remain open.  No separate architectural,
+state-lifetime, or performance finding was confirmed.
+
+** Unresolved
+
+=F97-R04= blocks deterministic fixed point.  =F97-S6a= gateway capability and
+=F97-S6b= configured composition remain separate external unknowns until a
+zero-finding Tick clears the repository revision.  The running Emacs remains
+unchanged; core and adapter behavior needs a restart to use immediately.
