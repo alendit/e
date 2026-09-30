@@ -34,6 +34,31 @@
       (accept-process-output nil 0.01))
     value))
 
+(defun e-anthropic-test--http-backend-start
+    (on-item on-done on-error &optional on-request-start)
+  "Start a real Anthropic HTTP backend with the supplied callbacks."
+  (e-backend-start
+   (e-anthropic-backend-create :provider 'eng-anthropic)
+   :messages '((:role user :content "Inspect both paths."))
+   :options '(:model "claude-test" :max-tokens 1024)
+   :on-item on-item
+   :on-done on-done
+   :on-error on-error
+   :on-request-start on-request-start))
+
+(defun e-anthropic-test--write-http-chunk (buffer text)
+  "Append HTTP response TEXT to BUFFER as one transport chunk."
+  (with-current-buffer buffer
+    (goto-char (point-max))
+    (insert text)))
+
+(defun e-anthropic-test--write-http-headers (buffer status)
+  "Append a minimal HTTP response header with STATUS to BUFFER."
+  (e-anthropic-test--write-http-chunk
+   buffer
+   (format "HTTP/1.1 %d Test\r\nContent-Type: text/event-stream\r\n\r\n"
+           status)))
+
 (defun e-anthropic-test--sse-stream (events)
   "Encode canonical Messages EVENTS as an SSE response string."
   (mapconcat (lambda (event)
@@ -1172,10 +1197,27 @@ retry classifier sees the kind even when the message does not name it."
     (should (eq (plist-get (plist-get item :payload) :response-kind) 'text))
     (should (string-match-p "upstream connect error" (plist-get item :content)))))
 
-(ert-deftest e-anthropic-test-parse-empty-body-returns-no-items ()
-  "A truly empty body yields no items so the loop reports empty output."
-  (should (null (e-anthropic-parse-stream "")))
-  (should (null (e-anthropic-parse-stream "   \n  "))))
+(ert-deftest e-anthropic-test-parse-empty-body-fails-without-terminal ()
+  "An empty response is a failed Messages stream without message_stop."
+  (dolist (body '("" "   \n  "))
+    (let ((items (e-anthropic-parse-stream body)))
+      (should (= (length items) 1))
+      (should (eq (plist-get (car items) :type) 'backend-error))
+      (should (string-match-p "message_stop"
+                              (plist-get (car items) :content))))))
+
+(ert-deftest e-anthropic-test-parse-rejects-oversized-sse-event ()
+  "The decoder bounds partial SSE event storage before parsing JSON."
+  (let* ((line (make-string 900000 ?x))
+         (stream (concat (mapconcat (lambda (_) (concat "data: " line "\n"))
+                                    '(1 2 3 4 5)
+                                    "")
+                         "\n"))
+         (items (e-anthropic-parse-stream stream)))
+    (should (= (length items) 1))
+    (should (eq (plist-get (car items) :type) 'backend-error))
+    (should (string-match-p "SSE event exceeds the byte limit"
+                            (plist-get (car items) :content)))))
 
 (ert-deftest e-anthropic-test-parse-tool-use-stream ()
   "Messages tool_use blocks accumulate input JSON into a neutral tool call."
@@ -2252,6 +2294,331 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       ;; Once data stops, the idle timer eventually fires.
       (should (e-anthropic-test--wait-until (lambda () error) 0.5))
       (should (eq (car error) 'e-anthropic-request-timeout)))))
+
+(ert-deftest e-anthropic-test-http-streams-progress-before-terminal-and-effects-once ()
+  "Complete SSE deltas stream early while native effects wait for HTTP success."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-stream*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (e-anthropic-test--http-backend-start
+       (lambda (item) (push item items))
+       (lambda (value) (push value done-values))
+       (lambda (err) (push err errors)))
+      (e-anthropic-test--write-http-headers buffer 200)
+      (let* ((events e-anthropic-test--signed-two-tool-events)
+             (text-event-index 6)
+             (text-event (e-anthropic-test--sse-stream
+                          (list (nth text-event-index events))))
+             (split (1+ (/ (length text-event) 2))))
+        (dolist (event (cl-subseq events 0 text-event-index))
+          (e-anthropic-test--write-http-chunk
+           buffer (e-anthropic-test--sse-stream (list event))))
+        (e-anthropic-test--write-http-chunk
+         buffer (substring text-event 0 split))
+        (should (equal (mapcar (lambda (item) (plist-get item :type))
+                               (reverse items))
+                       '(reasoning-raw-delta)))
+        (e-anthropic-test--write-http-chunk
+         buffer (substring text-event split))
+        (should (equal (mapcar (lambda (item) (plist-get item :type))
+                               (reverse items))
+                       '(reasoning-raw-delta assistant-delta)))
+        (dolist (event (cl-subseq events (1+ text-event-index)
+                                  (1- (length events))))
+          (e-anthropic-test--write-http-chunk
+           buffer (e-anthropic-test--sse-stream (list event))))
+        (e-anthropic-test--write-http-chunk
+         buffer (e-anthropic-test--sse-stream (last events)))
+        (should-not done-values)
+        (should-not errors)
+        (should-not
+         (seq-some
+          (lambda (item)
+            (memq (plist-get item :type)
+                  '(assistant-message tool-call context-curate
+                    provider-replay-item provider-anchor-candidate done)))
+          items))
+        (with-current-buffer buffer
+          (funcall url-callback nil))
+        (let ((types (mapcar (lambda (item) (plist-get item :type))
+                             (reverse items))))
+          (should (= (cl-count 'assistant-delta types) 1))
+          (should (= (cl-count 'tool-call types) 2))
+          (should (= (cl-count 'provider-replay-item types) 5))
+          (should (= (cl-count 'done types) 1)))
+        (should (= (length done-values) 1))
+        (should-not errors)
+        (with-temp-buffer
+          (funcall url-callback nil))
+        (should (= (length done-values) 1))
+        (should (= (cl-count 'tool-call
+                             (mapcar (lambda (item) (plist-get item :type))
+                                     items))
+                   2))))))
+
+(ert-deftest e-anthropic-test-http-eof-without-terminal-releases-no-effects ()
+  "An incomplete normal HTTP body emits one failure and no native effects."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-eof*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (e-anthropic-test--http-backend-start
+       (lambda (item) (push item items))
+       (lambda (value) (push value done-values))
+       (lambda (err) (push err errors)))
+      (e-anthropic-test--write-http-headers buffer 200)
+      (dolist (event (butlast e-anthropic-test--signed-two-tool-events))
+        (e-anthropic-test--write-http-chunk
+         buffer (e-anthropic-test--sse-stream (list event))))
+      (should-not
+       (seq-some (lambda (item)
+                   (memq (plist-get item :type)
+                         '(tool-call context-curate provider-replay-item
+                           provider-anchor-candidate done)))
+                 items))
+      (with-current-buffer buffer
+        (funcall url-callback nil))
+      (let ((types (mapcar (lambda (item) (plist-get item :type))
+                           (reverse items))))
+        (should (= (cl-count 'backend-error types) 1))
+        (should-not (memq 'assistant-message types))
+        (should-not (memq 'tool-call types))
+        (should-not (memq 'provider-replay-item types))
+        (should-not (memq 'done types)))
+      (should (= (length done-values) 1))
+      (should-not errors))))
+
+(ert-deftest e-anthropic-test-http-error-after-message-stop-discards-response ()
+  "A URL failure cannot promote an anchor or commit effects after message_stop."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-http-fail*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (e-anthropic-test--http-backend-start
+       (lambda (item) (push item items))
+       (lambda (value) (push value done-values))
+       (lambda (err) (push err errors)))
+      (e-anthropic-test--write-http-headers buffer 200)
+      (e-anthropic-test--write-http-chunk
+       buffer (e-anthropic-test--sse-stream
+               e-anthropic-test--signed-two-tool-events))
+      (with-current-buffer buffer
+        (funcall url-callback '(:error (error "connection reset"))))
+      (should-not done-values)
+      (should (= (length errors) 1))
+      (should (eq (caar errors) 'error))
+      (should-not
+       (seq-some (lambda (item)
+                   (memq (plist-get item :type)
+                         '(assistant-message tool-call context-curate
+                           provider-replay-item provider-anchor-candidate done)))
+                 items)))))
+
+(ert-deftest e-anthropic-test-http-error-status-is-failure-not-messages-data ()
+  "A non-2xx response is classified with its HTTP status and never streamed."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-http-status*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (e-anthropic-test--http-backend-start
+       (lambda (item) (push item items))
+       (lambda (value) (push value done-values))
+       (lambda (err) (push err errors)))
+      (e-anthropic-test--write-http-headers buffer 429)
+      (e-anthropic-test--write-http-chunk
+       buffer
+       "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Try again later\"}}")
+      (with-current-buffer buffer
+        (funcall url-callback nil))
+      (should (= (length items) 1))
+      (should (eq (plist-get (car items) :type) 'backend-error))
+      (should (equal (plist-get (plist-get (car items) :payload) :status) 429))
+      (should (eq (plist-get (plist-get (car items) :payload) :retry-reason)
+                  'rate-limit))
+      (should-not errors)
+      (should (= (length done-values) 1)))))
+
+(ert-deftest e-anthropic-test-http-provider-and-malformed-events-fail-closed ()
+  "Provider error and malformed SSE responses publish no successful items."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds nil)
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil)
+         (bodies
+          '("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
+            "event: content_block_delta\ndata: {broken}\n\n")))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-bad-event*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (dolist (body bodies)
+        (setq items nil done-values nil errors nil)
+        (e-anthropic-test--http-backend-start
+         (lambda (item) (push item items))
+         (lambda (value) (push value done-values))
+         (lambda (err) (push err errors)))
+        (e-anthropic-test--write-http-headers buffer 200)
+        (e-anthropic-test--write-http-chunk buffer body)
+        (with-current-buffer buffer
+          (funcall url-callback nil))
+        (should (= (length items) 1))
+        (should (eq (plist-get (car items) :type) 'backend-error))
+        (should-not (memq 'done
+                          (mapcar (lambda (item) (plist-get item :type)) items)))
+        (should (= (length done-values) 1))
+        (should-not errors)))))
+
+(ert-deftest e-anthropic-test-http-idle-timeout-settles-partial-stream-once ()
+  "The idle timeout discards pending effects after incremental text progress."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (e-anthropic-request-timeout-seconds 0.05)
+         (buffer nil)
+         (url-callback nil)
+         (items nil)
+         (done-values nil)
+         (errors nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url callback &rest _args)
+                 (setq buffer (generate-new-buffer " *e-anthropic-idle*"))
+                 (setq url-callback callback)
+                 buffer)))
+      (e-anthropic-test--http-backend-start
+       (lambda (item) (push item items))
+       (lambda (value) (push value done-values))
+       (lambda (err) (push err errors)))
+      (e-anthropic-test--write-http-headers buffer 200)
+      (dolist (event (butlast e-anthropic-test--signed-two-tool-events))
+        (e-anthropic-test--write-http-chunk
+         buffer (e-anthropic-test--sse-stream (list event))))
+      (should (seq-some (lambda (item)
+                          (eq (plist-get item :type) 'assistant-delta))
+                        items))
+      (should (e-anthropic-test--wait-until (lambda () errors) 0.5))
+      (should (= (length errors) 1))
+      (should (eq (caar errors) 'e-anthropic-request-timeout))
+      (should-not done-values)
+      (should-not
+       (seq-some (lambda (item)
+                   (memq (plist-get item :type)
+                         '(assistant-message tool-call context-curate
+                           provider-replay-item provider-anchor-candidate done)))
+                 items))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (funcall url-callback nil)))
+      (should (= (length errors) 1))
+      (should-not done-values))))
+
+(ert-deftest e-anthropic-test-injected-requester-truncation-releases-no-tools ()
+  "The synchronous requester validates message_stop before tool continuation."
+  (let* ((process-environment
+          (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
+         (e-anthropic-model-providers
+          '((eng-anthropic
+             :name "Engineering Anthropic"
+             :base-url "https://gateway.example.test/v1"
+             :auth bearer
+             :env-key "ANTHROPIC_GATEWAY_KEY")))
+         (backend
+          (e-anthropic-backend-create
+           :provider 'eng-anthropic
+           :request-function
+           (lambda (&rest _arguments)
+             (e-anthropic-test--sse-stream
+              (butlast e-anthropic-test--signed-two-tool-events)))))
+         (items nil))
+    (e-backend-stream-batch
+     backend
+     :messages '((:role user :content "Inspect both paths."))
+     :options '(:model "claude-test" :max-tokens 1024)
+     :on-item (lambda (item) (push item items)))
+    (should (equal (mapcar (lambda (item) (plist-get item :type))
+                           (reverse items))
+                   '(backend-error)))
+    (should-not
+     (seq-some (lambda (item)
+                 (memq (plist-get item :type)
+                       '(tool-call context-curate provider-replay-item done)))
+               items))))
 
 (provide 'e-anthropic-test)
 

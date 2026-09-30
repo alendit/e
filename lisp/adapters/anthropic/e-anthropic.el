@@ -1427,19 +1427,150 @@ provide."
                        :reasoning-output-tokens nil
                        :total-tokens total))))
 
+(defconst e-anthropic--sse-line-byte-limit (* 1024 1024)
+  "Maximum byte length of one buffered Messages SSE line.")
+
+(defconst e-anthropic--sse-event-byte-limit (* 4 1024 1024)
+  "Maximum byte length of one buffered Messages SSE event.")
+
+(cl-defstruct (e-anthropic--sse-decoder
+               (:constructor e-anthropic--sse-decoder-create))
+  line-buffer
+  data-lines
+  (event-bytes 0)
+  sse-seen
+  failed
+  stopped)
+
+(defun e-anthropic--sse-decoder-invalid (reason)
+  "Signal that a Messages SSE stream is invalid for REASON."
+  (signal 'e-anthropic-response-invalid (list reason)))
+
+(defun e-anthropic--sse-decoder-line (decoder line separator-bytes)
+  "Consume one complete SSE LINE for DECODER.
+SEPARATOR-BYTES counts the line ending that followed LINE."
+  (if (string-empty-p line)
+      (let ((data-lines (nreverse
+                         (e-anthropic--sse-decoder-data-lines decoder))))
+        (setf (e-anthropic--sse-decoder-data-lines decoder) nil
+              (e-anthropic--sse-decoder-event-bytes decoder) 0)
+        (when data-lines
+          (let ((data (string-join data-lines "\n")))
+            (unless (or (string-empty-p data) (equal data "[DONE]"))
+              (e-anthropic--parse-json data)))))
+    (let* ((decoder-bytes (+ (e-anthropic--sse-decoder-event-bytes decoder)
+                             (string-bytes line)
+                             separator-bytes))
+           (colon (string-match ":" line)))
+      (when (> decoder-bytes e-anthropic--sse-event-byte-limit)
+        (e-anthropic--sse-decoder-invalid "SSE event exceeds the byte limit"))
+      (setf (e-anthropic--sse-decoder-event-bytes decoder) decoder-bytes)
+      (cond
+       ((string-prefix-p ":" line)
+        (setf (e-anthropic--sse-decoder-sse-seen decoder) t))
+       (colon
+        (let* ((field (substring line 0 colon))
+               (value (substring line (1+ colon)))
+               (value (if (string-prefix-p " " value)
+                          (substring value 1)
+                        value)))
+          (when (member field '("data" "event" "id" "retry"))
+            (setf (e-anthropic--sse-decoder-sse-seen decoder) t))
+          (when (equal field "data")
+            (push value (e-anthropic--sse-decoder-data-lines decoder))))))
+      nil)))
+
+(defun e-anthropic--sse-decoder-feed (decoder chunk)
+  "Feed response CHUNK to DECODER and return its complete JSON events."
+  (when (e-anthropic--sse-decoder-failed decoder)
+    (e-anthropic--sse-decoder-invalid "SSE decoder has already failed"))
+  (let* ((input (concat (or (e-anthropic--sse-decoder-line-buffer decoder) "")
+                        chunk))
+         (length (length input))
+         (start 0)
+         (events nil))
+    (setf (e-anthropic--sse-decoder-line-buffer decoder) "")
+    (while (string-match "\r\n\\|\n\\|\r" input start)
+      (let* ((line-end (match-beginning 0))
+             (separator-end (match-end 0))
+             (separator (substring input line-end separator-end)))
+        (if (and (equal separator "\r") (= separator-end length))
+            (setq start line-end)
+          (let ((line (substring input start line-end)))
+            (when (> (string-bytes line) e-anthropic--sse-line-byte-limit)
+              (e-anthropic--sse-decoder-invalid
+               "SSE line exceeds the byte limit"))
+            (when-let* ((event
+                         (e-anthropic--sse-decoder-line
+                          decoder line (string-bytes separator))))
+              (push event events)))
+          (setq start separator-end))))
+    (let ((remainder (substring input start)))
+      (when (> (string-bytes remainder) e-anthropic--sse-line-byte-limit)
+        (e-anthropic--sse-decoder-invalid "SSE line exceeds the byte limit"))
+      (setf (e-anthropic--sse-decoder-line-buffer decoder) remainder))
+    (nreverse events)))
+
+(defun e-anthropic--sse-decoder-finish (decoder)
+  "Return whether DECODER saw SSE and whether it ended inside a line/event."
+  (list :sse-seen (e-anthropic--sse-decoder-sse-seen decoder)
+        :incomplete (or (not (string-empty-p
+                              (or (e-anthropic--sse-decoder-line-buffer decoder)
+                                  "")))
+                         (e-anthropic--sse-decoder-data-lines decoder))))
+
+(defun e-anthropic--sse-decode (stream-text)
+  "Decode complete Messages SSE events from STREAM-TEXT.
+Return events with SSE and partial-response facts for the terminal validator."
+  (let* ((decoder (e-anthropic--sse-decoder-create))
+         (events (e-anthropic--sse-decoder-feed decoder stream-text))
+         (finished (e-anthropic--sse-decoder-finish decoder)))
+    (when (and (plist-get finished :sse-seen)
+               (plist-get finished :incomplete))
+      (e-anthropic--sse-decoder-invalid
+       "stream ended inside an SSE line or event"))
+    (list :events events :sse-seen (plist-get finished :sse-seen))))
+
 (defun e-anthropic--sse-data (stream-text)
   "Return parsed JSON events from Messages SSE STREAM-TEXT, in order."
-  (let ((events nil))
-    (dolist (chunk (split-string stream-text "\n\n" t))
-      (let ((data-lines nil))
-        (dolist (line (split-string chunk "\n"))
-          (when (string-prefix-p "data:" line)
-            (push (string-trim (substring line 5)) data-lines)))
-        (when data-lines
-          (let ((data (string-join (nreverse data-lines) "\n")))
-            (unless (or (string-empty-p data) (equal data "[DONE]"))
-              (push (e-anthropic--parse-json data) events))))))
-    (nreverse events)))
+  (plist-get (e-anthropic--sse-decode stream-text) :events))
+
+(defun e-anthropic--stream-progress-items (decoder chunk)
+  "Decode progress items from complete SSE events in CHUNK using DECODER."
+  (unless (or (e-anthropic--sse-decoder-failed decoder)
+              (e-anthropic--sse-decoder-stopped decoder))
+    (condition-case nil
+        (let ((events (e-anthropic--sse-decoder-feed decoder chunk))
+              (items nil))
+          (dolist (event events)
+            (unless (or (e-anthropic--sse-decoder-failed decoder)
+                        (e-anthropic--sse-decoder-stopped decoder))
+              (let* ((event-type (plist-get event :type))
+                     (delta (plist-get event :delta))
+                     (delta-type (plist-get delta :type)))
+                (cond
+                 ((equal event-type "error")
+                  (setf (e-anthropic--sse-decoder-stopped decoder) t))
+                 ((member event-type '("message_delta" "message_stop"))
+                  (setf (e-anthropic--sse-decoder-stopped decoder) t))
+                 ((and (equal event-type "content_block_delta")
+                       (equal delta-type "text_delta")
+                       (stringp (plist-get delta :text)))
+                  (push (list :type 'assistant-delta
+                              :content (plist-get delta :text))
+                        items))
+                 ((and (equal event-type "content_block_delta")
+                       (equal delta-type "thinking_delta")
+                       (stringp (plist-get delta :thinking)))
+                  (push (list :type 'reasoning-raw-delta
+                              :stream-kind 'raw
+                              :content (plist-get delta :thinking)
+                              :content-index (plist-get event :index))
+                        items))))))
+          (nreverse items))
+      (error
+       (setf (e-anthropic--sse-decoder-failed decoder) t)
+       nil))))
 
 (defun e-anthropic--parse-tool-input (partial-json)
   "Parse accumulated PARTIAL-JSON from a tool_use block into a plist."
@@ -1574,6 +1705,19 @@ visible rather than masked as empty assistant output."
                                  preview)
                 :payload (list :response-kind 'text :preview preview))))))))
 
+(defun e-anthropic--http-error-item (stream-text status)
+  "Return a backend error item for HTTP STATUS and response STREAM-TEXT."
+  (let* ((item (or (e-anthropic--non-stream-error-item stream-text)
+                   (list :type 'backend-error
+                         :content
+                         (format "Anthropic HTTP %s response did not contain a Messages stream"
+                                 status)
+                         :payload (list :response-kind 'http-error))))
+         (payload (copy-sequence (plist-get item :payload))))
+    (plist-put item :payload
+               (plist-put (plist-put payload :status status)
+                          :http-status status))))
+
 (defun e-anthropic--invalid-response-item (reason &optional provider-event)
   "Return a backend error item for an invalid response REASON."
   (list :type 'backend-error
@@ -1591,9 +1735,12 @@ Content blocks are collected by native index.  A complete terminal response
 must be validated before any tool call or opaque native replay item is exposed.
 Text deltas across blocks remain a single `assistant-message'.  Non-stream JSON
 errors are surfaced as `backend-error' items because gateways can return those
-instead of an SSE stream."
+  instead of an SSE stream."
   (condition-case err
-      (let ((blocks (make-hash-table :test 'eql))
+      (let* ((sse-result (e-anthropic--sse-decode stream-text))
+             (events (plist-get sse-result :events))
+             (sse-seen (plist-get sse-result :sse-seen))
+             (blocks (make-hash-table :test 'eql))
             (block-order nil)
             (next-block-index 0)
             (open-block-count 0)
@@ -1637,7 +1784,7 @@ instead of an SSE stream."
                       (plist-get usage :cache_creation_input_tokens)))
               (when (plist-member usage :output_tokens)
                 (setq output-tokens (plist-get usage :output_tokens))))))
-          (dolist (event (e-anthropic--sse-data stream-text))
+          (dolist (event events)
             (setq event-count (1+ event-count))
             (when terminal-seen
               (reject "event received after message_stop" event))
@@ -1864,11 +2011,17 @@ instead of an SSE stream."
                          event)))))
           (cond
            ((zerop event-count)
-            (if (string-match-p "\\`[[:space:]]*\\'" stream-text)
-                nil
-              (when-let* ((error-item
-                           (e-anthropic--non-stream-error-item stream-text)))
-                (list error-item))))
+            (cond
+             (sse-seen
+              (reject "stream ended before message_stop"))
+             ((string-match-p "\\`[[:space:]]*\\'" stream-text)
+              (reject "empty response ended before message_stop"))
+             (t
+              (let ((error-item
+                     (e-anthropic--non-stream-error-item stream-text)))
+                (if error-item
+                    (list error-item)
+                  (reject "non-stream response has no error details"))))))
            ((not terminal-seen)
             (reject "stream ended before message_stop"))
            (t
@@ -1970,8 +2123,26 @@ instead of an SSE stream."
   "Return response body text from url.el BUFFER."
   (with-current-buffer buffer
     (goto-char (point-min))
-    (re-search-forward "\n\n" nil 'move)
+    (re-search-forward "\r?\n\r?\n" nil 'move)
     (buffer-substring-no-properties (point) (point-max))))
+
+(defun e-anthropic--http-response-status (&optional callback-status)
+  "Return the numeric HTTP status in the current response or CALLBACK-STATUS."
+  (or (save-excursion
+        (goto-char (point-min))
+        (let ((case-fold-search t)
+              status)
+          (while (re-search-forward
+                  "^HTTP/[0-9.]+[ \t]+\\([0-9][0-9][0-9]\\)" nil t)
+            (setq status (string-to-number (match-string-no-properties 1))))
+          status))
+      (and (boundp 'url-http-response-status)
+           (numberp (symbol-value 'url-http-response-status))
+           (symbol-value 'url-http-response-status))
+      (let ((url-error (plist-get callback-status :error)))
+        (when-let* ((http-tail (and (listp url-error)
+                                    (memq 'http url-error))))
+          (and (numberp (cadr http-tail)) (cadr http-tail))))))
 
 (defun e-anthropic--url-metadata (url)
   "Return sanitized diagnostic metadata for URL."
@@ -1991,17 +2162,23 @@ never raise the blocking \"has a running process; kill it?\" prompt."
   (e-kill-buffer-quietly buffer))
 
 (cl-defun e-anthropic--http-request-start
-    (&key url headers body on-complete on-error (method "POST"))
+    (&key url headers body on-complete on-error on-http-error on-body-chunk
+          (method "POST"))
   "Send METHOD request to URL with HEADERS and optional BODY asynchronously.
 ON-COMPLETE receives the response body text.  ON-ERROR receives an Emacs
-condition list.  Return a cancellable `e-backend-request' handle."
+condition list.  ON-BODY-CHUNK receives each new body chunk and numeric status
+after the HTTP headers identify a successful response.  ON-HTTP-ERROR receives
+the body and status for a non-2xx response.  Return a cancellable
+`e-backend-request' handle."
   (let ((url-request-method method)
         (url-request-extra-headers (e-anthropic--http-header-list headers))
         (url-request-data (and body (encode-coding-string body 'utf-8)))
         (timeout e-anthropic-request-timeout-seconds)
         request-buffer
+        body-cursor
         timeout-timer
-        settled)
+        settled
+        error-notified)
     (cl-labels
         ((cancel-timeout ()
            (when (timerp timeout-timer)
@@ -2009,17 +2186,26 @@ condition list.  Return a cancellable `e-backend-request' handle."
            (setq timeout-timer nil))
          (cleanup (buffer)
            (cancel-timeout)
+           (when (markerp body-cursor)
+             (set-marker body-cursor nil))
+           (setq body-cursor nil)
            (e-anthropic--kill-request-buffer buffer))
-         (settle-timeout ()
+         (notify-error (err)
+           (unless error-notified
+             (setq error-notified t)
+             (when on-error
+               (funcall on-error err))))
+         (settle-error (err)
            (unless settled
              (setq settled t)
              (cleanup request-buffer)
-             (when on-error
-               (funcall
-                on-error
-                (list 'e-anthropic-request-timeout
-                      (format "Anthropic request timed out after %s seconds without response data"
-                              timeout))))))
+             (notify-error err)))
+         (settle-timeout ()
+           (unless settled
+             (settle-error
+              (list 'e-anthropic-request-timeout
+                    (format "Anthropic request timed out after %s seconds without response data"
+                            timeout)))))
          (arm-timeout ()
            ;; Idle deadline: re-arm on every chunk of response data so a long
            ;; but healthy streamed generation is never killed mid-flight; only
@@ -2028,37 +2214,65 @@ condition list.  Return a cancellable `e-backend-request' handle."
            (when (and timeout (not settled))
              (setq timeout-timer
                    (run-at-time timeout nil #'settle-timeout))))
+         (response-body-chunk ()
+           (when (and on-body-chunk (buffer-live-p request-buffer))
+             (with-current-buffer request-buffer
+               (save-excursion
+                 (goto-char (point-min))
+                 (when (re-search-forward "\r?\n\r?\n" nil t)
+                   (let* ((body-start (point))
+                          (status (e-anthropic--http-response-status)))
+                     (unless (markerp body-cursor)
+                       (setq body-cursor (copy-marker body-start nil)))
+                     (when (< (marker-position body-cursor) body-start)
+                       (set-marker body-cursor body-start))
+                     (when (and status (<= 200 status) (< status 300)
+                                (> (point-max) (marker-position body-cursor)))
+                       (let ((chunk (buffer-substring-no-properties
+                                     (marker-position body-cursor) (point-max))))
+                         (set-marker body-cursor (point-max))
+                         (funcall on-body-chunk chunk status)))))))))
          (note-activity (&rest _)
            (unless settled
-             (arm-timeout)))
+             (arm-timeout)
+             (condition-case err
+                 (response-body-chunk)
+               (error (settle-error err)))))
          (handle-callback (status)
            (unless settled
              (setq settled t)
              (let ((buffer (current-buffer)))
                (unwind-protect
                    (condition-case err
-                       (let ((url-error (plist-get status :error)))
-                         (if url-error
-                             (let ((response-text
-                                    (e-anthropic--http-response-text buffer)))
-                               (if (not (string-empty-p
-                                         (string-trim response-text)))
-                                   (when on-complete
-                                     (funcall on-complete response-text))
-                                 (when on-error
-                                   (funcall
-                                    on-error
-                                    (list 'error
-                                          (e-format-safe
-                                           "Anthropic request failed: %S"
-                                           url-error))))))
+                       (let* ((url-error (plist-get status :error))
+                              (http-status
+                               (e-anthropic--http-response-status status))
+                              (http-failure
+                               (and http-status
+                                    (not (and (<= 200 http-status)
+                                              (< http-status 300)))))
+                              (response-text
+                               (e-anthropic--http-response-text buffer)))
+                         (cond
+                          (http-failure
+                           (if on-http-error
+                               (funcall on-http-error response-text http-status)
+                             (when on-complete
+                               (funcall on-complete response-text))))
+                          (url-error
+                           (notify-error
+                            (list 'error
+                                  (e-format-safe
+                                   "Anthropic request failed: %S"
+                                   url-error))))
+                          (t
+                           (when (and http-status (<= 200 http-status)
+                                      (< http-status 300))
+                             (response-body-chunk))
                            (when on-complete
-                             (funcall
-                              on-complete
-                              (e-anthropic--http-response-text buffer)))))
+                             (funcall on-complete response-text)))))
                      (error
-                      (when on-error
-                        (funcall on-error err))))
+                      (notify-error err)))
                  (cleanup buffer))))))
       (setq request-buffer
             (url-retrieve url
@@ -2116,20 +2330,32 @@ condition list.  Return a cancellable `e-backend-request' handle."
             :provider-id 'anthropic
             :metadata metadata))))
 
-(defun e-anthropic--emit-response-items-with-context (response context on-item)
+(defun e-anthropic--emit-response-items-with-context
+    (response context on-item &optional http-status suppress-progress-p)
   "Parse RESPONSE and emit backend-neutral items through ON-ITEM.
 When CONTEXT has provider cache metadata, emit a provider anchor candidate
-before the terminal success item so the harness can persist the cache state."
+before the terminal success item so the harness can persist the cache state.
+HTTP-STATUS classifies a non-2xx response before Messages decoding.  When
+SUPPRESS-PROGRESS-P is non-nil, progress was already delivered from complete
+SSE events and is not emitted a second time."
   (let ((candidate (e-anthropic--anchor-candidate-item context))
         emitted-candidate)
-    (dolist (item (e-anthropic-parse-stream response))
-      (setq item (e-anthropic--normalize-backend-error-item item))
-      (when (and candidate
-                 (not emitted-candidate)
-                 (eq (plist-get item :type) 'done))
-        (funcall on-item candidate)
-        (setq emitted-candidate t))
-      (funcall on-item item))))
+    (dolist (item (if (and http-status
+                           (not (and (<= 200 http-status)
+                                     (< http-status 300))))
+                      (list (e-anthropic--http-error-item
+                             response http-status))
+                    (e-anthropic-parse-stream response)))
+      (unless (and suppress-progress-p
+                   (memq (plist-get item :type)
+                         '(assistant-delta reasoning-raw-delta)))
+        (setq item (e-anthropic--normalize-backend-error-item item))
+        (when (and candidate
+                   (not emitted-candidate)
+                   (eq (plist-get item :type) 'done))
+          (funcall on-item candidate)
+          (setq emitted-candidate t))
+        (funcall on-item item)))))
 
 (cl-defun e-anthropic--request-context
     (&key provider base-url model messages options)
@@ -2220,12 +2446,13 @@ MODEL is the backend-local default when turn options omit `:model'."
      :start
      (cl-function
       (lambda (&key messages options on-item on-done on-error on-request-start)
-        (let ((context (e-anthropic--request-context
-                        :provider provider
-                        :base-url base-url
-                        :model model
-                        :messages messages
-                        :options options)))
+        (let* ((context (e-anthropic--request-context
+                         :provider provider
+                         :base-url base-url
+                         :model model
+                         :messages messages
+                         :options options))
+               (progress-decoder (e-anthropic--sse-decoder-create)))
           (if request-function
               (let ((cancelled nil) (timer nil) request)
                 (setq request
@@ -2263,28 +2490,38 @@ MODEL is the backend-local default when turn options omit `:model'."
                              (error
                               (when on-error (funcall on-error err))))))))
                 request)
-            (let ((request
-                   (e-anthropic--http-request-start
-                    :url (plist-get context :url)
-                    :headers (plist-get context :headers)
-                    :body (plist-get context :body)
-                    :on-complete
-                    (lambda (response)
-                      (condition-case err
-                          (progn
-                            (e-anthropic--emit-response-items-with-context
-                             response context on-item)
-                            (when on-done (funcall on-done '(:status done))))
-                        (error
-                         (when on-error (funcall on-error err)))))
-                    :on-error on-error)))
-              (setf (e-backend-request-metadata request)
-                    (append (list :provider provider)
-                            (plist-get context :metadata)
-                            (e-backend-request-metadata request)))
-              (when on-request-start
-                (funcall on-request-start request))
-              request))))))))
+            (cl-labels
+                ((complete-response (response &optional http-status)
+                   (condition-case err
+                       (progn
+                         (e-anthropic--emit-response-items-with-context
+                          response context on-item http-status t)
+                         (when on-done
+                           (funcall on-done '(:status done))))
+                     (error
+                      (when on-error
+                        (funcall on-error err))))))
+              (let ((request
+                     (e-anthropic--http-request-start
+                      :url (plist-get context :url)
+                      :headers (plist-get context :headers)
+                      :body (plist-get context :body)
+                      :on-body-chunk
+                      (lambda (chunk _http-status)
+                        (dolist (item
+                                 (e-anthropic--stream-progress-items
+                                  progress-decoder chunk))
+                          (funcall on-item item)))
+                      :on-complete #'complete-response
+                      :on-http-error #'complete-response
+                      :on-error on-error)))
+                (setf (e-backend-request-metadata request)
+                      (append (list :provider provider)
+                              (plist-get context :metadata)
+                              (e-backend-request-metadata request)))
+                (when on-request-start
+                  (funcall on-request-start request))
+                request)))))))))
 
 (cl-defun e-anthropic-create-harness
     (&key provider base-url request-function model sessions)
