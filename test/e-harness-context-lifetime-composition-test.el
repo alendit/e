@@ -110,6 +110,18 @@
       (setq offset (match-end 0)))
     (nreverse markers)))
 
+(defun e-harness-context-lifetime-composition-test--openai-anchor-candidate
+    (options response-id)
+  "Return an OpenAI continuation candidate matching request OPTIONS."
+  (list :type 'provider-anchor-candidate
+        :provider-id 'openai
+        :metadata
+        (list :response-id response-id
+              :prompt-layout-revision
+              (e-openai-responses-prompt-layout-revision options)
+              :reasoning-identity
+              (e-openai-responses-reasoning-identity options))))
+
 (ert-deftest e-harness-test-context-lifetime-tool-bundle-curates-and-forgets ()
   "A normal opted-in tool turn exposes a paired bundle once and keeps its curation."
   (e-harness-test--with-empty-layer-registry
@@ -1656,7 +1668,7 @@
     (should-not (e-session-local-context-curations store "session-1"))))
 
 (ert-deftest e-harness-test-context-lifetime-steering-rebuilds-after-follow-up ()
-  "Steering after a tool follow-up uses the fresh projection exactly once."
+  "Steering after curation acknowledgement uses the fresh projection once."
   (e-harness-test--with-empty-layer-registry
     (let (backend provider capability harness turn-id
           (request-count 0) requests finish-b raw-result curation-input)
@@ -1683,18 +1695,21 @@
                    ((= ordinal 1)
                     (funcall on-item
                              '(:type provider-replay-item
-                               :provider-id fake
-                               :item (:type "steering-replay"
-                                      :id "REPLAY-STEERING")))
+                               :provider-id openai
+                               :full-replay-only t
+                               :item (:type "function_call"
+                                      :call_id "call-steering"
+                                      :name "inspect-steering"
+                                      :arguments
+                                      "{\"marker\":\"REPLAY-STEERING\"}")))
                     (funcall on-item
                              '(:type tool-call
                                :id "call-steering"
                                :name "inspect-steering"
                                :arguments ()))
                     (funcall on-item
-                             '(:type provider-anchor-candidate
-                               :provider-id fake
-                               :metadata (:response-id "resp-A")))
+                             (e-harness-context-lifetime-composition-test--openai-anchor-candidate
+                              options "resp-A"))
                     (funcall on-item '(:type done :reason tool-use))
                     (funcall on-done '(:status done)))
                    ((= ordinal 2)
@@ -1714,14 +1729,21 @@
                                      '(:type assistant-message
                                        :content "B"))
                             (funcall on-item
-                                     '(:type provider-anchor-candidate
-                                       :provider-id fake
-                                       :metadata (:response-id "resp-B")))
+                                     (e-harness-context-lifetime-composition-test--openai-anchor-candidate
+                                      options "resp-B"))
                             (funcall on-item '(:type done :reason stop))
                             (funcall on-done '(:status done)))))
                    ((= ordinal 3)
                     (funcall on-item
                              '(:type assistant-message :content "C"))
+                    (funcall on-item
+                             (e-harness-context-lifetime-composition-test--openai-anchor-candidate
+                              options "resp-C"))
+                    (funcall on-item '(:type done :reason stop))
+                    (funcall on-done '(:status done)))
+                   ((= ordinal 4)
+                    (funcall on-item
+                             '(:type assistant-message :content "D"))
                     (funcall on-item '(:type done :reason stop))
                     (funcall on-done '(:status done)))
                    (t (error "unexpected request %S" ordinal)))
@@ -1748,8 +1770,14 @@
             (e-harness-create
              :backend backend
              :intrinsic-capabilities (list capability)
-             :default-options '(:provider-continuation t
-                                :provider-anchor-provider-id fake)))
+             :default-options '(:model "gpt-test"
+                                :reasoning-effort "high"
+                                :reasoning-summary "auto"
+                                :responses-transport http
+                                :response-store t
+                                :provider-continuation t
+                                :provider-anchor-provider-id openai
+                                :reserved-effect-carrier context-curate-wire)))
       (let ((e-context-lifetime-shadow-projection-enabled t))
         (e-harness-create-session harness :id "session-1")
         (setq turn-id
@@ -1771,8 +1799,10 @@
       (let* ((ordered (nreverse requests))
              (request-b (nth 1 ordered))
              (request-c (nth 2 ordered))
+             (request-d (nth 3 ordered))
              (messages-b (plist-get request-b :messages))
              (messages-c (plist-get request-c :messages))
+             (messages-d (plist-get request-d :messages))
              (curation-message
               (seq-find
                (lambda (message)
@@ -1782,14 +1812,64 @@
              (curation-replay-items
               (plist-get (plist-get curation-message :metadata)
                          :provider-replay-items))
+             (body-b-anchored
+              (e-openai-codex-request-body
+               :messages messages-b
+               :options (plist-get request-b :options)
+               :tools nil))
+             (body-c
+              (e-openai-codex-request-body
+               :messages messages-c
+               :options (plist-get request-c :options)
+               :tools nil))
+             (body-d
+              (e-openai-codex-request-body
+               :messages messages-d
+               :options (plist-get request-d :options)
+               :tools nil))
+             (input-b (append (plist-get body-b-anchored :input) nil))
+             (input-c (append (plist-get body-c :input) nil))
+             (input-d (append (plist-get body-d :input) nil))
+             (tool-follow-up-outputs
+              (seq-filter
+               (lambda (item)
+                 (and (equal (plist-get item :type) "function_call_output")
+                      (equal (plist-get item :call_id) "call-steering")))
+               input-b))
+             (curation-calls
+              (seq-filter
+               (lambda (item)
+                 (and (equal (plist-get item :type) "function_call")
+                      (equal (plist-get item :call_id)
+                             "curation-call-steering")))
+               input-c))
+             (curation-acks
+              (seq-filter
+               (lambda (item)
+                 (and (equal (plist-get item :type) "function_call_output")
+                      (equal (plist-get item :call_id)
+                             "curation-call-steering")))
+               input-c))
+             (request-c-anchor
+              (plist-get (plist-get request-c :options) :provider-anchor))
+             (request-c-anchor-layout
+              (plist-get (plist-get request-c-anchor :metadata)
+                         :prompt-layout-revision))
+             (request-c-layout
+              (e-openai-responses-prompt-layout-revision
+               (plist-get request-c :options)))
              (printed-b (prin1-to-string messages-b))
-             (printed-c (prin1-to-string messages-c)))
-        (should (= request-count 3))
+             (printed-c (prin1-to-string messages-c))
+             (printed-d (prin1-to-string messages-d)))
+        (should (= request-count 4))
         (should (string-match-p raw-result printed-b))
         (should (string-match-p "call-steering" printed-b))
         (should (string-match-p "REPLAY-STEERING" printed-b))
         (should (string-match-p "selected after B" printed-c))
-        (should (string-match-p "steer now" printed-c))
+        (should-not (string-match-p "steer now" printed-c))
+        (should (string-match-p "selected after B" printed-d))
+        (should (string-match-p "steer now" printed-d))
+        (should-not (string-match-p raw-result printed-d))
         (should curation-message)
         (should (equal curation-replay-items
                        (plist-get curation-input :provider-replay-items)))
@@ -1799,9 +1879,40 @@
                         curation-replay-items)
                 '("function_call" "function_call_output")))
         (should (string-match-p "curation-call-steering" printed-c))
+        (should (equal (plist-get body-b-anchored :previous_response_id)
+                       "resp-A"))
+        (should (= (length tool-follow-up-outputs) 1))
+        (should (equal (plist-get (car tool-follow-up-outputs) :output)
+                       raw-result))
+        (should-not (string-match-p "REPLAY-STEERING"
+                                    (prin1-to-string input-b)))
+        (should request-c-anchor)
+        (should-not (equal request-c-anchor-layout request-c-layout))
+        (should-not (plist-get body-c :previous_response_id))
+        (should (= (length curation-calls) 1))
+        (should (= (length curation-acks) 1))
+        (should (equal (plist-get (car curation-acks) :output) ""))
+        (should-not (plist-get (plist-get request-d :options) :provider-anchor))
+        (should-not (plist-get (plist-get request-d :options)
+                               :provider-request-replay-items))
         (dolist (marker (list raw-result "call-steering" "REPLAY-STEERING"
-                               "resp-A" "resp-B"))
-          (should-not (string-match-p marker printed-c)))
+                               "resp-A" "resp-B" "resp-C"
+                               "curation-call-steering"))
+          (should-not (string-match-p marker printed-d)))
+        (should-not (plist-get body-d :previous_response_id))
+        (should (string-match-p raw-result (prin1-to-string body-c)))
+        (should-not (string-match-p "steer now"
+                                    (prin1-to-string body-c)))
+        (should (string-match-p "steer now" (prin1-to-string body-d)))
+        (should (string-match-p "selected after B" (prin1-to-string body-d)))
+        (should-not (string-match-p raw-result (prin1-to-string body-d)))
+        (should-not
+         (seq-some
+          (lambda (item)
+            (and (member (plist-get item :type)
+                         '("function_call" "function_call_output"))
+                 (equal (plist-get item :call_id) "curation-call-steering")))
+          input-d))
         (should-not
          (e-session-local-provider-anchors
           (e-harness-sessions harness) "session-1"))))))

@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-openai-decoder)
 (load (expand-file-name "e-harness-composition-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
@@ -827,10 +828,11 @@ an empty summary\"."
                      'none)))))
 
 (ert-deftest e-harness-test-invalid-curation-does-not-mutate-session ()
-  "Invalid reserved control stops later tools and creates no curation."
+  "Invalid reserved control skips later tools and creates no curation."
   (e-harness-test--with-empty-layer-registry
     (let* ((started nil)
            (request-count 0)
+           recovery-options
            (backend
             (e-backend-create
              :name "invalid-promotion-session"
@@ -840,22 +842,36 @@ an empty summary\"."
                :reserved-effect-carrier context-curate-wire)
              :stream
              (cl-function
-              (lambda (&key on-item &allow-other-keys)
+              (lambda (&key options on-item &allow-other-keys)
                 (cl-incf request-count)
-                (funcall on-item
-                         '(:type tool-call
-                           :id "call-before-invalid-session"
-                           :name "before-invalid-session"
-                           :arguments ()))
-                (funcall on-item
-                         '(:type context-curate
-                           :arguments (:keep [999]
-                                       :summaries [])))
-                (funcall on-item
-                         '(:type tool-call
-                           :id "call-after-invalid-session"
-                           :name "after-invalid-session"
-                           :arguments nil))))))
+                (pcase request-count
+                  (1
+                   (funcall on-item
+                            '(:type tool-call
+                              :id "call-before-invalid-session"
+                              :name "before-invalid-session"
+                              :arguments ()))
+                   (funcall on-item
+                            (e-openai-decoder--context-curation-effect
+                             '(:keep [999] :summaries [])
+                             "invalid-curation-session"))
+                   (funcall on-item
+                            '(:type tool-call
+                              :id "call-after-invalid-session"
+                              :name "after-invalid-session"
+                              :arguments nil))
+                   (funcall on-item
+                            '(:type assistant-message
+                              :content "REJECTED-CURATION-MUST-NOT-PERSIST"))
+                   (funcall on-item '(:type done :reason tool-use)))
+                  (2
+                   (setq recovery-options (copy-tree options))
+                   (funcall on-item
+                            '(:type assistant-message
+                              :content "RECOVERED-INVALID-CURATION"))
+                   (funcall on-item '(:type done :reason stop)))
+                  (_ (error "Unexpected invalid-curation request %d"
+                            request-count)))))))
            (capability
             (e-capability-create
              :id 'invalid-promotion-tools
@@ -884,25 +900,53 @@ an empty summary\"."
              :intrinsic-capabilities (list capability))))
       (let ((e-context-lifetime-shadow-projection-enabled t))
         (e-harness-create-session harness :id "invalid-promotion-session")
-        (should-error
-         (e-harness-test-prompt-batch
-          harness "invalid-promotion-session" "trigger malformed control")
-         :type 'e-context-lifetime-invalid-record))
-      (should (= request-count 1))
-      (should (equal started '("before-invalid-session")))
+        (should
+         (equal
+          (e-harness-test-prompt-batch
+           harness "invalid-promotion-session" "trigger malformed control")
+          '(:status done :reason stop
+            :assistant-content "RECOVERED-INVALID-CURATION"))))
+      (should (= request-count 2))
+      (should-not (member "after-invalid-session" started))
       (should-not
        (e-session-local-context-curations
         (e-harness-sessions harness) "invalid-promotion-session"))
+      (let* ((correction-items
+              (plist-get recovery-options :provider-request-replay-items))
+             (correction-outputs
+              (seq-filter
+               (lambda (item)
+                 (and (equal (plist-get (plist-get item :item) :type)
+                             "function_call_output")
+                      (equal (plist-get (plist-get item :item) :call_id)
+                             "invalid-curation-session")))
+               correction-items))
+             (correction-output (car correction-outputs))
+             (assistant-messages
+              (seq-filter
+               (lambda (message)
+                 (eq (plist-get message :role) 'assistant))
+               (e-harness-messages harness "invalid-promotion-session"))))
+        (should (= (length correction-outputs) 1))
+        (should correction-output)
+        (should
+         (equal (plist-get (plist-get correction-output :item) :output)
+                e-openai-decoder--context-curation-invalid-correction))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               assistant-messages)
+                       '("RECOVERED-INVALID-CURATION"))))
+      (should-not
+       (string-match-p
+        "REJECTED-CURATION-MUST-NOT-PERSIST"
+        (prin1-to-string
+         (e-harness-messages harness "invalid-promotion-session"))))
       (should-not
        (seq-find
         (lambda (message)
           (equal (plist-get (plist-get message :content) :name)
                  "after-invalid-session"))
-        (e-harness-messages harness "invalid-promotion-session")))
-      (should-not
-       (seq-find (lambda (message)
-                 (eq (plist-get message :role) 'assistant))
-                 (e-harness-messages harness "invalid-promotion-session"))))))
+        (e-harness-messages harness "invalid-promotion-session"))))))
 
 (provide 'e-harness-compaction-composition-test)
 

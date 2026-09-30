@@ -551,9 +551,12 @@ schedules it behind the owning session's active commit barrier."
                   (e-loop--clear-provider-compaction-request-state
                    turn-options))))
          (start-request
-          ()
+          (&optional immediate-curation-followup-p)
           (unless (or settled (cancelled))
-            (drain-pending)
+            ;; Drain queued steering after the immediate curation follow-up so
+            ;; it can use a projection rebuilt past the consumed source.
+            (unless immediate-curation-followup-p
+              (drain-pending))
             (let ((request-messages
                    (let ((snapshot (copy-tree turn-messages)))
                      ;; Replay metadata belongs to one provider request.  Keep
@@ -642,6 +645,8 @@ schedules it behind the owning session's active commit barrier."
                   (response-entry-id nil)
                   (pending-tool-call-entry-id nil)
                   (provider-request-causes next-request-causes)
+                  (provider-request-curation-followup-p
+                   immediate-curation-followup-p)
                   (provider-request-projection-identity
                    (plist-get turn-options
                               :continuation-projection-identity))
@@ -1009,7 +1014,9 @@ schedules it behind the owning session's active commit barrier."
                           (stage-curation-rejection)
                         (attach-pending-provider-replay-items))
                       (promote-provider-anchor)
-                      (start-request)))
+                      (start-request
+                       (or response-curation-effects
+                           response-curation-rejection))))
                   (maybe-start-curation-rejection-followup
                     ()
                     (when (and provider-done
@@ -1021,7 +1028,7 @@ schedules it behind the owning session's active commit barrier."
                       (setq followup-started t)
                       (stage-curation-rejection)
                       (promote-provider-anchor t)
-                      (start-request)))
+                      (start-request t)))
                    (duplicate-curation-opportunity-p
                     ()
                     (and
@@ -1081,7 +1088,7 @@ schedules it behind the owning session's active commit barrier."
                             ;; The duplicate response id is valid only for its
                             ;; matching immediate corrective output.
                             (promote-provider-anchor t)
-                            (start-request)))
+                            (start-request t)))
                       (e-context-lifetime-invalid-record
                       (setq response-curation-rejection err
                             response-curation-effects nil
@@ -1133,7 +1140,7 @@ schedules it behind the owning session's active commit barrier."
                         ;; acknowledgement continuation, even when the frame
                         ;; makes it unsafe as a durable anchor.
                         (promote-provider-anchor t)
-                        (start-request))))
+                        (start-request t))))
                    (current-tool-p
                     (token)
                     (and (listp active-tool)
@@ -1185,7 +1192,7 @@ schedules it behind the owning session's active commit barrier."
                     (stage-curation-rejection)
                     (setq followup-started t)
                     (promote-provider-anchor t)
-                    (start-request))
+                    (start-request t))
                    (handle-carrier-terminal-response
                     ()
                     (cond
@@ -1220,7 +1227,7 @@ schedules it behind the owning session's active commit barrier."
                                 (setq last-curated-lifetime-frame
                                       provider-request-lifetime-frame)
                                 (promote-provider-anchor t)
-                                (start-request))
+                                (start-request t))
                             (maybe-start-curation-followup)))))
                      (tool-called
                       (when (response-commentary-p)
@@ -1684,6 +1691,7 @@ schedules it behind the owning session's active commit barrier."
                               (let ((immediate-only-p
                                      (or tool-called
                                          response-curation-effects
+                                         provider-request-curation-followup-p
                                          (plist-member
                                           provider-request-options
                                           :provider-request-replay-items))))
@@ -1845,7 +1853,8 @@ schedules it behind the owning session's active commit barrier."
                                                  (setq followup-started t)
                                                  (promote-provider-anchor
                                                   (and response-curation-effects t))
-                                                 (start-request))
+                                                 (start-request
+                                                  (and response-curation-effects t)))
                                                 ((string-empty-p
                                                   (or (response-text) ""))
                                                  (if response-curation-effects
