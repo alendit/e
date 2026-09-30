@@ -486,13 +486,18 @@ Anthropic requires an object; canonical nil is its empty object."
 
 (defun e-anthropic--tool-result-presentation-blocks
     (messages result-markers)
-  "Return marker and tool_result blocks for result MESSAGES.
+  "Return tool_result blocks for result MESSAGES with any paired markers.
 RESULT-MARKERS maps each marked tool result to its request-local marker."
   (let (blocks)
     (dolist (message messages)
-      (when-let* ((marker (gethash message result-markers)))
-        (push (e-anthropic--text-block (plist-get marker :content)) blocks))
-      (push (e-anthropic--tool-result-block message) blocks))
+      (let ((block (e-anthropic--tool-result-block message)))
+        (when-let* ((marker (gethash message result-markers)))
+          (setq block
+                (plist-put
+                 block :content
+                 (vector (e-anthropic--text-block (plist-get marker :content))
+                         (e-anthropic--text-block (plist-get block :content))))))
+        (push block blocks)))
     (nreverse blocks)))
 
 (defun e-anthropic--message (message)

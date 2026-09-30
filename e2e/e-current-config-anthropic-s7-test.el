@@ -24,6 +24,7 @@
 (require 'e-harness-registry)
 (require 'e-layers)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-tools)
 
 (load (expand-file-name
@@ -381,6 +382,19 @@ tool schema is a different prefix and must not be compared with open requests."
             (or (plist-get (plist-get event :payload) key) 0))
           events)))
 
+(defun e-current-config-anthropic-s7--curations (harness session-id)
+  "Return durable curation promotions through a bounded SQLite read."
+  (delq nil
+        (mapcar
+         (lambda (entry)
+           (plist-get (plist-get entry :value) :promotion))
+         (plist-get
+          (e-chat-sql-e2e--await
+           (e-session-async-record-page
+            (e-harness-sessions harness) session-id
+            :record-type "context-curation-package" :limit 20))
+          :records))))
+
 (defun e-current-config-anthropic-s7--utc-now ()
   "Return the current time in explicit UTC form."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
@@ -593,8 +607,8 @@ tool schema is a different prefix and must not be compared with open requests."
                                 body))))
                        bodies))
                      (curations
-                      (e-session-local-context-curations
-                       (e-harness-sessions harness) session-id))
+                      (e-current-config-anthropic-s7--curations
+                       harness session-id))
                      (curation-record (car (last curations)))
                      (curation-items
                       (plist-get curation-record :items))
