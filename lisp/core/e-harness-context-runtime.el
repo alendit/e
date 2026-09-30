@@ -449,7 +449,7 @@ CONTEXT-PURPOSE defaults to `turn'."
                        :first-kept-entry-id
                        (plist-get compaction :first-kept-entry-id))))
     (e-harness-context-runtime--context-observation-frontier
-     context capability-context)
+     context context-capabilities)
     (e-harness-context-runtime--context-with-segment-message-boundary context)
     ;; Anchor selection still needs additional detached relational fields.
     ;; Fail inside this asynchronous request instead of reaching a synchronous

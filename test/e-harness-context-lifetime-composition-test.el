@@ -79,23 +79,24 @@
 
 (defun e-harness-context-lifetime-composition-test--anthropic-tool-result-marker
     (body tool-use-id)
-  "Return BODY's text marker immediately before TOOL-USE-ID's result."
+  "Return BODY's source marker inside TOOL-USE-ID's result."
   (seq-some
    (lambda (message)
-     (let* ((blocks (append (plist-get message :content) nil))
-            (result-index
-             (cl-position-if
-              (lambda (block)
-                (and (equal (plist-get block :type) "tool_result")
-                     (equal (plist-get block :tool_use_id) tool-use-id)))
-              blocks)))
-       (when (and result-index (> result-index 0))
-         (let ((marker (nth (1- result-index) blocks)))
-           (and (equal (plist-get marker :type) "text")
-                (string-match-p
-                 "\\[ephemeral context source [0-9]+,"
-                 (plist-get marker :text))
-                (plist-get marker :text))))))
+     (seq-some
+      (lambda (block)
+        (when (and (equal (plist-get block :type) "tool_result")
+                   (equal (plist-get block :tool_use_id) tool-use-id))
+          (seq-some
+           (lambda (content)
+             (let ((text (plist-get content :text)))
+               (and (equal (plist-get content :type) "text")
+                    (stringp text)
+                    (string-match-p
+                     "\\[ephemeral context source [0-9]+,"
+                     text)
+                    text)))
+           (append (plist-get block :content) nil))))
+      (append (plist-get message :content) nil)))
    (append (plist-get body :messages) nil)))
 
 (defun e-harness-context-lifetime-composition-test--source-markers (body)
@@ -325,6 +326,39 @@
     (should (= (length messages) (length message-entry-ids)))
     (should-not (plist-member (plist-get projected :options)
                               :message-entry-ids))))
+
+(ert-deftest e-harness-test-detached-context-retains-backend-capabilities ()
+  "SQLite context construction carries backend curation and cache capabilities."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((e-context-lifetime-shadow-projection-enabled t)
+           (store (e-session-store-create))
+           (backend
+            (e-backend-create
+             :name "detached-capabilities"
+             :context-capabilities
+             '(:reserved-effect-carrier context-curate-wire
+               :prefix-cache explicit
+               :observation-delivery request-local-replaceable)))
+           (harness (e-harness-create :backend backend :sessions store))
+           (session-id "detached-capabilities")
+           (path '(:messages ((:id "intent" :type message :role user
+                              :content "Inspect the source."))
+                   :message-path-indexes (0)
+                   :context-records nil
+                   :current-head-id "intent")))
+      (e-harness-create-session harness :id session-id)
+      (let* ((context
+              (e-harness-context-runtime--detached-context
+               harness session-id "turn-detached" path))
+             (options (plist-get context :options))
+             (capabilities (plist-get options :context-capabilities)))
+        (should (eq (plist-get capabilities :reserved-effect-carrier)
+                    'context-curate-wire))
+        (should (eq (plist-get capabilities :prefix-cache) 'explicit))
+        (should (eq (plist-get options :context-lifetime-enabled) t))
+        (should
+         (e-harness-context-runtime--context-curation-carrier-active-p
+          context))))))
 
 (ert-deftest e-harness-test-turn-context-message-identities-reach-loop-and-refresh ()
   "The turn owner forwards identity vectors outside backend options."
@@ -1231,8 +1265,11 @@
                   '("toolu-inspect-frame-b" "toolu-curate-frame-a")))
           (should
            (equal (plist-get (car result-blocks) :content)
-                  (concat "FRAME-B-RAW-TOOL-RESULT "
-                          (make-string 240 ?b))))
+                  (vector
+                   (list :type "text" :text frame-b-marker)
+                   (list :type "text"
+                         :text (concat "FRAME-B-RAW-TOOL-RESULT "
+                                       (make-string 240 ?b))))))
           (should (equal (plist-get (cadr result-blocks) :content)
                          "Curation applied.")))
         (should b-curation-assistant)

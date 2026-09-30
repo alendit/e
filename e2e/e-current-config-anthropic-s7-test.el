@@ -409,6 +409,7 @@ tool schema is a different prefix and must not be compared with open requests."
 (defun e-current-config-anthropic-s7--request-summary (record)
   "Return a content-free evidence summary for captured REQUEST RECORD."
   (let* ((body (plist-get record :body))
+         (body-text (prin1-to-string body))
          (checkpoint
           (e-current-config-anthropic-s7--cache-checkpoint body))
          (thinking (plist-get body :thinking))
@@ -423,6 +424,18 @@ tool schema is a different prefix and must not be compared with open requests."
           :response-events (plist-get record :response-events)
           :response-shapes (plist-get record :response-shapes)
           :failure-class (plist-get record :failure-class)
+          :scenario-markers
+          (list :r2-prompt (and (string-match-p "LIVE-S7-R2-READY" body-text) t)
+                :curation-marker
+                (and (string-match-p
+                      (regexp-quote "[ephemeral context source") body-text)
+                     t)
+                :initial-source
+                (and (string-match-p "F97-S7-CURRENT-INITIAL-" body-text) t)
+                :omitted-source
+                (and (string-match-p "F97-S7-OMIT-" body-text) t)
+                :tool-output
+                (and (string-match-p "F97-S7-TOOL-" body-text) t))
           :options
           (list :model (plist-get body :model)
                 :max-tokens (plist-get body :max_tokens)
@@ -532,6 +545,9 @@ tool schema is a different prefix and must not be compared with open requests."
          (first-pair-index nil)
          (second-pair-index nil)
          (failure-class nil)
+         (tool-option-trace nil)
+         (native-tool-definitions
+          (symbol-function 'e-anthropic--request-tool-definitions))
          (native-start (symbol-function 'e-anthropic--http-request-start)))
     (unwind-protect
         (condition-case condition
@@ -567,7 +583,23 @@ tool schema is a different prefix and must not be compared with open requests."
                      :session-id session-id))
               (let ((e-current-config-anthropic-s7--tool-output tool-output))
                 (cl-letf
-                    (((symbol-function 'e-anthropic--http-request-start)
+                    (((symbol-function 'e-anthropic--request-tool-definitions)
+                      (lambda (tools options)
+                        (push (list :carrier-present
+                                    (and (plist-member options
+                                                       :reserved-effect-carrier)
+                                         t)
+                                    :carrier
+                                    (plist-get options :reserved-effect-carrier)
+                                    :capability-carrier
+                                    (plist-get
+                                     (plist-get options :context-capabilities)
+                                     :reserved-effect-carrier)
+                                    :lifetime-enabled
+                                    (plist-get options :context-lifetime-enabled))
+                              tool-option-trace)
+                        (funcall native-tool-definitions tools options)))
+                     ((symbol-function 'e-anthropic--http-request-start)
                       (lambda (&rest arguments)
                         (apply #'e-current-config-anthropic-s7--capture-http-start
                                native-start capture-state arguments))))
@@ -810,6 +842,7 @@ tool schema is a different prefix and must not be compared with open requests."
                :failure-detail failure-detail
                :request-count (length ordered-requests)
                :requests request-summaries
+               :tool-option-trace (reverse tool-option-trace)
                :repo-head (getenv "E_CURRENT_CONFIG_F97_REPO_HEAD")
                :doom-config-org-sha256
                (getenv "E_CURRENT_CONFIG_F97_DOOM_ORG_SHA256")
