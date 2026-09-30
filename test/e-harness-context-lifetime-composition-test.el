@@ -939,13 +939,16 @@
                 (should-not (e-session-local-entry-by-id reopened fork-id control-id)))))
       (delete-directory directory t)))))
 
-(ert-deftest e-harness-test-anthropic-mixed-curation-composes-across-frames ()
-  "Messages composes mixed frame-A curation, frame-B curation, and a fresh turn."
+(defun e-harness-context-lifetime-composition-test--anthropic-mixed-curation
+    (compact-assistant-p)
+  "Exercise mixed Messages curation, optionally compacting its assistant."
   (e-harness-test--with-empty-layer-registry
     (let* ((request-count 0)
            (requests nil)
            (events nil)
            (source-phase 'frame-a)
+           (store (e-session-store-create))
+           (session-id "anthropic-composed-curation")
            (frame-b-label nil)
            (frame-b-marker nil)
            (process-environment
@@ -1039,16 +1042,36 @@
                  :handler
                  (lambda (_arguments)
                    (setq source-phase 'after-frame-a)
-                   (e-tools-result-create
-                    (plist-get (e-tools-current-context) :tool-call)
-                    'ok
-                    (concat "FRAME-B-RAW-TOOL-RESULT "
-                            (make-string 240 ?b))
-                    '(:refresh-context t))))))))
+                   (let ((result
+                          (e-tools-result-create
+                           (plist-get (e-tools-current-context) :tool-call)
+                           'ok
+                           (concat "FRAME-B-RAW-TOOL-RESULT "
+                                   (make-string 240 ?b))
+                           '(:refresh-context t))))
+                     (when compact-assistant-p
+                       (let ((entry
+                              (seq-find
+                               (lambda (candidate)
+                                 (and
+                                  (eq (plist-get candidate :role) 'tool-call)
+                                  (equal
+                                   (plist-get
+                                    (plist-get candidate :content) :id)
+                                   "toolu-inspect-frame-b")))
+                               (reverse
+                                (e-session-local-current-path
+                                 store session-id)))))
+                         (unless entry
+                           (error "Expected current inspect-source call"))
+                         (e-session-append-compaction
+                          store session-id "Compacted before the tool result"
+                          :first-kept-entry-id (plist-get entry :id))))
+                     result)))))))
            (harness (e-harness-create
                      :backend backend
-                     :intrinsic-capabilities (list capability)))
-           (session-id "anthropic-composed-curation"))
+                     :sessions store
+                     :intrinsic-capabilities (list capability))))
       (e-harness-create-session harness :id session-id)
       (e-harness-activity-subscribe
        harness (lambda (event) (setq events (append events (list event))))
@@ -1263,10 +1286,19 @@
                   :source-stubs
                   ((:disposition erased :source-kind "tool-result"
                     :tool-name "inspect-source")))))
-        (should (string-match-p "FRAME-A-KEPT-RAW" body-fresh-text))
-        (should (string-match-p "FRAME-A-CURATED-SUMMARY" body-fresh-text))
+        (unless compact-assistant-p
+          (should (string-match-p "FRAME-A-KEPT-RAW" body-fresh-text))
+          (should (string-match-p "FRAME-A-CURATED-SUMMARY" body-fresh-text)))
         (should-not (string-match-p "FRAME-A-OMITTED-RAW" body-fresh-text))
         (should-not (string-match-p "FRAME-B-RAW-TOOL-RESULT" body-fresh-text))))))
+
+(ert-deftest e-harness-test-anthropic-mixed-curation-composes-across-frames ()
+  "Messages composes mixed frame-A curation, frame-B curation, and a fresh turn."
+  (e-harness-context-lifetime-composition-test--anthropic-mixed-curation nil))
+
+(ert-deftest e-harness-test-anthropic-mixed-curation-after-compaction ()
+  "Messages replays a mixed response after compaction removes its assistant."
+  (e-harness-context-lifetime-composition-test--anthropic-mixed-curation t))
 
 (ert-deftest e-harness-test-invalid-curation-returns-provider-error-before-append ()
   "Rejected mixed calls recover without entering session or branch history."

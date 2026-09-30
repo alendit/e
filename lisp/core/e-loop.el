@@ -602,6 +602,7 @@ schedules it behind the owning session's active commit barrier."
                   (pending-provider-replay-items nil)
                   (pending-provider-replay-response-id nil)
                   (pending-provider-replay-assistant-entry-id nil)
+                  (pending-provider-replay-assistant-omitted-p nil)
                   (pending-provider-corrective-replay-items nil)
                   (pending-provider-invalid-replay-items nil)
                   (provider-followup-messages nil)
@@ -976,7 +977,8 @@ schedules it behind the owning session's active commit barrier."
                                      :provider-replay-items
                                      (copy-tree pending-provider-replay-items)))
                               (cl-remf metadata :provider-replay-response-id)
-                              (when pending-provider-replay-response-id
+                              (when (and pending-provider-replay-response-id
+                                         (not pending-provider-replay-assistant-omitted-p))
                                 (setq metadata
                                       (plist-put
                                        metadata
@@ -1193,11 +1195,12 @@ schedules it behind the owning session's active commit barrier."
                               (list role
                                     (plist-get content :tool-call-id)))))))
                    (restore-provider-replay-assistant-correlation
-                    ()
+                    (projection bundle)
                     ;; A context refresh rebuilds this request from durable
-                    ;; messages without entry IDs. Restore the wire-only
-                    ;; correlation on the assistant selected by the aligned
-                    ;; request-local identity map.
+                    ;; messages without entry IDs. The aligned identity map
+                    ;; identifies a retained assistant; a compaction whose
+                    ;; kept boundary is this response's tool call proves that
+                    ;; the assistant is absent from the refreshed request.
                     (when (and pending-provider-replay-response-id
                                pending-provider-replay-assistant-entry-id
                                turn-message-entry-ids)
@@ -1210,26 +1213,48 @@ schedules it behind the owning session's active commit barrier."
                                  (aref turn-message-entry-ids index)
                                  pending-provider-replay-assistant-entry-id)
                             (push index matches)))
-                        (unless (= (length matches) 1)
-                          (error "Replay assistant entry ID is not unique"))
-                        (let* ((index (car matches))
-                               (message (nth index turn-messages)))
-                          (unless (eq (plist-get message :role) 'assistant)
-                            (error "Replay entry ID maps to a non-assistant"))
-                          (unless (equal
-                                   (plist-get (plist-get message :metadata)
-                                              :provider-replay-response-id)
-                                   pending-provider-replay-response-id)
-                            (let* ((request-message (copy-tree message))
-                                   (metadata (copy-tree
-                                              (plist-get message :metadata))))
-                              (setq metadata
-                                    (plist-put
-                                     metadata :provider-replay-response-id
-                                     pending-provider-replay-response-id))
-                              (plist-put request-message :metadata metadata)
-                              (setcar (nthcdr index turn-messages)
-                                      request-message)))))))
+                        (pcase (length matches)
+                          (0
+                           (let ((boundary-id
+                                  (plist-get
+                                   (plist-get projection
+                                              :provider-anchor-compaction-boundary)
+                                   :first-kept-entry-id)))
+                             (unless
+                                 (and boundary-id
+                                      (seq-some
+                                       (lambda (message)
+                                         (and (eq (plist-get message :role)
+                                                  'tool-call)
+                                              (equal (plist-get message :id)
+                                                     boundary-id)))
+                                       bundle))
+                               (error "Replay assistant entry ID is absent without covering compaction"))
+                             (setq pending-provider-replay-assistant-omitted-p
+                                   t)))
+                          (1
+                           (setq pending-provider-replay-assistant-omitted-p
+                                 nil)
+                           (let* ((index (car matches))
+                                  (message (nth index turn-messages)))
+                             (unless (eq (plist-get message :role) 'assistant)
+                               (error "Replay entry ID maps to a non-assistant"))
+                             (unless (equal
+                                      (plist-get (plist-get message :metadata)
+                                                 :provider-replay-response-id)
+                                      pending-provider-replay-response-id)
+                               (let* ((request-message (copy-tree message))
+                                      (metadata (copy-tree
+                                                 (plist-get message :metadata))))
+                                 (setq metadata
+                                       (plist-put
+                                        metadata :provider-replay-response-id
+                                        pending-provider-replay-response-id))
+                                 (plist-put request-message :metadata metadata)
+                                 (setcar (nthcdr index turn-messages)
+                                         request-message)))))
+                          (_
+                           (error "Replay assistant entry ID is not unique"))))))
                    (curation-buffering-enabled-p
                     ()
                     ;; The wire definition is request-scoped, but buffering
@@ -1405,26 +1430,30 @@ schedules it behind the owning session's active commit barrier."
                                        :refresh-context)
                         (cond
                          (refresh-context
-                          (apply-context-refresh (funcall refresh-context))
-                          (when (lifetime-projection-enabled-p)
-                            (merge-provider-followup-bundle
-                             provider-followup-bundle)
-                            (restore-provider-replay-assistant-correlation))
+                          (let ((projection (funcall refresh-context)))
+                            (apply-context-refresh projection)
+                            (when (lifetime-projection-enabled-p)
+                              (merge-provider-followup-bundle
+                               provider-followup-bundle)
+                              (restore-provider-replay-assistant-correlation
+                               projection provider-followup-bundle)))
                           (setq context-refreshed-p t))
                          (refresh-messages
                           ;; Compatibility for callers that have not yet
                           ;; adopted the atomic projection contract.
-                          (apply-context-refresh
-                           (list :messages (funcall refresh-messages)
-                                 :options turn-options
-                                 :segments (plist-get turn-options :segments)
-                                 :observation-frontier
-                                 (plist-get turn-options
-                                            :observation-frontier)))
-                          (when (lifetime-projection-enabled-p)
-                            (merge-provider-followup-bundle
-                             provider-followup-bundle)
-                            (restore-provider-replay-assistant-correlation))
+                          (let ((projection
+                                 (list :messages (funcall refresh-messages)
+                                       :options turn-options
+                                       :segments (plist-get turn-options :segments)
+                                       :observation-frontier
+                                       (plist-get turn-options
+                                                  :observation-frontier))))
+                            (apply-context-refresh projection)
+                            (when (lifetime-projection-enabled-p)
+                              (merge-provider-followup-bundle
+                               provider-followup-bundle)
+                              (restore-provider-replay-assistant-correlation
+                               projection provider-followup-bundle)))
                           (setq context-refreshed-p t))))
                       ;; Refresh is a whole request projection.  Capture the
                       ;; tool/result bundle after it so a refreshed current
