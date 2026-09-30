@@ -109,6 +109,7 @@
                        :body body
                        :status nil
                        :response-events nil
+                       :response-shapes nil
                        :response-event-count nil
                        :response-bytes nil
                        :failure-class nil))
@@ -129,14 +130,32 @@
           (plist-put
            arguments :on-complete
            (lambda (response)
-             (let* ((events
+             (let* ((parsed-events
                      (condition-case condition
-                         (mapcar (lambda (event) (plist-get event :type))
-                                 (e-anthropic--sse-data response))
-                       (error (list (car-safe condition)))))
+                         (e-anthropic--sse-data response)
+                       (error (list (list :type (car-safe condition))))))
+                    (events (mapcar (lambda (event) (plist-get event :type))
+                                    parsed-events))
+                    (shapes
+                     (mapcar
+                      (lambda (event)
+                        (let ((block (plist-get event :content_block)))
+                          (list (plist-get event :type)
+                                (plist-get event :index)
+                                (plist-get block :type)
+                                (plist-get (plist-get event :delta) :type)
+                                (and (plist-member block :signature)
+                                     (if (equal (plist-get block :signature) "")
+                                         'empty 'present)))))
+                      parsed-events))
                     (count (length events)))
                (setf (plist-get record :response-bytes) (length response)
                      (plist-get record :response-event-count) count
+                     (plist-get record :response-shapes)
+                     (if (> count 40)
+                         (append (seq-take shapes 30)
+                                 '(("...")) (last shapes 10))
+                       shapes)
                      (plist-get record :response-events)
                      (if (> count 40)
                          (append (seq-take events 30)
@@ -397,6 +416,7 @@ tool schema is a different prefix and must not be compared with open requests."
           :response-bytes (plist-get record :response-bytes)
           :response-event-count (plist-get record :response-event-count)
           :response-events (plist-get record :response-events)
+          :response-shapes (plist-get record :response-shapes)
           :failure-class (plist-get record :failure-class)
           :options
           (list :model (plist-get body :model)

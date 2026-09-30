@@ -1930,7 +1930,9 @@ errors are surfaced as `backend-error' items because gateways can return those
                         (let ((thinking (plist-get delta :thinking)))
                           (unless (and (equal block-type "thinking")
                                        (stringp thinking)
-                                       (not (plist-member block :signature)))
+                                       (or (not (plist-member block :signature))
+                                           (equal (plist-get block :signature)
+                                                  "")))
                             (reject
                              "thinking delta does not match its content block"
                              event))
@@ -1956,7 +1958,9 @@ errors are surfaced as `backend-error' items because gateways can return those
                                        (not (string-empty-p thinking))
                                        (stringp signature)
                                        (not (string-empty-p signature))
-                                       (not (plist-member block :signature)))
+                                       (or (not (plist-member block :signature))
+                                           (equal (plist-get block :signature)
+                                                  "")))
                             (reject "signature delta is malformed or misplaced"
                                     event))
                           (entry-set index entry :block

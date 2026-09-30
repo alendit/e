@@ -1626,6 +1626,35 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                      :signature "sig-native-0")))
     (should (eq (plist-get (car (last items)) :type) 'done))))
 
+(ert-deftest e-anthropic-test-parse-empty-thinking-signature-placeholder ()
+  "A streamed thinking block can begin with an empty signature placeholder."
+  (let* ((events (copy-tree e-anthropic-test--signed-two-tool-events))
+         (start (cadr events))
+         (block (plist-get start :content_block))
+         (items
+          (progn
+            (plist-put block :signature "")
+            (e-anthropic-parse-stream
+             (e-anthropic-test--sse-stream events))))
+         (replay
+          (seq-find (lambda (item)
+                      (eq (plist-get item :type) 'provider-replay-item))
+                    items)))
+    (should (equal (plist-get (plist-get replay :item) :signature)
+                   "sig-native-0"))
+    (should (= (cl-count 'tool-call
+                         (mapcar (lambda (item) (plist-get item :type))
+                                 items))
+               2))
+    (should (eq (plist-get (car (last items)) :type) 'done))))
+
+(ert-deftest e-anthropic-test-parse-rejects-preset-thinking-signature-with-deltas ()
+  "A nonempty start signature cannot be overwritten by later deltas."
+  (let* ((events (copy-tree e-anthropic-test--signed-two-tool-events))
+         (start (cadr events)))
+    (plist-put (plist-get start :content_block) :signature "premature")
+    (e-anthropic-test--assert-invalid-tool-response events)))
+
 (ert-deftest e-anthropic-test-replay-correlation-mismatch-is-rejected ()
   "Equal assistant text cannot replace an exact native replay identity."
   (let* ((parsed
