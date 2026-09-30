@@ -4,20 +4,26 @@
 * Status
 
 =In-review=.  Independent plan review reached
-=implementation-plan-fixed-point= at the plan identity recorded in
-[[file:plan-review-03.org][Plan Review 03]].  Feature 88 remains the authority
-for provider-neutral context lifetime and =context-curate-v8=; this feature
-adds a native Anthropic Messages carrier and tests its composition.  The user's
-running Emacs and provider configuration are unchanged.
+=implementation-plan-fixed-point= for DP1--DP6 in
+[[file:plan-review-03.org][Plan Review 03]] and for the operator's normal-chat
+default amendment, DP7, in [[file:plan-review-04.org][Plan Review 04]].  All seven
+packages are implemented.  The independent implementation review found no
+actionable C07/DP7 or final frame-handoff defect.  The private current-Doom
+default composition passes; a live signed-thinking tool call has not been
+observed for the separate =F97-S6a= replay witness.  Feature 88 remains the
+authority for provider-neutral context lifetime and =context-curate-v8=.  The
+user's running Emacs is unchanged.
 
 * Behavioral goal
 
 - Goal ID :: =F97-ANTHROPIC-COMPOSED-TURN=.
-- Behavioral goal :: A user can select an accessible Claude 5.5 Messages model
-  through the engineering gateway, use ordinary tools and model-directed
-  ephemeral-source curation, continue with valid Anthropic tool history, and
-  reuse a stable prompt-cache prefix without changing what the model sees.
-- Direct scenario :: Select the gateway's =claude-opus-5-5=.  Present stable
+- Behavioral goal :: A user's normal chat starts on the accessible gateway
+  =claude-opus-5-5= Messages model, uses ordinary tools and model-directed
+  ephemeral-source curation, continues with valid Anthropic tool history, and
+  reuses a stable prompt-cache prefix without changing what the model sees.
+- Direct scenario :: Open normal chat from the current Doom configuration and
+  verify its default harness selects the gateway's exact =claude-opus-5-5=.
+  Present stable
   instructions and a changing ephemeral source.  The model calls an ordinary
   tool, then uses =context-curate= to keep one source and omit another.  The
   immediate follow-up contains the exact signed thinking/tool blocks required
@@ -28,16 +34,19 @@ running Emacs and provider configuration are unchanged.
 - Product authority :: The user/operator through Feature 97.  A proposed
   change to curation meaning, labels, limits, or durability returns to Feature
   88's owning contract before this adapter plan changes.
-- Owning contracts :: =F97-C01=--=F97-C06= below.
-- Behavioral status :: The injected real-Anthropic =F97-S4= composition passes.
-  The configured Opus 5.5 gateway composition and final cache, streaming, and
-  cancellation probes remain unverified on the accepted revision.
-- Mechanism status :: In progress.  =F97-DP1= is parent-accepted at
+- Owning contracts :: =F97-C01=--=F97-C07= below.
+- Behavioral status :: The injected real-Anthropic =F97-S4= composition and
+  configured Opus 5.5 =F97-S6b= and current-Doom =F97-S7= gateway compositions
+  pass.  Native tool/curation pairs, fresh-turn omission, and stable-prefix
+  cache write/read were observed on the current implementation revision.
+- Mechanism status :: =F97-DP1= is parent-accepted at
   =6a5f7155=, =F97-DP2= at =a077b513=, =F97-DP3= at =d3b773ca=,
   =F97-DP4= at =c656136c=, =F97-DP5= at =bda84391=, and =F97-DP6=
   at =246c84ce=.  DP4's recovery is recorded in
   [[file:implementation-rebaseline-01.org][Implementation Rebaseline 01]].
-  Independent implementation review and exact-revision external evidence remain.
+  DP7 is implemented in the repository and the user's committed Doom
+  configuration.  The independent incremental review cleared DP7 and the
+  same-turn frame fix on =8768dc6a=.  The full suite passed 2,839/2,839 there.
 
 Here a /semantic checkpoint/ means Feature 88's durable, provider-neutral
 context boundary.  An Anthropic /cache checkpoint/ is a =cache_control= marker
@@ -86,7 +95,8 @@ separate bounded Messages requests for =claude-opus-5-5= and
 =claude-sonnet-5-5= each returned HTTP 200 with the matching response model.
 Both catalog records still omitted =max_input_tokens=.  These minimal requests
 did not exercise streaming, curation, cache reuse, or the configured =e=
-scenario; =F97-S6a= and =F97-S6b= remain separate final probes.
+scenario.  The later =F97-S6a=, =F97-S6b=, and =F97-S7= probes are recorded
+in [[file:review.org][the implementation review]].
 
 The Opus 5.5 catalog records omitted input/output limits, and this credential
 received HTTP 401 from the single-model metadata endpoint.  Public Anthropic
@@ -95,7 +105,7 @@ unknown.  Do not put 1M into =e='s budget table on that evidence alone.
 
 | Area | 2026-09-29 source evidence | Consequence |
 |------+-------------------------+-------------|
-| Model selection | =lisp/adapters/anthropic/e-anthropic.el:152= defaults to Opus 4.8; =e2e/e-e2e-config-anthropic.el:25= also selects 4.8.  The local Doom Opus profile selects =claude-opus-5=, which the direct gateway probe denied with HTTP 403.  Standard Doom chat currently uses GPT-6. | Opus 5.5 must be selected deliberately in Anthropic profiles and tests; changing standard chat is a separate decision. |
+| Model selection | =lisp/adapters/anthropic/e-anthropic.el:152= defaults to Opus 4.8; =e2e/e-e2e-config-anthropic.el:25= also selects 4.8.  The local Doom Opus profile selects =claude-opus-5=, which the direct gateway probe denied with HTTP 403.  Standard Doom chat currently uses GPT-6. | Opus 5.5 must be selected deliberately in Anthropic profiles and tests.  The operator made the separate normal-chat default decision on 2026-09-30; DP7 owns it. |
 | Context capability | =e-anthropic-backend-create= supplies no =:context-capabilities=; =e-backend= therefore returns conservative defaults. | The harness cannot offer Anthropic the reserved curation effect or claim native prefix caching. |
 | Native replay | =e-anthropic-parse-stream= emits text, raw-thinking deltas, and tool calls but discards signed thinking blocks and their ordered content-block envelope; =e-anthropic--message= reconstructs bare =tool_use= messages. | A tool-result follow-up can lose the unchanged signed thinking blocks required by Messages. |
 | Cache layout | =e-anthropic--system-blocks-from-segments= rebuilds the system field only from =:segments= when explicit caching is on.  A local request-shape probe dropped a late ephemeral-source marker. | The cache option can change semantic input and make curation labels invisible. |
@@ -115,12 +125,13 @@ they preserve the observable result.
 
 | ID | Observable contract | Semantic owner | Establishing package | Deterministic evidence | External compatibility evidence | Status |
 |----+---------------------+----------------+----------------------+------------------------+---------------------------------+--------|
-| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is neither exposed as available nor silently aliased while the team receives access denial; it can be activated after independent catalog and Messages success.  Existing usable Opus 4.8 and Sonnet 5 profiles remain selectable, and the standard GPT-6 chat default does not change as part of this feature. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests, E2E profile selection, and no default-chat change | Fresh gateway catalog plus bounded Messages probe for each activated ID | Accepted |
+| =F97-C01= | An accessible gateway Opus 5.5 profile selects the exact catalog ID and supported Messages options.  Sonnet 5.5 is separately selectable after independent catalog and Messages success, without aliasing another model.  Existing Opus 4.8 and Sonnet 5 profiles remain selectable.  Normal-chat default selection belongs to =F97-C07=. | Anthropic profile/configuration | =F97-DP6= | Exact request-body/profile tests and isolated E2E profile selection | Fresh gateway catalog plus bounded Messages probe for each activated ID | Accepted |
 | =F97-C02= | Provider usage reports full context input as fresh + cache-read + cache-creation input while preserving each original billing counter.  An absent gateway model limit is represented as unknown, so status and auto-compaction do not assume an unproved window. | Anthropic usage decoder and core context budget; catalog adapter owns model metadata | =F97-DP1= | Cache-hit fixture 17 + 4,802 = 4,819; budget/status and missing-limit fixtures | Gateway counter and model-metadata observations | Accepted |
 | =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing terminal completion or missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Accepted |
 | =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message in order, and presents each late ephemeral marker paired with its matching source, including each tool result, with caching on or off.  A changing suffix leaves the stable prefix unchanged.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment and marker meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker-to-result pairing in both request projections, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Accepted |
 | =F97-C05= | When a live frame is presented, =context-curate= is a reserved native Messages tool translated from one core-owned schema, guidance, and revision descriptor shared with OpenAI.  Only a complete valid response may commit keep/summary/erase/omission exactly once, supply a valid immediate acknowledgement, retire consumed labels, and continue; a mixed ordinary/curation response groups all calls in one assistant array and their ID-matched result/acknowledgement in one following user array.  Invalid or duplicate effects follow Feature 88's bounded rules without ordinary-tool dispatch. | Core curation policy and loop sequencing; Anthropic and OpenAI translate the carrier descriptor into their own wire shapes | =F97-DP4= | Shared schema/guidance/revision parity, credential-free real-adapter curate/tool/curate/answer, mixed grouping, invalid/duplicate, reopen/branch projection | Opus 5.5 native curation and same-turn follow-up | Accepted |
 | =F97-C06= | A Messages stream delivers text progress as complete events arrive, releases tool and curation effects only after a valid terminal response, and classifies EOF, HTTP, SSE, timeout, and cancellation failures without publishing partial success or replay. | Anthropic HTTP/SSE transport and decoder | =F97-DP5= | Split-chunk, terminal, truncated, error, idle-timeout, cancellation, no partial tool dispatch, and single-settlement fixtures | Bounded Opus 5.5 streamed turn and cancellation smoke probe | Accepted |
+| =F97-C07= | The Anthropic adapter's no-model fallback defaults to exact =claude-opus-5-5=.  The user's current Doom =:chat-default= creates a Messages harness on =eng-ai-gateway-opus-5-5= with native =:prompt-cache t= and an explicit stable-prefix =cache_control= checkpoint.  It keeps gateway authentication in the local profile, preserves the separate GPT-6 subagent registrations and exact older selectable Opus 4.8 and Sonnet 5 profiles, and does not alter the running Emacs during validation. | Anthropic model fallback and local Doom chat configuration | =F97-DP7= | No-model adapter fallback and profile tests, synchronized Doom source and tangled config, private current-config cold-start exact default/options/profile assertions | Opt-in private current-Doom gateway composition =F97-S7= on the accepted revision, including captured stable-prefix =cache_control= | Accepted |
 
 Cache counters, latency, and token savings are observational except for the
 named live write/read compatibility check in =F97-C04=.  Exact hit size is not
@@ -265,10 +276,24 @@ terminal validation.
   success.  Record the capability identity and failure class defined above.
   Covers =F97-C01=--=F97-C06= as external compatibility evidence.
 - =F97-S6b=, configured composition :: On the same accepted revision, run the
-  checked-in Anthropic profile through the direct
-  =F97-ANTHROPIC-COMPOSED-TURN= scenario and record the same identity, the
+  checked-in Anthropic profile through the composed tool, curation, cache, and
+  fresh-turn sequence and record the same identity, the
   exact composition result, and the first failing boundary if any.  Covers
   =F97-C01=, =F97-C03=--=F97-C06= as external compatibility evidence.
+- =F97-S7=, current-Doom default composition :: Use an opt-in live selector
+  in =bash e2e/run-current-config-tests.sh= to start a private Emacs daemon
+  through the user's current Doom configuration with test-owned runtime state.
+  The selector must retain Doom's registered =:chat-default= factory; it must
+  neither load =E_E2E_CONFIG= nor replace the default with the checked-in E2E
+  profile.  Verify exact gateway Opus 5.5 selection and the default native
+  cache options without adding request-local cache overrides.  Run the composed
+  tool, curation, cache, and fresh-turn scenario through that harness.  Capture
+  a stable-prefix =cache_control= checkpoint on the actual default request and
+  its unchanged prefix across the changing suffix.  Record the same endpoint,
+  profile, model, headers, options, UTC time, status, counters, and first
+  failing boundary as =F97-S6b=.  Do not reload or change the user's running
+  Emacs.  Covers =F97-C07= and the direct behavioral goal as external
+  compatibility evidence.
 
 * Ordered delivery packages
 
@@ -410,34 +435,68 @@ terminal validation.
 
 ** F97-DP6: gateway profile activation and composed acceptance
 
-- Owner :: Anthropic provider configuration, checked-in E2E profile, and
-  separately approved local Doom profile; no default GPT-6 chat switch.
+- Owner :: Anthropic provider configuration and checked-in E2E profile.  The
+  user's normal-chat default belongs to DP7.
 - Prerequisites :: DP1--DP5 and a fresh model-access probe.
 - Establishes :: =F97-C01=.
 - Useful stopping point :: Opus 5.5 is a selectable validated Messages profile
-  with an honest unknown gateway window.  Sonnet 5.5 stays pending until the
-  team gains access, then uses the same gates before activation.
+  with an honest unknown gateway window.  Sonnet 5.5 is separately selectable
+  after catalog and Messages access succeeded for the team.
 - Evidence :: =F97-S6a= and =F97-S6b=, isolated configured E2E, affected
   repository suites, clean compilation, and
   =bash e2e/run-current-config-tests.sh= for any local configuration or startup
   change.  Report Opus and Sonnet external status separately.
 - State and lifetime :: Checked-in profile selection is static configuration;
   provider access and model metadata are observed, not persisted as a false
-  limit or copied into the user's running Emacs.  A local Doom profile needs
-  its separate authorization and cold-start validation before local activation.
+  limit or copied into the user's running Emacs.
 - Transaction and recovery :: Activate the exact Opus 5.5 ID only after fresh
   access and Messages proof.  A 403 or missing Sonnet catalog entry leaves
   Sonnet 5.5 unavailable, without alias or model fallback; profile errors
-  surface normally and do not switch the GPT-6 default.
+  surface normally.
 - Surface :: Selectable Anthropic provider configuration and checked-in E2E
-  profile; no default-chat or generic backend contract change.
-- Safe deferred work :: Sonnet 5.5 and the local Doom change may remain pending
-  on their separate access/authorization conditions without weakening the
-  checked-in Opus 5.5 profile contract.  Report that boundary explicitly.
+  profile.
+- Safe deferred work :: A later Sonnet access change is reported independently
+  and does not weaken the checked-in Opus 5.5 profile contract.
 - Split/combine decision :: Profile selection is useful only after DP1--DP5
   compose.  One final exact-revision deterministic gate and independent review
   decide repository acceptance; =F97-S6a= and =F97-S6b= then decide external
   capability and direct behavior separately.
+
+** F97-DP7: make gateway Opus 5.5 the normal-chat default
+
+- Owner :: Anthropic adapter's no-model fallback, the user's Doom chat factory,
+  and a private current-config opt-in live selector.  The no-model fallback
+  change is intentional additional scope of the requested model-default switch;
+  a profile's explicit model still takes precedence.
+  The repository default-harness policy remains provider-neutral.
+- Prerequisites :: DP6 and the operator's explicit default-switch request.
+- Establishes :: =F97-C07=.
+- Useful stopping point :: A fresh normal chat chooses exact Opus 5.5 through
+  the engineering gateway with native one-hour stable-prefix caching; exact
+  Opus 4.8 and Sonnet 5 profiles and the separately configured GPT-6 subagent
+  registrations remain available.
+- Evidence :: Exact no-model adapter fallback, local old-profile, and subagent
+  selection tests; synchronized =config.org=/=config.el=; the private
+  =bash e2e/run-current-config-tests.sh= cold-start gate with exact
+  default-harness model, profile, and cache-option assertions; and opt-in
+  =F97-S7= after independent review.  =F97-S7= must capture native
+  =cache_control= on the actual default request, not enable it in the test.
+  =F97-S6a= and =F97-S6b= remain separate endpoint and checked-in-profile
+  probes.
+- State and lifetime :: The local Doom factory selects the provider at fresh
+  startup.  It uses the existing gateway environment key and does not store a
+  credential or change a running Emacs process.
+- Transaction and recovery :: A missing key, access denial, or provider error
+  fails visibly.  No silent fallback to GPT-6 or another Claude model is added.
+- Surface :: The user's normal =:chat-default= harness, Anthropic's generic
+  no-model fallback, local configuration, and a separate opt-in private-daemon
+  live test path; no core default provider is hardcoded.
+- Safe deferred work :: A live Emacs restart can be left to the user after
+  repository and private-daemon validation.  Sonnet 5.5 remains a separately
+  selectable checked-in profile, with final capability reported by =F97-S6a=.
+- Split/combine decision :: Cold-start selection proves local configuration;
+  the private-daemon composed turn proves the actual gateway behavior.  Both
+  are needed before claiming the new normal-chat default works end to end.
 
 Each package is a reviewable semantic slice.  Run focused tests at its owner
 boundary and the relevant complete deterministic gate once on the accepted
@@ -500,13 +559,21 @@ part of repository validation.
 - =F97-DP6= / =F97-C01= :: Parent-accepted at =246c84ce=.  The checked-in
   Anthropic E2E profile selects exact Opus 5.5; Opus 4.8, Sonnet 5, and newly
   accessible Sonnet 5.5 remain separately selectable.  No gateway context
-  window is fabricated, and standard GPT-6 chat and local Doom configuration
-  are unchanged.  Fresh catalog and minimal Messages checks returned HTTP 200
+  window is fabricated.  At that checkpoint, standard GPT-6 chat and local
+  Doom configuration were unchanged; the later operator request adds DP7.
+  Fresh catalog and minimal Messages checks returned HTTP 200
   with exact response IDs for both 5.5 models.  Anthropic ERT passed 83/83,
   isolated configured profile selection 1/1, and warnings-as-errors compilation
   passed for the checked-in profile and Anthropic adapter.  The unrelated
-  pre-existing free =profile= warning in the full live E2E test file remains;
-  final exact-revision capability and configured composition probes are pending.
+  pre-existing free =profile= warning in the full live E2E test file remains.
+- =F97-DP7= / =F97-C07= :: Implemented at repository revision =8768dc6a=
+  with the user's committed Doom default in =adccce2=.  Independent review
+  found no actionable C07/DP7 or frame-handoff issue.  The full repository
+  suite passed 2,839/2,839; private current-Doom cold start passed 8/8; opt-in
+  =F97-S7= passed 1/1 with five HTTP 200 Messages requests, native tool and
+  curation pairs, one durable curation, fresh-turn omission, and cache creation
+  and read counters.  See [[file:review.org][Review]] for the request identity,
+  exact results, and the separate signed-tool witness limit.
 
 * Compatibility, uncertainty, and architecture check
 
@@ -528,18 +595,20 @@ layout.  Keeping the schema literal separately in each adapter would reduce a
 small shared boundary but allow curation meaning to diverge.  Letting the
 Anthropic adapter infer markers from text or own source lifetime would remove
 the typed boundary at the cost of brittle classification or inverted ownership.
-The selected aggregate adds no durable state or generic checkpoint layer; its
-six delivery packages separate complete accounting, replay, cache, curation,
-transport, and profile outcomes with focused evidence before one composed gate.
+The selected aggregate adds no durable state or generic checkpoint layer.  Its
+first six packages separate accounting, replay, cache, curation, transport,
+and selectable profiles; DP7 adds the normal-chat default and private-Doom
+composition evidence.
 
-Before implementation, check that each chosen abstraction serves an actual
+At implementation review, check that each chosen abstraction serves an actual
 cross-adapter contract: the existing backend capability values, core-owned
 curation schema, and one-shot replay seam suffice unless a concrete test shows
 otherwise.  Core must not import Anthropic fields; the adapter must not decide
 source lifetime.  Unexpected wire or replay errors surface as failed turns.
-External cache and Sonnet access remain explicit unknowns until fresh gateway
-evidence resolves them.  A completed mechanism package does not make the
-direct behavioral scenario pass.
+Fresh gateway evidence establishes cache write/read, Sonnet 5.5 access, and the
+configured current-Doom composition on =8768dc6a=.  Signed thinking appeared
+on a completed =F97-S7= answer, but not in its tool-call responses or the
+bounded =F97-S6a= tool probes; live signed-tool replay remains unobserved.
 
 * Design self-check for implementation review
 
@@ -549,7 +618,7 @@ evidence must replace assumptions before a =Done= decision.
 
 1. If this work package stopped here, would the project be better off than if
    it had not been built?  Each DP states a useful independently testable
-   outcome, even when the full scenario still waits for DP6.
+   outcome; DP7 now supplies the amended normal-chat scenario.
 2. What final direction does this move toward?  One provider-neutral context
    policy with native Messages and Responses adapters.
 3. Which decisions are likely to change, uncertain, or stable, and are
@@ -585,7 +654,7 @@ evidence must replace assumptions before a =Done= decision.
     capability values describe only behavior the effective endpoint supports.
 11. What compatibility expectations apply, and were obsolete paths removed
     unless required?  Preserve used older profiles; remove duplicate schema
-    literals and replace the denied Opus 5 selection after validation.
+    literals and replace the formerly denied Opus 5 selection after validation.
 12. What legacy code can we remove now?  Remove the Anthropic buffered-only
     happy-path completion and any redundant cache/system renderer after its
     replacement proves parity; do not retain dead compatibility branches.
@@ -595,5 +664,5 @@ evidence must replace assumptions before a =Done= decision.
 14. What tests prove the core behavior independently of the full system?  If
     the design changed, would tests change narrowly, or would unrelated tests
     need rewrites?  =F97-S1=--=F97-S5= prove owner boundaries;
-    =F97-S6a= and =F97-S6b= prove endpoint capability and composition
-    separately.  Keep mechanism fixtures local.
+    =F97-S6a=, =F97-S6b=, and =F97-S7= prove endpoint, checked-in profile,
+    and current-Doom composition separately.  Keep mechanism fixtures local.

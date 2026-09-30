@@ -1,0 +1,31 @@
+#+title: Plan Review 04: Normal-Chat Opus 5.5 Default
+#+date: 2026-09-30
+#+startup: overview
+
+* Result
+
+Independent read-only review established =implementation-plan-fixed-point= for
+the =F97-C07=/=F97-DP7=/=F97-S7= amendment in =plan.org= at HEAD =57eb080d=,
+Git blob =f47fa6e5ec83759b6ea0fde3c38849dce6cacbce=, SHA-256
+=19db53623f517c7593d39ec7e1acde5fd17bdefd62a5df3c4290247a937b8ff6=.
+The earlier [[file:plan-review-03.org][Plan Review 03]] fixed point covers DP1--DP6.
+
+* Findings resolved
+
+- Native caching :: C07 requires =:prompt-cache t= and an explicit stable-prefix
+  =cache_control= checkpoint on the actual Doom default request.  The one-hour
+  TTL is a local configuration choice, not a product limit.
+- Current-Doom evidence :: DP7 owns an opt-in private-daemon live selector.
+  =F97-S7= keeps Doom's registered =:chat-default= factory, uses test-owned
+  runtime state, and records the composed request without =E_E2E_CONFIG= or a
+  test-added cache override.
+- Compatibility :: DP7 checks exact local Opus 4.8 and Sonnet 5 profile IDs
+  and the separate GPT-6 subagent registrations.  Sonnet 5.5's checked-in
+  selectable profile is no longer described as pending activation.
+- Fallback scope :: The adapter's no-model fallback changes to Opus 5.5 by
+  deliberate operator request; an explicit profile model keeps precedence.
+
+The reviewer found no remaining plan-level gap and made no source edit, test,
+gateway request, or live Emacs request.  This plan decision does not establish
+implementation acceptance.  The independent implementation Tick and
+exact-revision =F97-S6a=, =F97-S6b=, and =F97-S7= probes remain required.

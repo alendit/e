@@ -4,10 +4,12 @@
 
 * Status
 
-In-review.  The third independent implementation Tick at =5e111766= closed
-=F97-R04= and found =F97-R05= when the same structured tool also compacts
-away its preceding assistant message.  =F97-S6a= and =F97-S6b= have not yet
-run on an accepted revision.
+In-review.  The independent fourth Tick closed =F97-R05= on =57eb080d=.
+An incremental independent review found no actionable =F97-C07=/=F97-DP7=
+or same-turn frame-handoff issue on =8768dc6a=.  The full suite and private
+current-Doom default composition pass on that implementation revision.  The
+live model has not emitted signed thinking in a tool-call response, so that
+specific =F97-S6a= replay witness remains unobserved.
 
 * First Tick: scope and result at =e1ea7549=
 
@@ -98,7 +100,7 @@ ordinary tool returns a structured result with =:refresh-context t=.
 - =F97-R03= closed: trailing =\r= stays buffered and the next chunk advances
   the decoder.  A bounded HTTP case covers lone CR and split CRLF.
 
-** TODO High F97-R04: Preserve assistant replay correlation across context refresh
+** DONE High F97-R04: Preserve assistant replay correlation across context refresh
 
 The reviewer changed only the public =F97-S4= fixture's =inspect-source=
 handler to return the same content through =e-tools-result-create= with
@@ -140,7 +142,7 @@ the accepted revision.  The public =F97-S4= scenario passes when
 request-local entry-ID vector restores the assistant's exact replay identity
 after that refresh without persisting it or sending it as a provider option.
 
-** TODO High F97-R05: Permit native replay after compaction removes its assistant
+** DONE High F97-R05: Permit native replay after compaction removes its assistant
 
 If =inspect-source= also appends a valid compaction with
 =:first-kept-entry-id= set to its current tool-call entry, the refreshed
@@ -168,3 +170,147 @@ tests with loopback binding.  Those gates did not cover =F97-R05=.
 confirmed.  The running Emacs was left unchanged, and no gateway probe ran in
 this Tick.  =F97-S6a= and =F97-S6b= remain external unknowns for an accepted
 revision.
+
+* Fourth Tick: R05 closure at =57eb080d=
+
+A new independent read-only reviewer found no actionable defect in the R05
+repair.  The loop permits a missing replay assistant only when the refreshed
+projection's valid compaction first-kept entry is a tool call in the active
+response bundle.  A retained assistant still receives its exact response ID;
+duplicate or misaligned identities still fail.  Native replay stays on the
+immediate result, and the Anthropic renderer still enforces one ordered,
+ID-matched call/result pair per =tool_use=.
+
+The public =F97-S4= regression test compacts at the actual =inspect-source=
+tool call.  It checks one signed native assistant, one paired user result,
+absence of repeated assistant text, curation, and fresh-turn source
+retirement.  The separately supplied full deterministic gate passed
+2,832/2,832 on =57eb080d= with loopback binding.  The independent Tick did not
+rerun tests because DP7 edits were concurrent.  This closes =F97-R05= and the
+remaining =F97-C03=/=F97-C05= deterministic review findings at that revision;
+it does not establish DP7 or live gateway acceptance.  The running Emacs was
+left unchanged.
+
+* Fifth Tick: normal-chat default and gateway composition
+
+** Independent review
+
+The read-only reviewer cleared =F97-C07=/=F97-DP7= and the =048d4f63=
+source-frame fix at =8768dc6a= with no actionable finding.  The Anthropic
+no-model fallback selects exact =claude-opus-5-5=
+(=lisp/adapters/anthropic/e-anthropic.el:155,2599-2618=).  Committed Doom
+=config.org:453-533= and matching =config.el= register
+=eng-ai-gateway-opus-5-5= as =:chat-default=, enable native prompt caching,
+and preserve the older profiles and GPT-6 subagent factories.  Private
+cold-start assertions are in =e2e/e-current-config-e2e-test.el:332-375=;
+composed assertions are in
+=e2e/e-current-config-anthropic-s7-test.el:742-754,890-923=.
+
+The loop restores the original unconsumed source frame only after an ordinary
+tool response consumed its active descendant with the same frame ID and no
+curation (=lisp/core/e-loop.el:1461-1490=).  The context runtime creates that
+descendant from the original observations
+(=lisp/core/e-harness-context-runtime.el:1110-1177=).  Curation still retires
+labels before acknowledgement (=lisp/core/e-loop.el:896-919=).
+
+** Verification on =8768dc6a=
+
+#+begin_src sh
+eldev test
+bash e2e/run-current-config-tests.sh
+E_CURRENT_CONFIG_F97_S7=1 E_CURRENT_CONFIG_E2E_SELECTOR=e-current-config-e2e-test-f97-s7-anthropic-default bash e2e/run-current-config-tests.sh
+#+end_src
+
+#+begin_example
+Full repository ERT: 2,839/2,839, 0 unexpected, 297.212 seconds.
+Private current-Doom cold start: 8/8, 0 unexpected.
+F97-S7 private current-Doom composition: 1/1, 0 unexpected.
+#+end_example
+
+=F97-S7= ran at 2026-09-30 17:36:25--17:36:55 UTC on repository revision
+=8768dc6a1194f44d4cdcd839e378c36e8428dc73=.  Doom =config.org= SHA-256
+was =8be0148b7d28010995bcd15644ffae001b726ba1ed8a7644e80da20535c6f76f=;
+=config.el= was =915985668cb78aa991e89cc1df561682d544fe03e26937018afc65b328fd769c=.
+The profile was =eng-ai-gateway-opus-5-5=, model =claude-opus-5-5=, and
+transport =url-retrieve= to the engineering gateway =/v1/messages= with
+=anthropic-version: 2023-06-01=.  All five requests returned HTTP 200.  The
+test observed native ordinary-tool and curation pairs, one durable keep,
+consumed labels absent from the immediate acknowledgement, and the omitted
+raw source absent from the later canonical turn.  Every request carried a
+native one-hour =cache_control= checkpoint.  The stable-prefix SHA-256 was
+=772eaaafd0e2c382bcc50d16c975d50a58158361cd5c1d0a095615eeea92450e=
+across a changing suffix.  Gateway usage reported 124,048 cache-creation and
+99,260 cache-read input tokens.  The structured record is
+=/private/tmp/f97_s7_current_doom_8768.log=.
+
+The checked-in Anthropic profile's separate =F97-S6b= composition passed 1/1
+on the same revision at 2026-09-30 17:40:48 UTC.  Its four Messages requests
+returned HTTP 200 with native ordinary-tool and curation pairs, one durable
+curation, fresh-turn source exclusion, and 16,396 cache-creation followed by
+16,396 cache-read input tokens.  The record is
+=/private/tmp/f97_s6b_8768_final.log=.  The model repeated a synthetic tool
+value in its own assistant text; the test checked exclusion from the owned
+source and tool-result fields on the later turn, which is Feature 88's
+source-lifetime boundary.
+
+The =F97-S6a= probe at 2026-09-30 17:38:32--17:38:58 UTC recorded the same
+revision in =/private/tmp/f97_s6a_8768.json=.  Catalog and minimal Messages
+requests returned HTTP 200 for exact =claude-opus-5-5= and
+=claude-sonnet-5-5=; neither catalog record supplied =max_input_tokens=.
+Opus ordinary-tool and reserved-curation calls and their ID-matched follow-ups
+returned HTTP 200.  Stream completion reached =message_stop=; bounded client
+cancellation stopped after the first content event.  The separate application
+cancellation test passed 1/1 in =/private/tmp/f97_gateway_cancel_v4.log=.
+Stable-prefix cache probes reported 11,502 creation and then 11,502 read
+input tokens.
+
+** UX, performance, and live boundary
+
+The private Doom daemon exercised fresh normal-chat routing, tool
+continuation, curation, cache reuse, and a later turn through the real user
+configuration.  This feature changes model routing and request handling, not
+presentation layout; the private run makes no visual UI claim.  Five gateway
+requests completed in 30 seconds.  Cache counters show reuse, not a
+controlled latency improvement.  The user's running Emacs was not reloaded
+or restarted; it needs a restart to use the new core and default there.
+
+** Design self-check
+
+1. A fresh default chat uses the composed Opus path; older profiles remain
+   selectable, so this package is useful at this stopping point.
+2. It moves toward one provider-neutral context policy with native Messages
+   and Responses adapters.
+3. Gateway access, effective limits, and TTL stay in provider evidence or
+   configuration; Feature 88 curation meaning remains stable.
+4. Core owns curation, Anthropic owns Messages wire/transport, and Doom owns
+   normal-chat model selection.
+5. The shared curation descriptor and existing replay seam keep interfaces
+   narrow; the default switch adds no cross-provider API.
+6. Core policy gains no dependency on Anthropic or the Doom shell.
+7. HTTP remains in the adapter; the Doom factory selects a profile; the
+   harness commits semantic curation.
+8. Signed replay and partial SSE state are request-local; durable curation
+   uses existing session records; model choice is static configuration.
+9. SSE text arrives before terminal settlement while effects wait for a
+   complete response.  Live timings do not establish a regression comparison.
+10. Existing capability and replay contracts need no unsupported-operation
+    branch; provider-specific shapes stay in adapters.
+11. Exact older Opus 4.8 and Sonnet 5 profiles and GPT-6 subagent routing
+    remain; the denied old Opus 5 default was replaced.
+12. No obsolete default-route compatibility branch was added; DP5 removed
+    Anthropic's buffered-only completion path.
+13. Expected gateway, SSE, timeout, and cancellation errors settle in the
+    adapter; malformed replay and unexpected inconsistencies fail the turn.
+14. Focused adapter, loop, context, and curation tests prove owner behavior;
+    the full suite and private Doom composition prove their join.
+
+** Unresolved evidence
+
+The =F97-S6a= tool-call responses carried no signed thinking block, including
+one bounded request with explicit thinking enabled.  =F97-S7= received a
+signed thinking block on its final answer, but not on a tool-call response.
+Live signed-tool replay for =F97-C03= remains =capability-unconfirmed=;
+deterministic ordered signed-tool fixtures pass.  A separate complex synthetic
+tool prompt received a refusal, which does not show an implemented replay
+failure.  This external witness is the remaining =In-review= note.  The
+direct default-chat scenario and repository-side checks above pass.
