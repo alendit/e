@@ -2239,6 +2239,30 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                          :max-tokens e-anthropic-default-max-tokens
                          :effort e-anthropic-default-effort)))))
 
+(ert-deftest e-anthropic-test-create-harness-uses-opus-5-5-without-profile-model ()
+  "A profile without a model uses the exact Opus 5.5 adapter fallback."
+  (let ((e-anthropic-model-providers
+         '((eng-anthropic
+            :name "Engineering Anthropic"
+            :base-url "https://gateway.example.test/v1"
+            :auth bearer
+            :env-key "ANTHROPIC_GATEWAY_KEY"))))
+    (should (equal e-anthropic-default-model "claude-opus-5-5"))
+    (should (equal (plist-get
+                    (e-harness-default-options
+                     (e-anthropic-create-harness :provider 'eng-anthropic
+                                                 :request-function #'ignore))
+                    :model)
+                   "claude-opus-5-5"))
+    (should (equal
+             (e-anthropic--provider-model
+              '(:default-model "claude-opus-4-8") nil)
+             "claude-opus-4-8"))
+    (should (equal
+             (e-anthropic--provider-model
+              '(:default-model "claude-opus-4-8") "claude-explicit")
+             "claude-explicit"))))
+
 (defconst e-anthropic-test--model-catalog-json
   (concat
    "{\"data\":["

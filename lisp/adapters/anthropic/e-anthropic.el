@@ -152,7 +152,7 @@ provider-neutral backend contract."
   :group 'e
   :prefix "e-anthropic-")
 
-(defcustom e-anthropic-default-model "claude-opus-4-8"
+(defcustom e-anthropic-default-model "claude-opus-5-5"
   "Default model id for Anthropic Messages requests."
   :type 'string
   :group 'e-anthropic)
