@@ -289,15 +289,19 @@ Repeated transcript history is accepted only when its pair is unchanged."
                     :system (cl-subseq system 0 (1+ index)))
               :suffix (cl-subseq system (1+ index)))))))
 
-(defun e-current-config-anthropic-s7--open-cache-pair (bodies checkpoints)
-  "Find two open-frame BODIES with one unchanged cache prefix and changed suffix.
+(defun e-current-config-anthropic-s7--open-cache-pair
+    (bodies checkpoints old-source new-source)
+  "Find open-frame BODIES sharing a prefix across OLD-SOURCE and NEW-SOURCE.
 The curation acknowledgement intentionally closes the reserved carrier, so its
 tool schema is a different prefix and must not be compared with open requests."
   (cl-loop for first from 0 below (length bodies)
            for first-body = (nth first bodies)
            for first-checkpoint = (nth first checkpoints)
-           when (member "context-curate"
-                        (e-current-config-anthropic-s7--tool-names first-body))
+           when (and (member "context-curate"
+                             (e-current-config-anthropic-s7--tool-names first-body))
+                     (string-match-p
+                      (regexp-quote old-source)
+                      (prin1-to-string (plist-get first-checkpoint :suffix))))
            thereis
            (cl-loop for second from (1+ first) below (length bodies)
                     for second-body = (nth second bodies)
@@ -308,9 +312,14 @@ tool schema is a different prefix and must not be compared with open requests."
                                    second-body))
                           (equal (plist-get first-checkpoint :prefix)
                                  (plist-get second-checkpoint :prefix))
-                          (not (equal (plist-get first-checkpoint :suffix)
-                                      (plist-get second-checkpoint :suffix))))
-                    return (list first-checkpoint second-checkpoint))))
+                          (string-match-p
+                           (regexp-quote new-source)
+                           (prin1-to-string
+                            (plist-get second-checkpoint :suffix))))
+                    return (list :first-index first
+                                 :second-index second
+                                 :first-checkpoint first-checkpoint
+                                 :second-checkpoint second-checkpoint))))
 
 (ert-deftest e-current-config-anthropic-s7-open-cache-pair-helper ()
   "Compare open-frame prefixes while allowing the consumed carrier to close."
@@ -323,19 +332,20 @@ tool schema is a different prefix and must not be compared with open requests."
           (lambda (tools suffix)
             (list :tools tools
                   :system (vector stable (list :type "text" :text suffix)))))
-         (bodies (list (funcall make-body open-tools "old")
-                       (funcall make-body open-tools "changed")
-                       (funcall make-body closed-tools "after-curation")))
+         (bodies (list (funcall make-body open-tools "old-source")
+                       (funcall make-body open-tools "old-source other turn")
+                       (funcall make-body closed-tools "after-curation")
+                       (funcall make-body open-tools "new-source")))
          (checkpoints
           (mapcar #'e-current-config-anthropic-s7--cache-checkpoint bodies))
          (pair (e-current-config-anthropic-s7--open-cache-pair
-                bodies checkpoints)))
+                bodies checkpoints "old-source" "new-source")))
     (should pair)
-    (should (equal (plist-get (car pair) :prefix)
-                   (plist-get (cadr pair) :prefix)))
-    (should-not (equal (plist-get (car pair) :suffix)
-                       (plist-get (cadr pair) :suffix)))
-    (should-not (equal (plist-get (car pair) :prefix)
+    (should (= (plist-get pair :first-index) 0))
+    (should (= (plist-get pair :second-index) 3))
+    (should (equal (plist-get (plist-get pair :first-checkpoint) :prefix)
+                   (plist-get (plist-get pair :second-checkpoint) :prefix)))
+    (should-not (equal (plist-get (plist-get pair :first-checkpoint) :prefix)
                        (plist-get (nth 2 checkpoints) :prefix)))))
 
 (defun e-current-config-anthropic-s7--request-summary (record)
@@ -434,6 +444,8 @@ tool schema is a different prefix and must not be compared with open requests."
          (first-suffix-hash nil)
          (second-suffix-hash nil)
          (tool-schema-hash nil)
+         (first-pair-index nil)
+         (second-pair-index nil)
          (failure-class nil)
          (native-start (symbol-function 'e-anthropic--http-request-start)))
     (unwind-protect
@@ -530,9 +542,11 @@ tool schema is a different prefix and must not be compared with open requests."
                      (final-body (car (last bodies)))
                      (cache-pair
                       (e-current-config-anthropic-s7--open-cache-pair
-                       bodies checkpoints))
-                     (first-checkpoint (car cache-pair))
-                     (second-checkpoint (cadr cache-pair))
+                       bodies checkpoints old-current new-current))
+                     (first-checkpoint
+                      (plist-get cache-pair :first-checkpoint))
+                     (second-checkpoint
+                      (plist-get cache-pair :second-checkpoint))
                      (first-suffix (plist-get first-checkpoint :suffix))
                      (second-suffix (plist-get second-checkpoint :suffix))
                      (tool-pairs
@@ -603,7 +617,7 @@ tool schema is a different prefix and must not be compared with open requests."
                        usage-events :cached-input-tokens)))
                 (should (seq-every-p #'identity checkpoints))
                 (unless cache-pair
-                  (ert-fail "F97-S7 found no open-frame cache pair with a stable prefix and changed suffix"))
+                  (ert-fail "F97-S7 found no stable open-frame cache prefix across the changing source"))
                 (should (equal (plist-get first-checkpoint :control)
                                '(:type "ephemeral" :ttl "1h")))
                 (should (equal (plist-get second-checkpoint :control)
@@ -658,7 +672,9 @@ tool schema is a different prefix and must not be compared with open requests."
                                    (e-json-serialize
                                     (plist-get
                                      (plist-get first-checkpoint :prefix)
-                                     :tools)))))
+                                     :tools)))
+                      first-pair-index (plist-get cache-pair :first-index)
+                      second-pair-index (plist-get cache-pair :second-index)))
               (setq composition-result "pass"
                     failure-stage "none"))
           (error
@@ -704,6 +720,8 @@ tool schema is a different prefix and must not be compared with open requests."
                e-context-lifetime-curation-schema-revision
                :tool-schema-sha256 tool-schema-hash
                :stable-prefix-sha256 prefix-hash
+               :first-cache-pair-request-index first-pair-index
+               :second-cache-pair-request-index second-pair-index
                :first-cache-pair-suffix-sha256 first-suffix-hash
                :second-cache-pair-suffix-sha256 second-suffix-hash
                :cache-write-input-tokens
