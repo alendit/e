@@ -102,6 +102,7 @@
 (defun e-process-reporting-test--inject-report-history
     (store session-id count &optional marker-id)
   "Append COUNT test reports, optionally triaging MARKER-ID, in SQL batches."
+  (e-session-flush-write-queue store)
   (let* ((runtime (e-session-storage-runtime-store store))
          (state (e-runtime-store-call
                  runtime 'read
@@ -152,6 +153,7 @@
 (defun e-process-reporting-test--inject-open-markers
     (store session-id count)
   "Append COUNT open markers to SESSION-ID in bounded SQL batches."
+  (e-session-flush-write-queue store)
   (let* ((runtime (e-session-storage-runtime-store store))
          (state (e-runtime-store-call
                  runtime 'read

@@ -207,15 +207,15 @@
                    :generation 1)))
                1))))
 
-(ert-deftest e-runtime-store-session-worker-v8-schema-is-relational-and-narrow ()
-  "Fresh v8 storage has query/history relations but no opaque mirrors."
+(ert-deftest e-runtime-store-session-worker-v9-schema-is-relational-and-narrow ()
+  "Fresh v9 storage has query/history relations but no opaque mirrors."
   (e-runtime-store-session-worker-test--with-runtime (runtime directory)
     (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
       (unwind-protect
           (progn
             (should (= (plist-get (e-runtime-store-metrics runtime)
                                   :schema-version)
-                                  8))
+                                  9))
             (should (car (sqlite-select database
                                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_query_state'")))
             (should (car (sqlite-select database

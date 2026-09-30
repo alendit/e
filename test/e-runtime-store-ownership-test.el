@@ -699,35 +699,21 @@
          (events nil))
     (unwind-protect
         (progn
-          (e-runtime-store-worker--open directory "offline-fixture")
-          (e-runtime-store-worker--close)
           (let ((database (sqlite-open database-file)))
             (unwind-protect
                 (progn
-                  ;; Preserve only the canonical journal when synthesizing a
-                  ;; stopped v4 image.  Current normalized projections did not
-                  ;; exist in v4 and are rebuilt by the explicit upgrader.
-                  (sqlite-execute database "PRAGMA foreign_keys=OFF")
-                  (dolist (table
-                           '(session_process_report_index board_pickup_events
-                             board_pickups board_routing
-                             board_record_attributes board_record_tags
-                             board_records board_replay_progress
-                             board_session_associations board_session_admissions
-                             board_participants boards task_attempts task_records
-                             task_queues session_query_state))
-                    (sqlite-execute
-                     database (format "DROP TABLE IF EXISTS %s" table)))
-                  (sqlite-execute database "PRAGMA foreign_keys=ON")
-                  (sqlite-execute
-                   database
-                   "UPDATE store_meta SET value='4' WHERE key='schema_version'")
-                  (sqlite-execute
-                   database
-                   "DELETE FROM schema_migrations WHERE version>=5")
-                  (sqlite-execute database "DROP TABLE runtime_store_receipts")
-                  (sqlite-execute database "DROP TABLE runtime_store_state"))
+                  ;; Build the old physical schema directly.  Relabeling a
+                  ;; current store leaves relations that v4 never contained.
+                  (dolist (statement
+                           '("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                             "CREATE TABLE session_records (session_id TEXT NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, position))"
+                             "CREATE TABLE session_checkpoints (session_id TEXT PRIMARY KEY, payload TEXT NOT NULL, revision INTEGER NOT NULL)"
+                             "CREATE TABLE catalog_projection (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL, revision INTEGER NOT NULL)"))
+                    (sqlite-execute database statement))
+                  (sqlite-execute database
+                                  "INSERT INTO store_meta(key,value) VALUES('schema_version','4')"))
               (sqlite-close database)))
+          (set-file-modes database-file #o600)
           (let ((real-acquire
                  (symbol-function 'e-runtime-store-ownership-acquire))
                 (real-release
@@ -757,7 +743,6 @@
             (should (eq (cadr ordered) 'sqlite-open))
             (should (eq (car (last ordered)) 'release))
             (should (= (cl-count 'sqlite-close ordered) 2))))
-      (e-runtime-store-worker--close)
       (delete-directory directory t))))
 
 (provide 'e-runtime-store-ownership-test)

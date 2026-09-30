@@ -490,7 +490,8 @@ composite, even when the failed status contains a live object."
     (should (equal '((:run-id "run" :task-key "task" :attempt 0)
                      done
                      (:summary "canonical" :result (:answer "ok") :outputs []
-                      :error nil :author (:session-id "session")))
+                      :error nil :author (:session-id "session")
+                      :generation nil))
                    reports))))
 
 (ert-deftest e-subagent-live-test-report-callback-does-not-create-live-result-inventory ()
