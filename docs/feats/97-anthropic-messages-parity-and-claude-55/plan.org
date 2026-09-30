@@ -34,9 +34,10 @@ running Emacs and provider configuration are unchanged.
   =e= scenario is unavailable until the planned adapter packages exist.
 - Mechanism status :: In progress.  =F97-DP1= is parent-accepted at
   =6a5f7155=, =F97-DP2= at =a077b513=, =F97-DP3= at =d3b773ca=,
-  and =F97-DP4= at =c656136c=.  Its recovery is recorded in
+  =F97-DP4= at =c656136c=, and =F97-DP5= at =bda84391=.  DP4's recovery is
+  recorded in
   [[file:implementation-rebaseline-01.org][Implementation Rebaseline 01]].
-  =F97-DP5= and =F97-DP6= remain unimplemented.
+  =F97-DP6= remains unimplemented.
 
 Here a /semantic checkpoint/ means Feature 88's durable, provider-neutral
 context boundary.  An Anthropic /cache checkpoint/ is a =cache_control= marker
@@ -111,7 +112,7 @@ they preserve the observable result.
 | =F97-C03= | Every ordinary tool-result follow-up that requires Anthropic thinking replay sends one assistant content array with the complete unchanged signed or redacted thinking blocks and all native content blocks in original order, including each =tool_use= exactly once.  One following user content array pairs each ordinary =tool_result= to its call ID.  Missing terminal completion or missing or malformed required replay fails clearly before tool continuation; provider-only replay does not become lasting semantic context. | Anthropic Messages decoder/renderer through the existing loop replay seam | =F97-DP2= | Ordered thinking/text/two-tool fixture, one assistant and one user message, exact ID pairing; request-local full replay; cancellation/reopen boundary | Opus 5.5 thinking + ordinary tool follow-up | Accepted |
 | =F97-C04= | Enabling Anthropic caching places explicit checkpoints only at selected stable segment boundaries, preserves every uncached system message in order, and presents each late ephemeral marker paired with its matching source, including each tool result, with caching on or off.  A changing suffix leaves the stable prefix unchanged.  Cache reuse never changes Feature 88 source lifetime. | Anthropic request renderer; core owns segment and marker meaning | =F97-DP3= | Cached/uncached semantic-content equivalence, marker-to-result pairing in both request projections, stable/dynamic boundary, changed-prefix invalidation | Two Opus 5.5 requests show write then read counters for the same prefix | Accepted |
 | =F97-C05= | When a live frame is presented, =context-curate= is a reserved native Messages tool translated from one core-owned schema, guidance, and revision descriptor shared with OpenAI.  Only a complete valid response may commit keep/summary/erase/omission exactly once, supply a valid immediate acknowledgement, retire consumed labels, and continue; a mixed ordinary/curation response groups all calls in one assistant array and their ID-matched result/acknowledgement in one following user array.  Invalid or duplicate effects follow Feature 88's bounded rules without ordinary-tool dispatch. | Core curation policy and loop sequencing; Anthropic and OpenAI translate the carrier descriptor into their own wire shapes | =F97-DP4= | Shared schema/guidance/revision parity, credential-free real-adapter curate/tool/curate/answer, mixed grouping, invalid/duplicate, reopen/branch projection | Opus 5.5 native curation and same-turn follow-up | Accepted |
-| =F97-C06= | A Messages stream delivers text progress as complete events arrive, releases tool and curation effects only after a valid terminal response, and classifies EOF, HTTP, SSE, timeout, and cancellation failures without publishing partial success or replay. | Anthropic HTTP/SSE transport and decoder | =F97-DP5= | Split-chunk, terminal, truncated, error, idle-timeout, cancellation, no partial tool dispatch, and single-settlement fixtures | Bounded Opus 5.5 streamed turn and cancellation smoke probe | Proposed |
+| =F97-C06= | A Messages stream delivers text progress as complete events arrive, releases tool and curation effects only after a valid terminal response, and classifies EOF, HTTP, SSE, timeout, and cancellation failures without publishing partial success or replay. | Anthropic HTTP/SSE transport and decoder | =F97-DP5= | Split-chunk, terminal, truncated, error, idle-timeout, cancellation, no partial tool dispatch, and single-settlement fixtures | Bounded Opus 5.5 streamed turn and cancellation smoke probe | Accepted |
 
 Cache counters, latency, and token savings are observational except for the
 named live write/read compatibility check in =F97-C04=.  Exact hit size is not
@@ -479,6 +480,15 @@ part of repository validation.
   adapter tests, warning-as-error compilation, =check-parens=, and
   =git diff --check=.  This repository acceptance does not establish the
   exact-revision Opus gateway composition or live cache reuse.
+- =F97-DP5= / =F97-C06= :: Parent-accepted at =bda84391=.  Complete SSE
+  events now stream text and thinking progress while terminal validation and
+  successful HTTP completion gate tools, curation, replay, usage, and anchors.
+  EOF, malformed/provider events, HTTP and transport errors, idle timeout, and
+  cancellation settle without partial effectful success.  Anthropic ERT passed
+  82/82, loop ERT 65/65, context-lifetime composition 15/15, turn composition
+  34/34, provider-continuation integration 3/3, warning-as-error compilation,
+  and committed diff hygiene.  The final exact-revision gateway stream and
+  cancellation probes remain external compatibility evidence.
 
 * Compatibility, uncertainty, and architecture check
 
