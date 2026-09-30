@@ -522,7 +522,7 @@ tool schema is a different prefix and must not be compared with open requests."
          (stable-instructions
           (concat "F97-S7 stable-prefix instructions. "
                   (mapconcat #'identity
-                             (make-list 1400 "stable-prefix-guidance-token")
+                             (make-list 100 "stable-prefix-guidance-token")
                              " ")))
          (context-layer
           (e-current-config-anthropic-s7--context-layer
@@ -622,7 +622,7 @@ tool schema is a different prefix and must not be compared with open requests."
                          (e-chat-sql-e2e-prompt-batch
                           harness session-id
                           (concat
-                           "Call e2e_s7_deterministic exactly once. After its result arrives, call the reserved context-curate tool exactly once. In its keep array, include only the numeric label whose exact displayed source value is the result returned by e2e_s7_deterministic. Omit every other displayed source, including the source containing F97-S7-OMIT. Do not summarize or erase any source. Then reply with exactly LIVE-S7-R2-READY and no other text.")
+                           "Call e2e_s7_deterministic exactly once. Its tool_result contains a marker of the form [ephemeral context source N, ...] beside the returned value. Read N from that same tool_result, then call the reserved context-curate tool exactly once with keep containing only N. Omit every other displayed source, including the source containing F97-S7-OMIT. Do not summarize or erase any source. Then reply with exactly LIVE-S7-R2-READY and no other text.")
                           300.0)))
                     (unless (eq (plist-get result :status) 'done)
                       (setq failure-detail
