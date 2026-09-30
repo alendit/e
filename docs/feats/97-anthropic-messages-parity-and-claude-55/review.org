@@ -4,9 +4,10 @@
 
 * Status
 
-In-review.  The second independent implementation Tick at =4fcfe95e= closed
-=F97-R01=--=F97-R03= and found =F97-R04= on structured tool-result context
-refresh.  =F97-S6a= and =F97-S6b= have not yet run on an accepted revision.
+In-review.  The third independent implementation Tick at =5e111766= closed
+=F97-R04= and found =F97-R05= when the same structured tool also compacts
+away its preceding assistant message.  =F97-S6a= and =F97-S6b= have not yet
+run on an accepted revision.
 
 * First Tick: scope and result at =e1ea7549=
 
@@ -130,3 +131,40 @@ state-lifetime, or performance finding was confirmed.
 =F97-S6b= configured composition remain separate external unknowns until a
 zero-finding Tick clears the repository revision.  The running Emacs remains
 unchanged; core and adapter behavior needs a restart to use immediately.
+
+* Third Tick: compacted assistant at =5e111766=
+
+The persistent independent reviewer confirmed =F97-R01=--=F97-R04= closed on
+the accepted revision.  The public =F97-S4= scenario passes when
+=inspect-source= returns a structured result with =:refresh-context t=.  The
+request-local entry-ID vector restores the assistant's exact replay identity
+after that refresh without persisting it or sending it as a provider option.
+
+** TODO High F97-R05: Permit native replay after compaction removes its assistant
+
+If =inspect-source= also appends a valid compaction with
+=:first-kept-entry-id= set to its current tool-call entry, the refreshed
+projection omits the preceding assistant.  =e-loop.el='s replay-correlation
+restore requires exactly one matching assistant entry ID and fails before the
+next Messages request with =Replay assistant entry ID is not unique=.  The
+native replay bundle and current tool call/result are still available.  This
+breaks =F97-C03= and =F97-C05='s composed tool continuation.  The loop should
+permit a proven absent assistant while retaining exact correlation and the
+adapter's strict uniqueness check whenever the assistant remains in context.
+
+** Verification and coverage
+
+The reviewer reproduced the defect by wrapping only the public =F97-S4=
+=inspect-source= handler: after producing the existing structured result, it
+appended a compaction at the current tool-call entry.  That variant failed 0/1
+with the error above; the unmodified structured-refresh scenario passed.
+Focused replay, detached identity, missing-start, and split-CR checks passed
+6/6.  Exact-revision gates supplied to the review passed 181/181 loop and
+adapter tests, 88/88 lifetime and session tests, and 2,831/2,831 full-suite
+tests with loopback binding.  Those gates did not cover =F97-R05=.
+
+=F97-C01=, =F97-C02=, =F97-C04=, and =F97-C06= remain deterministically clear.
+=F97-C03= and =F97-C05= remain open.  No other new High or Medium finding was
+confirmed.  The running Emacs was left unchanged, and no gateway probe ran in
+this Tick.  =F97-S6a= and =F97-S6b= remain external unknowns for an accepted
+revision.
