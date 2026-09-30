@@ -1459,7 +1459,26 @@ schedules it behind the owning session's active commit barrier."
                       ;; tool/result bundle after it so a refreshed current
                       ;; state and the inherited result remain one frame.
                       (when on-tool-observation
-                        (let* ((previous-frame active-lifetime-frame)
+                        (let* ((previous-frame
+                                ;; The response may complete before an ordinary
+                                ;; tool settles.  Its consumed frame is the
+                                ;; durable binding, while this request's
+                                ;; original frame still owns the observations
+                                ;; needed by the same-turn tool descendant.
+                                (if (and (not response-curation-effects)
+                                         (e-context-lifetime-frame-p
+                                          active-lifetime-frame)
+                                         (e-context-lifetime-frame-consumed-p
+                                          active-lifetime-frame)
+                                         (e-context-lifetime-frame-p
+                                          provider-request-lifetime-frame)
+                                         (equal
+                                          (e-context-lifetime-frame-id
+                                           active-lifetime-frame)
+                                          (e-context-lifetime-frame-id
+                                           provider-request-lifetime-frame)))
+                                    provider-request-lifetime-frame
+                                  active-lifetime-frame))
                                (observation-payload
                                 (list :tool-call tool-call
                                       :result result

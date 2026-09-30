@@ -734,7 +734,7 @@
                          (e-openai-decoder--context-curation-effect
                           '(:keep []
                             :summaries
-                            [(:sources [1]
+                            [(:sources [2]
                               :text "selected from tool result")])
                           "curation-call"))
                    (funcall on-item curation-input)
@@ -832,14 +832,18 @@
                                           :role)
                                'system))
                 (should (string-match-p
-                         "\\[ephemeral context source 1, ~[0-9]+ tokens, erase-eligible\\]"
+                         "\\[ephemeral context source 2, ~[0-9]+ tokens, erase-eligible\\]"
                          (plist-get (nth (1- tool-position) messages-b)
                                     :content))))
               (should (equal curation-arguments
                              '(:keep []
                                :summaries
-                               [(:sources [1]
+                               [(:sources [2]
                                  :text "selected from tool result")])))
+              (should-not
+               (string-match-p
+                "\\[ephemeral context source"
+                (prin1-to-string (plist-get request-c :messages))))
               (should tool-message-c)
               (should (equal (mapcar (lambda (item)
                                        (plist-get (plist-get item :item) :type))

@@ -462,7 +462,26 @@ tool schema is a different prefix and must not be compared with open requests."
     (should-not (equal (plist-get (plist-get pair :first-checkpoint) :prefix)
                        (plist-get (nth 2 checkpoints) :prefix)))))
 
-(defun e-current-config-anthropic-s7--request-summary (record)
+(defun e-current-config-anthropic-s7--source-labels (value)
+  "Return numeric source labels visible in VALUE without retaining source text."
+  (let ((rendered (prin1-to-string value))
+        (cursor 0)
+        labels)
+    (while (string-match
+            "\\[ephemeral context source \\([0-9]+\\)," rendered cursor)
+      (push (string-to-number (match-string 1 rendered)) labels)
+      (setq cursor (match-end 0)))
+    (nreverse labels)))
+
+(ert-deftest e-current-config-anthropic-s7-source-labels-helper ()
+  "Summarize labels from each native request field without copying content."
+  (should
+   (equal (e-current-config-anthropic-s7--source-labels
+           '(:text "[ephemeral context source 2, ~4 tokens, erase-eligible]"
+             :content "[ephemeral context source 5, ~8 tokens, erase-ineligible]"))
+          '(2 5))))
+
+(defun e-current-config-anthropic-s7--request-summary (record omitted-source)
   "Return a content-free evidence summary for captured REQUEST RECORD."
   (let* ((body (plist-get record :body))
          (body-text (prin1-to-string body))
@@ -494,6 +513,13 @@ tool schema is a different prefix and must not be compared with open requests."
           :response-events (plist-get record :response-events)
           :response-shapes (plist-get record :response-shapes)
           :failure-class (plist-get record :failure-class)
+          :source-labels
+          (list :system
+                (e-current-config-anthropic-s7--source-labels
+                 (plist-get body :system))
+                :messages
+                (e-current-config-anthropic-s7--source-labels
+                 (plist-get body :messages)))
           :ordinary-result-shape
           (when ordinary-result
             (list :content-kind (cond ((vectorp ordinary-content) 'blocks)
@@ -527,7 +553,7 @@ tool schema is a different prefix and must not be compared with open requests."
                 :initial-source
                 (and (string-match-p "F97-S7-CURRENT-INITIAL-" body-text) t)
                 :omitted-source
-                (and (string-match-p "F97-S7-OMIT-" body-text) t)
+                (and (string-match-p (regexp-quote omitted-source) body-text) t)
                 :tool-output
                 (and (string-match-p "F97-S7-TOOL-" body-text) t))
           :options
@@ -926,7 +952,9 @@ tool schema is a different prefix and must not be compared with open requests."
       (let* ((ordered-requests (reverse (plist-get capture-state :requests)))
              (request-summaries
               (mapcar
-               #'e-current-config-anthropic-s7--request-summary
+               (lambda (record)
+                 (e-current-config-anthropic-s7--request-summary
+                  record omitted-source))
                ordered-requests))
              (usage-events
               (seq-filter
