@@ -159,6 +159,114 @@
    (lambda (block) (equal (plist-get block :type) "tool_result"))
    (e-current-config-anthropic-s7--content-blocks body)))
 
+(defun e-current-config-anthropic-s7--tool-pairs-in-body (body)
+  "Return native call/result pairs in BODY, rejecting malformed pairs."
+  (let ((calls (make-hash-table :test 'equal))
+        (results (make-hash-table :test 'equal))
+        call-entries
+        result-entries)
+    (cl-loop for block in (e-current-config-anthropic-s7--content-blocks body)
+             for position from 0
+             do (pcase (plist-get block :type)
+                  ("tool_use"
+                   (push (cons position block) call-entries))
+                  ("tool_result"
+                   (push (cons position block) result-entries))))
+    (setq call-entries (nreverse call-entries)
+          result-entries (nreverse result-entries))
+    (dolist (entry call-entries)
+      (let ((id (plist-get (cdr entry) :id)))
+        (unless (and (stringp id) (not (string-empty-p id)))
+          (error "F97-S7 native tool call has no valid id"))
+        (when (gethash id calls)
+          (error "F97-S7 request body has duplicate native tool call id"))
+        (puthash id entry calls)))
+    (dolist (entry result-entries)
+      (let ((id (plist-get (cdr entry) :tool_use_id)))
+        (unless (and (stringp id) (not (string-empty-p id)))
+          (error "F97-S7 native tool result has no valid call id"))
+        (when (gethash id results)
+          (error "F97-S7 request body has duplicate native tool result id"))
+        (unless (gethash id calls)
+          (error "F97-S7 native tool result has no matching call"))
+        (puthash id entry results)))
+    (mapcar
+     (lambda (entry)
+       (let* ((call (cdr entry))
+              (id (plist-get call :id))
+              (result-entry (gethash id results)))
+         (unless result-entry
+           (error "F97-S7 native tool call has no matching result"))
+         (unless (< (car entry) (car result-entry))
+           (error "F97-S7 native tool result precedes its call"))
+         (cons call (cdr result-entry))))
+     call-entries)))
+
+(defun e-current-config-anthropic-s7--captured-tool-pairs (bodies)
+  "Return unique native tool pairs across captured request BODIES.
+Repeated transcript history is accepted only when its pair is unchanged."
+  (let ((pairs-by-id (make-hash-table :test 'equal))
+        (ids-by-name (make-hash-table :test 'equal))
+        pairs)
+    (dolist (body bodies)
+      (dolist (pair (e-current-config-anthropic-s7--tool-pairs-in-body body))
+        (let* ((call (car pair))
+               (id (plist-get call :id))
+               (name (plist-get call :name))
+               (previous-pair (gethash id pairs-by-id)))
+          (unless (and (stringp name) (not (string-empty-p name)))
+            (error "F97-S7 native tool call has no valid name"))
+          (if previous-pair
+              (unless (equal previous-pair pair)
+                (error "F97-S7 repeated native tool pair changed"))
+            (when (gethash name ids-by-name)
+              (error "F97-S7 captured a duplicate call for one tool"))
+            (puthash id pair pairs-by-id)
+            (puthash name id ids-by-name)
+            (push pair pairs)))))
+    (nreverse pairs)))
+
+(ert-deftest e-current-config-anthropic-s7-tool-pair-helper ()
+  "Validate native tool pairing without credentials or an Emacs daemon."
+  (let* ((make-body
+          (lambda (&rest blocks)
+            (list :messages
+                  (vector (list :role "assistant"
+                                :content (vconcat blocks))))))
+         (call-a '(:type "tool_use" :id "call-a"
+                   :name "e2e_s7_deterministic" :input ()))
+         (result-a '(:type "tool_result" :tool_use_id "call-a"
+                     :content "output-a"))
+         (call-b '(:type "tool_use" :id "call-b"
+                   :name "context-curate" :input ()))
+         (result-b '(:type "tool_result" :tool_use_id "call-b"
+                     :content "ack-b"))
+         (duplicate-call
+          '(:type "tool_use" :id "call-c"
+            :name "e2e_s7_deterministic" :input ()))
+         (duplicate-result
+          '(:type "tool_result" :tool_use_id "call-c" :content "output-c")))
+    (should
+     (equal
+      (mapcar (lambda (pair)
+                (cons (plist-get (car pair) :name)
+                      (plist-get (cdr pair) :tool_use_id)))
+              (e-current-config-anthropic-s7--captured-tool-pairs
+               (list (funcall make-body call-a result-a)
+                     (funcall make-body call-a result-a call-b result-b))))
+      '(("e2e_s7_deterministic" . "call-a")
+        ("context-curate" . "call-b"))))
+    (should-error
+     (e-current-config-anthropic-s7--tool-pairs-in-body
+      (funcall make-body call-a call-a result-a)))
+    (should-error
+     (e-current-config-anthropic-s7--tool-pairs-in-body
+      (funcall make-body call-a result-b)))
+    (should-error
+     (e-current-config-anthropic-s7--captured-tool-pairs
+      (list (funcall make-body call-a result-a)
+            (funcall make-body duplicate-call duplicate-result))))))
+
 (defun e-current-config-anthropic-s7--cache-checkpoint (body)
   "Return BODY's native stable system checkpoint and its prefix/suffix."
   (let* ((system (plist-get body :system))
@@ -364,16 +472,11 @@
                      (final-checkpoint (car (last checkpoints)))
                      (initial-suffix (plist-get initial-checkpoint :suffix))
                      (final-suffix (plist-get final-checkpoint :suffix))
-                     (final-blocks
-                      (e-current-config-anthropic-s7--content-blocks
-                       final-body))
-                     (tool-uses
-                      (seq-filter
-                       (lambda (block)
-                         (equal (plist-get block :type) "tool_use"))
-                       final-blocks))
-                     (tool-results
-                      (e-current-config-anthropic-s7--tool-results final-body))
+                     (tool-pairs
+                      (e-current-config-anthropic-s7--captured-tool-pairs
+                       bodies))
+                     (tool-uses (mapcar #'car tool-pairs))
+                     (tool-results (mapcar #'cdr tool-pairs))
                      (tool-use-names
                       (mapcar (lambda (block) (plist-get block :name))
                               tool-uses))
@@ -454,17 +557,6 @@
                                     '("e2e_s7_deterministic" "context-curate"))
                              (= (length tool-results) 2))
                   (ert-fail "F97-S7 transcript did not contain one ordinary tool and one curation call"))
-                (dolist (call tool-uses)
-                  (unless (seq-some
-                           (lambda (result)
-                             (equal (plist-get result :tool_use_id)
-                                    (plist-get call :id)))
-                           tool-results)
-                    (ert-fail "F97-S7 transcript contained an unpaired native tool result")))
-                (should (e-current-config-anthropic-s7--find-tool-use
-                         final-body "e2e_s7_deterministic"))
-                (should (e-current-config-anthropic-s7--find-tool-use
-                         final-body "context-curate"))
                 (should curation-ack-bodies)
                 (should tool-result-body)
                 (unless (not (string-match-p
