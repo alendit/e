@@ -691,9 +691,9 @@ the Board id as an address."
                                   (if (e-chat-service--stale-board-generation-error-p
                                        error)
                                       (e-work-finish parent nil)
-                                    (e-work-fail parent error))))))))))))
+                                    (e-work-fail parent error)))))))))))))
               ('cancelled (e-work-cancel parent))
-              (_ (e-work-fail parent (plist-get status :error))))))))
+              (_ (e-work-fail parent (plist-get status :error)))))))
        :deferred)))
   "Work contract for one exact durable continuation outcome backfill.")
 
