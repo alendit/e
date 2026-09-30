@@ -6777,30 +6777,35 @@ WebSocket and socket-replacement assertions."
 
 (ert-deftest e-live-e2e-test-active-request-can-be-cancelled ()
   "An active live turn can be cancelled through the harness."
-  (e-live-e2e--with-harness (harness session-id :layers (list (e-live-e2e--tool-layer)))
-    (let ((turn-id
-           (e-chat-sql-e2e-prompt-async
-            harness session-id
-            "Call e2e_slow now. Do not answer until the tool result is available.")))
-      (let ((deadline (+ (float-time) 30))
-            cancelled)
-        (while (and (not (e-live-e2e--activity-of-type
-                          harness session-id 'provider-request-started))
+  (e-live-e2e--with-harness
+      (harness session-id :layers (list (e-live-e2e--tool-layer))
+               :events-var events)
+    (e-chat-sql-e2e-prompt-async
+     harness session-id
+     "Call e2e_slow now. Do not answer until the tool result is available.")
+    (let ((deadline (+ (float-time) 30))
+          cancelled
+          turn-id)
+        (while (and (not (e-live-e2e--events-of-type
+                          events 'provider-request-started))
                     (< (float-time) deadline))
           (accept-process-output nil 0.05))
-        (should (e-live-e2e--activity-of-type
-                 harness session-id 'provider-request-started))
+        (setq turn-id
+              (plist-get
+               (car (e-live-e2e--events-of-type
+                     events 'provider-request-started))
+               :turn-id))
+        (should (stringp turn-id))
         (should (e-chat-service-abort-session harness session-id))
         (while (and (not cancelled) (< (float-time) deadline))
           (setq cancelled
                 (seq-some
                  (lambda (event)
-                   (and (eq (plist-get event :event-type) 'turn-cancelled)
+                   (and (eq (plist-get event :type) 'turn-cancelled)
                         (equal (plist-get event :turn-id) turn-id)))
-                 (e-session-local-activity-events
-                  (e-harness-sessions harness) session-id)))
+                 events))
           (accept-process-output nil 0.05))
-        (should cancelled)))))
+        (should cancelled))))
 
 (ert-deftest e-live-e2e-test-provider-errors_surface_as_turn_failures ()
   "A live provider failure releases the session for the next request."
