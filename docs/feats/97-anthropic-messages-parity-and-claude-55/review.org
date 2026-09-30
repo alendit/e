@@ -1,0 +1,79 @@
+#+title: Review: Anthropic Messages Parity and Claude 5.5
+#+date: 2026-09-30
+#+startup: overview
+
+* Status
+
+In-review.  The first independent implementation review found three High
+defects at =e1ea7549=.  =F97-S6a= and =F97-S6b= have not yet run on an accepted
+revision.
+
+* Scope and result
+
+The read-only review compared the complete =F97-C01=--=F97-C06= implementation
+and direct =F97-ANTHROPIC-COMPOSED-TURN= scenario with =plan.org=, Feature 88's
+consumed-source boundary, the Anthropic adapter, core loop, checked-in
+profiles, and their owner and composition tests.  =F97-C01=, =F97-C02=, and
+=F97-C04= cleared.  =F97-C03=, =F97-C05=, and =F97-C06= remain open on the
+findings below.  The injected =F97-S4= flow runs, but its literal native
+request repeats model-visible assistant text.  Gateway capability and
+configured composition remain unconfirmed.
+
+* Findings
+
+** TODO High F97-R01: Require a complete Messages start before tool admission
+
+=e-anthropic-parse-stream= accepts =content_block_start=, =message_delta=, and
+=message_stop= without =message_start=.  A batch probe containing a native
+=tool_use=, block stop, =message_delta(stop_reason=tool_use)=, and
+=message_stop=, but no start, returned =tool-call=, =provider-replay-item=,
+and =done=.  This violates =F97-C03= and =F97-C06='s complete valid response
+guard.  The Anthropic decoder must enforce start and terminal order before
+releasing effects; permissive fixtures must be brought to the same contract.
+
+** TODO High F97-R02: Emit mixed native assistant text only once
+
+The loop appends a neutral assistant text message before ordinary tool
+admission, while Anthropic's native replay substitutes the entire response,
+including that text.  The reviewer captured the actual passing =F97-S4=
+request: it contained a text-only assistant message and then a second
+assistant array with the same text, signed thinking, the ordinary call, and
+the curation call.  This violates =F97-C03= and =F97-C05='s single native
+assistant envelope and changes model-visible input.  Keep durable semantic
+text but remove only its proven redundant immediate wire copy.  Strengthen
+the public =F97-S4= request-body assertion to detect the extra message.
+
+** TODO High F97-R03: Advance the SSE decoder across a trailing CR
+
+=e-anthropic--sse-decoder-feed= repeats its scan at the same position when
+an HTTP chunk ends with a lone =\r=.  A bounded batch probe did not return
+within three seconds.  A valid CRLF delimiter split across chunks can freeze
+Emacs and prevent the idle timer from firing, violating =F97-C06=.  Retain the
+partial CR for the next chunk without rescanning it; test lone-CR and
+split-CRLF input at the decoder and request boundary.
+
+* Verified boundaries
+
+The DP4 acknowledgement precedes queued steering.  The next ordinary
+request refreshes its projection and omits the consumed raw result, replay,
+and contaminated anchors.  Focused steering and negative lifetime tests pass.
+Core owns curation semantics, the adapter owns wire and SSE behavior, and the
+loop owns request-local replay and steering.  No additional architectural
+finding was established.
+
+* Verification and evidence status
+
+The independent reviewer ran 9/9 focused owner/composition tests and 4/4
+negative/lifetime tests.  An instrumented =F97-S4= test passed while exposing
+=F97-R02=.  The broad deterministic suite began on =e1ea7549= and was stopped
+after the confirmed defects; it has no complete result.  The running Emacs was
+left unchanged.  External Opus and Sonnet access prerequisites passed minimal
+catalog and Messages requests, but exact-revision =F97-S6a=/=F97-S6b= evidence
+is pending.  No live reload was performed; core and adapter changes require a
+restart for use in the running Emacs.
+
+* Unresolved
+
+=F97-R01=--=F97-R03= block deterministic fixed point.  After remediation,
+rerun the complete gate on its commit and obtain an independent review of
+their closure and affected contract cells before external acceptance probes.

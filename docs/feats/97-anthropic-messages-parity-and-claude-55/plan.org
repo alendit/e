@@ -3,7 +3,7 @@
 
 * Status
 
-=In-progress=.  Independent plan review reached
+=In-review=.  Independent plan review reached
 =implementation-plan-fixed-point= at the plan identity recorded in
 [[file:plan-review-03.org][Plan Review 03]].  Feature 88 remains the authority
 for provider-neutral context lifetime and =context-curate-v8=; this feature

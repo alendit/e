@@ -411,4 +411,4 @@ and excludes raw/private reasoning from Board publication and detail lookup.
 | 94 | Done        | 94-canonical-json-values/                            | Canonical JSON Values Across Model and Persistence Boundaries |
 | 95 | Done        | 95-normalized-sqlite-communication/                   | Normalized SQLite Communication State              |
 | 96 | Done        | 96-reliable-tool-continuations-and-daily-completion/    | Reliable Tool Continuations and Daily Completion   |
-| 97 | In-progress | 97-anthropic-messages-parity-and-claude-55/              | Anthropic Messages Parity and Claude 5.5 Gateway Models |
+| 97 | In-review   | 97-anthropic-messages-parity-and-claude-55/              | Anthropic Messages Parity and Claude 5.5 Gateway Models |
