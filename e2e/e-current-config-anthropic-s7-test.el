@@ -219,6 +219,13 @@
         (substring content (+ separator 2))
       content)))
 
+(defun e-current-config-anthropic-s7--normalized-tool-pair (pair)
+  "Return PAIR with only its request-local source label removed."
+  (cons (car pair)
+        (plist-put (copy-tree (cdr pair)) :content
+                   (e-current-config-anthropic-s7--tool-result-value
+                    (cdr pair)))))
+
 (defun e-current-config-anthropic-s7--tool-names (body)
   "Return the offered tool names in BODY."
   (mapcar (lambda (tool) (plist-get tool :name))
@@ -282,7 +289,11 @@ Repeated transcript history is accepted only when its pair is unchanged."
           (unless (and (stringp name) (not (string-empty-p name)))
             (error "F97-S7 native tool call has no valid name"))
           (if previous-pair
-              (unless (equal previous-pair pair)
+              (unless (equal
+                       (e-current-config-anthropic-s7--normalized-tool-pair
+                        previous-pair)
+                       (e-current-config-anthropic-s7--normalized-tool-pair
+                        pair))
                 (error "F97-S7 repeated native tool pair changed"))
             (when (gethash name ids-by-name)
               (error "F97-S7 captured a duplicate call for one tool"))
@@ -302,6 +313,9 @@ Repeated transcript history is accepted only when its pair is unchanged."
                    :name "e2e_s7_deterministic" :input ()))
          (result-a '(:type "tool_result" :tool_use_id "call-a"
                      :content "output-a"))
+         (labeled-result-a
+          '(:type "tool_result" :tool_use_id "call-a"
+            :content "[ephemeral context source 3, ~4 tokens, erase-eligible]\n\noutput-a"))
          (call-b '(:type "tool_use" :id "call-b"
                    :name "context-curate" :input ()))
          (result-b '(:type "tool_result" :tool_use_id "call-b"
@@ -322,6 +336,12 @@ Repeated transcript history is accepted only when its pair is unchanged."
       '(("e2e_s7_deterministic" . "call-a")
         ("context-curate" . "call-b"))))
     (should
+     (= (length
+         (e-current-config-anthropic-s7--captured-tool-pairs
+          (list (funcall make-body call-a labeled-result-a)
+                (funcall make-body call-a result-a))))
+        1))
+    (should
      (equal
       (e-current-config-anthropic-s7--tool-result-value
        '(:content "[ephemeral context source 3, ~4 tokens, erase-eligible]\n\noutput-a"))
@@ -335,7 +355,14 @@ Repeated transcript history is accepted only when its pair is unchanged."
     (should-error
      (e-current-config-anthropic-s7--captured-tool-pairs
       (list (funcall make-body call-a result-a)
-            (funcall make-body duplicate-call duplicate-result))))))
+            (funcall make-body duplicate-call duplicate-result))))
+    (should-error
+     (e-current-config-anthropic-s7--captured-tool-pairs
+      (list (funcall make-body call-a labeled-result-a)
+            (funcall make-body
+             call-a
+             '(:type "tool_result" :tool_use_id "call-a"
+               :content "different output")))))))
 
 (defun e-current-config-anthropic-s7--cache-checkpoint (body)
   "Return BODY's native stable system checkpoint and its prefix/suffix."
