@@ -1,17 +1,20 @@
-#+title: Investigation: Steered Board Input Strands the Topic FIFO
+#+title: Investigation: Board-backed Steering Does Not Settle Its Input
 #+startup: overview
 
 * Conclusion
 
-The active-turn steering path writes a Board input into the session and gives
-it to the next model request, but never emits the =input-consumed= receipt that
-advances its durable Board pickup.  That pickup stays =claimed= at the head of
-the participant FIFO.  Later inputs stay =pending=, even after the turn
-finishes.  Ordinary topic reopening does not reconcile this claimed head.
+Board-backed steering is broken as an end-to-end operation.  The active-turn
+path writes the steered input into the session and gives it to the next model
+request, but never emits the =input-consumed= receipt that completes its Board
+delivery.  The pickup stays =claimed= at the participant FIFO head.  Later
+inputs stay =pending=, even after the turn finishes.
 
-This is a delivery-lifecycle defect, not evidence of SQLite corruption.  The
-Board persists the claim and FIFO order correctly; the execution side fails to
-close the claim, and the service has no general convergence path for it.
+The primary architectural defect is an incomplete steering contract across
+Board claim, session input, model use, and Board receipt.  A missing receipt
+turns an apparently successful steer into a permanent queue block.  Ordinary
+topic reopening also lacks reconciliation of the claimed head.  SQLite
+persists the claim and FIFO order correctly; this is not evidence of database
+corruption.
 
 * Live and durable evidence
 
@@ -63,6 +66,13 @@ database.
    FIFO item only when the claimed head reaches a terminal pickup transition
    (=e-board-sqlite-worker--board-pickup-transition=).
 
+The direct-submit receipt is emitted after =e-session-append-message= accepts
+an asynchronous write request, before its commit acknowledgement.  Adding an
+equally early receipt to the steering drain would clear this observed queue in
+the happy path but would still allow Board consumption to get ahead of a
+failed session write.  Steering needs a commit-aware settlement boundary, not
+just another optimistic event.
+
 * Isolated reproduction and coverage gap
 
 A disposable batch Emacs reproduction used the real harness turn and attached
@@ -82,7 +92,7 @@ model delivery of steering input but supplies no Board delivery identity and
 does not assert its receipt.  The Board FIFO integration tests exercise queued
 follow-ups, not an =inject= pickup steered into a running turn.
 
-* Recovery gap and safety constraint
+* Secondary recovery gap and safety constraint
 
 =e-chat-service--sql-resume-ready-scan= handles a =claimed= head only when its
 binding has =continuation-owner-p=.  Ordinary Grimoire topic creation and
@@ -111,12 +121,17 @@ simply resubmits the prompt can duplicate model execution.
 
 * Corrective direction
 
-- Make every accepted steering item carry a settlement path.  A receipt must
-  identify the original delivery and follow the successful session-input
-  commit; the backend-neutral loop should expose that append boundary without
-  depending on Board internals.
-- Give the chat delivery service one bounded reconciliation operation for any
-  claimed FIFO head, independent of continuation ownership.  It must use
+- Complete steering as one semantic operation: keep the exact Board delivery
+  identity through the pending-input drain, await the session-input commit,
+  emit one fenced consumption receipt, and only then consider that input
+  admitted for the next model request.  The backend-neutral loop should expose
+  the append boundary without depending on Board internals.  An append failure
+  must fail steering visibly rather than leave a claimed pickup.
+- Apply the same commit-aware receipt contract to direct and queued input.
+  Posting to Board or enqueuing a session write is not proof of consumption.
+- As a separate safety net, give the chat delivery service one bounded
+  reconciliation operation for any claimed FIFO head, independent of
+  continuation ownership.  It must use
   durable input evidence and the exact delivery identity to consume an
   already-recorded input, retry a proven uncommitted handoff, or visibly
   terminalize an ambiguous one.  Every outcome must promote or expose the

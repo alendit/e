@@ -8,7 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
-| New    | board-steered-input-strands-fifo/ | Steered Board input strands the topic FIFO |
+| New    | board-steered-input-strands-fifo/ | Board-backed steering does not settle its input |
 | Closed | canonical-json-text-leaks-utf8-bytes/ | Canonical JSON text leaks UTF-8 bytes |
 | Closed | stale-doom-autoload-retains-retired-subagent-command/ | Stale Doom autoload retains retired subagent command |
 | Closed | repeated-tool-failure-ignores-arguments/ | Repeated tool failure guard ignores call arguments |

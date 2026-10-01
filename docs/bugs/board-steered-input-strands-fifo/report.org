@@ -1,16 +1,18 @@
-#+title: Steered Board Input Strands the Topic FIFO
+#+title: Board-backed Steering Does Not Settle Its Input
 #+startup: overview
 
 * Report
 
-In a Grimoire topic chat, a URL submitted during an active turn reached the
-agent, and that turn completed.  The chat then stopped responding to three
-later prompts.  Its header remained =queued= while Board reported no active
-run.
+In a Grimoire topic chat, a URL submitted as steering during an active turn
+reached the agent, but steering did not complete its Board delivery.  The turn
+finished, and the chat stopped responding to three later prompts.  Its header
+remained =queued= while Board reported no active run.
 
-Expected behavior: every claimed Board input settles to a durable consumption
-or explicit non-consumption outcome.  A completed or abandoned turn cannot
-leave its participant's input FIFO blocked indefinitely.
+Expected behavior: steering a Board-backed chat is complete only when its user
+input is durably admitted to the turn and the corresponding Board pickup is
+settled.  The next prompt must remain runnable after the steered turn finishes.
+Recovery must also resolve an interrupted steering handoff without losing or
+duplicating the input.
 
 The affected topic is the 2026-10-01 Penteract sandbox discussion, session
 =20261001T124240-b830b9a2a666=, Board
