@@ -11,8 +11,8 @@ remained =queued= while Board reported no active run.
 Expected behavior: steering a Board-backed chat is complete only when its user
 input is durably admitted to the turn and the corresponding Board pickup is
 settled.  The next prompt must remain runnable after the steered turn finishes.
-Recovery must also resolve an interrupted steering handoff without losing or
-duplicating the input.
+The already stranded pickup needs a separate offline repair based on its
+recorded session input; blindly resubmitting it could duplicate execution.
 
 The affected topic is the 2026-10-01 Penteract sandbox discussion, session
 =20261001T124240-b830b9a2a666=, Board

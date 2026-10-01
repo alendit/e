@@ -119,33 +119,104 @@ the URL.  Recovery must distinguish a committed consumption from an
 uncommitted handoff, or record an explicit uncertain outcome.  A timeout that
 simply resubmits the prompt can duplicate model execution.
 
-* Corrective direction
+* Resolution
 
-- Complete steering as one semantic operation: keep the exact Board delivery
-  identity through the pending-input drain, await the session-input commit,
-  emit one fenced consumption receipt, and only then consider that input
-  admitted for the next model request.  The backend-neutral loop should expose
-  the append boundary without depending on Board internals.  An append failure
-  must fail steering visibly rather than leave a claimed pickup.
-- Apply the same commit-aware receipt contract to direct and queued input.
-  Posting to Board or enqueuing a session write is not proof of consumption.
-- As a separate safety net, give the chat delivery service one bounded
-  reconciliation operation for any claimed FIFO head, independent of
-  continuation ownership.  It must use
-  durable input evidence and the exact delivery identity to consume an
-  already-recorded input, retry a proven uncommitted handoff, or visibly
-  terminalize an ambiguous one.  Every outcome must promote or expose the
-  blocked successor.
-- Preserve FIFO and idempotence across turn finish/failure/cancellation,
-  asynchronous append failure, binding retirement, and restart.  Do not clear
-  process-local correlation while leaving a claimed pickup with no owner.
-- Surface an aged claimed head or reconciliation failure in Board/chat
-  activity, separately from the orchestration run count.
-- Add a real SQLite-backed composition regression: steer during a held turn,
-  verify the first pickup is consumed and a later input starts, then cover the
-  crash cuts before and after session-input commit.  Keep each recovery query
-  bounded to the participant head; do not add broad polling or table scans.
+The runtime store now performs Board head claim, session user-message append,
+pickup consumption, successor promotion, and its replay receipt inside one
+SQLite write transaction.  A failed append rolls the claim back.  A worker
+crash before commit rolls the whole write back; a crash after commit replays
+the one recorded result.  There is no application-side transaction or polling
+protocol for this boundary.
 
-The affected live Board and topic were left unchanged.  Repair should use the
-corrected durable reconciliation path; direct SQLite edits or blind resubmit
-would erase the evidence needed to decide whether the URL was already used.
+Chat delivers the already committed message through its attached harness port.
+It does not append it a second time.  A queued pickup remains =ready= while a
+turn is busy.  At the next provider boundary, the loop waits for its async
+session context refresh and includes a committed steer once.  Direct input
+consumption receipts now follow append acknowledgement.  The =input-consumed=
+activity event is durable so a continuation message admitted before its turn
+exists can be correlated with the turn that actually ran it.
+
+The old automatic retry of a =claimed= pickup was removed.  It could duplicate
+an input already recorded in the session.  The observed live pickup predates
+the transactional fix and needs a one-off offline repair.  The repair tool in
+=repair-claimed-head.el= refuses the live store path, defaults to dry run, and
+requires the exact Board association, FIFO shape, matching session delivery
+identity and content, and finished-turn evidence.  In apply mode it uses the
+Board worker's normal =consume= transition inside one SQLite transaction to
+promote the next input.  It has not been applied to the user's running store.
+
+The transaction closes the original claimed-head stranding path.  A process
+loss after that commit but before harness delivery still leaves an admitted
+session message whose execution is not automatically resumed; provider
+execution recovery is a separate lifecycle concern.  The runtime reports a
+visible delivery error if a synchronous handoff fails.  No generic claimed
+head retry or UI age indicator was added to the steady-state path.
+
+* Verification
+
+- The real SQLite chat composition steered into a held provider turn, observed
+  the steered input once in the next request, and ran a later queued input.
+- Worker tests covered rollback after a failed session append, FIFO fencing,
+  and worker loss before and after commit.  The replay produced one session
+  message and one pickup consumption.
+- Continuation tests covered ready-head deferral and outcome backfill across
+  restart.  The bounded outcome query correlated a committed message with its
+  durable consumption receipt.
+- Repository tests passed: Board service 41/41, session worker 28/28, harness
+  and loop 99/99, session async 20/20.  Changed Lisp compiled successfully;
+  =e-chat-service.el= retained three pre-existing warnings under ordinary
+  compilation, so warnings-as-errors did not pass.
+
+The live Emacs and its store were not reloaded, stopped, or changed.  Core
+runtime changes require an Emacs restart for new behavior.  The offline repair
+remains a separate operation after a consistent store copy and dry-run review.
+
+** Offline repair procedure
+
+Take a consistent SQLite backup into a private directory; copying only the
+main database file while its WAL is active is insufficient.  Run the one-off
+tool with =E_BOARD_REPAIR_STORE_DIR= pointing to that copy:
+
+#+begin_example
+E_BOARD_REPAIR_STORE_DIR=/private/path/to/offline-copy eldev exec -R -f docs/bugs/board-steered-input-strands-fifo/repair-claimed-head.el
+E_BOARD_REPAIR_STORE_DIR=/private/path/to/offline-copy E_BOARD_REPAIR_APPLY=1 eldev exec -R -f docs/bugs/board-steered-input-strands-fifo/repair-claimed-head.el
+#+end_example
+
+The first invocation only prints the exact proof.  The second changes the
+copy, then refuses a second application because the FIFO shape has changed.
+This dry-run/apply/refusal sequence passed on a disposable synthetic SQLite
+store.  Replacing the user's live store with a repaired copy requires Emacs and
+all store owners to be stopped, the original database and WAL files retained
+as a backup, and a separate controlled restore.  None of those operations was
+performed here.
+
+* Design self-check
+
+1. A stopped package fixes future steering and leaves a checkable offline path
+   for the historical head; that is better than the prior stuck FIFO.
+2. It moves toward one database-owned admission boundary for Board and Session.
+3. The stable transaction is direct.  Provider execution recovery remains a
+   separate, reversible lifecycle decision rather than a speculative adapter.
+4. The runtime-store worker owns the transaction; chat owns delivery; the
+   harness owns turn input; the loop owns provider request timing.
+5. Coupling is limited to one session command carrying exact Board pickup
+   coordinates.  The provider loop sees only committed user messages.
+6. Core loop policy has no SQLite or Board dependency.  The chat adapter uses
+   the Board service contract rather than issuing SQL.
+7. SQLite mutation stays in the worker; the one-off repair stays outside the
+   runtime modules.
+8. Durable facts are the session message, pickup state, transaction receipt,
+   and consumption activity.  Process-local delivery correlation remains local.
+9. One bounded transaction replaces separate writes.  The durable receipt adds
+   one small activity row per delivered Board input, needed to link a message
+   admitted before turn creation to its actual turn.
+10. The composed command names a real shared-store invariant; the committed
+    message port works for submit, steer, and queue without weakening them.
+11. Legacy claimed heads are handled offline.  No runtime compatibility retry
+    is retained.
+12. The obsolete claimed-head retry and separate pickup settlement path were
+    removed.
+13. Expected Board conflicts and write failures settle as visible failures;
+    unexpected worker errors roll the SQLite transaction back and surface.
+14. Worker, loop, harness, and real SQLite chat tests each prove their own
+    boundary; the composed steering test proves the user-visible FIFO path.
