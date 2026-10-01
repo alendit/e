@@ -1,0 +1,17 @@
+#+title: Steered Board Input Strands the Topic FIFO
+#+startup: overview
+
+* Report
+
+In a Grimoire topic chat, a URL submitted during an active turn reached the
+agent, and that turn completed.  The chat then stopped responding to three
+later prompts.  Its header remained =queued= while Board reported no active
+run.
+
+Expected behavior: every claimed Board input settles to a durable consumption
+or explicit non-consumption outcome.  A completed or abandoned turn cannot
+leave its participant's input FIFO blocked indefinitely.
+
+The affected topic is the 2026-10-01 Penteract sandbox discussion, session
+=20261001T124240-b830b9a2a666=, Board
+=brd_fdc2c88f13ad9d1464990437032ad3d3=.

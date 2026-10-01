@@ -1,0 +1,136 @@
+#+title: Investigation: Steered Board Input Strands the Topic FIFO
+#+startup: overview
+
+* Conclusion
+
+The active-turn steering path writes a Board input into the session and gives
+it to the next model request, but never emits the =input-consumed= receipt that
+advances its durable Board pickup.  That pickup stays =claimed= at the head of
+the participant FIFO.  Later inputs stay =pending=, even after the turn
+finishes.  Ordinary topic reopening does not reconcile this claimed head.
+
+This is a delivery-lifecycle defect, not evidence of SQLite corruption.  The
+Board persists the claim and FIFO order correctly; the execution side fails to
+close the claim, and the service has no general convergence path for it.
+
+* Live and durable evidence
+
+The user's screenshot showed the Penteract Org canvas beside a chat with
+=Chat turn: queued=, =Board runs: idle (0 active)=, and the three unanswered
+follow-ups.  A bounded =scripts/e-live-probe chat= of that selected chat
+returned session =20261001T124240-b830b9a2a666=, status =queued=, and no
+progress turn.  No live Emacs state was changed.
+
+Read-only queries of the active SQLite store
+=~/.config/emacs/.local/cache/e/store.sqlite3= found:
+
+| UTC time | Durable fact |
+|----------+--------------|
+| 12:42:40 | Initial topic input was consumed; pickup FIFO position 1 is =consumed=. |
+| 12:45:34 | The mid-turn Slack URL input reached FIFO position 2 and became =claimed=, attempt 1. |
+| 12:45:37 | The session journal appended that same URL as a user message with its exact =:board-delivery-id=. |
+| 12:52:02 | The assistant answer and =turn-finished= were committed; the topic file was saved. |
+| 12:57:13 | The Hyperframe/o11y-notebooks follow-up entered FIFO position 3 as =pending=. |
+| 13:38:57 | "did you address the last comment?" entered position 4 as =pending=. |
+| 13:44:35 | "Hi?" entered position 5 as =pending=. |
+
+At the last read, position 2 still had only =ready -> claimed= pickup events;
+positions 3--5 remained =pending= with zero attempts.  The session journal
+ended at position 348 with =turn-finished= and contained no later user turns.
+The topic's Hyperframe follow-up is absent from the saved document.
+
+The quoted times are UTC; Berlin local time was UTC+2.  These reads were
+bounded to the exact session and Board identities and did not change the
+database.
+
+* Execution trace
+
+1. Plain chat submit during an active turn chooses steering
+   (=e-chat--submit-intent= in =lisp/shells/chat/e-chat.el=).  The chat service
+   posts a Board input with mode =inject=, claims its ready pickup, and calls
+   the attached turn port's steer operation
+   (=e-chat-service--sql-submit-claimed-pickup=).
+2. =e-harness-attached-turn-steer= retains the prompt and delivery metadata
+   as pending steering input.  =e-loop= drains it at the next provider
+   boundary, appends a user message, and sends it in the next model request.
+   The live session's URL message proves this path ran.
+3. =e-harness-turn.el= emits =input-consumed= for a directly submitted turn
+   after appending its first user message.  Neither steering drain in that
+   file emits the corresponding receipt.  =e-chat-service--sql-harness-event=
+   transitions a pickup to =consumed= only on that receipt.
+4. =turn-finished= reports execution outcome and clears process-local delivery
+   correlation, but it does not settle the pickup.  SQLite promotes the next
+   FIFO item only when the claimed head reaches a terminal pickup transition
+   (=e-board-sqlite-worker--board-pickup-transition=).
+
+* Isolated reproduction and coverage gap
+
+A disposable batch Emacs reproduction used the real harness turn and attached
+port with a held fake backend.  It submitted one Board input, steered a second
+Board input while the first request was active, then finished both requests.
+The second input appeared in the next backend request.  The first input emitted
+an =input-consumed= receipt; the steered input emitted none:
+
+#+begin_example
+(:steered-in-next-request t :first-receipt t :steered-receipt nil)
+#+end_example
+
+The existing direct-input receipt test
+=e-harness-test-board-consumption-receipt-carries-endpoint-fence= covers only
+initial submit.  =e-harness-test-steer-active-turn-drains-in-same-turn= proves
+model delivery of steering input but supplies no Board delivery identity and
+does not assert its receipt.  The Board FIFO integration tests exercise queued
+follow-ups, not an =inject= pickup steered into a running turn.
+
+* Recovery gap and safety constraint
+
+=e-chat-service--sql-resume-ready-scan= handles a =claimed= head only when its
+binding has =continuation-owner-p=.  Ordinary Grimoire topic creation and
+reopen call =grimoire-topic--start-agentic-session= without that flag.  The
+pickup observer can therefore see the claimed head but does not settle or
+retry it.  There is no scheduled claimed-head expiry in the current SQL
+service.  Subsequent input admission returns successfully while its pickups
+wait behind the head, which explains the misleading =queued= status with no
+active turn.
+
+The Feature 66 plan explicitly calls harness acceptance/consumption
+reconciliation partial, defers scheduled expiry/rebind reconciliation, and
+lists steering transfer among the remaining pickup work.  The implemented
+direct-submit and queued-input paths have receipt coverage, but the active
+steering path crosses that unfinished boundary.
+
+The chat header's =Board runs: idle= is the orchestration run count, not a
+pickup-liveness check.  The UI therefore gives no visible age or reason for
+the blocked claimed head even as later submissions continue to say =queued=.
+
+Blindly retrying position 2 would be unsafe: its user message and exact Board
+delivery ID are already in the durable session, and the completed turn used
+the URL.  Recovery must distinguish a committed consumption from an
+uncommitted handoff, or record an explicit uncertain outcome.  A timeout that
+simply resubmits the prompt can duplicate model execution.
+
+* Corrective direction
+
+- Make every accepted steering item carry a settlement path.  A receipt must
+  identify the original delivery and follow the successful session-input
+  commit; the backend-neutral loop should expose that append boundary without
+  depending on Board internals.
+- Give the chat delivery service one bounded reconciliation operation for any
+  claimed FIFO head, independent of continuation ownership.  It must use
+  durable input evidence and the exact delivery identity to consume an
+  already-recorded input, retry a proven uncommitted handoff, or visibly
+  terminalize an ambiguous one.  Every outcome must promote or expose the
+  blocked successor.
+- Preserve FIFO and idempotence across turn finish/failure/cancellation,
+  asynchronous append failure, binding retirement, and restart.  Do not clear
+  process-local correlation while leaving a claimed pickup with no owner.
+- Surface an aged claimed head or reconciliation failure in Board/chat
+  activity, separately from the orchestration run count.
+- Add a real SQLite-backed composition regression: steer during a held turn,
+  verify the first pickup is consumed and a later input starts, then cover the
+  crash cuts before and after session-input commit.  Keep each recovery query
+  bounded to the participant head; do not add broad polling or table scans.
+
+The affected live Board and topic were left unchanged.  Repair should use the
+corrected durable reconciliation path; direct SQLite edits or blind resubmit
+would erase the evidence needed to decide whether the URL was already used.
