@@ -138,12 +138,12 @@ exists can be correlated with the turn that actually ran it.
 
 The old automatic retry of a =claimed= pickup was removed.  It could duplicate
 an input already recorded in the session.  The observed live pickup predates
-the transactional fix and needs a one-off offline repair.  The repair tool in
-=repair-claimed-head.el= refuses the live store path, defaults to dry run, and
-requires the exact Board association, FIFO shape, matching session delivery
-identity and content, and finished-turn evidence.  In apply mode it uses the
-Board worker's normal =consume= transition inside one SQLite transaction to
-promote the next input.  It has not been applied to the user's running store.
+the transactional fix and required a one-off repair outside the runtime.  The
+tool in =repair-claimed-head.el= defaults to dry run and requires the exact
+Board association, FIFO shape, matching session delivery identity and content,
+and finished-turn evidence.  In apply mode it uses the Board worker's normal
+=consume= transition inside one SQLite transaction to promote the next input.
+The live application path does not contain this historical repair logic.
 
 The transaction closes the original claimed-head stranding path.  A process
 loss after that commit but before harness delivery still leaves an admitted
@@ -167,11 +167,10 @@ head retry or UI age indicator was added to the steady-state path.
   =e-chat-service.el= retained three pre-existing warnings under ordinary
   compilation, so warnings-as-errors did not pass.
 
-The live Emacs and its store were not reloaded, stopped, or changed.  Core
-runtime changes require an Emacs restart for new behavior.  The offline repair
-remains a separate operation after a consistent store copy and dry-run review.
+Core runtime changes require an Emacs restart for new behavior.  Emacs was not
+reloaded or stopped during implementation or the later one-off repair.
 
-** Offline repair procedure
+** One-off repair procedure and live execution
 
 Take a consistent SQLite backup into a private directory; copying only the
 main database file while its WAL is active is insufficient.  Run the one-off
@@ -185,15 +184,32 @@ E_BOARD_REPAIR_STORE_DIR=/private/path/to/offline-copy E_BOARD_REPAIR_APPLY=1 el
 The first invocation only prints the exact proof.  The second changes the
 copy, then refuses a second application because the FIFO shape has changed.
 This dry-run/apply/refusal sequence passed on a disposable synthetic SQLite
-store.  Replacing the user's live store with a repaired copy requires Emacs and
-all store owners to be stopped, the original database and WAL files retained
-as a backup, and a separate controlled restore.  None of those operations was
-performed here.
+store.
+
+The user then explicitly asked to unblock the live session without backups.
+The live store still showed pickup position 2 =claimed= with one matching
+session user message and a finished turn.  An additional later input had
+entered position 6, so the bounded proof accepted contiguous pending positions
+3--6.  The same tool's dry run passed against the exact live directory.  With
+=E_BOARD_REPAIR_ALLOW_LIVE=1= and =E_BOARD_REPAIR_APPLY=1=, it committed the
+=consume= transition directly to that store under SQLite's =BEGIN IMMEDIATE=.
+No backup was made, and Emacs was not stopped or reloaded.
+
+Read-only verification showed position 2 =consumed= (attempt 1, revision 3),
+position 3 promoted to =ready=, and a third pickup event =consumed= after
+=ready= and =claimed=.  The running chat initially remained =queued= because
+the external transaction did not emit a process-local wakeup.  A targeted
+=e-chat-service--sql-resume-ready= call on that session's existing binding
+started its ordinary delivery scan.  A bounded live probe then showed status
+=waiting for provider= with active turn
+=01M3WDM1HP67CVP2R6SM08BTCP=; read-only SQL showed positions 2--6 all
+=consumed=.  The Board FIFO is no longer blocked.  Provider completion was not
+required for this repair and was not forced.
 
 * Design self-check
 
-1. A stopped package fixes future steering and leaves a checkable offline path
-   for the historical head; that is better than the prior stuck FIFO.
+1. A stopped package fixes future steering and the historical head was
+   resolved through a checked one-off transaction.
 2. It moves toward one database-owned admission boundary for Board and Session.
 3. The stable transaction is direct.  Provider execution recovery remains a
    separate, reversible lifecycle decision rather than a speculative adapter.

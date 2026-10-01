@@ -2,6 +2,7 @@
 
 ;; Run with: E_BOARD_REPAIR_STORE_DIR=/path/to/offline-copy eldev exec -R -f docs/bugs/board-steered-input-strands-fifo/repair-claimed-head.el
 ;; Set E_BOARD_REPAIR_APPLY=1 to change that copy after reviewing the dry run.
+;; The exact live directory additionally requires E_BOARD_REPAIR_ALLOW_LIVE=1.
 
 (require 'cl-lib)
 (require 'sqlite)
@@ -34,7 +35,7 @@
     (let* ((rows
             (sqlite-select
              database
-             "SELECT delivery_key,participant_id,fifo_position,message_id,state,revision,attempt,payload FROM board_pickups WHERE board_id=? AND generation=? AND participant_id=? AND state IN ('pending','ready','claimed','accepted','cancelling') ORDER BY fifo_position LIMIT 5"
+             "SELECT delivery_key,participant_id,fifo_position,message_id,state,revision,attempt,payload FROM board_pickups WHERE board_id=? AND generation=? AND participant_id=? AND state IN ('pending','ready','claimed','accepted','cancelling') ORDER BY fifo_position LIMIT 17"
              (vector e-board-repair--board-id e-board-repair--generation
                      participant-id)))
            (pickups
@@ -43,15 +44,15 @@
                        row e-board-repair--board-id e-board-repair--generation))
                     rows))
            (head (car pickups)))
-      (unless (and (= (length pickups) 4)
+      (unless (and (<= 4 (length pickups) 16)
                    (equal (mapcar (lambda (pickup)
                                     (plist-get pickup :fifo-position))
                                   pickups)
-                          '(2 3 4 5))
-                   (equal (mapcar (lambda (pickup)
-                                    (plist-get pickup :state))
-                                  pickups)
-                          '(claimed pending pending pending)))
+                          (number-sequence 2 (1+ (length pickups))))
+                   (eq (plist-get head :state) 'claimed)
+                   (cl-every (lambda (pickup)
+                               (eq (plist-get pickup :state) 'pending))
+                             (cdr pickups)))
         (error "Participant FIFO changed; inspect it before repair"))
       (let* ((message-rows
               (sqlite-select
@@ -113,9 +114,11 @@
         (expand-file-name "~/.config/emacs/.local/cache/e")))
   (unless (and directory (file-directory-p directory)
                (file-exists-p (expand-file-name "store.sqlite3" directory)))
-    (error "Set E_BOARD_REPAIR_STORE_DIR to an offline store copy"))
-  (when (equal (file-truename directory) (file-truename live-directory))
-    (error "This one-off tool refuses the live store directory"))
+    (error "Set E_BOARD_REPAIR_STORE_DIR to a store directory"))
+  (when (and (equal (file-truename directory)
+                    (file-truename live-directory))
+             (not (equal (getenv "E_BOARD_REPAIR_ALLOW_LIVE") "1")))
+    (error "Set E_BOARD_REPAIR_ALLOW_LIVE=1 for the exact live store"))
   (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
     (unwind-protect
         (if (equal (getenv "E_BOARD_REPAIR_APPLY") "1")
@@ -142,7 +145,7 @@
                                         (plist-get proof :next-delivery-id)))
                       (error "Transition did not consume the head and promote its successor"))
                     (sqlite-execute database "COMMIT")
-                    (princ (format "Repaired offline copy: %S\n" proof)))
+                    (princ (format "Repaired store: %S\n" proof)))
                 (error
                  (ignore-errors (sqlite-execute database "ROLLBACK"))
                  (signal (car err) (cdr err)))))
