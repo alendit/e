@@ -401,6 +401,53 @@
                        (plist-get second-pickup :delivery-id)))
         (should (eq (plist-get (plist-get consumed :next) :state) 'ready))))))
 
+(ert-deftest e-board-sqlite-service-pickup-message-commits-with-session-owner ()
+  "The session-owned composite write consumes one head and promotes its next."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id session-id participant-id)
+    (e-session-async-enable store)
+    (let* ((first
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-append-route-start
+              service board-id :content "board first" :tags '(main)
+              :source-input-key '("session-commit" 1 1))))
+           (second
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-append-route-start
+              service board-id :content "board second" :tags '(main)
+              :source-input-key '("session-commit" 1 2))))
+           (first-pickup (car (plist-get first :pickups)))
+           (second-pickup (car (plist-get second :pickups)))
+           (result
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-append-pickup-message-start
+              service store session-id first-pickup
+              '(:role user :origin board :content "durably admitted"))))
+           (page
+            (e-board-sqlite-service-test--await
+             (e-board-sqlite-service-pickup-page-start
+              service board-id 1 participant-id 8)))
+           (session-page
+            (e-board-sqlite-service-test--await
+             (e-session-async-visible-message-page store session-id 8)))
+           (pickup-result (plist-get result :board-pickup)))
+      (should (= (plist-get first-pickup :generation) 1))
+      (should (equal (plist-get result :content) "durably admitted"))
+      (should (eq (plist-get (plist-get pickup-result :pickup) :state)
+                  'consumed))
+      (should (equal (plist-get (plist-get pickup-result :next) :delivery-id)
+                     (plist-get second-pickup :delivery-id)))
+      (should (eq (plist-get (car page) :state) 'ready))
+      (should (equal (mapcar (lambda (message)
+                               (plist-get message :content))
+                             (plist-get session-page :messages))
+                     '("durably admitted")))
+      (should (= (plist-get
+                  (e-board-sqlite-service-test--await
+                   (e-session-async-query-state store session-id))
+                  :message-count)
+                 1)))))
+
 (ert-deftest e-board-sqlite-service-retry-rejects-stale-pickup-coordinates ()
   "A claimed pickup is not retried with stale generation or participant data."
   (cl-labels
@@ -722,6 +769,97 @@
           (e-chat-service-unsubscribe subscription))
         (when (e-chat-service-binding harness session-id)
           (e-chat-service--retire-binding binding))))))
+
+(ert-deftest e-chat-service-sqlite-steer-consumes-head-and-runs-later-queued-input ()
+  "A committed steer reaches the model and releases the participant FIFO."
+  (e-board-sqlite-service-test--with-fixture
+      (store service board-id session-id participant-id)
+    (let* ((requests nil)
+           (finishers nil)
+           (backend
+            (e-backend-create
+             :name "held-board-steering"
+             :start
+             (cl-function
+              (lambda (&key messages options on-item on-done on-error
+                            on-request-start)
+                (ignore options on-error)
+                (let ((ordinal (1+ (length requests))))
+                  (setq requests (append requests (list (copy-tree messages t))))
+                  (funcall on-request-start (e-backend-request-create))
+                  (push (lambda ()
+                          (funcall on-item
+                                   (list :type 'assistant-message
+                                         :content (format "answer %d" ordinal)))
+                          (funcall on-item '(:type done :reason stop))
+                          (funcall on-done '(:status done)))
+                        finishers))
+                nil))))
+           (harness (e-harness-create :sessions store :backend backend))
+           (binding (e-board-sqlite-service-test--await
+                     (e-chat-service-binding-start harness session-id))))
+      (unwind-protect
+          (progn
+            (e-board-sqlite-service-test--await
+             (e-chat-service-submit-session harness session-id "first"))
+            (e-board-sqlite-service-test--wait-until
+             (lambda () (= (length requests) 1)))
+            (e-board-sqlite-service-test--await
+             (e-chat-service-steer-session harness session-id "steered"))
+            (e-board-sqlite-service-test--wait-until
+             (lambda ()
+               (null (e-board-sqlite-service-test--await
+                      (e-board-sqlite-service-pickup-page-start
+                       service board-id 1 participant-id 8)))))
+            (funcall (pop finishers))
+            (e-board-sqlite-service-test--wait-until
+             (lambda () (= (length requests) 2)))
+            (should (= (cl-count "steered" (nth 1 requests)
+                                 :key (lambda (message)
+                                        (plist-get message :content))
+                                 :test #'equal)
+                       1))
+            (e-board-sqlite-service-test--await
+             (e-chat-service-queue-session harness session-id "queued later"))
+            (should (= (length requests) 2))
+            (funcall (pop finishers))
+            (e-board-sqlite-service-test--wait-until
+             (lambda () (= (length requests) 3)))
+            (should (equal (plist-get (car (last (nth 2 requests))) :content)
+                           "queued later"))
+            (funcall (pop finishers))
+            (e-board-sqlite-service-test--wait-until
+             (lambda ()
+               (null (e-board-sqlite-service-test--await
+                      (e-board-sqlite-service-pickup-page-start
+                       service board-id 1 participant-id 8)))))
+            (let* ((page (e-board-sqlite-service-test--await
+                          (e-session-async-visible-message-page
+                           store session-id 16)))
+                   (contents (mapcar (lambda (message)
+                                       (plist-get message :content))
+                                     (plist-get page :messages))))
+              (should (= (cl-count "steered" contents :test #'equal) 1)))
+            (let* ((records
+                    (plist-get
+                     (e-runtime-store-call
+                      (e-session-storage-runtime-store store) 'read
+                      (list :op 'session-record-page :session-id session-id
+                            :record-type "activity-event" :order 'newest
+                            :limit 64))
+                     :records))
+                   (receipts
+                    (seq-filter
+                     (lambda (row)
+                       (eq (plist-get (plist-get row :value) :event-type)
+                           'input-consumed))
+                     records)))
+              (should (= (length receipts) 3))
+              (dolist (receipt receipts)
+                (let ((payload (plist-get (plist-get receipt :value) :payload)))
+                  (should (stringp (plist-get payload :message-id)))
+                  (should-not (plist-member payload :endpoint-token))))))
+        (e-chat-service--retire-binding binding)))))
 
 (ert-deftest e-chat-service-sqlite-participant-output-resolves-current-name ()
   "A participant label is resolved relationally for records and observers."
@@ -1629,13 +1767,13 @@
             (e-board-sqlite-service-test--await
              (e-board-sqlite-service-pickup-page-start
               service board-id 1 participant-id 16))))
-         (wait-for-claimed-pickup (service)
+         (wait-for-ready-pickup (service)
            (let ((deadline (+ (float-time) 5.0))
                  pickup)
-             (while (and (not (eq (plist-get pickup :state) 'claimed))
+             (while (and (not (eq (plist-get pickup :state) 'ready))
                          (< (float-time) deadline))
                (setq pickup (continuation-pickup service))
-               (unless (eq (plist-get pickup :state) 'claimed)
+               (unless (eq (plist-get pickup :state) 'ready)
                  (accept-process-output nil 0.01)))
              pickup))
          (run-projection (service)
@@ -1701,21 +1839,12 @@
                 service-1 board-id fact)))
             (e-board-sqlite-service-test--await
              (e-chat-service-binding-start harness-1 session-id nil t))
-            (let ((deadline (+ (float-time) 5.0))
-                  (pickup (wait-for-claimed-pickup service-1))
-                  queued)
-              (while (and (null queued) (< (float-time) deadline))
-                (setq queued (e-harness-queued-prompts harness-1 session-id))
-                (unless queued (accept-process-output nil 0.01)))
-              (should (eq (plist-get pickup :state) 'claimed))
+            (let ((pickup (wait-for-ready-pickup service-1)))
+              (should (eq (plist-get pickup :state) 'ready))
               (should (e-chat-service-active-turn-p harness-1 session-id))
-              (should (= (length queued) 1))
-              (should (equal
-                       (plist-get (plist-get (car queued) :metadata)
-                                  :board-continuation-key)
-                       publication-key)))
-            ;; The owner turn queue is process-local; the claimed pickup and
-            ;; keyed input are durable at this simulated restart boundary.
+              (should-not (e-harness-queued-prompts harness-1 session-id)))
+            ;; The keyed input and its ready pickup survive the simulated
+            ;; restart without relying on the process-local turn queue.
             (should (= (length (continuation-inputs service-1)) 1))
             (let ((projection (run-projection service-1)))
               (should (eq (plist-get (plist-get projection :continuation)
@@ -1887,14 +2016,6 @@
                    (mapcar (lambda (row) (plist-get row :record))
                            (plist-get page :records))))
              (e-board-orchestration-reduce records)))
-         (wait-for-queue-size (harness wanted)
-           (let ((deadline (+ (float-time) 5.0))
-                 (queued (e-harness-queued-prompts harness session-id)))
-             (while (and (< (length queued) wanted)
-                         (< (float-time) deadline))
-               (accept-process-output nil 0.01)
-               (setq queued (e-harness-queued-prompts harness session-id)))
-             queued))
          (wait-for-backend-starts (wanted)
            (let ((deadline (+ (float-time) 5.0)))
              (while (and (< backend-start-count wanted)
@@ -2045,25 +2166,21 @@
             (should (e-chat-service-active-turn-p harness-2 session-id))
             (e-board-sqlite-service-test--await
              (e-chat-service-queue-session harness-2 session-id user-prompt))
-            (let ((queued (wait-for-queue-size harness-2 1)))
-              (should (= (length queued) 1))
-              (should (equal (plist-get (car queued) :prompt) user-prompt)))
+            (should-not (e-harness-queued-prompts harness-2 session-id))
 
             (e-board-sqlite-service-test--await
              (e-chat-service-binding-start harness-2 session-id nil t))
             (let ((projection (wait-for-published service-2)))
               (should (eq (plist-get (plist-get projection :continuation) :state)
                           'published)))
-            (let ((queued (wait-for-queue-size harness-2 1))
-                  (pending (pickups service-2)))
-              (should (= (length queued) 1))
-              (should (equal (plist-get (car queued) :prompt) user-prompt))
+            (let ((pending (pickups service-2)))
+              (should-not (e-harness-queued-prompts harness-2 session-id))
               (should (= (length pending) 2))
               (setq user-delivery-id
                     (plist-get (car pending) :delivery-id)
                     continuation-delivery-id
                     (plist-get (cadr pending) :delivery-id))
-              (should (eq (plist-get (car pending) :state) 'claimed))
+              (should (eq (plist-get (car pending) :state) 'ready))
               (should (eq (plist-get (cadr pending) :state) 'pending))
               (should (< (plist-get (car pending) :fifo-position)
                          (plist-get (cadr pending) :fifo-position)))
@@ -2112,8 +2229,8 @@
               (should (eq (plist-get receipt :type) 'input-consumed))
               (should (equal (plist-get (plist-get receipt :payload) :delivery-id)
                              continuation-delivery-id)))
-            ;; The input-consumed receipt says the input started; only the
-            ;; later turn-finished event writes its coordinator outcome.
+            ;; The input-consumed receipt confirms durable admission; only
+            ;; the later turn-finished event writes its coordinator outcome.
             (let ((outcome
                    (e-board-sqlite-service-test--await
                     (e-session-async-continuation-outcome

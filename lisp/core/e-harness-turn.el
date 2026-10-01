@@ -129,7 +129,7 @@ owned by the activity owner and can be passed to
    subscription))
 
 (cl-defun e-harness-attached-turn-port-submit
-    (port prompt &key delay metadata)
+    (port prompt &key delay metadata committed-message)
   "Submit PROMPT through the endpoint bound to PORT."
   (e-harness-attached-turn-submit
    (e-harness-attached-turn-port-harness port)
@@ -137,6 +137,7 @@ owned by the activity owner and can be passed to
    prompt
    :delay delay
    :metadata metadata
+   :committed-message committed-message
    :attachment-token (e-harness-attached-turn-port-attachment-token port)
    :attached-turn-port port))
 
@@ -152,18 +153,19 @@ owned by the activity owner and can be passed to
    :attached-turn-port port))
 
 (cl-defun e-harness-attached-turn-port-steer
-    (port prompt &key metadata)
+    (port prompt &key metadata committed-message)
   "Steer PORT's active turn with PROMPT."
   (e-harness-attached-turn-steer
    (e-harness-attached-turn-port-harness port)
    (e-harness-attached-turn-port-session-id port)
    prompt
    :metadata metadata
+   :committed-message committed-message
    :attachment-token (e-harness-attached-turn-port-attachment-token port)
    :attached-turn-port port))
 
 (cl-defun e-harness-attached-turn-port-queue
-    (port prompt &key references metadata)
+    (port prompt &key references metadata committed-message)
   "Queue PROMPT on PORT's active turn."
   (e-harness-attached-turn-queue
    (e-harness-attached-turn-port-harness port)
@@ -171,6 +173,7 @@ owned by the activity owner and can be passed to
    prompt
    :references references
    :metadata metadata
+   :committed-message committed-message
    :attachment-token (e-harness-attached-turn-port-attachment-token port)
    :attached-turn-port port))
 
@@ -386,7 +389,7 @@ board, whose delivery path later starts the new turn."
 
 (cl-defun e-harness-attached-turn-queue
     (harness session-id prompt &key references metadata attachment-token
-             attached-turn-port)
+             attached-turn-port committed-message)
   "Queue PROMPT as a follow-up for SESSION-ID in HARNESS.
 The session must currently have a running active turn."
   (setq attached-turn-port
@@ -400,7 +403,8 @@ The session must currently have a running active turn."
            (gethash session-id (e-harness-active-turns harness)))
     (signal 'e-harness-no-active-turn (list session-id)))
   (e-harness-turn-state-enqueue-prompt
-   harness session-id prompt references metadata attached-turn-port))
+   harness session-id prompt references metadata attached-turn-port
+   committed-message))
 
 (defun e-harness-turn--steering-prompt-preview (prompt)
   "Return compact activity preview for steering PROMPT."
@@ -424,13 +428,17 @@ activity persistence."
   (and (listp entry)
        (plist-get entry :pending-steering-input)))
 
-(defun e-harness-turn--append-pending-steering-item (harness entry prompt metadata)
+(defun e-harness-turn--append-pending-steering-item
+    (harness entry prompt metadata &optional committed-message)
   "Append PROMPT and METADATA as pending steering input on HARNESS ENTRY."
   (plist-put entry
              :pending-steering-input
              (append (e-harness-turn--pending-steering-items entry)
                      (list (list :prompt prompt
-                                 :metadata (copy-sequence metadata)))))
+                                 :metadata (copy-sequence metadata)
+                                 :committed-message
+                                 (and committed-message
+                                      (copy-tree committed-message t))))))
   (plist-put entry :pending-steering-count
              (1+ (or (plist-get entry :pending-steering-count) 0)))
   (e-harness-turn-state-adjust-queued-input-count harness 1)
@@ -446,9 +454,17 @@ activity persistence."
       (e-harness-turn-state-adjust-queued-input-count harness (- count))
       items)))
 
+(defun e-harness-turn--steering-message (item)
+  "Return ITEM's committed or newly admitted user message."
+  (or (and (plist-get item :committed-message)
+           (copy-tree (plist-get item :committed-message) t))
+      (list :role 'user
+            :content (plist-get item :prompt)
+            :metadata (plist-get item :metadata))))
+
 (cl-defun e-harness-attached-turn-steer
     (harness session-id prompt &key metadata attachment-token
-             attached-turn-port)
+             attached-turn-port committed-message)
   "Steer SESSION-ID's running active turn with PROMPT in HARNESS."
   (e-harness-turn--require-attached-port
    harness session-id attachment-token attached-turn-port)
@@ -458,8 +474,14 @@ activity persistence."
     (unless (e-harness-turn-state-active-turn-running-p entry)
       (signal 'e-harness-no-active-turn (list session-id)))
     (let ((turn-id (plist-get entry :id))
+          (receipt-metadata metadata)
           (metadata (e-harness-turn--durable-input-metadata metadata)))
-      (e-harness-turn--append-pending-steering-item harness entry prompt metadata)
+      (e-harness-turn--append-pending-steering-item
+       harness entry prompt metadata committed-message)
+      (when committed-message
+        (e-harness-turn--emit-input-consumed
+         harness session-id turn-id receipt-metadata
+         (plist-get committed-message :id)))
       (e-harness-activity-emit-turn-event
        harness session-id turn-id 'turn-steered
        (list :prompt-preview (e-harness-turn--steering-prompt-preview prompt)
@@ -485,6 +507,7 @@ activity persistence."
          session-id
          (plist-get item :prompt)
          :metadata (e-harness-turn-state-queue-item-metadata item)
+         :committed-message (plist-get item :committed-message)
          :attachment-token
          (plist-get (plist-get item :metadata) :board-endpoint-token)
          :attached-turn-port (plist-get item :attached-turn-port))))))
@@ -1643,6 +1666,22 @@ commit acknowledgement.  For a local test store, return the updated message."
          :content prompt
          :metadata metadata)))
 
+(defun e-harness-turn--emit-input-consumed
+    (harness session-id turn-id metadata message-id)
+  "Report a durably admitted Board input after its session write settles."
+  (when (plist-get metadata :board-delivery-id)
+    (e-harness-activity-emit-turn-event
+     harness session-id turn-id 'input-consumed
+     (list :delivery-id (copy-tree (plist-get metadata :board-delivery-id))
+           :board-id (plist-get metadata :board-id)
+           :participant-id (plist-get metadata :board-participant-id)
+           :endpoint-token
+           (let ((token (plist-get metadata :board-endpoint-token)))
+             (if (vectorp token) (copy-sequence token) (copy-tree token)))
+           :endpoint-generation
+           (copy-tree (plist-get metadata :board-endpoint-generation))
+           :message-id message-id))))
+
 (defun e-harness-turn--turn-assistant-message (harness session-id turn-id)
   "Return the final assistant message for SESSION-ID TURN-ID in HARNESS.
 When a turn produced multiple assistant messages, return the last one."
@@ -1741,19 +1780,28 @@ session value directly."
           ;; A context refresh is atomic at the loop boundary: messages and
           ;; all request-derived options (segments, observation frontier, and
           ;; anchor decision) come from one fresh harness projection.
-          (let ((fresh-context
-                 (e-harness-turn-context harness session-id turn-id)))
-            (when on-context-refresh
-              (funcall on-context-refresh fresh-context))
-            fresh-context))
+          (if (e-session-async-enabled-p (e-harness-sessions harness))
+              (let ((work (e-harness-turn-context-start
+                           harness session-id turn-id)))
+                (when on-context-refresh
+                  (e-work-on-settle
+                   work
+                   (lambda (settled)
+                     (when (eq (plist-get (e-work-status settled) :state)
+                               'finished)
+                       (funcall on-context-refresh
+                                (plist-get (e-work-status settled) :result))))))
+                work)
+            (let ((fresh-context
+                   (e-harness-turn-context harness session-id turn-id)))
+              (when on-context-refresh
+                (funcall on-context-refresh fresh-context))
+              fresh-context)))
         :drain-pending-input
         (or drain-pending-input
             (lambda ()
               (mapcar
-               (lambda (item)
-                 (list :role 'user
-                       :content (plist-get item :prompt)
-                       :metadata (plist-get item :metadata)))
+               #'e-harness-turn--steering-message
                (e-harness-turn--drain-pending-steering-input
                 harness
                 (gethash session-id
@@ -1794,7 +1842,7 @@ session value directly."
 
 (cl-defun e-harness-attached-turn-submit
     (harness session-id prompt &key delay metadata attachment-token
-             attached-turn-port)
+             attached-turn-port committed-message)
   "Append PROMPT and run one backend turn asynchronously in HARNESS.
 Return the queued turn id.  DELAY is primarily for tests and queued-turn
 cancellation.  SESSION-ID identifies the session."
@@ -1841,8 +1889,14 @@ cancellation.  SESSION-ID identifies the session."
             (plist-put entry
                       :prompt-message-id
                       (plist-get
-                       (e-harness-turn--append-user-message
-                        harness session-id turn-id prompt metadata)
+                       (if committed-message
+                           (progn
+                             (e-harness-activity-emit-turn-event
+                              harness session-id turn-id 'message-added
+                              (list :message (copy-tree committed-message t)))
+                             committed-message)
+                         (e-harness-turn--append-user-message
+                          harness session-id turn-id prompt metadata))
                        :id))
           (error
           (let ((message (e-harness-turn--backend-error-message err))
@@ -1854,18 +1908,6 @@ cancellation.  SESSION-ID identifies the session."
              harness session-id turn-id message details)
             (e-harness-turn-state-remove-active-turn harness session-id entry)
              (signal (car err) (cdr err)))))
-        (when (plist-get metadata :board-delivery-id)
-          (e-harness-activity-emit-turn-event
-           harness session-id turn-id 'input-consumed
-           (list :delivery-id (copy-tree (plist-get metadata :board-delivery-id))
-                 :board-id (plist-get metadata :board-id)
-                 :participant-id (plist-get metadata :board-participant-id)
-                 :endpoint-token
-                 (let ((token (plist-get metadata :board-endpoint-token)))
-                   (if (vectorp token) (copy-sequence token) (copy-tree token)))
-                 :endpoint-generation
-                 (copy-tree (plist-get metadata :board-endpoint-generation))
-                 :message-id (plist-get entry :prompt-message-id))))
         (e-work-start-prepared turn-work :arguments nil
                                :context (list :session-id session-id
                                               :turn-id turn-id
@@ -2083,10 +2125,7 @@ cancellation.  SESSION-ID identifies the session."
 	                  (when (and (active-entry-p)
 	                             (not (plist-get entry :cancelled)))
 	                    (mapcar
-	                     (lambda (item)
-	                       (list :role 'user
-	                             :content (plist-get item :prompt)
-	                             :metadata (plist-get item :metadata)))
+	                     #'e-harness-turn--steering-message
                      (e-harness-turn--drain-pending-steering-input
                       harness entry))))
                 :on-context-refresh
@@ -2287,6 +2326,9 @@ cancellation.  SESSION-ID identifies the session."
 	                            (pcase (plist-get status :state)
 	                              ('finished
 	                               (unless (plist-get entry :cancelled)
+	                                 (e-harness-turn--emit-input-consumed
+	                                  harness session-id turn-id metadata
+	                                  (plist-get entry :prompt-message-id))
 	                                 (start-turn-after-input)))
 	                              ('failed
 	                               (finish-error (plist-get status :error)))
@@ -2295,7 +2337,11 @@ cancellation.  SESSION-ID identifies the session."
 	                                 (finish-error
 	                                  (list 'e-work-cancelled
 	                                        "Input admission cancelled"))))))))))
-	                 (start-turn-after-input)))))
+	                 (progn
+	                   (e-harness-turn--emit-input-consumed
+	                    harness session-id turn-id metadata
+	                    (plist-get entry :prompt-message-id))
+	                   (start-turn-after-input))))))
 	         (if (and delay (> delay 0))
 	             (plist-put entry :timer (run-at-time delay nil #'start-turn))
 	           (start-turn)))

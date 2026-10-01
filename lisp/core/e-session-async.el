@@ -37,7 +37,8 @@
 
 (cl-defstruct (e-session-async--operation
                (:constructor e-session-async--operation-create))
-  state session-id work storage-operation settled command before-submit)
+  state session-id work storage-operation settled command before-submit
+  board-pickup)
 
 (cl-defstruct (e-session-async--read-operation
                (:constructor e-session-async--read-operation-create))
@@ -507,7 +508,11 @@ or ambiguous evidence remains an unsettled/no-outcome result for callers."
                             (e-session-async--operation-session-id operation)
                             :command
                             (e-session-query-command-to-wire command))
-                      (when continuity (list :continuity continuity)))))
+                      (when continuity (list :continuity continuity))
+                      (when-let* ((board-pickup
+                                   (e-session-async--operation-board-pickup
+                                    operation)))
+                        (list :board-pickup board-pickup)))))
           (e-session-storage-validate-operation-body
            (e-session-async--state-store
             (e-session-async--operation-state operation))
@@ -534,7 +539,7 @@ or ambiguous evidence remains an unsettled/no-outcome result for callers."
        (e-session-async--relational-fail-request operation error)))))
 
 (cl-defun e-session-async--submit-relational-command
-    (store session-id tag arguments &key before-submit)
+    (store session-id tag arguments &key before-submit board-pickup)
   "Admit one bounded relational TAG independently and return its work."
   (condition-case error
       (let* ((command (e-session-aggregate-command-prepare
@@ -546,7 +551,9 @@ or ambiguous evidence remains an unsettled/no-outcome result for callers."
                  (operation
                   (e-session-async--operation-create
                    :state state :session-id effective-id :command command
-                   :before-submit before-submit))
+                   :before-submit before-submit
+                   :board-pickup (and board-pickup
+                                      (copy-tree board-pickup t))))
                  (work (e-session-async--start-work effective-id operation)))
             (condition-case admission-error
                 (progn
@@ -579,6 +586,24 @@ happens-before, and an explicitly dependent group belongs in one transaction."
   (ignore write-index)
   (e-session-async--submit-relational-command
    store session-id tag arguments :before-submit before-submit))
+
+(cl-defun e-session-async-submit-command-with-board-pickup
+    (store session-id tag arguments board-pickup &key before-submit)
+  "Submit session command TAG with BOARD-PICKUP in the same SQLite write.
+
+The session async owner still admits and settles the command.  BOARD-PICKUP
+is an immutable transaction descriptor interpreted by the runtime-store
+worker; a failed command rolls its pickup claim back with the session write."
+  (unless (and (listp board-pickup)
+               (plist-get board-pickup :board-id)
+               (plist-get board-pickup :generation)
+               (plist-get board-pickup :participant-id)
+               (plist-get board-pickup :delivery-id))
+    (signal 'e-session-storage-error
+            (list "Board pickup transaction coordinates are incomplete")))
+  (e-session-async--submit-relational-command
+   store session-id tag arguments
+   :before-submit before-submit :board-pickup board-pickup))
 
 (defun e-session-async-unsupported-command (session-id name)
   "Return a terminal typed work for unsupported asynchronous command NAME."

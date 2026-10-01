@@ -615,7 +615,7 @@ bound instead of silently truncating the eligible set."
             :kind kind :source-key source-key)))
     0 40)))
 
-(defun e-board-sqlite-worker--pickup-dto (row board-id)
+(defun e-board-sqlite-worker--pickup-dto (row board-id &optional generation)
   "Reconstruct one BOARD-ID pickup DTO from relational identity/state and payload."
   (let* ((content (e-board-sqlite-worker--value
                    (e-board-sqlite-worker--column row 7)))
@@ -626,9 +626,10 @@ bound instead of silently truncating the eligible set."
     (append
      (list :delivery-id
            (e-runtime-store-codec-decode
-            (base64-decode-string
+           (base64-decode-string
              (e-board-sqlite-worker--column row 0)))
            :board-id board-id
+           :generation generation
            :participant-id (e-board-sqlite-worker--column row 1)
            :fifo-position (e-board-sqlite-worker--column row 2)
            :message-id (e-board-sqlite-worker--column row 3)
@@ -653,7 +654,8 @@ bound instead of silently truncating the eligible set."
          (pickups
           (mapcar
            (lambda (pickup-row)
-             (e-board-sqlite-worker--pickup-dto pickup-row board-id))
+             (e-board-sqlite-worker--pickup-dto
+              pickup-row board-id generation))
            (sqlite-select
             e-board-sqlite-worker--database
             "SELECT delivery_key,participant_id,fifo_position,message_id,state,revision,attempt,payload FROM board_pickups WHERE board_id=? AND generation=? AND message_id=? ORDER BY participant_id,fifo_position"
@@ -1017,7 +1019,7 @@ bound instead of silently truncating the eligible set."
                "ready" revision
                (e-board-sqlite-worker--column next 7)
                (e-board-sqlite-worker--column next 1))
-       board-id))))
+       board-id generation))))
 
 (defun e-board-sqlite-worker--board-pickup-transition (body)
   "Commit one typed Board pickup transition from BODY."
@@ -1041,6 +1043,24 @@ bound instead of silently truncating the eligible set."
        (unless (eq state 'ready)
          (signal 'e-runtime-store-board-conflict
                  (list "Pickup is not ready" delivery-id state)))
+       (when-let* ((expected-participant-id
+                    (plist-get body :expected-participant-id)))
+         (unless (equal expected-participant-id participant-id)
+           (signal 'e-runtime-store-board-conflict
+                   (list "Pickup participant changed" board-id generation
+                         delivery-id expected-participant-id participant-id))))
+       (when (car
+              (sqlite-select
+               e-board-sqlite-worker--database
+               (concat
+                "SELECT 1 FROM board_pickups WHERE board_id=? AND generation=? "
+                "AND participant_id=? AND fifo_position<? "
+                "AND state IN ('pending','ready','claimed','accepted','cancelling') "
+                "LIMIT 1")
+               (vector board-id generation participant-id fifo-position)))
+         (signal 'e-runtime-store-board-conflict
+                 (list "Pickup is not the FIFO head" board-id generation
+                       participant-id delivery-id fifo-position)))
        (setq next-state 'claimed attempt (1+ attempt)))
       ('accept
        (unless (eq state 'claimed)
@@ -1099,7 +1119,7 @@ bound instead of silently truncating the eligible set."
                            (e-board-sqlite-worker--column row 3)
                            (symbol-name next-state) revision attempt
                            (e-board-sqlite-worker--column row 7))
-                   board-id)
+                   board-id generation)
           :next (and terminal-p
                      (e-board-sqlite-worker--pickup-promote-next
                       board-id generation participant-id fifo-position)))))
@@ -3159,7 +3179,8 @@ snapshot is resolved by the session owner after this Board-side check."
               (pickups
                (mapcar
                 (lambda (pickup-row)
-                  (e-board-sqlite-worker--pickup-dto pickup-row board-id))
+                  (e-board-sqlite-worker--pickup-dto
+                   pickup-row board-id generation))
                 (sqlite-select
                  e-board-sqlite-worker--database
                  "SELECT delivery_key,participant_id,fifo_position,message_id,state,revision,attempt,payload FROM board_pickups WHERE board_id=? AND generation=? AND message_id=? ORDER BY participant_id,fifo_position"
@@ -3193,7 +3214,8 @@ snapshot is resolved by the session owner after this Board-side check."
        (mapcar
         (lambda (pickup-row)
           (e-board-sqlite-worker--pickup-dto
-           pickup-row (plist-get body :board-id)))
+           pickup-row (plist-get body :board-id)
+           (plist-get body :generation)))
         (sqlite-select e-board-sqlite-worker--database sql
                        (vconcat parameters)))))
     ('board-participant-list

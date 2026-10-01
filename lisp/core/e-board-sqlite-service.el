@@ -19,6 +19,7 @@
 (require 'e-board-sqlite-contract)
 (require 'e-runtime-store)
 (require 'e-session)
+(require 'e-session-async)
 (require 'e-session-board-policy)
 (require 'e-session-query)
 (require 'e-work)
@@ -977,6 +978,65 @@ When GENERATION is supplied, it must still match before any admission write."
          :transition transition
          :data (e-board-sqlite-service--detached-copy data))
    (cons 'board board-id)))
+
+(defun e-board-sqlite-service-append-pickup-message-start
+    (service session-store session-id pickup message)
+  "Atomically append MESSAGE and consume PICKUP through SESSION-STORE.
+
+The session async owner retains the write until its runtime-store receipt
+settles.  The worker validates the Board generation, participant, and FIFO
+head in the same transaction as the session command."
+  (unless (e-board-sqlite-service-p service)
+    (signal 'wrong-type-argument
+            (list 'e-board-sqlite-service-p service)))
+  (unless (and (stringp session-id) (not (string-empty-p session-id))
+               (listp message) (eq (plist-get message :role) 'user)
+               (stringp (plist-get message :content))
+               (not (string-empty-p (plist-get message :content))))
+    (signal 'e-board-sqlite-error
+            (list "Board pickup requires one user session message")))
+  (unless (e-session-async-enabled-p session-store)
+    (signal 'e-session-storage-error
+            (list "Board pickup requires the async session owner" session-id)))
+  (let* ((runtime (e-board-sqlite-service-runtime service))
+         (session-runtime (e-session-storage-runtime-store session-store))
+         (board-id (plist-get pickup :board-id))
+         (generation (plist-get pickup :generation))
+         (participant-id (plist-get pickup :participant-id))
+         (delivery-id (plist-get pickup :delivery-id)))
+    (unless (eq runtime session-runtime)
+      (signal 'e-board-sqlite-error
+              (list "Board pickup and session must share one runtime store"
+                    board-id session-id)))
+    (unless (and (stringp board-id) (not (string-empty-p board-id))
+                 (integerp generation) (> generation 0)
+                 (stringp participant-id) (not (string-empty-p participant-id))
+                 delivery-id)
+      (signal 'e-board-sqlite-error
+              (list "Board pickup coordinates are incomplete" pickup)))
+    (let ((work
+           (e-session-async-submit-command-with-board-pickup
+            session-store session-id 'append-message
+            (list :message
+                  (e-board-sqlite-service--detached-copy message))
+            (list :board-id board-id :generation generation
+                  :participant-id participant-id :delivery-id
+                  (e-board-sqlite-service--detached-copy delivery-id)))))
+      (e-work-on-settle
+       work
+       (lambda (settled)
+         (when (eq (plist-get (e-work-status settled) :state) 'finished)
+           (let* ((result (plist-get (e-work-status settled) :result))
+                  (pickup-result (plist-get result :board-pickup))
+                  (next (plist-get pickup-result :next)))
+             (e-board-sqlite-service--notify-commits service board-id)
+             (when next
+               (run-at-time
+                0 nil
+                (lambda ()
+                  (e-board-sqlite-service--notify-pickups
+                   service board-id (list next)))))))))
+      work)))
 
 (cl-defun e-board-sqlite-service-record-page-start
     (service board-id &key generation after limit selector through)

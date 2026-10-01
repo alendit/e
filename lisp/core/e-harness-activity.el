@@ -76,7 +76,7 @@ turn-scoped events should use `e-harness-activity-emit-turn-event'."
     tool-started tool-finished action-started action-finished action-failed
     hook-audit turn-finished token-usage
     context-frame-consumed
-    turn-failed turn-cancelled turn-steered backend-empty-output
+    turn-failed turn-cancelled turn-steered input-consumed backend-empty-output
     compaction-started compaction-prepared compaction-summary-started
     compaction-finished compaction-failed)
   "Turn event types stored as durable session activity.")
@@ -106,6 +106,7 @@ payload normalization and persistence remain owned by this module.")
     (turn-failed . audit)
     (turn-cancelled . audit)
     (turn-steered . audit)
+    (input-consumed . audit)
     (backend-empty-output . audit)
     (compaction-started . audit)
     (compaction-prepared . audit)
@@ -525,6 +526,13 @@ fields outside that error contract."
      (e-harness-activity--provider-request-activity-projection payload))
     ('turn-retrying (e-harness-activity--retry-activity-projection payload))
     ('token-usage (e-harness-activity--token-usage-activity-projection payload))
+    ('input-consumed
+     (list :delivery-id (copy-tree (plist-get payload :delivery-id) t)
+           :board-id (plist-get payload :board-id)
+           :participant-id (plist-get payload :participant-id)
+           :endpoint-generation
+           (copy-tree (plist-get payload :endpoint-generation) t)
+           :message-id (plist-get payload :message-id)))
     (_ payload)))
 
 (defun e-harness-activity--append-durable-activity-event

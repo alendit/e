@@ -1750,7 +1750,7 @@ requested run id and publication key, then accepts only a unique terminal
 activity event for that message's turn.  It returns detached lifecycle facts
 only.  Missing, ambiguous, malformed, or truncated evidence is represented as
 unknown rather than inferred as success."
-  (condition-case error
+  (condition-case _error
       (catch 'unknown
         (let* ((session-id
               (e-runtime-store-session-worker--session-id
@@ -1782,6 +1782,7 @@ unknown rather than inferred as success."
                       (vector session-id (1+ limit)))))
                (truncated (and rows (> (length rows) limit)))
                (matching-messages nil)
+               (consumption-events nil)
                (terminal-events nil))
           (dolist (row (if truncated (cl-subseq rows 0 limit) rows))
             (let* ((record
@@ -1802,8 +1803,10 @@ unknown rather than inferred as success."
                                'message-shape)))
                      ;; Assistant transcript rows cannot represent a posted
                      ;; continuation input, so only validate candidate users.
-                     (when (memq (plist-get message :role) '(user "user"))
-                       (unless (and (stringp (plist-get message :turn-id))
+                     (when (member (plist-get message :role) '(user "user"))
+                       (unless (and (or (null (plist-get message :turn-id))
+                                        (stringp (plist-get message :turn-id)))
+                                    (stringp (plist-get message :id))
                                     (e-runtime-store-session-worker--proper-plist-p
                                      (plist-get message :metadata)))
                          (throw 'unknown
@@ -1815,7 +1818,8 @@ unknown rather than inferred as success."
                                     (equal (plist-get metadata
                                                       :board-continuation-key)
                                            publication-key))
-                           (push (list :turn-id (plist-get message :turn-id)
+                           (push (list :message-id (plist-get message :id)
+                                       :turn-id (plist-get message :turn-id)
                                        :position (plist-get record :position))
                                  matching-messages)))))))
                 ((equal record-type "activity-event")
@@ -1829,6 +1833,16 @@ unknown rather than inferred as success."
                    (let ((status
                           (e-runtime-store-session-worker--continuation-terminal-status
                            event)))
+                     (when (eq (plist-get event :event-type) 'input-consumed)
+                       (let ((message-id
+                              (plist-get (plist-get event :payload)
+                                         :message-id)))
+                         (when (and (stringp message-id)
+                                    (stringp (plist-get event :turn-id))
+                                    (stringp (plist-get event :id)))
+                           (push (list :message-id message-id
+                                       :turn-id (plist-get event :turn-id))
+                                 consumption-events))))
                      (when status
                        (unless (and (stringp (plist-get event :turn-id))
                                     (stringp (plist-get event :id)))
@@ -1851,20 +1865,33 @@ unknown rather than inferred as success."
             (e-runtime-store-session-worker--continuation-outcome-unknown
              (if matching-messages 'ambiguous-message 'no-message)))
            (t
-            (let* ((turn-id (plist-get (car matching-messages) :turn-id))
+            (let* ((message (car matching-messages))
+                   (receipts
+                    (cl-remove-if-not
+                     (lambda (event)
+                       (equal (plist-get event :message-id)
+                              (plist-get message :message-id)))
+                     consumption-events))
+                   (turn-id
+                    (or (plist-get message :turn-id)
+                        (and (= (length receipts) 1)
+                             (plist-get (car receipts) :turn-id))))
                    (events
                     (cl-remove-if-not
                      (lambda (event)
                        (equal (plist-get event :turn-id) turn-id))
                      terminal-events)))
-              (if (/= (length events) 1)
+              (if (not turn-id)
+                  (e-runtime-store-session-worker--continuation-outcome-unknown
+                   (if receipts 'ambiguous-consumption 'no-consumption))
+                (if (/= (length events) 1)
                   (e-runtime-store-session-worker--continuation-outcome-unknown
                    (if events 'ambiguous-terminal 'no-terminal))
                 (append
                  (list :known-p t :session-id session-id
                        :run-id (copy-sequence run-id)
                        :publication-key (copy-sequence publication-key))
-                 (copy-tree (car events) t)))))))))
+                 (copy-tree (car events) t))))))))))
     (error
      (e-runtime-store-session-worker--continuation-outcome-unknown
       'decode-or-shape))))

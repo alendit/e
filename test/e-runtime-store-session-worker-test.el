@@ -11,7 +11,9 @@
 (require 'e-runtime-store)
 (require 'e-runtime-store-worker)
 (require 'e-runtime-store-session-worker)
+(require 'e-session-aggregate)
 (require 'e-session-query)
+(require 'e-session-query-command)
 (require 'e-session-storage-sqlite)
 
 (defun e-runtime-store-session-worker-test--state
@@ -59,6 +61,37 @@
                          :timestamp (or updated-at
                                         "2026-09-06T00:00:00Z"))
            :query-delta state))))
+
+(defun e-runtime-store-session-worker-test--pickup-command
+    (session-id board-id generation participant-id delivery-id content)
+  "Return a session command that consumes DELIVERY-ID with CONTENT."
+  (let ((command
+         (e-session-aggregate-command-prepare
+          'append-message session-id
+          (list :message (list :role 'user :content content)))))
+    (list :op 'session-command :session-id session-id
+          :command (e-session-query-command-to-wire command)
+          :board-pickup
+          (list :board-id board-id :generation generation
+                :participant-id participant-id :delivery-id delivery-id))))
+
+(defun e-runtime-store-session-worker-test--route-pickups
+    (runtime board-id message-id)
+  "Route two FIFO pickups for BOARD-ID under MESSAGE-ID."
+  (e-runtime-store-call
+   runtime 'write
+   (list :op 'board-routing-put :board-id board-id :generation 1
+         :message-id message-id :outcome '(:state routed)
+         :pickups
+         (vector
+          (list :delivery-id (concat message-id "-first")
+                :participant-id "pickup-participant"
+                :message-id message-id :content "first pickup"
+                :mode 'inject)
+          (list :delivery-id (concat message-id "-second")
+                :participant-id "pickup-participant"
+                :message-id message-id :content "second pickup"
+                :mode 'inject)))))
 
 (defun e-runtime-store-session-worker-test--child-admission-body
     (session-id &optional pickup)
@@ -206,6 +239,178 @@
                  '(:op board-participant-list :board-id "admission-board"
                    :generation 1)))
                1))))
+
+(ert-deftest e-runtime-store-session-worker-pickup-message-is-one-transaction ()
+  "A Board FIFO claim, session append, consume, and promotion share one write."
+  (e-runtime-store-session-worker-test--with-runtime (runtime directory)
+    (dolist (board-id '("composite-board" "fifo-board"))
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'board-create :board-id board-id
+             :trusted-principal "owner" :root '(:kind test)))
+      (e-runtime-store-session-worker-test--route-pickups
+       runtime board-id (concat board-id "-message")))
+    (e-runtime-store-session-worker-test--append
+     runtime "composite-session" 1)
+    (let* ((first-id "composite-board-message-first")
+           (second-id "composite-board-message-second")
+           (pickup-query
+            '(:op board-pickup-list :board-id "composite-board"
+              :generation 1 :participant-id "pickup-participant" :limit 8)))
+      ;; The worker rejects stale generation and participant coordinates before
+      ;; touching the session command.
+      (should-error
+       (e-runtime-store-call
+        runtime 'write
+        (e-runtime-store-session-worker-test--pickup-command
+         "composite-session" "composite-board" 2 "pickup-participant"
+         first-id "stale generation")))
+      (should-error
+       (e-runtime-store-call
+        runtime 'write
+        (e-runtime-store-session-worker-test--pickup-command
+         "composite-session" "composite-board" 1 "wrong-participant"
+         first-id "stale participant")))
+      (should (= (plist-get
+                  (e-runtime-store-call
+                   runtime 'read
+                   '(:op session-query-state :session-id "composite-session"))
+                  :message-count)
+                 0))
+      ;; A missing session fails after the worker has claimed the FIFO head.
+      ;; The outer runtime-store transaction must restore that head to ready.
+      (should-error
+       (e-runtime-store-call
+        runtime 'write
+        (e-runtime-store-session-worker-test--pickup-command
+         "missing-session" "composite-board" 1 "pickup-participant"
+         first-id "must roll back")))
+      (should-not
+       (e-runtime-store-call
+        runtime 'read '(:op session-query-state :session-id "missing-session")))
+      (should (eq (plist-get (car (e-runtime-store-call
+                                   runtime 'read pickup-query))
+                             :state)
+                  'ready))
+      ;; A successful session command consumes exactly one head and promotes
+      ;; its successor in the same worker receipt.
+      (let* ((result
+              (e-runtime-store-call
+               runtime 'write
+               (e-runtime-store-session-worker-test--pickup-command
+                "composite-session" "composite-board" 1
+                "pickup-participant" first-id "committed once")))
+             (pickup-result (plist-get result :board-pickup))
+             (page (e-runtime-store-call runtime 'read pickup-query))
+             (session-page
+              (e-runtime-store-call
+               runtime 'read
+               '(:op session-visible-message-page
+                 :session-id "composite-session" :limit 8))))
+        (should (equal (plist-get result :content) "committed once"))
+        (should (eq (plist-get (plist-get pickup-result :pickup) :state)
+                    'consumed))
+        (should (= (plist-get (plist-get pickup-result :pickup) :attempt) 1))
+        (should (equal (plist-get (plist-get pickup-result :next) :delivery-id)
+                       second-id))
+        (should (eq (plist-get (car page) :state) 'ready))
+        (should (equal (mapcar (lambda (message)
+                                 (plist-get message :content))
+                               (plist-get session-page :messages))
+                       '("committed once")))
+        (should (= (plist-get
+                    (e-runtime-store-call
+                     runtime 'read
+                     '(:op session-query-state
+                       :session-id "composite-session"))
+                    :message-count)
+                   1)))
+      ;; A ready row behind an unresolved FIFO predecessor cannot be claimed,
+      ;; even if a stale caller names the successor directly.
+      (let ((database (sqlite-open (expand-file-name "store.sqlite3" directory))))
+        (unwind-protect
+            (progn
+              (sqlite-execute
+               database
+               "UPDATE board_pickups SET state='claimed' WHERE board_id=? AND generation=1 AND participant_id=? AND fifo_position=1"
+               (vector "fifo-board" "pickup-participant"))
+              (sqlite-execute
+               database
+               "UPDATE board_pickups SET state='ready' WHERE board_id=? AND generation=1 AND participant_id=? AND fifo_position=2"
+               (vector "fifo-board" "pickup-participant"))
+              (should-error
+               (e-runtime-store-call
+                runtime 'write
+                (e-runtime-store-session-worker-test--pickup-command
+                 "composite-session" "fifo-board" 1 "pickup-participant"
+                 "fifo-board-message-second" "out of order")))
+              (should (= (plist-get
+                          (e-runtime-store-call
+                           runtime 'read
+                           '(:op session-query-state
+                             :session-id "composite-session"))
+                          :message-count)
+                         1))
+              (should
+               (eq (plist-get
+                    (cadr
+                     (e-runtime-store-call
+                      runtime 'read
+                      '(:op board-pickup-list :board-id "fifo-board"
+                        :generation 1 :participant-id "pickup-participant"
+                        :limit 8)))
+                    :state)
+                   'ready)))
+          (sqlite-close database))))))
+
+(ert-deftest e-runtime-store-session-worker-pickup-message-replays-across-commit-cuts ()
+  "Worker loss on either side of COMMIT leaves one message and one consumption."
+  (dolist (point '("before-commit" "after-commit"))
+    (let* ((marker (make-temp-file "e-pickup-commit-cut-"))
+           (process-environment
+            (append (list (concat "E_RUNTIME_STORE_TEST_FAULT=" point)
+                          (concat "E_RUNTIME_STORE_TEST_FAULT_ONCE_FILE=" marker)
+                          "E_RUNTIME_STORE_TEST_FAULT_OPERATION=session-command")
+                    process-environment)))
+      (delete-file marker)
+      (unwind-protect
+          (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+            (e-runtime-store-call
+             runtime 'write
+             '(:op board-create :board-id "crash-board"
+               :trusted-principal "owner" :root (:kind test)))
+            (e-runtime-store-session-worker-test--route-pickups
+             runtime "crash-board" "crash-message")
+            (e-runtime-store-session-worker-test--append runtime "crash-session" 1)
+            (let* ((result
+                    (e-runtime-store-call
+                     runtime 'write
+                     (e-runtime-store-session-worker-test--pickup-command
+                      "crash-session" "crash-board" 1 "pickup-participant"
+                      "crash-message-first" "once")))
+                   (next (plist-get (plist-get result :board-pickup) :next))
+                   (state
+                    (e-runtime-store-call
+                     runtime 'read
+                     '(:op session-query-state :session-id "crash-session")))
+                   (pickups
+                    (e-runtime-store-call
+                     runtime 'read
+                     '(:op board-pickup-list :board-id "crash-board"
+                       :generation 1 :participant-id "pickup-participant"
+                       :limit 8))))
+              (should (file-exists-p marker))
+              (should (equal (plist-get result :content) "once"))
+              (should (= (plist-get state :message-count) 1))
+              (should (= (plist-get (plist-get
+                                     (plist-get result :board-pickup) :pickup)
+                                    :attempt)
+                         1))
+              (should (= (length pickups) 1))
+              (should (eq (plist-get (car pickups) :state) 'ready))
+              (should (equal (plist-get next :delivery-id)
+                             "crash-message-second"))))
+        (when (file-exists-p marker) (delete-file marker))))))
 
 (ert-deftest e-runtime-store-session-worker-v9-schema-is-relational-and-narrow ()
   "Fresh v9 storage has query/history relations but no opaque mirrors."
@@ -1048,6 +1253,45 @@
                          (concat session-id "-event")))
           (should-not (plist-member result :content))
           (should-not (plist-member result :message)))))))
+
+(ert-deftest e-runtime-store-session-worker-continuation-outcome-follows-consumed-message ()
+  "A message admitted before its turn uses its durable consumption receipt."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let* ((session-id "continuation-admitted-first")
+           (state (e-runtime-store-session-worker-test--state session-id))
+           (query (list :op 'session-continuation-outcome
+                        :session-id session-id :run-id "run"
+                        :publication-key "key")))
+      (e-runtime-store-session-worker-test--append runtime session-id 1)
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 2
+             (list :type "message" :session-id session-id :id "input"
+                   :timestamp "2026-09-06T00:00:01Z"
+                   :message '(:id "input" :role user :content "finish"
+                              :metadata (:board-run-id "run"
+                                         :board-continuation-key "key")))))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 3
+             (e-runtime-store-session-worker-test--continuation-event
+              session-id "terminal" "2026-09-06T00:00:03Z"
+              "actual-turn" 'turn-finished)))
+      (should (eq (plist-get (e-runtime-store-call runtime 'read query) :reason)
+                  'no-consumption))
+      (setq state
+            (e-runtime-store-session-worker-test--append-continuation-record
+             runtime session-id state 4
+             (list :type "activity-event" :session-id session-id
+                   :id "consumed" :timestamp "2026-09-06T00:00:02Z"
+                   :semantic-event
+                   '(:id "consumed" :turn-id "actual-turn"
+                     :event-type input-consumed
+                     :payload (:message-id "input")))))
+      (let ((outcome (e-runtime-store-call runtime 'read query)))
+        (should (plist-get outcome :known-p))
+        (should (eq (plist-get outcome :status) 'done))
+        (should (equal (plist-get outcome :turn-id) "actual-turn"))))))
 
 (ert-deftest e-runtime-store-session-worker-continuation-outcome-skips-assistant-messages ()
   "An assistant transcript row does not invalidate continuation input evidence."

@@ -854,15 +854,43 @@ the following ordered open frame is the sole observable acknowledgement."
    e-runtime-store-worker--database body))
 
 (defun e-runtime-store-worker--session-command (body)
-  "Commit BODY's sealed session command and optional tool transition."
-  (let ((result
-         (e-runtime-store-session-worker-write
-          e-runtime-store-worker--database body))
-        (continuity (plist-get body :continuity)))
-    (when continuity
-      (e-runtime-store-worker--tool-transition
-       (append (list :session-id (plist-get body :session-id)) continuity)))
-    result))
+  "Commit BODY's sealed session command and composed transitions."
+  (let* ((board-pickup (plist-get body :board-pickup))
+         (_claim
+          (when board-pickup
+            (e-board-sqlite-worker-write
+             e-runtime-store-worker--database
+             (list :op 'board-pickup-transition
+                   :board-id (plist-get board-pickup :board-id)
+                   :generation (plist-get board-pickup :generation)
+                   :delivery-id (plist-get board-pickup :delivery-id)
+                   :expected-participant-id
+                   (plist-get board-pickup :participant-id)
+                   :transition 'claim))))
+         (result
+          (e-runtime-store-session-worker-write
+           e-runtime-store-worker--database body))
+         (continuity (plist-get body :continuity))
+         (_tool-transition
+          (when continuity
+            (e-runtime-store-worker--tool-transition
+             (append (list :session-id (plist-get body :session-id))
+                     continuity))))
+         (pickup-result
+          (when board-pickup
+            (e-board-sqlite-worker-write
+             e-runtime-store-worker--database
+             (list :op 'board-pickup-transition
+                   :board-id (plist-get board-pickup :board-id)
+                   :generation (plist-get board-pickup :generation)
+                   :delivery-id (plist-get board-pickup :delivery-id)
+                   :transition 'consume
+                   :data (list :session-id (plist-get body :session-id)
+                               :message-id (plist-get result :id)))))))
+    (if pickup-result
+        (append (copy-sequence result)
+                (list :board-pickup pickup-result))
+      result)))
 
 (defun e-runtime-store-worker--tool-transition (body)
   "Commit one typed tool follow-up transition from BODY."

@@ -235,16 +235,20 @@ or nil without changing the queue when the head belongs to another delivery."
                                   harness session-id)))))
 
 (defun e-harness-turn-state-enqueue-prompt
-    (harness session-id prompt references metadata &optional attached-turn-port)
+    (harness session-id prompt references metadata &optional attached-turn-port
+             committed-message)
   "Append PROMPT to SESSION-ID's follow-up queue in HARNESS and return its id.
 Shared enqueue body with no active-turn guard for attached queue and settlement
-follow-up ports."
+follow-up ports.  COMMITTED-MESSAGE is an already persisted user message."
   (let* ((queue-id (e-session-generate-ulid))
          (item (list :id queue-id
                      :prompt prompt
                      :references (copy-tree references)
                      :metadata (copy-sequence metadata)
                      :attached-turn-port attached-turn-port
+                     :committed-message
+                     (and committed-message
+                          (copy-tree committed-message t))
                      :created-at (e-harness-turn-state-queue-timestamp)))
          (items (append (e-harness-queued-prompts harness session-id)
                         (list item))))

@@ -2213,23 +2213,6 @@ semantic interpretation responsibility."
   (dolist (subscription
            (copy-sequence (e-chat-service-binding-subscribers binding)))
     (e-chat-service--schedule-subscription-drain subscription)))
-(defun e-chat-service--sql-settle-pickup (binding delivery-id transition)
-  "Settle DELIVERY-ID by TRANSITION and continue its SQLite FIFO."
-  (let ((work
-         (e-board-sqlite-service-transition-pickup-start
-          (e-chat-service-binding-sqlite-service binding)
-          (e-chat-service-binding-board-id binding) delivery-id transition)))
-    (e-work-on-settle
-     work
-     (lambda (settled)
-       (let ((status (e-work-status settled)))
-         (if (eq (plist-get status :state) 'finished)
-             (when-let* ((next (plist-get (plist-get status :result) :next)))
-               (e-chat-service--sql-deliver-pickup binding next))
-           (e-chat-service--sql-note-failure
-            binding (plist-get status :error) t)))))
-    work))
-
 (defun e-chat-service--sql-delivery-metadata (binding pickup)
   "Return harness metadata for BINDING's claimed detached PICKUP."
   (append
@@ -2255,12 +2238,12 @@ semantic interpretation responsibility."
    (copy-tree
     (plist-get (plist-get pickup :cause-metadata) :input-attributes) t)))
 
-(defun e-chat-service--sql-submit-claimed-pickup (binding pickup)
-  "Submit claimed PICKUP through BINDING's attached harness port."
+(defun e-chat-service--sql-submit-committed-pickup (binding pickup message)
+  "Deliver PICKUP's committed MESSAGE through BINDING's attached port."
   (let* ((port (e-chat-service-binding-turn-port binding))
          (active (e-harness-attached-turn-port-active-turn port))
          (active-p (eq (plist-get active :status) 'running))
-         (mode (or (plist-get pickup :mode) 'inject))
+         (queue-p (eq (plist-get pickup :mode) 'queue))
          (prompt (plist-get pickup :content))
          (metadata (e-chat-service--sql-delivery-metadata binding pickup))
          (delivery-id (plist-get pickup :delivery-id))
@@ -2268,33 +2251,46 @@ semantic interpretation responsibility."
           (e-chat-service--continuation-context metadata)))
     (condition-case error
         (progn
-          ;; Capture the generic continuation identity before invoking the
-          ;; attached port.  A submit may emit `input-consumed' synchronously,
-          ;; while a queued input emits it only when its later turn begins.
+          ;; The SQLite receipt already settled the pickup.  This correlation
+          ;; tracks execution only; the harness never appends MESSAGE again.
           (when continuation
             (puthash (copy-tree delivery-id t) continuation
                      (e-chat-service-binding-continuation-deliveries binding)))
           (puthash (copy-tree delivery-id t) 'submitting
                    (e-chat-service-binding-executing-turns binding))
-          (let ((turn-id
-                 (cond
-                  ((not active-p)
-                   (e-harness-attached-turn-port-submit
-                    port prompt :metadata metadata))
-                  ((eq mode 'queue)
-                   (e-harness-attached-turn-port-queue
-                    port prompt :metadata metadata))
-                  (t
-                   (e-harness-attached-turn-port-steer
-                    port prompt :metadata metadata)))))
-            (when turn-id
+          (let* ((queued-p (and active-p queue-p))
+                 (turn-id
+                  (condition-case _race
+                      (if active-p
+                          (if queue-p
+                              (e-harness-attached-turn-port-queue
+                               port prompt :metadata metadata
+                               :committed-message message)
+                            (e-harness-attached-turn-port-steer
+                             port prompt :metadata metadata
+                             :committed-message message))
+                        (e-harness-attached-turn-port-submit
+                         port prompt :metadata metadata
+                         :committed-message message))
+                    (e-harness-no-active-turn
+                     (setq queued-p nil)
+                     (e-harness-attached-turn-port-submit
+                      port prompt :metadata metadata
+                      :committed-message message))
+                    (e-harness-active-turn-exists
+                     (if queue-p
+                         (progn
+                           (setq queued-p t)
+                           (e-harness-attached-turn-port-queue
+                            port prompt :metadata metadata
+                            :committed-message message))
+                       (e-harness-attached-turn-port-steer
+                        port prompt :metadata metadata
+                        :committed-message message))))))
+            (when (and turn-id (not queued-p))
               (puthash (copy-tree delivery-id t) turn-id
                        (e-chat-service-binding-executing-turns binding))
-              ;; Direct/steered inputs return the current turn id.  Queued
-              ;; inputs return a queue id and are transferred by the later
-              ;; `input-consumed' edge instead.
               (when (and continuation
-                         (not (eq mode 'queue))
                          (e-chat-service-binding-continuation-deliveries
                           binding)
                          ;; A synchronous port may already have consumed
@@ -2314,12 +2310,11 @@ semantic interpretation responsibility."
         (e-chat-service-binding-sqlite-service binding)
         delivery-id 'failed
         (list :error (e-work-error-message error)))
-       (e-chat-service--sql-settle-pickup binding delivery-id 'fail)
        (e-chat-service--sql-note-failure binding error)
        nil))))
 
 (defun e-chat-service--sql-deliver-pickup (binding pickup)
-  "Claim and submit one ready detached PICKUP exactly once in this process."
+  "Atomically admit ready PICKUP and deliver its committed session message."
   (pcase (e-chat-service--binding-readiness-state binding)
     ('waiting
      ;; A readiness notification is a single edge, not a polling loop.  The
@@ -2331,28 +2326,56 @@ semantic interpretation responsibility."
      (let* ((delivery-id (plist-get pickup :delivery-id))
             (executing (e-chat-service-binding-executing-turns binding)))
        (when (and (eq (plist-get pickup :state) 'ready)
-                  (not (gethash delivery-id executing)))
-         (puthash (copy-tree delivery-id t) 'claiming executing)
-         (let ((work
-                (e-board-sqlite-service-transition-pickup-start
-                 (e-chat-service-binding-sqlite-service binding)
-                 (e-chat-service-binding-board-id binding) delivery-id 'claim)))
-           (e-work-on-settle
-            work
-            (lambda (settled)
-              (let ((status (e-work-status settled)))
-                (if (eq (plist-get status :state) 'finished)
-                    (e-chat-service--sql-submit-claimed-pickup
-                     binding (plist-get (plist-get status :result) :pickup))
-                  (remhash delivery-id executing)
-                  (e-board-sqlite-service-notify-delivery-outcome
-                   (e-chat-service-binding-sqlite-service binding)
-                   delivery-id 'failed
-                   (list :error (e-work-error-message
-                                 (plist-get status :error))))
-                  (e-chat-service--sql-note-failure
-                   binding (plist-get status :error) t)))))
-           work))))))
+                  (not (gethash delivery-id executing))
+                  (not (and (eq (plist-get pickup :mode) 'queue)
+                            (eq (plist-get
+                                 (e-harness-attached-turn-port-active-turn
+                                  (e-chat-service-binding-turn-port binding))
+                                 :status)
+                                'running))))
+         (puthash (copy-tree delivery-id t) 'admitting executing)
+         (condition-case error
+             (let* ((port (e-chat-service-binding-turn-port binding))
+                    (metadata (e-chat-service--sql-delivery-metadata binding pickup))
+                    (durable-metadata (copy-sequence metadata))
+                    (_ (cl-remf durable-metadata :board-endpoint-token))
+                    (message (list :role 'user :origin 'board
+                                   :content (plist-get pickup :content)
+                                   :metadata durable-metadata))
+                    (work
+                     (e-board-sqlite-service-append-pickup-message-start
+                      (e-chat-service-binding-sqlite-service binding)
+                      (e-harness-sessions
+                       (e-harness-attached-turn-port-harness port))
+                      (e-chat-service-binding-session-id binding)
+                      pickup message)))
+               (e-work-on-settle
+                work
+                (lambda (settled)
+                  (let ((status (e-work-status settled)))
+                    (if (eq (plist-get status :state) 'finished)
+                        (let ((committed (copy-sequence
+                                          (plist-get status :result))))
+                          (cl-remf committed :board-pickup)
+                          (e-chat-service--sql-submit-committed-pickup
+                           binding pickup committed))
+                      (remhash delivery-id executing)
+                      (e-board-sqlite-service-notify-delivery-outcome
+                       (e-chat-service-binding-sqlite-service binding)
+                       delivery-id 'failed
+                       (list :error (e-work-error-message
+                                     (plist-get status :error))))
+                      (e-chat-service--sql-note-failure
+                       binding (plist-get status :error) t)))))
+               work)
+           (error
+            (remhash delivery-id executing)
+            (e-board-sqlite-service-notify-delivery-outcome
+             (e-chat-service-binding-sqlite-service binding)
+             delivery-id 'failed
+             (list :error (e-work-error-message error)))
+            (e-chat-service--sql-note-failure binding error t)
+            nil)))))))
 
 (defun e-chat-service--sql-notify-turn-deliveries (binding event status)
   "Settle BINDING's live deliveries for terminal harness EVENT as STATUS."
@@ -2501,6 +2524,8 @@ Board record."
   (let ((type (plist-get event :type)))
     (pcase type
       ('input-consumed
+       ;; The pickup and message were committed together; this receipt only
+       ;; associates the durable input with the executing turn.
        (when-let* ((delivery-id
                     (plist-get (plist-get event :payload) :delivery-id)))
          ;; Retain only this live delivery-to-turn correlation until the
@@ -2518,8 +2543,7 @@ Board record."
                         (e-chat-service-binding-continuation-turns binding)))
                (puthash turn-id
                         (append context (list :turn-id turn-id))
-                        turns))))
-         (e-chat-service--sql-settle-pickup binding delivery-id 'consume)))
+                        turns))))))
       ('turn-finished
        ;; This event is emitted only after all ordinary `:turn-finished'
        ;; hooks settle.  Persist the generic continuation outcome before the
@@ -2548,6 +2572,7 @@ Board record."
                 :source-turn-id turn-id :content output
                 :attributes (copy-tree (plist-get event :payload) t))))
          (e-chat-service--sql-notify-turn-deliveries binding event 'done)
+         (e-chat-service--sql-resume-ready binding)
          (e-work-on-settle
           work
           (lambda (settled)
@@ -2570,6 +2595,7 @@ Board record."
         binding event (if (eq type 'turn-failed) 'failed 'cancelled))
        (e-chat-service--sql-notify-turn-deliveries
         binding event (if (eq type 'turn-failed) 'failed 'cancelled))
+       (e-chat-service--sql-resume-ready binding)
        (e-chat-service--sql-notify-event
         binding (append (copy-tree event t)
                         (list :selected-participant-p t))))
@@ -2601,27 +2627,6 @@ Board record."
                    (e-chat-service-binding-executing-turns candidate))))
    (e-chat-service--board-bindings-for binding)))
 
-(defun e-chat-service--sql-retry-restored-pickup
-    (binding generation pickup)
-  "Return a stale claimed PICKUP to ready before BINDING resumes its FIFO."
-  (let* ((delivery-id (plist-get pickup :delivery-id))
-         (participant-id (plist-get pickup :participant-id))
-         (work
-          (e-board-sqlite-service-transition-pickup-start
-           (e-chat-service-binding-sqlite-service binding)
-           (e-chat-service-binding-board-id binding) delivery-id 'retry
-           (list :expected-generation generation
-                 :expected-participant-id participant-id))))
-    (e-work-on-settle
-     work
-     (lambda (settled)
-       (let ((status (e-work-status settled)))
-         (if (eq (plist-get status :state) 'finished)
-             (e-chat-service--sql-resume-ready-scan binding)
-           (e-chat-service--sql-note-failure
-            binding (plist-get status :error) t)))))
-    work))
-
 (defun e-chat-service--sql-resume-ready-scan (binding)
   "Deliver the oldest ready pickup for BINDING after its restore checks."
   (let ((board-work
@@ -2652,20 +2657,11 @@ Board record."
                                            :result))
                        (head (car pickups))
                        (delivery-id (plist-get head :delivery-id)))
-                  (cond
-                   ((and (e-chat-service-binding-continuation-owner-p binding)
-                         (eq (plist-get head :state) 'claimed))
-                    ;; A claim with no process-local submit correlation can only
-                    ;; be an interrupted handoff.  Retry only the FIFO head;
-                    ;; worker-side coordinates fence a stale page or generation.
-                    (unless (e-chat-service--sql-delivery-executing-p
-                             binding delivery-id)
-                      (e-chat-service--sql-retry-restored-pickup
-                       binding generation head)))
-                   ((eq (plist-get head :state) 'ready)
-                    (unless (e-chat-service--sql-delivery-executing-p
-                             binding delivery-id)
-                      (e-chat-service--sql-deliver-pickup binding head))))))))))))))
+                  (when (and (eq (plist-get head :state) 'ready)
+                             (not (e-chat-service--sql-delivery-executing-p
+                                   binding delivery-id)))
+                    (e-chat-service--sql-deliver-pickup
+                     binding head))))))))))))
 
 (defun e-chat-service--sql-resume-ready (binding)
   "Request and run BINDING's bounded pickup restore and resume path."
@@ -2706,6 +2702,7 @@ does not acquire the owner-chat Board run-set readiness obligation."
                      (e-session-board-routing-policy-valid-p policy))
           (signal 'e-session-error
                   (list "Malformed detached Board association" association)))
+        (e-session-async-enable (e-harness-sessions harness))
         (setq binding
               (e-chat-service--binding-create
                :harness harness :session-id session-id

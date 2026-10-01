@@ -493,24 +493,68 @@ schedules it behind the owning session's active commit barrier."
           ;; opted-in turns.  The semantic option on the current request is
           ;; the authority for the new context-lifetime projection behavior.
           (plist-get turn-options :context-lifetime-enabled))
+         (merge-pending
+          (pending)
+          (dolist (message pending)
+            (unless (and (plist-get message :id)
+                         (or (and turn-message-entry-ids
+                                  (seq-contains-p
+                                   turn-message-entry-ids
+                                   (plist-get message :id) #'equal))
+                             (seq-some
+                              (lambda (existing)
+                                (equal (plist-get existing :id)
+                                       (plist-get message :id)))
+                              turn-messages)))
+              (setq turn-messages (append turn-messages (list message)))
+              (when (and turn-message-entry-ids
+                         (plist-get message :id))
+                (setq turn-message-entry-ids
+                      (vconcat turn-message-entry-ids
+                               (vector (plist-get message :id))))))
+            (unless (plist-get message :id)
+              (funcall append-message message))))
          (drain-pending
-          (&optional refresh-before-pending-p)
+          ()
+          (when-let* ((pending (and drain-pending-input
+                                    (funcall drain-pending-input))))
+            (merge-pending pending)
+            t))
+         (drain-pending-after-response
+          (done-reason assistant-content)
           (let ((pending (and drain-pending-input
                               (funcall drain-pending-input))))
-            (when pending
-              ;; A same-turn steering message after an immediate tool
-              ;; follow-up must start from the harness's newly committed
-              ;; projection.  The refresh callback is invoked only when there
-              ;; is actually pending input, so ordinary turns keep their
-              ;; existing transcript path.
-              (when (and refresh-before-pending-p
-                         refresh-context
-                         (lifetime-projection-enabled-p))
-                (apply-context-refresh (funcall refresh-context)))
-              (dolist (message pending)
-                (setq turn-messages (append turn-messages (list message)))
-                (funcall append-message message))
-              t)))
+            (if (null pending)
+                (finish done-reason assistant-content)
+              (let ((projection
+                     (and refresh-context
+                          (lifetime-projection-enabled-p)
+                          (funcall refresh-context))))
+                (if (e-work-handle-p projection)
+                    (e-work-on-settle
+                     projection
+                     (lambda (settled-work)
+                       (dispatch-callback
+                        (lambda ()
+                          (pcase-let ((`(,state ,result ,error)
+                                       (let ((status
+                                              (e-work-status settled-work)))
+                                         (list (plist-get status :state)
+                                               (plist-get status :result)
+                                               (plist-get status :error)))))
+                            (pcase state
+                              ('finished
+                               (condition-case err
+                                   (progn
+                                     (apply-context-refresh result)
+                                     (merge-pending pending)
+                                     (start-request))
+                                 (error (fail err))))
+                              (_ (fail (or error
+                                           '(e-loop-context-refresh-failed))))))))))
+                  (when projection (apply-context-refresh projection))
+                  (merge-pending pending)
+                  (start-request))))))
          (apply-context-refresh
           (projection)
           ;; Build the replacement values before mutating the loop state.  A
@@ -2022,10 +2066,9 @@ schedules it behind the owning session's active commit barrier."
                                                  (funcall append-message message)
                                                  (notify-response-complete)
                                                  (promote-provider-anchor)
-                                                 (if (drain-pending t)
-                                                     (start-request)
-                                                   (finish done-reason
-                                                           (response-text))))))))))
+                                                 (drain-pending-after-response
+                                                  done-reason
+                                                  (response-text)))))))))
                                           (error
                                            (fail-provider err)))))))
                                  :on-error
