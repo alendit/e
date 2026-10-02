@@ -32,6 +32,27 @@
      'terminal-report "many" (list :run-id "run-1" :task-key "task" :attempt 0
                                    :status 'done :outputs (make-list 33 '(:kind file)))))))
 
+(ert-deftest e-board-orchestration-test-oversized-prompt-error-is-bounded ()
+  "Reject an oversized prompt without retaining it in the error."
+  (let* ((fact
+          (e-board-orchestration-test--fact
+           'manifest "oversized-prompt"
+           (list :run-id "run-1" :tasks nil :deadline '(:kind none)
+                 :continuation
+                 (list :session-id "coordinator" :publication-key "key"
+                       :prompt (make-string
+                                (1+ e-board-orchestration-fact-byte-limit)
+                                ?x)))))
+         (caught
+          (condition-case error
+              (progn (e-board-orchestration-validate-fact fact) nil)
+            (e-board-orchestration-invalid-fact error))))
+    (should (eq (car caught) 'e-board-orchestration-invalid-fact))
+    (should (eq (cadr caught) :continuation-prompt))
+    (should (equal (caddr caught)
+                   (list :bytes (1+ e-board-orchestration-fact-byte-limit)
+                         :limit e-board-orchestration-fact-byte-limit)))))
+
 (ert-deftest e-board-orchestration-test-wire-roundtrip-preserves-lisp-shapes ()
   "JSON replay preserves enums, task arrays, and opaque output values."
   (let* ((fact

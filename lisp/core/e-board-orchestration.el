@@ -49,10 +49,15 @@
 
 (defun e-board-orchestration--string (value field &optional allow-empty)
   "Return VALUE when it is a bounded string for FIELD, otherwise signal."
-  (unless (and (stringp value)
+  (let ((bytes (and (stringp value) (string-bytes value))))
+    (unless (and bytes
                (or allow-empty (not (string-empty-p value)))
-               (<= (string-bytes value) e-board-orchestration-fact-byte-limit))
-    (e-board-orchestration--invalid field value))
+                 (<= bytes e-board-orchestration-fact-byte-limit))
+      (e-board-orchestration--invalid
+       field
+       (if (and bytes (> bytes e-board-orchestration-fact-byte-limit))
+           (list :bytes bytes :limit e-board-orchestration-fact-byte-limit)
+         value))))
   value)
 
 (defun e-board-orchestration--attempt (value field)
