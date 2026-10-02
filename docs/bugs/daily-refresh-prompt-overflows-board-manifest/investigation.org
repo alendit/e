@@ -67,20 +67,43 @@ entry is gone.
 
 * October 2 cleanup
 
-The exact one-off cleanup is in =repair-october-2.py=.  It defaults to dry run,
-checks the Board generation, all three associations and session journals, the
-consumed pickup, absence of any run, and whole-store foreign-key integrity.
-Apply mode deletes only that Board and those three sessions in one SQLite
-transaction, then checks the foreign keys again.  It does not create or retain
-backups.  Dry run passed against the live store.  Apply mode and its readback
-passed on a temporary consistent SQLite copy, which was removed afterward.
+The former =repair-october-2.py= procedure assumed that this Board had no
+manifest or worker data.  That assumption became false after the restart and
+successful dispatch of two Daily runs, so the procedure was retired.  Deleting
+this Board now would discard accepted worker reports and their source
+artifacts.  The old scaffold and =window.json= sidecar were retained as part
+of the active Daily rather than removed.
 
-The affected owner chat was still selected in the running Emacs at the last
-bounded probe.  Live deletion is deferred until that process stops, so its
-in-memory binding and in-flight Work cannot reintroduce the abandoned state.
-After the database repair, remove the empty October 2 scaffold and its
-=daily/raw/2026-10-02/window.json= sidecar; preserve unrelated Grimoire edits.
-Then restart Emacs to load the new Grimoire layer code and retry the Daily.
+The Board now has two manifest positions, 5 and 170, with terminal failed
+continuation outcomes at positions 169 and 324.  Both runs collected worker
+artifacts.  The first coordinator session
+=20261002T100331-4699e2c79ea3= ended with =event is missing its type=;
+its provider event carried an =internalServerException= and string code
+=500=, but the Anthropic adapter classified it as a nonretryable invalid
+stream.  The second coordinator session
+=20261002T114111-2ccb52f079f1= ended with =message_delta arrived before
+content blocks stopped= at =max_tokens= (32,000 output tokens, of which
+20,487 were thinking tokens).  Neither session journal contains a file write.
+The Daily stayed at its 306-byte scaffold even though collection progressed.
+
+The continuation prompt had required every W-, PR-, and PRB- id across all
+fragments, plus every carry-forward item, to be checked before saving.  The
+second run's seven fragments contain roughly 129 KiB of material.  Grimoire
+now instructs the coordinator to save a source-labelled checkpoint before
+reading those fragments, then update and save one source section at a time.
+It reconciles active ids and carry-forward work after those saves, and reports
+remaining gaps in Summary.  The Anthropic adapter now treats an SSE error
+with a three-digit string code such as =500= as a provider error with retry
+metadata.  The invalid incomplete =max_tokens= stream remains rejected.
+
+The full Grimoire Daily suite passed 51/51; the Anthropic adapter suite passed
+93/93 with its local HTTP test server enabled.  The running Emacs has not
+loaded either code change.  A 5,019-byte source-backed checkpoint was written
+through the already selected, unchanged October 2 buffer and saved.  It
+preserves the Board binding and links to seven committed durable source
+artifacts while marking synthesis incomplete.  No Board records or worker
+artifacts were deleted, and no backup was retained.  Grimoire commits
+=c55c964= and =ca605ff= contain the prompt change and recovered Daily.
 
 * Design self-check
 
@@ -117,3 +140,35 @@ Then restart Emacs to load the new Grimoire layer code and retry the Daily.
     prompt test proves failure settlement and absence of an orphan participant
     against real SQLite, and the coordinator test proves exact session identity.
     The complete Daily suite passed 51/51.
+
+* Follow-up design self-check
+
+1. A provider 500 now remains retryable, and a failed long synthesis leaves a
+   saved partial Daily.  This is useful even before a complete retry.
+2. The direction is a direct-write coordinator that saves incremental useful
+   results and a provider adapter that owns its own error vocabulary.
+3. The first-save wording is local to Grimoire and reversible.  Numeric HTTP
+   status semantics are stable; no speculative extension interface was added.
+4. Grimoire owns Daily synthesis and save order.  Anthropic owns gateway SSE
+   error normalization.  The Board retains workflow and worker evidence.
+5. The existing prompt and backend item contracts suffice; neither acquires a
+   new dependency on the other.
+6. No core policy gained a dependency on Grimoire or the provider adapter.
+7. File writes remain with the ordinary model-facing file tool; the adapter
+   only maps transport errors to backend-neutral error items.
+8. No runtime state was added.  The partial Daily and raw source files are the
+   existing durable output surface, and the Board history remains in SQLite.
+9. One early save and per-section saves add I/O that is necessary to keep
+   useful output when a later request exhausts its output budget.  No extra
+   Board query or worker dispatch was added.
+10. No shared interface was changed; the error item still meets the backend
+    contract and all provider implementations retain their own semantics.
+11. Existing manifests and Daily files remain valid.  The old empty-Board
+    cleanup script was removed because its exact-state premise no longer held.
+12. The exhaustive pre-save coverage instruction and stale deletion procedure
+    were removed.
+13. Gateway SSE errors surface as provider failures; malformed non-error
+    streams still fail validation, including the incomplete =max_tokens= event.
+14. A focused test uses the observed string =500= SSE shape.  The complete
+    Anthropic 93/93 and Grimoire Daily 51/51 suites passed; the direct prompt
+    test verifies the early and per-section save order.
