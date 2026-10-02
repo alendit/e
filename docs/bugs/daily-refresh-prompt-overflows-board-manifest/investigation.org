@@ -88,22 +88,36 @@ The Daily stayed at its 306-byte scaffold even though collection progressed.
 
 The continuation prompt had required every W-, PR-, and PRB- id across all
 fragments, plus every carry-forward item, to be checked before saving.  The
-second run's seven fragments contain roughly 129 KiB of material.  Grimoire
-now instructs the coordinator to save a source-labelled checkpoint before
-reading those fragments, then update and save one source section at a time.
-It reconciles active ids and carry-forward work after those saves, and reports
-remaining gaps in Summary.  The Anthropic adapter now treats an SSE error
-with a three-digit string code such as =500= as a provider error with retry
-metadata.  The invalid incomplete =max_tokens= stream remains rejected.
+second run's seven fragments contain roughly 129 KiB of material.  The first
+repair replaced that gate with a prescribed checkpoint and per-section save
+order.  User review found that this was still overprescriptive.  The current
+prompt leaves synthesis and save order to the coordinator, names the accepted
+fragments and durable source files, preserves user edits, and asks it to save
+useful progress.  A representative continuation prompt fell from 7,867 to
+3,309 bytes, below the Board's 8,192-byte fact limit.
+
+The Anthropic adapter treats an SSE error with string code =500= as a
+retryable provider error.  It now labels the observed =max_tokens= event with
+an unfinished content block as an output-limit failure, without accepting the
+partial block.  The 32,000-token ceiling was an =e= fallback, not a verified
+Opus 5.5 limit; Anthropic Messages requires an explicit =max_tokens= and
+counts thinking tokens against it.  A bounded authenticated gateway request
+accepted =claude-opus-5-5= with =max_tokens= 128000 and returned HTTP 200.
+The configured Opus 5.5 profile now uses 128,000; other profiles keep their
+existing fallback pending model-specific evidence.
 
 The full Grimoire Daily suite passed 51/51; the Anthropic adapter suite passed
-93/93 with its local HTTP test server enabled.  The running Emacs has not
-loaded either code change.  A 5,019-byte source-backed checkpoint was written
+95/95 with its local HTTP test server enabled; the isolated current-Doom
+cold-start gate passed 8/8 after removing an exact stale generated
+=e-anthropic.elc=.  The running Emacs has not loaded either code change.  A
+5,019-byte source-backed checkpoint was written
 through the already selected, unchanged October 2 buffer and saved.  It
 preserves the Board binding and links to seven committed durable source
 artifacts while marking synthesis incomplete.  No Board records or worker
-artifacts were deleted, and no backup was retained.  Grimoire commits
-=c55c964= and =ca605ff= contain the prompt change and recovered Daily.
+artifacts were deleted, and no backup was retained.  Grimoire commit
+=ca605ff= contains the recovered Daily.  The interim prompt in =c55c964=
+was simplified in =0611b10=.  The adapter correction is =8f34c984= and the
+current Doom profile is =df11e83=.
 
 * Design self-check
 
@@ -143,14 +157,14 @@ artifacts were deleted, and no backup was retained.  Grimoire commits
 
 * Follow-up design self-check
 
-1. A provider 500 now remains retryable, and a failed long synthesis leaves a
-   saved partial Daily.  This is useful even before a complete retry.
-2. The direction is a direct-write coordinator that saves incremental useful
-   results and a provider adapter that owns its own error vocabulary.
-3. The first-save wording is local to Grimoire and reversible.  Numeric HTTP
-   status semantics are stable; no speculative extension interface was added.
-4. Grimoire owns Daily synthesis and save order.  Anthropic owns gateway SSE
-   error normalization.  The Board retains workflow and worker evidence.
+1. A provider 500 is retryable, an output-limit failure is identified, and
+   the concise prompt gives the coordinator room to produce a useful Daily.
+2. The direction is a direct-write coordinator that uses the gathered evidence
+   and its own judgment, with provider errors classified at the adapter.
+3. Prompt wording remains local to Grimoire and reversible.  The verified
+   Opus 5.5 ceiling is profile data; no speculative limit table was added.
+4. Grimoire owns Daily synthesis.  Anthropic owns SSE error normalization and
+   provider output-budget defaults.  Board retains workflow evidence.
 5. The existing prompt and backend item contracts suffice; neither acquires a
    new dependency on the other.
 6. No core policy gained a dependency on Grimoire or the provider adapter.
@@ -158,17 +172,19 @@ artifacts were deleted, and no backup was retained.  Grimoire commits
    only maps transport errors to backend-neutral error items.
 8. No runtime state was added.  The partial Daily and raw source files are the
    existing durable output surface, and the Board history remains in SQLite.
-9. One early save and per-section saves add I/O that is necessary to keep
-   useful output when a later request exhausts its output budget.  No extra
-   Board query or worker dispatch was added.
+9. The shorter prompt reduces model input and removes mandatory source-by-source
+   save calls.  The larger verified output ceiling provides headroom but still
+   bounds one provider request.  No extra Board query or worker dispatch was
+   added.
 10. No shared interface was changed; the error item still meets the backend
     contract and all provider implementations retain their own semantics.
 11. Existing manifests and Daily files remain valid.  The old empty-Board
     cleanup script was removed because its exact-state premise no longer held.
 12. The exhaustive pre-save coverage instruction and stale deletion procedure
     were removed.
-13. Gateway SSE errors surface as provider failures; malformed non-error
-    streams still fail validation, including the incomplete =max_tokens= event.
-14. A focused test uses the observed string =500= SSE shape.  The complete
-    Anthropic 93/93 and Grimoire Daily 51/51 suites passed; the direct prompt
-    test verifies the early and per-section save order.
+13. Gateway SSE errors surface as provider failures; unfinished =max_tokens=
+    blocks surface as output-limit failures.  Other malformed streams still
+    fail validation, and no partial block is admitted.
+14. Focused tests use the observed string =500= and unfinished =max_tokens=
+    shapes.  The complete Anthropic 95/95, Grimoire Daily 51/51, and isolated
+    current-Doom 8/8 gates passed; prompt tests reject exhaustive instructions.
