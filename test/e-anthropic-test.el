@@ -1769,6 +1769,28 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
       (:type assistant-message :content "Writing now.")
       (:type done :reason max-tokens)))))
 
+(ert-deftest e-anthropic-test-open-block-at-max-tokens-is-output-limit ()
+  "An unfinished block at max_tokens is a limit failure, not malformed data."
+  (let (items)
+    (e-anthropic--emit-response-items
+     (e-anthropic-test--sse-stream
+      '((:type "message_start"
+         :message (:role "assistant" :content []))
+        (:type "content_block_start" :index 0
+         :content_block (:type "thinking" :thinking ""))
+        (:type "content_block_delta" :index 0
+         :delta (:type "thinking_delta" :thinking "still working"))
+        (:type "message_delta" :delta (:stop_reason "max_tokens")
+         :usage (:output_tokens 32000))))
+     (lambda (item) (push item items)))
+    (let* ((item (car items))
+           (details (plist-get item :payload)))
+      (should (= (length items) 1))
+      (should (eq (plist-get item :type) 'backend-error))
+      (should (eq (plist-get details :response-kind) 'output-limit))
+      (should (equal (plist-get details :error-type) "max_tokens"))
+      (should-not (plist-get details :retryable)))))
+
 (ert-deftest e-anthropic-test-messages-url-appends-messages-path ()
   "Messages providers append /messages unless the base URL already has it."
   (should (equal (e-anthropic-messages-url "https://gateway.example.test/v1")
@@ -2318,6 +2340,24 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                    (list :model "claude-default"
                          :max-tokens e-anthropic-default-max-tokens
                          :effort e-anthropic-default-effort)))))
+
+(ert-deftest e-anthropic-test-create-harness-uses-provider-output-ceiling ()
+  "The verified provider ceiling overrides the generic fallback."
+  (let ((e-anthropic-model-providers
+         '((eng-anthropic
+            :name "Engineering Anthropic"
+            :base-url "https://gateway.example.test/v1"
+            :auth bearer
+            :env-key "ANTHROPIC_GATEWAY_KEY"
+            :default-model "claude-opus-5-5"
+            :max-tokens 128000))))
+    (should (= (plist-get
+                (e-harness-default-options
+                 (e-anthropic-create-harness
+                  :provider 'eng-anthropic
+                  :request-function #'ignore))
+                :max-tokens)
+               128000))))
 
 (ert-deftest e-anthropic-test-create-harness-uses-opus-5-5-without-profile-model ()
   "A profile without a model uses the exact Opus 5.5 adapter fallback."

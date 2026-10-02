@@ -158,12 +158,13 @@ provider-neutral backend contract."
   :group 'e-anthropic)
 
 (defcustom e-anthropic-default-max-tokens 32000
-  "Default `max_tokens' for Anthropic Messages requests.
+  "Fallback `max_tokens' for Anthropic Messages requests.
 
 The Messages API requires an explicit output-token ceiling.  Sending it from
 the client keeps the budget under our control rather than at the mercy of a
 gateway default, which is what silently truncated tool calls under the
-OpenAI-compatible chat/completions path."
+OpenAI-compatible chat/completions path.  A provider profile can supply its
+verified `:max-tokens' value."
   :type 'integer
   :group 'e-anthropic)
 
@@ -235,7 +236,8 @@ lookups themselves are always cache-only.  Set to 0 to retry every refresh."
 Each profile is plist data.  `:auth' supports `bearer' (read a token from
 `:env-key', sent as `x-api-key') and `sigv4' (reserved for Amazon Bedrock and
 Claude Platform on AWS; not implemented yet).  `:model-prefix' is prepended to
-model ids (Amazon Bedrock uses `anthropic.')."
+model ids (Amazon Bedrock uses `anthropic.').  `:max-tokens' overrides the
+fallback output ceiling for that provider's harness."
   :type '(alist :key-type symbol :value-type sexp)
   :group 'e-anthropic)
 
@@ -1822,6 +1824,16 @@ visible rather than masked as empty assistant output."
                              (when status
                                (list :status status)))))))
 
+(defun e-anthropic--output-limit-event-item (event)
+  "Return an output-limit error when EVENT ended with unfinished blocks."
+  (when (and (equal (plist-get event :type) "message_delta")
+             (equal (plist-get (plist-get event :delta) :stop_reason)
+                    "max_tokens"))
+    (list :type 'backend-error
+          :content "Anthropic Messages output limit reached before content blocks finished"
+          :payload '(:response-kind output-limit
+                     :error-type "max_tokens"))))
+
 (defun e-anthropic-parse-stream (stream-text)
   "Parse Anthropic Messages STREAM-TEXT into validated backend-neutral items.
 
@@ -2212,7 +2224,10 @@ errors are surfaced as `backend-error' items because gateways can return those
                            :reason
                            (e-anthropic--stop-reason-symbol stop-reason)))))))))
     (e-anthropic-response-invalid
-     (list (or (e-anthropic--stream-error-item (caddr err))
+     (list (or (and (equal (cadr err)
+                           "message_delta arrived before content blocks stopped")
+                    (e-anthropic--output-limit-event-item (caddr err)))
+               (e-anthropic--stream-error-item (caddr err))
                (e-anthropic--invalid-response-item
                 (or (cadr err) "malformed response") (caddr err)))))
     (e-json-error
@@ -2668,7 +2683,8 @@ backend-neutral turn options.  SESSIONS supplies an existing session store."
                :request-function request-function
                :model model)
      :default-options (list :model model
-                            :max-tokens e-anthropic-default-max-tokens
+                            :max-tokens (or (plist-get profile :max-tokens)
+                                            e-anthropic-default-max-tokens)
                             :effort e-anthropic-default-effort)
      :sessions sessions)))
 

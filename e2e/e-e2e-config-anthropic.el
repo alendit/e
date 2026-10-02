@@ -39,7 +39,8 @@
          :auth-header authorization
          :env-key "ENG_AI_MODEL_GW_KEY"
          :model-prefix ""
-         :default-model "claude-opus-5-5")
+         :default-model "claude-opus-5-5"
+         :max-tokens 128000)
         (eng-ai-gateway-sonnet
          :name "Engineering AI Model Gateway / Sonnet 5 (Messages)"
          :base-url "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1"
