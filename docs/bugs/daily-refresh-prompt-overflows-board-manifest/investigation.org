@@ -42,11 +42,21 @@ and Watching items.  The removed parser no longer duplicates mutable Daily
 content into a bounded Board fact.  The coordinator callback now converts
 manifest construction/publication errors into a failed start Work.
 
+A further fix generates the coordinator session ID and validates the exact
+Board manifest before admitting that session.  An oversized prompt therefore
+fails the start without leaving an orphan coordinator participant.  Publication
+uses the same validated manifest and session ID.
+
 With the actual October 1 file and all seven task contracts, the repaired
 October 2 prompt is 7,220 bytes and the complete manifest passes Board fact
-validation.  The Grimoire Daily suite passed 49/49 tests, including a long
-previous-Daily manifest check and a real SQLite coordinator admission test
-that forces a manifest error and verifies terminal failure.
+validation.  The later Grimoire Daily suite passed 51/51 tests.  It covers the
+long previous-Daily reference, a genuinely oversized prompt rejected against
+the real Board contract before admission, and admission of the preassigned
+coordinator session ID.  The failed start leaves only the original owner, no
+Board records, and no run-index entry.  Grimoire commit =4ead6b6= contains
+that boundary fix.  Controller error messages are bounded to 480 characters,
+and Board validation reports an oversized string's byte count and limit
+without retaining the rejected prompt in the error.
 
 The running Emacs and the user's Daily files were not changed.  The hung
 process-local start Work remains in that Emacs instance.  A full Emacs restart
@@ -55,23 +65,42 @@ is needed before retrying the Daily: reloading the layer preserves its
 turn to replay, so a new start can allocate a fresh run after that in-flight
 entry is gone.
 
+* October 2 cleanup
+
+The exact one-off cleanup is in =repair-october-2.py=.  It defaults to dry run,
+checks the Board generation, all three associations and session journals, the
+consumed pickup, absence of any run, and whole-store foreign-key integrity.
+Apply mode deletes only that Board and those three sessions in one SQLite
+transaction, then checks the foreign keys again.  It does not create or retain
+backups.  Dry run passed against the live store.  Apply mode and its readback
+passed on a temporary consistent SQLite copy, which was removed afterward.
+
+The affected owner chat was still selected in the running Emacs at the last
+bounded probe.  Live deletion is deferred until that process stops, so its
+in-memory binding and in-flight Work cannot reintroduce the abandoned state.
+After the database repair, remove the empty October 2 scaffold and its
+=daily/raw/2026-10-02/window.json= sidecar; preserve unrelated Grimoire edits.
+Then restart Emacs to load the new Grimoire layer code and retry the Daily.
+
 * Design self-check
 
-1. If this package stops here, Daily starts can dispatch again, and later
-   manifest errors fail visibly instead of leaving a pending action.
+1. If this package stops here, Daily starts can dispatch again, and invalid
+   manifests fail before a coordinator is admitted.  Later publication errors
+   still fail the start Work visibly.
 2. It moves toward bounded Board facts that reference source files rather than
    copying growing note content into the fact.
 3. The 8 KiB Board contract is stable; the Daily prompt and carry-forward
    wording remain local to Grimoire and can change without a new interface.
-4. Grimoire owns its Daily prompt and controller settlement.  The generic
-   Board owns only the manifest contract and its size limit.
+4. Grimoire owns its Daily prompt, coordinator identity, and controller
+   settlement.  The generic Board owns only the manifest contract and limit.
 5. Coupling decreases because the manifest no longer embeds a parsed copy of
    the previous Daily.  The existing file-reading capability is sufficient.
 6. Dependency direction is unchanged: Grimoire uses the Board contract; no
    Board policy depends on Grimoire.
 7. The previous-file read occurs through the coordinator's ordinary tool
    boundary.  No file side effect was added to the Board reducer.
-8. No state was added.  The duplicated carry-forward checklist and its parser
+8. No durable state was added.  The coordinator ID is generated earlier in the
+   same start operation.  The duplicated carry-forward checklist and parser
    were removed; the source remains the previous Org file.
 9. Start avoids a previous-file parse.  The coordinator must read that file
    to use its content, which is work required by the task itself.
@@ -81,8 +110,10 @@ entry is gone.
     manifest to migrate, and the obsolete embedded-checklist path was removed.
 12. The carry-forward parser, headings, and item limit were removed.
 13. A missing previous file is reported by the coordinator instruction;
-    manifest construction errors now fail the start Work.  Unexpected errors
-    surface in that Work rather than being swallowed by its callback.
-14. The long-note manifest test proves the Board contract independently, and
-    a real SQLite coordinator test proves callback failure settlement.  The
-    complete Daily suite passed 49/49.
+    manifest validation errors fail the start before admission with bounded
+    diagnostic data.  Unexpected errors surface in that Work rather than being
+    swallowed by its callback.
+14. The long-note manifest test proves the bounded prompt, the oversized
+    prompt test proves failure settlement and absence of an orphan participant
+    against real SQLite, and the coordinator test proves exact session identity.
+    The complete Daily suite passed 51/51.
