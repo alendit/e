@@ -1339,6 +1339,23 @@ retry classifier sees the kind even when the message does not name it."
         (should (eq (plist-get details :retry-reason)
                     'provider-unavailable))))))
 
+(ert-deftest e-anthropic-test-gateway-sse-error-without-type-is-retryable ()
+  "A gateway SSE error with a numeric server code is a provider failure."
+  (let (items)
+    (e-anthropic--emit-response-items
+     "event: error\ndata: {\"error\":{\"code\":\"500\",\"message\":\"internalServerException\"}}\n\n"
+     (lambda (item) (push item items)))
+    (let* ((item (car items))
+           (details (plist-get item :payload)))
+      (should (= (length items) 1))
+      (should (eq (plist-get item :type) 'backend-error))
+      (should (equal (plist-get item :content) "internalServerException"))
+      (should (eq (plist-get details :response-kind) 'sse-error))
+      (should (= (plist-get details :status) 500))
+      (should (eq (plist-get details :retryable) t))
+      (should (eq (plist-get details :retry-reason)
+                  'provider-unavailable)))))
+
 (ert-deftest e-anthropic-test-normalizes-provider-retry-hints ()
   "The Anthropic adapter owns transient classification and reset parsing."
   (let* ((now (float-time

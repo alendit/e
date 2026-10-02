@@ -1794,6 +1794,34 @@ visible rather than masked as empty assistant output."
                 (when provider-event
                   (list :provider-event provider-event)))))
 
+(defun e-anthropic--stream-error-item (event)
+  "Return a backend error for an Anthropic or gateway SSE error EVENT."
+  (let* ((event-type (plist-get event :type))
+         (provider-error (plist-get event :error))
+         (message (and (listp provider-error)
+                       (plist-get provider-error :message)))
+         (code (and (listp provider-error)
+                    (plist-get provider-error :code)))
+         (status (cond
+                  ((and (integerp code) (<= 100 code) (<= code 599)) code)
+                  ((and (stringp code)
+                        (string-match-p "\\`[1-5][0-9][0-9]\\'" code))
+                   (string-to-number code))))
+         (error-type (and (listp provider-error)
+                          (plist-get provider-error :type))))
+    (when (and (or (null event-type) (equal event-type "error"))
+               (listp provider-error)
+               (or (stringp message) status (stringp error-type)))
+      (list :type 'backend-error
+            :content (or (and (stringp message) message)
+                         (and (stringp error-type) error-type)
+                         (format "Provider SSE error %s" code))
+            :payload (append (list :response-kind 'sse-error)
+                             (when (stringp error-type)
+                               (list :error-type error-type))
+                             (when status
+                               (list :status status)))))))
+
 (defun e-anthropic-parse-stream (stream-text)
   "Parse Anthropic Messages STREAM-TEXT into validated backend-neutral items.
 
@@ -2184,8 +2212,9 @@ errors are surfaced as `backend-error' items because gateways can return those
                            :reason
                            (e-anthropic--stop-reason-symbol stop-reason)))))))))
     (e-anthropic-response-invalid
-     (list (e-anthropic--invalid-response-item
-            (or (cadr err) "malformed response") (caddr err))))
+     (list (or (e-anthropic--stream-error-item (caddr err))
+               (e-anthropic--invalid-response-item
+                (or (cadr err) "malformed response") (caddr err)))))
     (e-json-error
      (list (e-anthropic--invalid-response-item
             "invalid JSON event or tool input")))))
