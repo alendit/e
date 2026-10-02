@@ -1,0 +1,8 @@
+#+title: Report: October 2 Daily refresh never dispatches
+#+date: 2026-10-02
+#+startup: overview
+
+The latest Grimoire Daily remained an empty scaffold after a refresh request.
+The =daily-run :start= action stayed in =started= for more than nine minutes,
+while the Daily Board reported zero runs.  The user suspected fallout from the
+October 1 Board steering/FIFO change and asked for debugging.
