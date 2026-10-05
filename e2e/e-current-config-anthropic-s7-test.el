@@ -678,13 +678,15 @@ tool schema is a different prefix and must not be compared with open requests."
                           'eng-ai-gateway-opus-5-5))
               (should (equal (plist-get profile :default-model)
                              "claude-opus-5-5"))
-              (should (equal (plist-get
-                              (e-harness-default-options harness)
-                              :prompt-cache-ttl)
-                             "1h"))
-              (should (eq (plist-get (e-harness-default-options harness)
-                                     :prompt-cache)
-                          t))
+              (let ((capabilities
+                     (e-anthropic-context-capabilities
+                      e-anthropic-default-provider nil)))
+                (should (eq (plist-get capabilities :prefix-cache)
+                            'automatic-explicit))
+                (unless (eq (plist-get capabilities :reserved-effect-carrier)
+                            'context-curate-wire)
+                  (ert-skip
+                   "Anthropic curation is unavailable until repeated-cache P3 evidence is accepted.")))
               (e-harness-set-intrinsic-capabilities
                harness
                (append (e-harness-intrinsic-capabilities harness)

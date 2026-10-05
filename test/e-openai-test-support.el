@@ -27,6 +27,23 @@
 (defvar url-http-version)
 (defvar url-mime-encoding-string)
 
+(defmacro e-openai-test--with-prefix-cache-capability (capability &rest body)
+  "Run direct request-renderer tests under test-owned CAPABILITY evidence.
+Production adapters derive these values from the endpoint and model."
+  (declare (indent 1) (debug t))
+  `(let ((e-openai-profile--effective-prefix-cache ,capability)
+         (e-openai-profile--effective-cache-routing-key nil)
+         (e-openai-profile--effective-cache-retention nil)
+         (e-openai-profile--effective-cache-capability-evidence 'test-owned))
+     ,@body))
+
+(defmacro e-openai-test--with-curation-capability (&rest body)
+  "Run a renderer-only schema assertion with synthetic test-owned evidence."
+  (declare (indent 0) (debug t))
+  `(let ((e-openai-profile--effective-context-curation-capability
+          'context-curate-wire))
+     ,@body))
+
 (defun e-openai-test--jwt ()
   "Return a fake JWT with a Codex account-id claim."
   (let* ((payload (e-json-serialize

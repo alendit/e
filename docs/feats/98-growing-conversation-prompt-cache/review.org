@@ -1,0 +1,109 @@
+#+title: Review: Growing Conversation Prompt Cache Remediation
+#+date: 2026-10-05
+#+startup: overview
+
+* Status
+
+In-review.  Deterministic implementation acceptance and external cache benefit
+are separate.  No shipped adapter advertises efficient cache-plus-curation
+support; unconfirmed curation stays unavailable.
+
+* Scope and authority
+
+DP1 implements F98-G1 and F98-C1--C6 in [[file:plan.org][the reviewed plan]].
+The admitted plan identity is recorded in [[file:plan-review.org][plan-review.org]].  Review base is
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=.  Provider adapters own wire policy;
+existing harness/lifetime owners enforce semantic availability and commit.
+No runtime cache registry, durable cache state, user enable switch, or hit-rate
+heuristic was added.  The running Emacs and audited Board/store remain untouched.
+
+* Review 1: Pre-acceptance risk review
+
+An independent read-only reviewer found three actionable defects in the first
+settled implementation diff.  This was not a fixed-point decision.
+
+1. F98-C6: disabling wire publication left curation labels and prepared effects
+   available.  Corrected by gating labels, tool observation presentation,
+   request admission, preflight, and commit against adapter-derived capability.
+2. F98-C6: caller-supplied OpenAI tools could republish =context-curate=.
+   Corrected at both Responses and Chat Completions composition boundaries.
+3. F98-C5/C6: a classifier accepted repeated static hits as P3 success.
+   Corrected with ordered curation/rebuilt-history/reuse phases, a static-only
+   baseline, two cache-read advances per phase, repeated curation, and a material
+   summary/erase phase.  No boolean or legacy =pass= string grants P3 support.
+
+Independent closure review remains pending.
+
+* Parent acceptance corrections
+
+- A misplaced parenthesis in the capability rejection guard suppressed ordinary
+  frame commits.  Correcting the guard restored curation persistence, atomic
+  erasure/package tests, Anthropic mixed replay, and steering summaries.
+- Semantic observation placement remains independent of curation labels.
+  Unsupported sessions still receive the authorized late observation frontier.
+- Supported synthetic backends now declare the carrier at its trusted owning
+  seam; copied request options cannot enable it.  Direct commit witnesses carry
+  the originating provider-request options.
+- Supported sessions retain bounded duplicate-curation recovery after a frame
+  closes; unsupported sessions reject forced effects before replay or mutation.
+- The historical steering assertion also failed on the untouched base.  Its
+  expected pending-input record now includes the existing =:committed-message nil=
+  slot; production steering behavior was not changed for this assertion.
+- The external evidence record no longer references the removed harness cache
+  key version.  The adapter-owned derivation revision is explicit.
+
+* Verification before the review anchor
+
+- Focused adapter/backend/harness/lifetime/reporting/subagent/session suite:
+  521/521 expected; the separately confirmed baseline steering assertion was
+  excluded in that run, then corrected and passed 1/1.
+- Corrected local semantic seams: 87/87 expected.
+- Growing-cache/P3 classifiers and bounded external evidence record: 10/10
+  expected.  The observed 52,493-token fixed ceiling cannot pass.
+- New configured-harness growing-tool probe: syntax/load passed.  Its provider
+  execution is deferred to the committed and independently reviewed candidate.
+- =git diff --check=: passed before the anchor.
+
+Verbose logs are under =/private/tmp/e-feature98/=; these are transient execution
+artifacts, not durable provider acceptance.
+
+* Configuration and external evidence
+
+The configured Anthropic factory was cleaned in both =~/.doom.d/config.org=
+and its generated =config.el=.  Removed only its =:prompt-cache t=
+=:prompt-cache-ttl "1h"= assignment; retained unrelated factories and settings.
+Backups are under =/private/tmp/e-feature98/doom-config-backups/=.  A fresh private
+current-config daemon must pass before claiming configured startup acceptance.
+
+A pre-acceptance synthetic Opus 5.5 hybrid request was accepted twice with
+HTTP 200, each reporting 4,203 creation tokens and zero reads.  This is diagnostic
+field-acceptance evidence only, tied to the uncommitted candidate.  It cannot be
+reused as P1/P2/P3 acceptance.  Strongest compatible controls remain enabled;
+curation remains unavailable.  First-party OpenAI API credentials are absent.
+
+* Architecture self-check
+
+1. If this package stopped here, would the project be better off?  It removes
+   fixed-only cache policy and prevents unproved curation effects; provider
+   benefit still requires external evidence.
+2. Final direction: API-capability-owned caching with unchanged-history reuse
+   and efficient curation admission.
+3. Stable requirements are semantic projection and caller inability to weaken
+   caching.  Optional provider syntax and capability proof remain adapter-local.
+4. Adapters own syntax; core lifetime/loop owners own presentation and effects.
+5. Coupling is reduced by removing harness cache-key and caller-policy APIs.
+6. Core depends on backend semantic capabilities, never provider wire fields.
+7. Network/auth/cache side effects remain in adapters and opt-in test runners.
+8. Added derived capability values live per request; provider caches are
+   disposable and accepted session projections remain the only history truth.
+9. Automatic boundaries allow new history writes, whose cost is necessary to
+   make later history reusable.  No measured latency or cost claim is made.
+10. The semantic capability interface reports unavailable support explicitly;
+    ordinary chat remains usable without a reserved carrier.
+11. Stale caller controls are stripped; old persisted records remain readable.
+12. Removed cache defaults/key inheritance, explicit-only selection, factory
+    options, and obsolete test policy assertions.
+13. Unsupported effects fail at admission/preflight/commit; provider errors
+    remain provider errors, and missing cache evidence remains unknown.
+14. Credential-free request, forced-effect, lifetime, replay, and classifier
+    tests prove owner behavior; public harness composition gates prove joins.

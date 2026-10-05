@@ -52,8 +52,27 @@
                   :response-store (e-openai-profile-response-store options)
                   :prompt-cache-key-present
                   (not (null (plist-member body :prompt_cache_key)))
-                  :prompt-cache-retention-present
-                  (not (null (plist-member body :prompt_cache_retention)))
+                  :prompt-cache-mode
+                  (e-openai-responses-prompt-cache-mode-label options)
+                  :prompt-cache-capability-evidence
+                  e-openai-profile--effective-cache-capability-evidence
+                  :prompt-cache-boundary-policy
+                  (if (eq e-openai-profile--effective-prefix-cache
+                          'automatic-explicit)
+                      'implicit-latest-eligible-plus-stable-guard
+                    (if (eq e-openai-profile--effective-prefix-cache 'automatic)
+                        'implicit-latest-eligible
+                      'unavailable))
+                  :prompt-cache-stable-guard-count
+                  (if (eq wire-api 'responses)
+                      (e-openai-responses-cache-breakpoint-count body)
+                    0)
+                  :prompt-cache-retention
+                  (or e-openai-profile--effective-cache-retention
+                      (if (eq e-openai-profile--effective-prefix-cache
+                              'automatic-explicit)
+                          "30m-default"
+                        "provider-default"))
                   :provider-continuation continuation-state
                   :previous-response-id-present
                   (not (null (plist-member body :previous_response_id)))
@@ -104,10 +123,7 @@
         (setq metadata (plist-put metadata :diagnostics diagnostics)))
       (when-let* ((revision (e-openai-responses-prompt-layout-revision options)))
         (setq diagnostics
-              (append diagnostics
-                      (list :prompt-cache-mode
-                            (e-openai-responses-prompt-cache-mode-label options)
-                            :prompt-layout-revision revision)))
+              (append diagnostics (list :prompt-layout-revision revision)))
         (setq metadata (plist-put metadata :diagnostics diagnostics))
         (setq metadata
               (append metadata
@@ -160,6 +176,12 @@ OpenAI request and backend-neutral context."
              (when (eq responses-transport 'websocket)
                (e-openai-profile-websocket-idle-close-seconds profile)))
             (effective-options (copy-sequence options))
+            (_ (dolist (key '(:prompt-cache :prompt-cache-default
+                              :prompt-cache-mode
+                              :prompt-cache-breakpoint-mode
+                              :prompt-cache-key :prompt-cache-retention
+                              :prompt-cache-ttl :reserved-effect-carrier))
+                 (cl-remf effective-options key)))
             (_ (when (and (eq responses-transport 'websocket)
                           (not (eq wire-api 'responses)))
                  (signal 'e-openai-provider-invalid
@@ -174,11 +196,6 @@ OpenAI request and backend-neutral context."
                        (plist-put effective-options
                                   :responses-transport
                                   responses-transport))
-                 (setq effective-options
-                       (plist-put
-                        effective-options
-                        :prompt-cache-breakpoint-mode
-                        (plist-get profile :prompt-cache-breakpoint-mode)))
                  (setq effective-options
                        (plist-put
                         effective-options
@@ -210,29 +227,31 @@ OpenAI request and backend-neutral context."
                         effective-options
                         :include-encrypted-reasoning
                         (plist-get profile :include-encrypted-reasoning)))
-                 (if (plist-get effective-options :context-lifetime-enabled)
-                     ;; The profile supplies the default carrier, while an
-                     ;; explicit request-local nil from the loop closes a
-                     ;; consumed frame opportunity without teaching core any
-                     ;; provider wire syntax.
-                     (unless (plist-member effective-options
-                                            :reserved-effect-carrier)
-                       (setq effective-options
-                             (plist-put effective-options
-                                        :reserved-effect-carrier
-                                        'context-curate-wire)))
-                   (cl-remf effective-options :reserved-effect-carrier))
                  (when (plist-member profile :response-store)
                    (setq effective-options
                          (plist-put effective-options
                                     :response-store
                                     (plist-get profile :response-store))))))
-            (_ (when (and (eq wire-api 'responses)
-                          (plist-member effective-options :prompt-cache-retention)
-                          (not (e-openai-profile-prompt-cache-retention-supported-p
-                                profile
-                                (plist-get effective-options :model))))
-                 (cl-remf effective-options :prompt-cache-retention)))
+            (effective-base-url
+             (or base-url (e-openai-provider-base-url profile)))
+            (effective-model (plist-get effective-options :model))
+            (cache-capability
+             (e-openai-profile-cache-capability
+              profile provider effective-base-url effective-model))
+            (e-openai-profile--effective-prefix-cache cache-capability)
+            (e-openai-profile--effective-cache-routing-key
+             (e-openai-profile-cache-routing-key
+              profile provider effective-base-url effective-model
+              effective-options))
+            (e-openai-profile--effective-cache-retention
+             (e-openai-profile-cache-retention
+              profile provider effective-base-url effective-model))
+            (e-openai-profile--effective-cache-capability-evidence
+             (e-openai-profile-cache-capability-evidence
+              profile provider effective-base-url effective-model))
+            ;; No OpenAI or Codex adapter/API combination is confirmed for
+            ;; efficient cache-plus-curation behavior yet.
+            (e-openai-profile--effective-context-curation-capability nil)
             (reasoning-identity
              (when (eq wire-api 'responses)
                (e-openai-responses-reasoning-identity effective-options)))
@@ -459,15 +478,24 @@ default when turn options do not include `:model'.  The provider profile's
        :normalize-error-details #'e-openai-diagnostics-normalize-error-details
        :context-capabilities
        (lambda (options)
-         (e-openai-profile-context-capabilities
-          (e-openai-provider-profile provider)
-          options
-          :provider provider
-          :base-url base-url
-          :request-function request-function
-          :provider-compaction-supported
-          (and provider-compaction-supported
-               (functionp provider-compaction))))
+         (let* ((profile (e-openai-provider-profile provider))
+                (capability-options (copy-sequence options)))
+           (unless (plist-get capability-options :model)
+             (setq capability-options
+                   (plist-put capability-options :model
+                              (e-openai-provider-model profile model))))
+           (when (eq (e-openai-provider-wire-api profile) 'responses)
+             (setq capability-options
+                   (plist-put capability-options :responses-transport
+                              (e-openai-profile-responses-transport profile))))
+           (e-openai-profile-context-capabilities
+            profile capability-options
+            :provider provider
+            :base-url (or base-url (e-openai-provider-base-url profile))
+            :request-function request-function
+            :provider-compaction-supported
+            (and provider-compaction-supported
+                 (functionp provider-compaction)))))
        :provider-compaction provider-compaction
        :stream
        (cl-function

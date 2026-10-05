@@ -1288,11 +1288,205 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
     "warm")
    (t "unavailable")))
 
+(defun e-live-e2e--user-message-count (body)
+  "Return the number of user messages in a Responses request BODY."
+  (cl-count-if (lambda (item) (equal (plist-get item :role) "user"))
+               (append (plist-get body :input) nil)))
+
+(defun e-live-e2e--context-curation-available-p (provider-id profile)
+  "Return whether the adapter confirms curation for PROVIDER-ID and PROFILE."
+  (eq (plist-get
+       (e-openai-profile-context-capabilities profile nil
+                                              :provider provider-id)
+       :reserved-effect-carrier)
+      'context-curate-wire))
+
+(cl-defun e-live-e2e--classify-growing-cache-evidence
+    (&key evidence (granularity 128))
+  "Classify ordered request EVIDENCE without mistaking static reads for growth.
+GRANULARITY is the provider's cache-read reporting step.  A cold request or
+missing counters leaves reuse unconfirmed; it does not prove a product defect."
+  (cond
+   ((or (< (length evidence) 3)
+        (not (cl-every
+              (lambda (event)
+                (and (numberp (plist-get event :input-tokens))
+                     (numberp (plist-get event :cached-input-tokens))
+                     (plist-get event :stable-prefix-fingerprint)))
+              evidence)))
+    "unavailable")
+   ((seq-some (lambda (event) (plist-get event :expired)) evidence) "expired")
+   ((not (cl-every
+          (lambda (event)
+            (cl-every (lambda (key)
+                        (equal (plist-get event key)
+                               (plist-get (car evidence) key)))
+                      '(:stable-prefix-fingerprint :provider :endpoint :model)))
+          evidence)) "prefix-changed")
+   ((not (cl-loop for previous in evidence
+                  for current in (cdr evidence)
+                  always (> (plist-get current :input-tokens)
+                            (plist-get previous :input-tokens))))
+    "history-not-growing")
+   ((cl-loop for previous in evidence
+             for current in (cdr evidence)
+             count (>= (- (plist-get current :cached-input-tokens)
+                           (plist-get previous :cached-input-tokens))
+                        granularity) into increases
+             finally return (>= increases 2))
+    "growing-history-reuse")
+   ((cl-every (lambda (event) (> (plist-get event :cached-input-tokens) 0))
+              evidence) "static-prefix-only")
+   (t "cold-or-inconclusive")))
+
+(cl-defun e-live-e2e--classify-p3-curation-cache-evidence
+    (&key capability-confirmed provider-id evidence (granularity 128))
+  "Classify repeated curation and rebuilt-history reuse in ordered EVIDENCE.
+A stable-only baseline bounds static hits.  Each curation owns a rebuilt request
+and two subsequent reads over its unchanged history, including newly appended
+history.  A projection rewrite may miss on the rebuilt request."
+  (let (baseline pending rebuilt reads seen-ids
+                 (pairs 0) (material-rebuild-p nil) failure)
+    (cond
+     ((not capability-confirmed) "capability-unconfirmed")
+     ((null evidence) "unavailable")
+     ((seq-some (lambda (event) (eq (plist-get event :type) 'expired)) evidence)
+      "expired")
+     (t
+      (dolist (event evidence)
+        (unless failure
+          (cond
+           ((not (equal (format "%s" (plist-get event :provider-id))
+                        (format "%s" provider-id)))
+            (setq failure "provider-mismatch"))
+           ((eq (plist-get event :type) 'curation)
+            (if (and baseline (null pending)
+                     (eq (plist-get event :accepted) t)
+                     (plist-get event :curation-id)
+                     (not (member (plist-get event :curation-id) seen-ids)))
+                (setq pending event rebuilt nil reads nil
+                      seen-ids (cons (plist-get event :curation-id) seen-ids))
+              (setq failure "unattributed-cache-read")))
+           ((eq (plist-get event :type) 'usage)
+            (cond
+             ((not (and (numberp (plist-get event :input-tokens))
+                        (numberp (plist-get event :cached-input-tokens))
+                        (plist-get event :stable-prefix-fingerprint)))
+              (setq failure "unavailable"))
+             ((null baseline)
+              (if (eq (plist-get event :phase) 'stable-only-baseline)
+                  (setq baseline event)
+                (setq failure "unavailable")))
+             ((not (and pending
+                        (equal (plist-get event :after-curation-id)
+                               (plist-get pending :curation-id))
+                        (equal (plist-get event :stable-prefix-fingerprint)
+                               (plist-get baseline :stable-prefix-fingerprint))
+                        (plist-get event :unchanged-history-suffix-fingerprint)))
+              (setq failure "unattributed-cache-read"))
+             ((null rebuilt)
+              (if (eq (plist-get event :phase) 'rebuilt-history)
+                  (setq rebuilt event)
+                (setq failure "missing-rebuilt-history")))
+             ((not (and (eq (plist-get event :phase) 'post-curation-reuse)
+                        (equal (plist-get event :unchanged-history-suffix-fingerprint)
+                               (plist-get rebuilt :unchanged-history-suffix-fingerprint))
+                        (>= (- (plist-get event :cached-input-tokens)
+                               (plist-get baseline :cached-input-tokens))
+                            granularity)))
+              (setq failure "static-prefix-only"))
+             (t
+              (push event reads)
+              (when (= (length reads) 2)
+                (if (equal (e-live-e2e--classify-growing-cache-evidence
+                            :evidence (cons rebuilt (reverse reads))
+                            :granularity granularity)
+                           "growing-history-reuse")
+                    (setq pairs (1+ pairs)
+                          material-rebuild-p
+                          (or material-rebuild-p
+                              (memq (plist-get pending :projection-change)
+                                    '(summary erase)))
+                          pending nil rebuilt nil reads nil)
+                  (setq failure "static-prefix-only"))))))
+           (t (setq failure "unavailable")))))
+      (cond (failure failure)
+            (pending "insufficient-post-curation-reuse")
+            ((< pairs 2) "insufficient-repeated-curation")
+            ((not material-rebuild-p) "missing-material-rebuild")
+            (t "pass"))))))
+
+(ert-deftest e-live-e2e-test-growing-classifier-rejects-observed-fixed-ceiling ()
+  "A growing input and a static cache ceiling cannot establish suffix reuse."
+  (let ((fixed '((:input-tokens 66648 :cached-input-tokens 52493
+                  :stable-prefix-fingerprint "s")
+                 (:input-tokens 112384 :cached-input-tokens 52493
+                  :stable-prefix-fingerprint "s")
+                 (:input-tokens 116531 :cached-input-tokens 52493
+                  :stable-prefix-fingerprint "s"))))
+    (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
+                   "static-prefix-only"))
+    (setf (plist-get (nth 1 fixed) :cached-input-tokens) 110000
+          (plist-get (nth 2 fixed) :cached-input-tokens) 114000)
+    (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
+                   "growing-history-reuse"))
+    (setf (plist-get (nth 1 fixed) :cached-input-tokens) nil)
+    (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
+                   "unavailable"))))
+
+(ert-deftest e-live-e2e-test-p3-classifier-requires-ordered-attributed-reuse ()
+  "Repeated curation must reuse history, including after a material rebuild."
+  (let* ((baseline '(:type usage :provider-id openai :phase stable-only-baseline
+                     :input-tokens 4096 :cached-input-tokens 4096
+                     :stable-prefix-fingerprint "stable"))
+         (evidence (list baseline)))
+    (dolist (phase '(keep summary))
+      (let ((id (symbol-name phase)))
+        (setq evidence
+              (append evidence
+                      (list (list :type 'curation :provider-id 'openai
+                                  :accepted t :curation-id id
+                                  :projection-change phase))))
+        (cl-loop for input in '(10000 14000 18000)
+                 for read in '(4096 8192 12288)
+                 for ordinal from 0 do
+                 (setq evidence
+                       (append evidence
+                               (list (list :type 'usage :provider-id 'openai
+                                           :phase (if (= ordinal 0) 'rebuilt-history
+                                                    'post-curation-reuse)
+                                           :after-curation-id id
+                                           :input-tokens input :cached-input-tokens read
+                                           :stable-prefix-fingerprint "stable"
+                                           :unchanged-history-suffix-fingerprint id)))))))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :capability-confirmed t :provider-id 'openai :evidence evidence)
+                   "pass"))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :capability-confirmed t :provider-id 'openai
+                    :evidence (seq-take evidence 5))
+                   "insufficient-repeated-curation"))
+    (let ((fixed (copy-tree evidence)))
+      (dolist (event (cdr fixed))
+        (when (eq (plist-get event :type) 'usage)
+          (setf (plist-get event :cached-input-tokens) 4096)))
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai :evidence fixed)
+                     "static-prefix-only")))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :capability-confirmed t :provider-id 'openai
+                    :evidence '((:type expired))) "expired"))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :capability-confirmed nil :provider-id 'openai :evidence evidence)
+                   "capability-unconfirmed"))))
+
 (cl-defun e-live-e2e--external-evidence-record
     (&key scenario provider profile model request-bodies request-metadata
-          usage-payloads timeout started-at ended-at semantic-result
+         usage-payloads timeout started-at ended-at semantic-result
           cache-result result adoption-result composition-result failure-stage
-          adoption-disposition scenario-prompt-identity affordance-revision
+          adoption-disposition curation-cache-result
+          curation-cache-evidence curation-capability-confirmed
+          scenario-prompt-identity affordance-revision
           presentation-revision adoption-gates adoption-dependency-identity
           erase-adoption-gates
           evidence-schema-revision reasoning-effort reasoning-summary
@@ -1461,6 +1655,14 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                               t))
          (profile-name (or (plist-get profile :name)
                            (format "%s" provider)))
+         (classified-curation-cache-result
+          (cond
+           (curation-cache-evidence
+            (e-live-e2e--classify-p3-curation-cache-evidence
+             :capability-confirmed curation-capability-confirmed
+             :provider-id provider :evidence curation-cache-evidence))
+           ((equal curation-cache-result "pass") "unavailable")
+           (t curation-cache-result)))
          (prompt-layout-revision
           (or (seq-some (lambda (metadata)
                           (plist-get metadata :prompt-layout-revision))
@@ -1513,8 +1715,7 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                  :scenario-result scenario-result
                  :prompt-layout-revision (format "%S" prompt-layout-revision)
                  :prompt-cache-key-derivation-revision
-                 (format "e-harness-prompt-cache-key-%s"
-                         e-harness-prompt-cache-key-version)
+                 "adapter-owned-v1"
                  :material-request-shape (or shapes [])
                  :request-count (length request-bodies)
                  :socket-connection-ids connection-ids
@@ -1585,7 +1786,14 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                         (or adoption-dependency-identity
                             (e-live-e2e--adoption-dependency-identity)
                             "unavailable")))
-        record))))
+        record)
+      (when (or curation-cache-result curation-cache-evidence)
+        (setq record
+              (append record
+                      (list :p3-curation-cache-result
+                            (or classified-curation-cache-result
+                                "unavailable")))))
+      record)))
 
 (defun e-live-e2e--report-external-evidence (record)
   "Emit one machine-readable bounded external evidence RECORD."
@@ -1697,6 +1905,13 @@ finalization, including when the original condition is re-signalled."
                 :composition-result (plist-get state :composition-result)
                 :failure-stage (plist-get state :failure-stage)
                 :adoption-disposition (plist-get state :adoption-disposition)
+                :curation-cache-result
+                (plist-get state :curation-cache-result)
+                :curation-cache-evidence
+                (plist-get state :curation-cache-evidence)
+                :curation-capability-confirmed
+                (e-live-e2e--context-curation-available-p
+                 (or provider e-openai-default-provider) profile)
                 :scenario-prompt-identity
                 (plist-get state :scenario-prompt-identity)
                 :affordance-revision (plist-get state :affordance-revision)
@@ -3174,6 +3389,7 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
               :ended-at 100.5
               :semantic-result "pass"
               :cache-result "warm"
+              :curation-cache-result "pass"
               :result "pass")))
         (should (equal (plist-get record :scenario)
                        "chatgpt-canonical-warm-prefix"))
@@ -3181,9 +3397,11 @@ NOW is a numeric or ISO timestamp used by deterministic owner tests."
         (should (equal (plist-get record :native-requester)
                        "e-openai-websocket-request-start"))
         (should (equal (plist-get record :prompt-cache-key-derivation-revision)
-                       "e-harness-prompt-cache-key-pcctx2"))
+                       "adapter-owned-v1"))
         (should (equal (plist-get record :total-input-tokens) 10))
         (should (equal (plist-get record :cached-input-tokens) 5))
+        (should (equal (plist-get record :p3-curation-cache-result)
+                       "unavailable"))
         (e-live-e2e--report-external-evidence record)
         (cl-letf (((symbol-function 'e-openai-codex-auth-file)
                    (lambda () "/private/tmp/e88-missing-auth.json")))
@@ -4565,6 +4783,11 @@ provider turn to settle without an implicit local deadline."
                        :usage-payloads usage-payloads
                        :semantic-result semantic-result
                        :cache-result cache-result
+                       :curation-cache-result
+                       (if (e-live-e2e--context-curation-available-p
+                            provider-id profile)
+                           "insufficient-repeated-curation"
+                         "capability-unconfirmed")
                        :adoption-result adoption-result
                        :composition-result composition-result
                        :failure-stage failure-stage
@@ -4573,9 +4796,18 @@ provider turn to settle without an implicit local deadline."
                        :scenario-prompt-identity prompt-identity
                        :affordance-revision affordance-revision
                        :presentation-revision presentation-revision
+                       :terminal-result
+                       (and (equal adoption-result "capability-unconfirmed")
+                            "capability-unconfirmed")
                        :scenario-result scenario-result)))
              :thunk
              (lambda ()
+               (unless (e-live-e2e--context-curation-available-p
+                        provider-id profile)
+                 (setq adoption-result "capability-unconfirmed"
+                       failure-stage "capability-unconfirmed")
+                 (ert-skip
+                  "The configured API has no confirmed curation carrier."))
                (cl-labels
                    ((classify (gates)
                       (setq adoption-gates gates)
@@ -4902,9 +5134,18 @@ and provider arguments stay local to the scenario gates."
                        :scenario-prompt-identity prompt-identity
                        :affordance-revision affordance-revision
                        :presentation-revision presentation-revision
+                       :terminal-result
+                       (and (equal adoption-result "capability-unconfirmed")
+                            "capability-unconfirmed")
                        :scenario-result scenario-result)))
              :thunk
              (lambda ()
+               (unless (e-live-e2e--context-curation-available-p
+                        provider-id profile)
+                 (setq adoption-result "capability-unconfirmed"
+                       failure-stage "capability-unconfirmed")
+                 (ert-skip
+                  "The configured API has no confirmed curation carrier."))
                (cl-labels
                    ((classify (gates)
                       (setq erase-adoption-gates gates)
@@ -5904,9 +6145,22 @@ continuation and socket assertions used by the compatibility selector."
                           (e-live-e2e--activity-of-type
                            harness session-id 'token-usage))
                   :semantic-result semantic-result
-                  :cache-result cache-result)))
+                  :cache-result cache-result
+                  :curation-cache-result
+                  (if (e-live-e2e--context-curation-available-p
+                       provider-id profile)
+                      "insufficient-repeated-curation"
+                    "capability-unconfirmed")
+                  :terminal-result
+                  (and (not (e-live-e2e--context-curation-available-p
+                             provider-id profile))
+                       "capability-unconfirmed"))))
              :thunk
              (lambda ()
+               (unless (e-live-e2e--context-curation-available-p
+                        provider-id profile)
+                 (ert-skip
+                  "The configured API has no confirmed curation carrier."))
                (let ((original-prepare
                       (symbol-function
                        'e-context-lifetime-prepare-curation-disposition)))
@@ -6493,10 +6747,6 @@ WebSocket and socket-replacement assertions."
                  (plist-get (e-harness-display-options harness session-id)
                             :model))
           (ert-skip "The configured live model is older than GPT-5.6."))
-        (e-session-set-turn-options
-         (e-harness-sessions harness)
-         session-id
-         '(:prompt-cache-default t))
         (let* ((scenario-timeout (e-live-e2e--cache-scenario-timeout))
                (started-at (float-time))
                (deadline (+ started-at scenario-timeout))
@@ -6693,11 +6943,9 @@ WebSocket and socket-replacement assertions."
                  (list (list :stage 'initial :body latest-body))
                  latest-turn-retry-events)
                 :valid-p))
-              (should (stringp (plist-get first-body :prompt_cache_key)))
-              (should (equal (plist-get first-body :prompt_cache_key)
-                             (plist-get middle-body :prompt_cache_key)))
-              (should (equal (plist-get first-body :prompt_cache_key)
-                             (plist-get latest-body :prompt_cache_key)))
+              (should (= (e-live-e2e--user-message-count first-body) 1))
+              (should (= (e-live-e2e--user-message-count middle-body) 2))
+              (should (= (e-live-e2e--user-message-count latest-body) 3))
               (should (equal (plist-get latest-body :include)
                              ["reasoning.encrypted_content"]))
               (dolist (body ordered-bodies)
@@ -6711,7 +6959,7 @@ WebSocket and socket-replacement assertions."
               (should stable-first)
               (should (equal stable-first stable-latest))
               (should (member (plist-get diagnostics :prompt-cache-mode)
-                              '("explicit" "implicit-segmented")))
+                              '("implicit" "implicit-plus-stable-guard")))
               (should (eq (plist-get diagnostics :observation-delivery)
                           'inherited))
               (should-not (plist-get diagnostics
@@ -6722,13 +6970,20 @@ WebSocket and socket-replacement assertions."
                 (should (eq (plist-get diagnostics :provider-anchor-safety)
                             'hold-unavailable-capability)))
               (when (equal (plist-get diagnostics :prompt-cache-mode)
-                           "explicit")
+                           "implicit-plus-stable-guard")
                 (should first-breakpoint)
                 (should (equal (plist-get first-breakpoint
                                           :prompt_cache_breakpoint)
                                '(:mode "explicit")))
                 (should (equal (plist-get latest-body :prompt_cache_options)
-                               '(:mode "explicit"))))
+                               '(:mode "implicit")))
+                (should-not (plist-member latest-body :prompt_cache_key)))
+              (when (equal (plist-get diagnostics :prompt-cache-mode)
+                           "implicit")
+                (should-not first-breakpoint)
+                (should-not (plist-member latest-body :prompt_cache_options))
+                (should-not (plist-member latest-body
+                                          :prompt_cache_breakpoint)))
               (if (eq transport 'websocket)
                   (progn
                     (should (eq (plist-get diagnostics

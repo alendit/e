@@ -139,10 +139,11 @@ entry at most once."
       (plist-put (copy-sequence item) :type 'tool-call))
      (t item))))
 
-(defun e-loop--retire-frame-curation-markers (messages options frame)
+(defun e-loop--retire-frame-curation-markers
+    (messages options frame &optional provider-followup-messages)
   "Retire FRAME's model-facing source markers from request projections.
 
-Return a plist containing detached `:messages' and `:options'.  The frame's
+Return detached `:messages', `:options', and follow-up messages.  The frame's
 ordinary source values remain under their existing semantic owners; only the
 frame-local labels that became invalid when FRAME was consumed are removed.
 Every option-side message projection is updated together so a stateless
@@ -197,7 +198,11 @@ adapter cannot reconstruct stale labels from semantic segments or a delta."
             (setq options
                   (plist-put options key
                              (without-markers (plist-get options key))))))
-        (list :messages messages :options options)))))
+        (let ((followup (and provider-followup-messages
+                             (without-markers provider-followup-messages))))
+          (list :messages messages
+                :options options
+                :provider-followup-messages followup))))))
 
 (defun e-loop--continuation-candidate-p (options candidate &optional immediate-only-p)
   "Return non-nil when CANDIDATE may continue the request in OPTIONS."
@@ -625,7 +630,7 @@ schedules it behind the owning session's active commit barrier."
             ;; it can use a projection rebuilt past the consumed source.
             (unless immediate-curation-followup-p
               (drain-pending))
-            (let ((request-messages (copy-tree turn-messages))
+            (let* ((request-messages (copy-tree turn-messages))
                   (tool-called nil)
                   (tool-queue nil)
                   (active-tool nil)
@@ -656,33 +661,36 @@ schedules it behind the owning session's active commit barrier."
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
                   (provider-request-lifetime-frame active-lifetime-frame)
+                  (provider-request-base-options
+                   (copy-sequence turn-options))
+                  (provider-request-context-capabilities
+                   (e-backend-context-capabilities
+                    backend provider-request-base-options))
                   (provider-request-options
-                   (let ((request-options (copy-sequence turn-options)))
-                     ;; The capability advertises the reserved carrier for the
-                     ;; turn, but only a request that actually presents a live
-                     ;; frame owns an open curation opportunity.
+                   (let ((request-options
+                          (copy-sequence provider-request-base-options)))
+                     ;; Re-derive the request-scoped carrier from the backend
+                     ;; after removing any copied metadata; only a live frame
+                     ;; can publish the supported carrier.
+                     (cl-remf request-options :context-capabilities)
+                     (setq request-options
+                           (plist-put request-options
+                                      :context-capabilities
+                                      provider-request-context-capabilities))
+                     (cl-remf request-options :reserved-effect-carrier)
                      (when (and
-                            (eq (if (plist-member request-options
-                                                  :reserved-effect-carrier)
-                                    (plist-get request-options
-                                               :reserved-effect-carrier)
-                                  (plist-get
-                                   (plist-get request-options
-                                              :context-capabilities)
-                                   :reserved-effect-carrier))
+                            (eq (plist-get
+                                 provider-request-context-capabilities
+                                 :reserved-effect-carrier)
                                 'context-curate-wire)
-                            (not (and
-                                  (e-context-lifetime-frame-p
-                                   active-lifetime-frame)
-                                  (not
-                                   (e-context-lifetime-frame-consumed-p
-                                    active-lifetime-frame)))))
-                       ;; Explicit nil prevents an adapter profile from
-                       ;; re-materializing its default carrier for this
-                       ;; closed request opportunity.
+                            (e-context-lifetime-frame-p
+                             provider-request-lifetime-frame)
+                            (not (e-context-lifetime-frame-consumed-p
+                                  provider-request-lifetime-frame)))
                        (setq request-options
                              (plist-put request-options
-                                        :reserved-effect-carrier nil)))
+                                        :reserved-effect-carrier
+                                        'context-curate-wire)))
                      (when next-request-provider-replay-items
                        (setq request-options
                              (plist-put
@@ -868,6 +876,8 @@ schedules it behind the owning session's active commit barrier."
                   (response-completion-payload
                     ()
                     (list :frame provider-request-lifetime-frame
+                          :provider-request-options
+                          (copy-sequence provider-request-options)
                           :provider-request-id provider-request-id
                           :provider-request-ordinal provider-request-ordinal
                           :curation-effects
@@ -956,11 +966,15 @@ schedules it behind the owning session's active commit barrier."
                             (let ((retired
                                    (e-loop--retire-frame-curation-markers
                                     turn-messages turn-options
-                                    provider-request-lifetime-frame)))
+                                    provider-request-lifetime-frame
+                                    provider-followup-messages)))
                               (setq turn-messages
                                     (plist-get retired :messages)
                                     turn-options
-                                    (plist-get retired :options))))))))
+                                    (plist-get retired :options)
+                                    provider-followup-messages
+                                    (plist-get
+                                     retired :provider-followup-messages))))))))
                    (attach-pending-provider-replay-items
                     ()
                     ;; A reserved provider effect may arrive after an
@@ -1304,13 +1318,8 @@ schedules it behind the owning session's active commit barrier."
                     ;; The wire definition is request-scoped, but buffering
                     ;; lasts through the turn so a stale duplicate can
                     ;; invalidate calls that arrived before its control item.
-                    (eq (if (plist-member turn-options
-                                          :reserved-effect-carrier)
-                            (plist-get turn-options
-                                       :reserved-effect-carrier)
-                          (plist-get
-                           (plist-get turn-options :context-capabilities)
-                           :reserved-effect-carrier))
+                    (eq (plist-get provider-request-context-capabilities
+                                   :reserved-effect-carrier)
                         'context-curate-wire))
                    (discard-curation-tool-queue
                     ()
@@ -1763,6 +1772,11 @@ schedules it behind the owning session's active commit barrier."
                                         response-curation-rejection)
                                 (signal 'e-context-lifetime-invalid-record
                                         (list 'multiple-curations
+                                              provider-request-id)))
+                              (unless (curation-buffering-enabled-p)
+                                (signal 'e-context-lifetime-invalid-record
+                                        (list 'curation
+                                              :carrier-unavailable
                                               provider-request-id)))
                               ;; A provider adapter may attach one opaque
                               ;; acknowledgement item for its reserved

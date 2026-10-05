@@ -1,6 +1,18 @@
 #+title: OpenAI GPT-5.6 Explicit Prompt Cache
 #+startup: overview
 
+* Cache policy superseded by Feature 98 (2026-10-05)
+
+[[file:../98-growing-conversation-prompt-cache/plan.org][Feature 98]] owns current caching policy and curation availability.  The
+explicit-only policy and public options described below are historical.  The
+first-party Responses adapter now derives support from the effective endpoint
+and model, combines a stable guard with implicit conversation boundaries on
+GPT-5.6+, and emits no optional cache fields to unconfirmed compatible endpoints.
+Callers cannot select cache mode, keys, TTL, or retention.  Current Codex
+continuation remains disabled; the earlier connection-local continuation
+statements below do not describe the shipped profile.  Replay and semantic
+segment ownership remain applicable.
+
 * Status
 
 In-review.

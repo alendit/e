@@ -1,0 +1,61 @@
+#+title: Plan Review: Growing Conversation Prompt Cache Remediation
+#+date: 2026-10-05
+#+startup: overview
+
+* Decision
+
+=implementation-plan-fixed-point=.
+
+An independent read-only reviewer cleared the complete implementation-plan
+scope at =39407dd76f50612cf65ae851aa8bb4fc54f67880=, with no actionable findings
+or required plan unknowns.  The operator subsequently authorized implementation.
+The primary admitted DP1 under the supervised-implementer-loop workflow.
+Implementation correctness and provider capability are not established by this
+decision.  P1/P2/P3 remain =capability-unconfirmed=.
+
+* Plan identity
+
+Identity binds the reviewed contract, delivery relation, closure, and dependency
+order to these Git objects.  Subsequent lifecycle-status changes are presentation
+only; they do not change the reviewed authority.  Material contract or delivery
+changes require a new plan-level review.
+
+| Scope | Git object |
+|-------+------------|
+| plan.org | dac46216acd53410cc823327d7ac5b5e192ddc73 |
+| Feature index | 25dd245445cd48d7b069b1077f8827ac9bf236f2 |
+| lisp/ | 2f88a54dc15cbb08031955db2ec0b1423d892d48 |
+| test/ | 4ce2947bc2f5880f2bb02681410ea369a0634d1c |
+| e2e/ | 9ea90a7a40da617df41c7b738dda99d8dceda58c |
+| AGENTS.md | 1772d96d0021d432a8f7f5eab0f8b81d8cc5430b |
+| docs/architecture.md | 48dc0e6e445a2a3a68630d40fba749f7444c58ae |
+| Runtime concepts | 3c8f7dc73ba6f3143a48f89d3226d84974931f80 |
+| Dev-work reference | a6fed3ea51ef189a93154aa8ab05c6728b71f816 |
+| Feature 81 plan | f74379a36f01cf9a7d1e1c89d46719f06df931a9 |
+| Feature 88 tree | d85c271eadf450fabf9fd7d61af8b4c66b6be1d2 |
+| Feature 97 plan | b63a91b13e5f67073924866530d543111b03cc68 |
+| Dynamic-context cache research | c71077bf4bfad108f9bbdae3fe33e6e2207febc5 |
+
+* Coverage
+
+Cleared: single authority, behavioral trace, durable contract boundary, scenario
+diagnosability, evidence topology and freshness, telemetry decision power,
+defensive actionability, ownership and change locality, workflow and decision
+boundaries, contract/package coverage, useful stopping point, cohesion and
+recovery closure, dependency order, package-size tradeoff, acceptance-cost
+topology, and checkpoint distinction.
+
+Exact product-limit justification is not applicable: no new correctness or
+resource cap is prescribed.  The existing evidence-freshness window governs
+external validation rather than runtime session availability.
+
+* Verification and remaining evidence
+
+Independent source inspection confirmed the restrictive Anthropic/OpenAI policy
+paths, compatible Codex exception, positive-only cache classifier, and feasible
+capability enforcement seams.  Clean-tree/dependency comparison and whitespace
+checks passed.  The reviewer changed no files or live state.
+
+Gateway hybrid controls, growing-history cache benefit, and efficient repeated
+curation require future P1/P2/P3 execution.  Missing P3 evidence keeps curation
+unavailable; ordinary chat remains independently valid.

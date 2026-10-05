@@ -1089,6 +1089,9 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
   "Return non-nil when NAME is the reserved curation carrier name."
   (member name '("context-curate" context-curate)))
 
+(defvar e-anthropic--context-curation-wire-active nil
+  "Dynamically bound when trusted adapter capability permits curation.")
+
 (defun e-anthropic--reserved-curation-only-replay-p (blocks)
   "Return non-nil when native replay BLOCKS contain only curation calls."
   (let ((tool-use-ids (e-anthropic--validate-native-replay-blocks blocks)))
@@ -1101,12 +1104,9 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
           blocks))))
 
 (defun e-anthropic--context-curation-carrier-active-p (options)
-  "Return non-nil when request OPTIONS enable the reserved curation carrier."
-  (eq (if (plist-member options :reserved-effect-carrier)
-          (plist-get options :reserved-effect-carrier)
-        (plist-get (plist-get options :context-capabilities)
-                   :reserved-effect-carrier))
-      'context-curate-wire))
+  "Return non-nil when the trusted request context permits curation."
+  (ignore options)
+  e-anthropic--context-curation-wire-active)
 
 (defun e-anthropic--context-curation-tool-definition ()
   "Translate the shared curation carrier descriptor to Messages format."
@@ -1137,9 +1137,13 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
       (list :type "ephemeral" :ttl ttl)
     (list :type "ephemeral")))
 
-(defun e-anthropic--top-level-cache-mode-p (options)
-  "Return non-nil when OPTIONS request provider-managed cache control."
-  (eq (plist-get options :prompt-cache-mode) 'top-level))
+(defun e-anthropic-context-capabilities (provider _options)
+  "Return provider API capabilities for Anthropic Messages PROVIDER.
+Cache controls belong to this native Messages adapter.  Curation stays
+unavailable until this endpoint/model has passed the separate P3 evidence."
+  (ignore provider)
+  '(:prefix-cache automatic-explicit
+    :reserved-effect-carrier none))
 
 (defun e-anthropic--stable-cache-segment-p (segment)
   "Return non-nil when SEGMENT belongs to the cacheable stable prefix."
@@ -1252,25 +1256,18 @@ a string overrides the type."
          (t "adaptive")))
     "adaptive"))
 
-(cl-defun e-anthropic-request-body (&key messages options tools)
+(cl-defun e-anthropic-request-body
+    (&key messages options tools (provider e-anthropic-default-provider))
   "Build an Anthropic Messages request body from MESSAGES, OPTIONS, and TOOLS.
 
-When OPTIONS enables `:prompt-cache', a `cache_control' breakpoint is attached
-to the end of the stable prefix (the system prompt, or the last tool when there
-is no system prompt) so Anthropic caches tools + system on the prefix match.
-`:prompt-cache-ttl' selects the cache TTL (Anthropic supports `5m' and `1h')."
+The adapter always enables automatic caching with a stable explicit guard
+when a stable system or tool boundary is available.  Cache TTL and marker
+placement are adapter-owned."
   (let* ((effort (or (plist-get options :effort) e-anthropic-default-effort))
-         (cache-p (plist-get options :prompt-cache))
-         (cache-control (and cache-p
-                             (e-anthropic--cache-control
-                              (plist-get options :prompt-cache-ttl))))
-         (top-level-cache-p (and cache-control
-                                 (e-anthropic--top-level-cache-mode-p options)))
+         (cache-control (e-anthropic--cache-control "1h"))
          (system (e-anthropic--system messages options))
-         (system-blocks (and cache-control
-                             (not top-level-cache-p)
-                             (e-anthropic--system-blocks
-                              messages options cache-control)))
+         (system-blocks (e-anthropic--system-blocks
+                         messages options cache-control))
          (turns (seq-remove #'e-anthropic--system-message-p messages))
          (tool-defs (e-anthropic--request-tool-definitions tools options))
          (body (list :model (or (plist-get options :model)
@@ -1287,15 +1284,9 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
                     (list :system
                           (if system-blocks
                               system-blocks
-                            (if (and cache-control (not top-level-cache-p))
-                              (vector (append (e-anthropic--text-block system)
-                                              (list :cache_control
-                                                    cache-control)))
-                              system))))))
-    (when top-level-cache-p
-      (setq body (append body (list :cache_control cache-control))))
-    (when (and cache-control (not top-level-cache-p)
-               (not system) (> (length tool-defs) 0))
+                            system)))))
+    (setq body (append body (list :cache_control cache-control)))
+    (when (and (not system) (> (length tool-defs) 0))
       (let ((last (1- (length tool-defs))))
         (aset tool-defs last
               (append (aref tool-defs last)
@@ -1334,52 +1325,45 @@ is no system prompt) so Anthropic caches tools + system on the prefix match.
 MESSAGES is the current neutral projection used to identify a stable segment."
   (let ((metadata (list :provider 'anthropic
                         :model (plist-get options :model))))
-    (when (plist-get options :prompt-cache)
-      (let ((mode (cond
-                   ((e-anthropic--top-level-cache-mode-p options)
-                    'top-level)
-                   ((plist-member body :system)
-                    'explicit)
-                   ((plist-member body :tools)
-                    'explicit)
-                   (t 'off)))
-            (breakpoint (cond
-                         ((plist-member body :cache_control)
-                          'provider-managed)
-                         ((and (plist-member body :system)
-                               (vectorp (plist-get body :system))
-                               (cl-some
-                                (lambda (block)
-                                  (plist-member block :cache_control))
-                                (append (plist-get body :system) nil)))
-                          'system-stable-prefix)
-                         ((and (plist-member body :tools)
-                               (cl-some
-                                (lambda (tool)
-                                  (plist-member tool :cache_control))
-                                (append (plist-get body :tools) nil)))
-                          'tools)
-                         (t 'none))))
+    (let* ((system-guard-p
+            (and (vectorp (plist-get body :system))
+                 (cl-some (lambda (block)
+                            (plist-member block :cache_control))
+                          (append (plist-get body :system) nil))))
+           (tool-guard-p
+            (and (vectorp (plist-get body :tools))
+                 (cl-some (lambda (tool)
+                            (plist-member tool :cache_control))
+                          (append (plist-get body :tools) nil))))
+           (mode (if (plist-member body :cache_control)
+                     'automatic
+                   'unavailable))
+           (breakpoint
+            (cond (system-guard-p 'automatic-plus-stable-system)
+                  (tool-guard-p 'automatic-plus-stable-tools)
+                  ((plist-member body :cache_control)
+                   'automatic-last-eligible-block)
+                  (t 'none))))
+      (setq metadata
+            (append metadata
+                    (list :anthropic-cache-mode mode
+                          :anthropic-cache-breakpoint breakpoint
+                          :full-history t)))
+      (when-let* ((breakpoint-segment
+                  (and system-guard-p
+                       (e-anthropic--cache-breakpoint-segment
+                        options messages))))
         (setq metadata
               (append metadata
-                      (list :anthropic-cache-mode mode
-                            :anthropic-cache-breakpoint breakpoint
-                            :full-history t)))
-        (when-let* ((breakpoint-segment
-                    (and (eq breakpoint 'system-stable-prefix)
-                         (e-anthropic--cache-breakpoint-segment
-                          options messages))))
-          (setq metadata
-                (append metadata
-                        (list :anthropic-breakpoint-segment-id
-                              (prin1-to-string
-                               (plist-get breakpoint-segment :id))
-                              :anthropic-breakpoint-fingerprint
-                              (plist-get breakpoint-segment :fingerprint)))))
-        (when-let* ((ttl (plist-get options :prompt-cache-ttl)))
-          (setq metadata
-                (append metadata
-                        (list :anthropic-cache-ttl ttl))))))
+                      (list :anthropic-breakpoint-segment-id
+                            (prin1-to-string
+                             (plist-get breakpoint-segment :id))
+                            :anthropic-breakpoint-fingerprint
+                            (plist-get breakpoint-segment :fingerprint)))))
+      (when-let* ((ttl (plist-get (plist-get body :cache_control) :ttl)))
+        (setq metadata
+              (append metadata
+                      (list :anthropic-cache-ttl ttl)))))
     (when-let* ((container (plist-get options :anthropic-container-id)))
       (when (and (stringp container) (not (string-empty-p container)))
         (setq metadata
@@ -1410,8 +1394,6 @@ MESSAGES is the current neutral projection used to identify a stable segment."
                                                              :output_config)
                                                  :effort)
                               :max-tokens (plist-get body :max_tokens)
-                              :prompt-cache
-                              (and (plist-get options :prompt-cache) t)
                               :anthropic-cache-mode
                               (plist-get metadata :anthropic-cache-mode)
                               :anthropic-cache-breakpoint
@@ -1480,9 +1462,9 @@ provide."
          (cached (e-anthropic--number-or-nil cached-tokens))
          (created (e-anthropic--number-or-nil created-tokens))
          (output (e-anthropic--number-or-nil output-tokens))
-         (context-input (and input (+ input (or cached 0) (or created 0))))
-         (parts (delq nil (list input cached created output)))
-         (total (and parts (apply #'+ parts))))
+         (context-input (and input cached created (+ input cached created)))
+         (total (and input cached created output
+                     (+ input cached created output))))
     (list :type 'token-usage
           :usage (list :context-input-tokens context-input
                        :input-tokens input
@@ -2520,7 +2502,18 @@ request and backend-neutral context."
          (beta-headers (and context-management configured-beta-headers))
          (headers (e-anthropic--headers-with-betas
                    (e-anthropic--headers profile)
-                   beta-headers)))
+                   beta-headers))
+         (capabilities
+          (e-anthropic-context-capabilities provider effective-options))
+         (e-anthropic--context-curation-wire-active
+          (and (plist-get effective-options :context-lifetime-enabled)
+               (eq (plist-get capabilities :reserved-effect-carrier)
+                   'context-curate-wire))))
+    (dolist (key '(:prompt-cache :prompt-cache-default :prompt-cache-mode
+                   :prompt-cache-breakpoint-mode :prompt-cache-key
+                   :prompt-cache-retention :prompt-cache-ttl
+                   :reserved-effect-carrier))
+      (cl-remf effective-options key))
     (setq effective-options
           (plist-put effective-options :model resolved-model))
     (when (and context-management beta-headers)
@@ -2534,6 +2527,7 @@ request and backend-neutral context."
                        :anthropic-beta-headers
                        beta-headers)))
     (let* ((body-data (e-anthropic-request-body
+                       :provider provider
                        :messages messages
                        :options effective-options
                        :tools (plist-get effective-options :tools)))
@@ -2556,7 +2550,9 @@ MODEL is the backend-local default when turn options omit `:model'."
     (e-backend-create
      :name (or name (e-anthropic-provider-name provider))
      :normalize-error-details #'e-anthropic--normalize-error-details
-     :context-capabilities '(:reserved-effect-carrier context-curate-wire)
+     :context-capabilities
+     (lambda (options)
+       (e-anthropic-context-capabilities provider options))
      :stream
      (cl-function
       (lambda (&key messages options on-item)

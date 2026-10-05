@@ -313,7 +313,7 @@ summary activity live in the selected chat, publishes a bounded
 cross-participant Board summary only after its session-owned snapshot commits,
 and excludes raw/private reasoning from Board publication and detail lookup.
 
-Feature 98 is =Planned=.  Its
+Feature 98 is =In-review=.  Its
 [[file:98-growing-conversation-prompt-cache/plan.org][growing conversation prompt cache remediation]] supersedes Feature 81's
 explicit-only cache policy and Feature 97's stable-boundary-only starting point.
 The plan makes cache policy adapter/API-owned, removes caller cache-policy
@@ -421,4 +421,4 @@ stable-prefix hit for growing-history reuse.
 | 95 | Done        | 95-normalized-sqlite-communication/                   | Normalized SQLite Communication State              |
 | 96 | Done        | 96-reliable-tool-continuations-and-daily-completion/    | Reliable Tool Continuations and Daily Completion   |
 | 97 | In-review   | 97-anthropic-messages-parity-and-claude-55/              | Anthropic Messages Parity and Claude 5.5 Gateway Models |
-| 98 | Planned     | 98-growing-conversation-prompt-cache/                   | Growing Conversation Prompt Cache Remediation       |
+| 98 | In-review | 98-growing-conversation-prompt-cache/                   | Growing Conversation Prompt Cache Remediation       |

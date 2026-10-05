@@ -1054,26 +1054,6 @@ and RECORD supplies persisted identity fields during replay."
       (when (and (stringp effort) (not (string-empty-p (string-trim effort))))
         (setq normalized
               (plist-put normalized :reasoning-effort (string-trim effort)))))
-    (when (and (plist-member options :prompt-cache-default)
-               (memq (plist-get options :prompt-cache-default) '(nil t)))
-      (setq normalized
-            (plist-put normalized
-                       :prompt-cache-default
-                       (plist-get options :prompt-cache-default))))
-    (when-let* ((cache-key (plist-get options :prompt-cache-key)))
-      (when (and (stringp cache-key)
-                 (not (string-empty-p (string-trim cache-key))))
-        (setq normalized
-              (plist-put normalized
-                         :prompt-cache-key
-                         (string-trim cache-key)))))
-    (when-let* ((retention (plist-get options :prompt-cache-retention)))
-      (when (and (stringp retention)
-                 (not (string-empty-p (string-trim retention))))
-        (setq normalized
-              (plist-put normalized
-                         :prompt-cache-retention
-                         (string-trim retention)))))
     normalized))
 
 (defun e-session-aggregate--message-with-created-at (message timestamp)

@@ -47,7 +47,7 @@ before a runtime candidate can be installed."
     ;; single kind-scoped query without making provider wire fields part of the
     ;; contract.
     (:observation-delivery inherited request-local-replaceable)
-    (:prefix-cache none implicit explicit)
+    (:prefix-cache none implicit implicit-explicit automatic automatic-explicit)
     (:provider-compaction none opaque)
     (:reasoning-state none replayable)
     ;; Context curation is the sole active model-facing reserved carrier.
@@ -59,7 +59,8 @@ before a runtime candidate can be installed."
     :observation-delivery inherited
     :prefix-cache none
     :provider-compaction none
-    :reasoning-state none)
+    :reasoning-state none
+    :reserved-effect-carrier none)
   "Conservative capabilities used when an adapter declares none.")
 
 (defun e-backend-default-context-capabilities ()
@@ -195,7 +196,14 @@ gets the conservative stateless defaults.  Core policy sees only semantic
 values and never provider wire field names."
   (unless (e-backend-p backend)
     (signal 'wrong-type-argument (list 'e-backend-p backend)))
-  (let* ((declaration (and (>= (length backend) 6)
+  (let* ((options (copy-sequence options))
+         ;; These are outputs of this query, never inputs to adapter policy.
+         ;; Strip them before a function-valued declaration sees OPTIONS so
+         ;; copied provider metadata cannot grant a reserved carrier.
+         (_ (progn
+              (cl-remf options :context-capabilities)
+              (cl-remf options :reserved-effect-carrier)))
+         (declaration (and (>= (length backend) 6)
                            (e-backend--context-capabilities backend)))
          (capabilities (cond
                         ((functionp declaration)

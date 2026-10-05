@@ -2191,8 +2191,8 @@ cancellation.  SESSION-ID identifies the session."
 	                (lambda (payload)
 	                  (when (and (active-entry-p)
 	                             (not (plist-get entry :cancelled)))
-	                    (e-harness-context-lifetime-present-tool-observation
-	                     payload)))
+                    (e-harness-context-lifetime-present-tool-observation
+                     payload (plist-get entry :context))))
 	                :context context)))
 	            (resume-after-auto-compaction
 	             ()

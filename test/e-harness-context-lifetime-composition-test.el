@@ -333,7 +333,7 @@
              :name "detached-capabilities"
              :context-capabilities
              '(:reserved-effect-carrier context-curate-wire
-               :prefix-cache explicit
+               :prefix-cache automatic
                :observation-delivery request-local-replaceable)))
            (harness (e-harness-create :backend backend :sessions store))
            (session-id "detached-capabilities")
@@ -350,7 +350,7 @@
              (capabilities (plist-get options :context-capabilities)))
         (should (eq (plist-get capabilities :reserved-effect-carrier)
                     'context-curate-wire))
-        (should (eq (plist-get capabilities :prefix-cache) 'explicit))
+        (should (eq (plist-get capabilities :prefix-cache) 'automatic))
         (should (eq (plist-get options :context-lifetime-enabled) t))
         (should
          (e-harness-context-runtime--context-curation-carrier-active-p
@@ -647,7 +647,10 @@
                  :previous-frame previous-frame
                  :message tool-message
                  :turn-messages messages
-                 :provider-followup-messages (list tool-message))))
+                 :provider-followup-messages (list tool-message))
+           '(:options (:context-lifetime-enabled t
+                       :context-capabilities
+                       (:reserved-effect-carrier context-curate-wire)))))
          (turn-messages (plist-get projection :turn-messages))
          (followup-messages (plist-get projection
                                       :provider-followup-messages)))
@@ -1111,8 +1114,23 @@
        harness (lambda (event) (setq events (append events (list event))))
        :session-id session-id)
       (let ((e-context-lifetime-shadow-projection-enabled t))
-        (e-harness-test-prompt-batch harness session-id "Inspect frame A.")
-        (e-harness-test-prompt-batch harness session-id "Fresh user turn."))
+        ;; This fixture is the supported synthetic endpoint case; shipped
+        ;; Anthropic curation stays unavailable pending repeated-use evidence.
+        (let ((native-capability
+               (e-backend--context-capabilities backend)))
+          (setf (e-backend--context-capabilities backend)
+                (lambda (options)
+                  (plist-put (funcall native-capability options)
+                             :reserved-effect-carrier
+                             'context-curate-wire)))
+          (let* ((first-result
+                 (e-harness-test-prompt-batch
+                  harness session-id "Inspect frame A."))
+                (fresh-result
+                 (e-harness-test-prompt-batch
+                  harness session-id "Fresh user turn.")))
+            (should first-result)
+            (should fresh-result))))
       (let* ((body-a (car requests))
              (body-b (cadr requests))
              (body-after-b-curation (nth 2 requests))
@@ -1867,6 +1885,128 @@
                    '(:role system :content "HARNESS-EXACT-VALUE")))
     (should-not (e-session-local-context-curations store "session-1"))))
 
+(ert-deftest e-harness-test-unsupported-carrier-hides-labels-and-rejects-forced-effect ()
+  "An unconfirmed carrier has no frame labels and cannot commit forced effects."
+  (e-harness-test--with-empty-layer-registry
+    (let* ((store (e-session-store-create))
+           (backend
+            (e-backend-fake-create
+             :items '((:type context-curate
+                       :arguments (:keep [1] :summaries [] :erase [])))))
+           (provider
+            (e-context-provider-create
+             :name 'unconfirmed-curation-source
+             :cache-placement 'dynamic-context
+             :build (lambda (&rest _)
+                      '((:role system :content "PRIVATE-OBSERVATION")))))
+           (capability
+            (e-capability-create
+             :id 'unconfirmed-curation-context
+             :context-providers (list provider)))
+           (harness
+            (e-harness-create
+             :backend backend
+             :sessions store
+             :intrinsic-capabilities (list capability)
+             :default-options
+             '(:model "synthetic"
+               :reserved-effect-carrier context-curate-wire
+               :context-capabilities
+               (:reserved-effect-carrier context-curate-wire)))))
+      (e-harness-create-session harness :id "session-1")
+      (let ((e-context-lifetime-shadow-projection-enabled t))
+        (e-harness-test-prompt-async harness "session-1" "inspect")
+        (let* ((entry (e-harness-wait-batch harness "session-1" 1.0))
+               (context (plist-get entry :context))
+               (options (plist-get context :options))
+               (frame (plist-get context :lifetime-frame)))
+          (should (eq (plist-get entry :status) 'error))
+          (should (string-match-p
+                   "carrier-unavailable"
+                   (prin1-to-string (plist-get entry :condition))))
+          (should (eq (plist-get
+                       (e-backend-context-capabilities backend options)
+                       :reserved-effect-carrier)
+                      'none))
+          (should-not (plist-get options :reserved-effect-carrier))
+          (should-not
+           (e-harness-context-runtime--context-curation-carrier-active-p
+            context))
+          (should (= (length
+                      (e-context-lifetime-frame-observations frame))
+                     1))
+          (should-not
+           (string-match-p "ephemeral context source"
+                           (prin1-to-string (plist-get context :messages))))
+          (let* ((tool-message
+                  '(:role tool
+                    :content (:tool-call-id "forced-tool"
+                             :name "inspect" :status ok
+                             :content "PRIVATE-TOOL-RESULT")))
+                 (presentation
+                  (e-harness-context-lifetime-present-tool-observation
+                   (list :frame frame :message tool-message
+                         :turn-messages (list tool-message)
+                         :provider-followup-messages (list tool-message))
+                   context)))
+            (should (equal (plist-get presentation :turn-messages)
+                           (list tool-message)))
+            (should (equal (plist-get presentation
+                                      :provider-followup-messages)
+                           (list tool-message)))
+            (should-not
+             (string-match-p "ephemeral context source"
+                             (prin1-to-string presentation)))))
+      (should-not (e-session-local-context-curations store "session-1"))
+      (should-not (plist-get
+                   (e-session-local-context-lifetime-projection
+                   store "session-1")
+                   :promotions))))))
+
+(ert-deftest e-harness-test-curation-commit-rechecks-carrier-capability ()
+  "A carrier revoked after preflight cannot commit its prepared projection."
+  (let* ((supported t)
+         (backend
+          (e-backend-create
+           :name "mutable-test-capability"
+           :context-capabilities
+           (lambda (_options)
+             (list :reserved-effect-carrier
+                   (if supported 'context-curate-wire 'none)))))
+         (harness (e-harness-create :backend backend))
+         (store (e-harness-sessions harness))
+         (frame (e-harness-test--curation-frame))
+         (entry (list :status 'running :context-frame frame))
+         (options '(:model "synthetic"))
+         (payload
+          (list :frame frame
+                :provider-request-options options
+                :provider-request-id "response-capability-change"
+                :response-entry-id "response-capability-change"
+                :assistant-content ""
+                :curation-effects
+                '((:type context-curate
+                   :arguments (:keep [1] :summaries [] :erase [])))))
+         preflight)
+    (e-harness-create-session harness :id "session-1")
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (setq preflight
+            (e-harness-context-lifetime-preflight-response
+             harness "session-1" "turn-1" entry payload))
+      (should (plist-get preflight :package))
+      (setq supported nil)
+      (should-error
+       (e-harness-context-lifetime-commit-response
+        harness "session-1" "turn-1" entry
+        (append payload (list :curation-preflight preflight)))
+       :type 'e-context-lifetime-invalid-record))
+    (should-not (e-context-lifetime-frame-consumed-p frame))
+    (should-not (e-session-local-context-curations store "session-1"))
+    (let ((projection
+           (e-session-local-context-lifetime-projection store "session-1")))
+      (should-not (plist-get projection :promotions))
+      (should-not (plist-get projection :curations)))))
+
 (ert-deftest e-harness-test-context-lifetime-steering-rebuilds-after-follow-up ()
   "Steering after curation acknowledgement uses the fresh projection once."
   (e-harness-test--with-empty-layer-registry
@@ -2015,13 +2155,15 @@
              (body-b-anchored
               (e-openai-codex-request-body
                :messages messages-b
-               :options (plist-get request-b :options)
+             :options (plist-get request-b :options)
                :tools nil))
              (body-c
-              (e-openai-codex-request-body
-               :messages messages-c
-               :options (plist-get request-c :options)
-               :tools nil))
+              (let ((e-openai-profile--effective-context-curation-capability
+                     'context-curate-wire))
+                (e-openai-codex-request-body
+                 :messages messages-c
+                 :options (plist-get request-c :options)
+                 :tools nil)))
              (body-d
               (e-openai-codex-request-body
                :messages messages-d
@@ -2056,8 +2198,10 @@
               (plist-get (plist-get request-c-anchor :metadata)
                          :prompt-layout-revision))
              (request-c-layout
-              (e-openai-responses-prompt-layout-revision
-               (plist-get request-c :options)))
+              (let ((e-openai-profile--effective-context-curation-capability
+                     'context-curate-wire))
+                (e-openai-responses-prompt-layout-revision
+                 (plist-get request-c :options))))
              (printed-b (prin1-to-string messages-b))
              (printed-c (prin1-to-string messages-c))
              (printed-d (prin1-to-string messages-d)))

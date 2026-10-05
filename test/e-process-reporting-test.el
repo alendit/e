@@ -776,7 +776,15 @@
           '(:role system
             :content "A project policy mentions process_marker but is unrelated."))
          (messages (list marker-message unrelated '(:role user :content "hi")))
-         (options '(:tools ((:name "process_marker") (:name "echo"))))
+         (options '(:prompt-cache-default t
+                    :prompt-cache nil
+                    :prompt-cache-mode explicit
+                    :prompt-cache-breakpoint-mode explicit
+                    :prompt-cache-key "caller-key"
+                    :prompt-cache-retention "1h"
+                    :prompt-cache-ttl "5m"
+                    :reserved-effect-carrier context-curate-wire
+                    :tools ((:name "process_marker") (:name "echo"))))
          (segments
           (list (list :id '(process-reporting instructions)
                       :messages (list marker-message))))
@@ -785,7 +793,14 @@
            messages options segments))
          (expected-options (copy-tree options)))
     (plist-put expected-options :tools '((:name "echo")))
-    (should (equal (plist-get shape :revision) "request-shape-v2"))
+    (should (equal (plist-get shape :revision) "request-shape-v3"))
+    (dolist (key '(:prompt-cache :prompt-cache-default :prompt-cache-mode
+                   :prompt-cache-breakpoint-mode :prompt-cache-key
+                   :prompt-cache-retention :prompt-cache-ttl
+                   :reserved-effect-carrier))
+      (should-not (plist-member
+                   (e-process-reporting--request-snapshot messages options)
+                   key)))
     (should
      (equal
       (plist-get (plist-get shape :without-passive-shape) :sha256)

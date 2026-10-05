@@ -2,13 +2,25 @@
 #+date: 2026-08-12
 #+startup: overview
 
+* Current policy (2026-10-05)
+
+[[file:../feats/98-growing-conversation-prompt-cache/plan.org][Feature 98]] separates semantic context placement from provider cache policy.
+Stable placement preserves unchanged guidance; it must not cap reuse of the
+conversation that follows it.  Cache controls are adapter-owned.  First-party
+GPT-5.6+ Responses combines a stable explicit marker with implicit boundaries;
+Codex and unconfirmed compatible APIs retain automatic caching without optional
+fields.  Anthropic combines top-level automatic caching with a stable guard.
+Curation requires separate evidence of efficient repeated cache reuse and is
+currently unavailable in shipped profiles.  The earlier evaluation below is
+historical, including its explicit-only policy and Codex continuation claims.
+
 * Question
 
 Does e's distinction between stable and dynamic context preserve provider prompt
 cache hits when dynamic session state changes, and can the request shape be made
 more efficient?
 
-* Current model
+* Semantic placement model
 
 =e-context= orders context as =static-prefix=, =stable-context=, then
 =dynamic-context=.  Capabilities preserve that order in the segment metadata.
@@ -21,7 +33,7 @@ This makes mutable session state such as voice-adjustment tell labels a
 value part of the promised stable prefix.  Keeping it as a short final segment
 both reduces input size and leaves earlier stable material unchanged.
 
-* Provider evaluation
+* Historical provider evaluation (2026-08-12)
 
 | Backend | Existing translation | Effect of a changed dynamic suffix |
 |---------+----------------------+------------------------------------|
@@ -35,7 +47,7 @@ Explicit breakpoints are supported on Responses input content blocks, not on
 the top-level string =instructions= field.  Therefore adding a field to the
 current flattened request would not correctly express e's existing boundary.
 
-* Implemented OpenAI adapter support
+* Historical OpenAI implementation (2026-08-12)
 
 Feature [[../feats/81-openai-gpt56-explicit-prompt-cache/plan.org][81]] implements GPT-5.6 explicit caching as a provider-adapter feature
 rather than a change to the generic context placements.
@@ -76,7 +88,7 @@ they remain identical after removing the API-only explicit cache fields.  The
 provider-neutral layout setting is =:responses-context-layout=; cache mode is a
 separate provider capability.
 
-* Conclusion
+* Historical conclusion
 
 The generic placement model is sound, and the voice tell list belongs in
 =dynamic-context=.  Anthropic and explicit-capable OpenAI GPT-5.6 profiles turn

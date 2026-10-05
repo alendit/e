@@ -32,6 +32,21 @@
   "https://api.openai.com/auth"
   "JWT claim namespace containing the ChatGPT account id.")
 
+(defvar e-openai-profile--effective-prefix-cache nil
+  "Dynamically bound by the adapter to the effective API cache capability.")
+
+(defvar e-openai-profile--effective-cache-routing-key nil
+  "Dynamically bound to an adapter-derived prompt-cache routing identity.")
+
+(defvar e-openai-profile--effective-cache-retention nil
+  "Dynamically bound to retention supported by the effective API/model.")
+
+(defvar e-openai-profile--effective-cache-capability-evidence nil
+  "Dynamically bound to the cache capability evidence label.")
+
+(defvar e-openai-profile--effective-context-curation-capability nil
+  "Dynamically bound to a separately proven curation capability.")
+
 (defgroup e-openai nil
   "OpenAI/Codex backend adapter for e."
   :group 'e
@@ -218,7 +233,6 @@ Responses profiles.")
         :responses-transport 'websocket
         :response-store :json-false
         :responses-context-layout 'developer-input
-        :prompt-cache-breakpoint-mode 'explicit
         ;; The canonical layout keeps the changing observation frontier in
         ;; late developer-role input.  It is therefore inherited by a
         ;; continuation; only profiles that deliberately retain the complete
@@ -252,17 +266,23 @@ including its nil no-timer behavior."
   (let ((normalized
          (mapcar (lambda (entry)
                    (let ((provider-id (car entry))
-                         (profile (cdr entry)))
+                         (profile (copy-sequence (cdr entry))))
+                     (dolist (key '(:prompt-cache :prompt-cache-default
+                                    :prompt-cache-mode
+                                    :prompt-cache-breakpoint-mode
+                                    :prompt-cache-key
+                                    :prompt-cache-retention
+                                    :prompt-cache-ttl
+                                    :reserved-effect-carrier))
+                       (cl-remf profile key))
                      (if (e-openai-profile-builtin-codex-p
                           provider-id
                           profile)
                          (let ((normalized
                                 (plist-put
                                  (plist-put
-                                  (plist-put
-                                   (plist-put (copy-sequence profile)
+                                 (plist-put (copy-sequence profile)
                                               :response-store :json-false)
-                                   :prompt-cache-breakpoint-mode nil)
                                   :responses-context-layout 'developer-input)
                                  :include-encrypted-reasoning t)))
                            (unless (plist-member normalized
@@ -287,7 +307,6 @@ including its nil no-timer behavior."
      :wire-api responses
      :responses-transport websocket
      :response-store :json-false
-     :prompt-cache-breakpoint-mode nil
      :responses-context-layout developer-input
      :observation-delivery inherited
      :include-encrypted-reasoning t
@@ -301,7 +320,6 @@ including its nil no-timer behavior."
      :responses-transport websocket
      :response-store :json-false
      :responses-context-layout developer-input
-     :prompt-cache-breakpoint-mode explicit
      :observation-delivery inherited
      :include-encrypted-reasoning t
      :continuation t
@@ -314,15 +332,11 @@ Each profile is plist data.  `:wire-api' supports `responses' and
 `chat-completion' (`chat-completions' is accepted as a compatibility alias).
 Profiles with `:requires-openai-auth' non-nil use Codex-managed ChatGPT auth.
 Profiles with `:requires-openai-auth' nil read a bearer token from `:env-key'.
-Profiles can set `:prompt-cache-retention' to nil to suppress that request
-field, or non-nil to force it on.  Responses profiles can set
-`:responses-transport' to `http' or `websocket'.  WebSocket Responses requests
+Responses profiles can set `:responses-transport' to `http' or `websocket'.  WebSocket Responses requests
 store responses by default; set `:response-store' to explicitly override that
 value.  Responses profiles can opt into provider continuation anchors with
 `:continuation' non-nil.  GPT-5.6 Responses profiles set
-`:prompt-cache-breakpoint-mode' to `explicit' when they accept explicit
-breakpoints and `prompt_cache_options', or leave it nil when unsupported.
-Profiles can independently set `:responses-context-layout' to
+`:responses-context-layout' to
 `developer-input' when system segments should remain distinct even without an
 explicit breakpoint.  Set `:include-encrypted-reasoning' when a provider
 supports returning stateless reasoning items for complete replay.  A Responses
@@ -432,21 +446,94 @@ When PROVIDER is nil, use `e-openai-default-provider'."
          (or (> major 5)
              (and (= major 5) (>= minor 6))))))
 
-(defconst e-openai-gpt56-explicit-cache-layout-revision
-  "responses-explicit-cache-v1"
-  "Anchor revision for the GPT-5.6 explicit prompt-cache input layout.")
+(defconst e-openai-gpt56-automatic-cache-layout-revision
+  "responses-automatic-cache-v2"
+  "Anchor revision for implicit plus explicit Responses cache boundaries.")
 
 (defconst e-openai-gpt56-segmented-context-layout-revision
   "responses-segmented-context-v1"
   "Anchor revision for GPT-5.6 segmented input without explicit caching.")
 
-(defun e-openai-profile--prompt-cache-breakpoint-mode (options)
-  "Return the provider-supported GPT-5.6 breakpoint mode from OPTIONS.
-Direct request-renderer callers default to `explicit' for compatibility; real
-provider requests always materialize this option from the provider profile."
-  (if (plist-member options :prompt-cache-breakpoint-mode)
-      (plist-get options :prompt-cache-breakpoint-mode)
-    'explicit))
+(defconst e-openai-profile--24h-cache-models
+  '("gpt-5.5" "gpt-5.5-pro" "gpt-5.4" "gpt-5.2" "gpt-5.1-codex-max"
+    "gpt-5.1" "gpt-5.1-codex" "gpt-5.1-codex-mini"
+    "gpt-5.1-chat-latest" "gpt-5" "gpt-5-codex" "gpt-4.1")
+  "OpenAI model families with documented 24-hour cache retention support.")
+
+(defun e-openai-profile-cache-capability (profile provider base-url model)
+  "Return trusted prefix-cache capability for PROFILE at BASE-URL and MODEL.
+The automatic API path stays selected for compatible Responses and Chat
+Completions endpoints.  The stable explicit guard is limited to the documented
+first-party Responses API on GPT-5.6 and later; it never disables implicit
+boundaries."
+  (let ((wire-api (e-openai-provider-wire-api profile)))
+    (cond
+     ((not (memq wire-api '(responses chat-completion))) 'none)
+     ((and (eq wire-api 'responses)
+           (eq provider 'openai)
+           (not (plist-get profile :requires-openai-auth))
+           (e-openai-profile-context-base-url-equal-p
+            base-url e-openai-api-default-base-url)
+           (e-openai-profile-model-gpt56-or-later-p model))
+      'automatic-explicit)
+     (t 'automatic))))
+
+(defun e-openai-profile-cache-capability-evidence
+    (profile provider base-url model)
+  "Return a non-secret evidence label for PROFILE cache policy.
+This reports the API contract selected by the adapter, not a measured hit."
+  (cond
+   ((and (eq provider 'openai)
+         (not (plist-get profile :requires-openai-auth))
+         (e-openai-profile-context-base-url-equal-p
+          base-url e-openai-api-default-base-url))
+    (if (eq (e-openai-profile-cache-capability
+             profile provider base-url model)
+            'automatic-explicit)
+        'first-party-responses-documented
+      'first-party-openai-default-documented))
+   ((eq provider 'codex) 'codex-implicit-default-unverified)
+   (t 'endpoint-default-unverified)))
+
+(defun e-openai-profile-cache-routing-key
+    (profile provider base-url model options)
+  "Return an adapter-derived stable routing key, or nil when not supported.
+The key never includes prompt content or caller cache controls.  On older
+first-party models it keeps one session's growing requests together; GPT-5.6+
+uses OpenAI's automatic routing and does not need an explicit key."
+  (when (and (eq provider 'openai)
+             (not (e-openai-profile-model-gpt56-or-later-p model))
+             (e-openai-profile-context-base-url-equal-p
+              base-url e-openai-api-default-base-url)
+             (eq (e-openai-provider-wire-api profile) 'responses))
+    (let ((identity
+           (list :provider provider
+                 :endpoint (string-remove-suffix "/" base-url)
+                 :model model
+                 :session (plist-get options :session-id)
+                 :stable-segments
+                 (mapcar (lambda (segment)
+                           (list (plist-get segment :kind)
+                                 (plist-get segment :fingerprint)))
+                         (seq-filter
+                          #'e-openai-profile--stable-cache-segment-p
+                          (plist-get options :segments)))
+                 :tools (plist-get options :tools))))
+      (concat "e:" (substring (secure-hash 'sha256
+                                             (prin1-to-string identity))
+                               0 62)))))
+
+(defun e-openai-profile-cache-retention (profile provider base-url model)
+  "Return adapter-selected retention for a documented model, or nil.
+Nil preserves the provider's effective default, including organization data
+retention policy.  GPT-5.6 and later accept only their default 30-minute TTL."
+  (when (and (eq provider 'openai)
+             (not (e-openai-profile-model-gpt56-or-later-p model))
+             (e-openai-profile-context-base-url-equal-p
+              base-url e-openai-api-default-base-url)
+             (member model e-openai-profile--24h-cache-models)
+             (eq (e-openai-provider-wire-api profile) 'responses))
+    "24h"))
 
 (defun e-openai-profile--stable-cache-segment-p (segment)
   "Return non-nil when SEGMENT belongs to the stable prompt prefix."
@@ -466,37 +553,27 @@ provider requests always materialize this option from the provider profile."
 
 This is a wire-layout decision, not a cache-breakpoint decision.  The
 developer-input profile declaration keeps stable and changing system messages
-in input even when no prompt-cache key is available when the profile declares
-the inherited delivery contract.  An explicit GPT-5.6 breakpoint declaration
-with a key retains the direct renderer's segmented shape for legacy/direct
-callers."
+in input even when no explicit routing key is available."
   (or (and (eq (e-openai-profile-observation-delivery-for-options options)
               'inherited)
            (eq (plist-get options :responses-context-layout)
                'developer-input))
       (and (e-openai-profile-model-gpt56-or-later-p (plist-get options :model))
-           (eq (e-openai-profile--prompt-cache-breakpoint-mode options)
-               'explicit)
-           (let ((key (plist-get options :prompt-cache-key)))
-             (and (stringp key)
-                  (not (string-empty-p key)))))))
+           (eq e-openai-profile--effective-prefix-cache 'automatic-explicit))))
 
 (defun e-openai-profile--wire-prompt-layout-revision (options)
   "Return the provider wire-layout revision for OPTIONS, or nil.
 
-This is deliberately separate from the material continuation identity below:
-the curation revision must fence anchors even when no prompt-cache key exists,
-while breakpoint emission remains key-dependent."
-  (let ((key (plist-get options :prompt-cache-key))
-        (mode (e-openai-profile--prompt-cache-breakpoint-mode options)))
+This is deliberately separate from the material continuation identity below.
+The effective API capability determines whether a stable marker is part of the
+wire layout."
+  (let ((capability e-openai-profile--effective-prefix-cache))
     (when (and (e-openai-profile-model-gpt56-or-later-p
                 (plist-get options :model))
-               (e-openai-profile--segmented-prompt-layout-p options)
-               (stringp key)
-               (not (string-empty-p key))
+               (e-openai-profile--segmented-prompt-layout-p options))
+      (if (and (eq capability 'automatic-explicit)
                (> (e-openai-profile--stable-system-message-count options) 0))
-      (if (eq mode 'explicit)
-          e-openai-gpt56-explicit-cache-layout-revision
+          e-openai-gpt56-automatic-cache-layout-revision
         e-openai-gpt56-segmented-context-layout-revision))))
 
 (defun e-openai-profile--prompt-layout-revision (options)
@@ -507,22 +584,18 @@ revision identity.  Per-frame labels, estimates, values, and provenance are
 not options and therefore cannot enter this identity."
   (let ((wire-revision
          (e-openai-profile--wire-prompt-layout-revision options)))
-    (if (eq (plist-get options :reserved-effect-carrier)
+    (if (eq e-openai-profile--effective-context-curation-capability
             'context-curate-wire)
         (list :prompt-layout-revision wire-revision
               :context-curation-revision-identity
               (e-context-lifetime-curation-revision-identity))
       wire-revision)))
 
-(defun e-openai-profile--prompt-cache-mode-label (options)
-  "Return the diagnostic cache mode label for segmented OPTIONS."
-  (if (eq (e-openai-profile--prompt-cache-breakpoint-mode options) 'explicit)
-      "explicit"
-    "implicit-segmented"))
-
-(defun e-openai-profile-prompt-cache-breakpoint-mode (options)
-  "Return the provider-supported prompt-cache breakpoint mode for OPTIONS."
-  (e-openai-profile--prompt-cache-breakpoint-mode options))
+(defun e-openai-profile-prompt-cache-mode-label (_options)
+  "Return the truthful automatic-cache diagnostic label."
+  (if (eq e-openai-profile--effective-prefix-cache 'automatic-explicit)
+      "implicit-plus-stable-guard"
+    "implicit"))
 
 (defun e-openai-profile-stable-system-message-count (options)
   "Return the number of stable system messages in OPTIONS."
@@ -545,19 +618,6 @@ not options and therefore cannot enter this identity."
   (let ((reasoning (e-openai-profile-effective-reasoning options)))
     (list :effort (plist-get reasoning :effort)
           :summary (plist-get reasoning :summary))))
-
-(defun e-openai-profile-prompt-cache-mode-label (options)
-  "Return the diagnostic cache mode label for OPTIONS."
-  (e-openai-profile--prompt-cache-mode-label options))
-
-(defun e-openai-profile-prompt-cache-retention-supported-p (profile model)
-  "Return non-nil when PROFILE and MODEL accept `prompt_cache_retention'.
-GPT-5.6 and later use `prompt_cache_options.ttl' instead; their only current
-TTL is the default, so the legacy retention option must not reach the wire."
-  (and (not (e-openai-profile-model-gpt56-or-later-p model))
-       (if (plist-member profile :prompt-cache-retention)
-           (plist-get profile :prompt-cache-retention)
-         (not (plist-get profile :requires-openai-auth)))))
 
 (defun e-openai-profile--continuation-supported-p (profile)
   "Return non-nil when PROFILE should use Responses continuation anchors."
@@ -656,14 +716,11 @@ injected requester for conformance tests."
                    (eq declared-delivery 'request-local-replaceable))
               (copy-tree e-openai-profile--request-local-observation-delivery-map)
             'inherited))
+         (model (e-openai-provider-model profile (plist-get options :model)))
+         (cache-base-url (or base-url profile-base-url))
          (prefix-cache
-          (cond
-           ((and (eq wire-api 'responses)
-                 (eq (plist-get profile :prompt-cache-breakpoint-mode)
-                     'explicit))
-            'explicit)
-           ((plist-get options :prompt-cache-key) 'implicit)
-           (t 'none))))
+          (e-openai-profile-cache-capability
+           profile provider cache-base-url model)))
     (list :continuation
           (if identity-compatible
               (or (e-openai-profile--continuation-mode profile) 'none)
@@ -676,10 +733,7 @@ injected requester for conformance tests."
           (if (plist-get profile :include-encrypted-reasoning)
               'replayable
             'none)
-          :reserved-effect-carrier
-          (if (eq wire-api 'responses)
-              'context-curate-wire
-            'none))))
+          :reserved-effect-carrier 'none)))
 
 (defun e-openai-profile-harness-default-options (profile model)
   "Return backend-neutral harness options for PROFILE and MODEL."

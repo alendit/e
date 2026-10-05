@@ -201,14 +201,16 @@ eldev -s test -f e2e/e-live-e2e-test.el \
   e-live-e2e-test-chatgpt-canonical-tool-heavy
 #+end_src
 
-The =chatgpt-canonical-warm-prefix= selector sends a canonical pair on a
-retained WebSocket and repeats it after deliberately replacing that socket.
-The =chatgpt-canonical-tool-heavy= selector records a real tool call, its
-matching immediate continuation, and a real reserved =context-curate= effect
-before checking the following canonical ordinary request.  Each selector
+The =chatgpt-canonical-warm-prefix= selector sends three full-history requests
+and verifies that the user-message count grows from one to three while the
+provider-reported cache read is checked on both later requests.  The
+=chatgpt-canonical-tool-heavy= selector records a tool call, its matching
+continuation, and a reserved =context-curate= effect only when the adapter
+confirms that carrier for the effective API.  Otherwise it skips before a
+provider request and records =capability-unconfirmed=.  Each selector
 prints one bounded JSON line beginning with =E88 external evidence:=.  The
 record includes provider/profile and endpoint identity, transport and store
-mode, model and layout/cache-key revisions, request-shape digests, socket
+mode, model and layout/policy revisions, request-shape digests, socket
 identity, usage, timeout, elapsed time, repository revision, and separate
 semantic/cache classifications.  Missing Codex authentication produces a
 bounded =configuration-unavailable= record before the selector skips.  Prompt
@@ -250,7 +252,9 @@ and encrypted-reasoning fallbacks without credentials.
 The credentialed naturalistic adoption selector is separate from those cache
 measurements.  Its deterministic runner gates classify captured behavior, but
 the selector itself is external compatibility evidence, not a deterministic
-repository test:
+repository test.  It checks adapter curation capability before sending a
+prompt; an unconfirmed carrier produces a bounded =capability-unconfirmed=
+result without a provider request:
 
 #+begin_src sh
 E_E2E=1 \
@@ -259,12 +263,14 @@ eldev -s test -f e2e/e-live-e2e-test.el \
   e-live-e2e-test-responses-autonomous-curation-adoption
 #+end_src
 
-It requires a configured Responses profile, uses only the ordinary
-=e2e_deterministic= tool in its first prompt, and checks the autonomous
-curation carrier, durable replacement, and next-turn raw-source exclusion.
+When the configured Responses profile declares the reserved carrier, it uses
+only the ordinary =e2e_deterministic= tool in its first prompt and checks the
+curation effect, durable replacement, and next-turn raw-source exclusion.
 Its bounded evidence record reports independent =adoption-result=,
-=composition-result=, and =failure-stage= fields without prompt or response
-content.  This selector is intentionally not run by repository-side tests.  Its
+=composition-result=, =failure-stage=, and =p3-curation-cache-result= fields
+without prompt or response content.  A single curation plus one later cache
+read is explicitly classified as insufficient for P3.  This selector is
+intentionally not run by repository-side tests.  Its
 v5/presentation-v2 Responses HTTP record is historical after the explicit
 eligibility correction; current v6/presentation-v3 adoption and exact built-in
 ChatGPT/WebSocket adoption remain unconfirmed scopes.
@@ -289,8 +295,10 @@ reports =adoption-disposition erase=,
 contains no prompt, sentinel, answer, summary text, or authentication data.
 No Addendum 6 =drop= evidence is reused for this materially different schema.
 
-To rerun the current configured Responses HTTP evidence set, select all five
-Feature 88 scenarios together:
+To rerun the current configured Responses HTTP evidence set, select the
+reasoning and growing-history scenarios together.  The curation selectors
+remain useful capability checks, but currently report =capability-unconfirmed=
+for APIs whose repeated-curation caching support has not passed P3:
 
 #+begin_src sh
 E_E2E=1 \
@@ -306,9 +314,11 @@ eldev -s test -f e2e/e-live-e2e-test.el \
 The 2026-08-28 run at revision =01a8466a= used the Engineering AI Model
 Gateway / GPT (Responses) profile over native HTTP, with =:json-false= store
 mode and model =gpt-5.6-sol=.  Its Addendum 6 results are historical after the
-carrier revision.  A current Addendum 7 rerun must pass the reasoning probe,
-positive adoption, explicit erase adoption, warm-prefix cache, and tool-heavy
-cache scenarios under =context-curate-v7=.  Identity-complete records contain
+carrier revision.  A current run does not grant curation capability from the
+wire API name alone.  Warm-prefix evidence must show positive reads on both
+the retained-history request and its replacement; one successful post-curation
+read cannot pass the separate repeated-curation P3 classifier.
+Identity-complete records contain
 only bounded request identity, revisions, classifications, counts, and timing;
 HTTP evidence does not confirm the exact built-in ChatGPT/WebSocket selectors.
 
@@ -351,3 +361,21 @@ not a normal package test:
 #+begin_src sh
 E_DEV_E2E=1 eldev test -f e2e/e-dev-bytecode-e2e-test.el
 #+end_src
+
+* Growing conversation cache acceptance (Feature 98)
+
+Static warm-prefix tests do not establish growing-history reuse.  Run the
+subturn probe through the configured ordinary harness, for example:
+
+#+begin_src sh
+E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-anthropic.el \
+  eldev -s test -f e2e/e-cache-efficiency-e2e-test.el
+#+end_src
+
+The probe uses substantial synthetic tool results, checks the data-dependent
+answer, and emits =E98_CACHE_EVIDENCE= with request identity, hashes, and usage.
+Two cache-read increases establish growing reuse.  A fixed read ceiling cannot
+pass; missing counters, cold/expired caches, and changing prefixes remain
+unconfirmed.  No credential or prompt content is recorded.  P3 is separate:
+curation remains unavailable until repeated curation and material rebuilt-history
+reuse have accepted evidence for the effective adapter/API/model.

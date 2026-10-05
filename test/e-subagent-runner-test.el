@@ -1834,8 +1834,8 @@ A later configure-type override is preserved across subsequent spawns."
                           :type :lean :prompt "again" :runner noop)
         (should (memq 'web (e-harness-enabled-layer-ids harness)))))))
 
-(ert-deftest e-subagent-runner-test-child-inherits-prompt-cache-policy ()
-  "A child without cache policy derives its own key from the parent's opt-in."
+(ert-deftest e-subagent-runner-test-child-does-not-inherit-cache-policy ()
+  "Child sessions do not inherit caller-owned cache policy from a parent."
   (e-subagent-runner-test--with-instances
     (let ((e-subagent-child-layer-ids nil))
       (e-harness-instance-register
@@ -1866,24 +1866,12 @@ A later configure-type override is preserved across subsequent spawns."
                 (e-subagent-runner-test--live-child-harness
                  live (plist-get record :participant-id)))
                (child-session-id (plist-get record :session-id))
-               session-options)
-          ;; Live installation precedes the callback step that enqueues this
-          ;; durable session update.  Wait for the semantic condition rather
-          ;; than treating an unrelated live-table observation as its barrier.
-          (should
-           (e-chat-test--wait-until
-            (lambda ()
-              (setq session-options
-                    (plist-get
-                     (e-board-producer-test-await
-                      (e-session-async-query-state
-                       (e-harness-sessions child) child-session-id))
-                     :turn-options))
-              (eq (plist-get session-options :prompt-cache-default) t))
-            5.0))
-          (should (eq (plist-get session-options :prompt-cache-default) t))
-          (should (equal (plist-get session-options :prompt-cache-retention)
-                         "24h")))))))
+               (session-options
+                (e-harness-session-options child child-session-id)))
+          (should-not (plist-member (e-harness-default-options child)
+                                    :prompt-cache-default))
+          (should-not (plist-member session-options :prompt-cache-default))
+          (should-not (plist-member session-options :prompt-cache-retention)))))))
 
 (ert-deftest e-subagent-runner-test-configure-type-passes-layer-config ()
   "configure-type writes a capability's runtime config on the type's harness.

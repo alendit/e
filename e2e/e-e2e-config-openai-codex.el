@@ -9,11 +9,10 @@
 
 ;; Sample E_E2E_CONFIG file for GPT-6 Sol on the Responses WebSocket transport.
 ;; It uses Codex-managed ChatGPT authentication and the backend-required
-;; unstored response mode.  The current ChatGPT endpoint does not accept the
-;; OpenAI API's explicit cache fields.  The profile uses segmented developer
-;; input and replays full context because detached SQLite provider-anchor
-;; selection is not implemented.  The focused explicit-cache probe skips while
-;; the rest of the live suite verifies the supported request shape:
+;; unstored response mode.  It relies on the endpoint's implicit cache behavior
+;; and sends no OpenAI API-only cache fields.  The profile uses segmented
+;; developer input and replays full context because detached SQLite
+;; provider-anchor selection is not implemented:
 ;;   E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
 ;;     eldev test -f e2e/e-live-e2e-test.el \
 ;;     e-live-e2e-test-openai-gpt56-explicit-cache-continues
@@ -32,7 +31,6 @@
          :wire-api responses
          :responses-transport websocket
          :response-store :json-false
-         :prompt-cache-breakpoint-mode nil
          :responses-context-layout developer-input
          :include-encrypted-reasoning t
          :continuation nil
@@ -45,14 +43,10 @@ LAYER-IDS and DIRECTORY are ignored so credentialed tests cannot inherit or
 send project-derived default-layer context.  Individual tests add synthetic
 capabilities explicitly."
   (ignore layer-ids directory)
-  (let ((harness (e-openai-create-harness
-                  :provider (or provider e-openai-default-provider)
-                  :model e-openai-default-model
-                  :sessions (or sessions (e-default-session-store)))))
-    (setf (e-harness-default-options harness)
-          (append (e-harness-default-options harness)
-                  '(:prompt-cache-default t)))
-    harness))
+  (e-openai-create-harness
+   :provider (or provider e-openai-default-provider)
+   :model e-openai-default-model
+   :sessions (or sessions (e-default-session-store))))
 
 (setq e-default-harness-specs
       '((:id :chat-default

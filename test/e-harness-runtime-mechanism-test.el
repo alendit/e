@@ -425,7 +425,8 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
       (let ((entry (gethash "session-1" (e-harness-active-turns harness))))
         (should (equal (e-harness-turn--pending-steering-items entry)
                        '((:prompt "focus here"
-                          :metadata (:source chat-composer))))))
+                          :metadata (:source chat-composer)
+                          :committed-message nil)))))
       (let ((steered (cl-find 'turn-steered events
                               :key (lambda (event)
                                      (plist-get event :type)))))
@@ -1470,100 +1471,41 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
     (should (equal (plist-get result :content) "prepared-post"))
     (should (= context-calls 1))))
 
-(ert-deftest e-harness-test-derived-prompt-cache-key-fits-provider-limit ()
-  "Derived prompt cache keys preserve identity within the provider limit."
+(ert-deftest e-harness-test-turn-cache-controls-are-dropped-before-dispatch ()
+  "Default and session cache/carrier values cannot weaken adapter policy."
   (e-harness-test--with-empty-layer-registry
     (let* ((harness
             (e-harness-create
              :backend (e-backend-fake-create :items nil)
              :default-options '(:model "gpt-5.6"
-                                :prompt-cache-default t)))
-           (session-id "session-1")
-           (other-root-session-id "session-2"))
-      (e-harness-create-session
-       harness
-       :id session-id
-       :metadata '(:project-root "/tmp/cache-project"))
-      (e-harness-create-session
-       harness
-       :id other-root-session-id
-       :metadata '(:project-root "/tmp/other-cache-project"))
-      (let* ((options (e-harness-turn-options harness session-id))
-             (key (plist-get options :prompt-cache-key))
-             (other-root-key
-              (plist-get
-               (e-harness-turn-options harness other-root-session-id)
-               :prompt-cache-key))
-             (other-model-key
-              (e-harness-context-runtime--derived-prompt-cache-key
-               harness session-id
-               (plist-put (copy-sequence options) :model "gpt-5.7")))
-             (other-tools-key
-              (e-harness-context-runtime--derived-prompt-cache-key
-               harness session-id
-               (plist-put (copy-sequence options)
-                          :tools
-                          '((:name "different-tool"))))))
-        (should (string-match-p "\\`e:pcctx[0-9]+:[[:xdigit:]]+\\'" key))
-        (should (= (length key) e-harness-prompt-cache-key-max-length))
-        (should (equal key
-                       (e-harness-context-runtime--derived-prompt-cache-key
-                        harness session-id options)))
-        (should-not (equal key other-root-key))
-        (should-not (equal key other-model-key))
-        (should-not (equal key other-tools-key))))))
-
-(ert-deftest e-harness-test-derived-prompt-cache-key-canonicalizes-tool-schemas ()
-  "Equivalent canonical schemas share a key; material changes do not."
-  (e-harness-test--with-empty-layer-registry
-    (let* ((path-schema '(:type "string" :minLength 1))
-           (other-schema '(:type "string" :maxLength 40)))
-      (let* ((properties-a
-              (list :path path-schema :other other-schema))
-             ;; Canonical objects may differ in property order; fingerprints
-             ;; sort object keys without accepting alternate container types.
-             (properties-b
-              (list :other (copy-tree other-schema)
-                    :path (copy-tree path-schema)))
-             (properties-c
-              (list :path '(:type "number")
-                    :other (copy-tree other-schema)))
-             (definition-a
-              (list :type "function" :name "read" :description "Read."
-                    :parameters (list :type "object"
-                                      :properties properties-a
-                                      :required ["path"]
-                                      :additionalProperties :json-false)
-                    :strict :json-false))
-             (definition-b
-              (list :strict :json-false :parameters
-                    (list :additionalProperties :json-false
-                          :required ["path"] :properties properties-b
-                          :type "object")
-                    :description "Read." :name "read" :type "function"))
-             (definition-c
-              (list :type "function" :name "read" :description "Read."
-                    :parameters (list :type "object"
-                                      :properties properties-c
-                                      :required ["path"]
-                                      :additionalProperties :json-false)
-                    :strict :json-false))
-             (options-a (list :model "gpt-test" :tools (list definition-a)))
-             (options-b (list :model "gpt-test" :tools (list definition-b)))
-             (options-c (list :model "gpt-test" :tools (list definition-c)))
-             (key-a (e-harness-context-runtime--derived-prompt-cache-key
-                     (e-harness-create :backend (e-backend-fake-create :items nil))
-                     "session-1" options-a))
-             (key-b (e-harness-context-runtime--derived-prompt-cache-key
-                     (e-harness-create :backend (e-backend-fake-create :items nil))
-                     "session-1" options-b))
-             (key-c (e-harness-context-runtime--derived-prompt-cache-key
-                     (e-harness-create :backend (e-backend-fake-create :items nil))
-                     "session-1" options-c)))
-        (should (equal (e-tools-definition-fingerprint definition-a)
-                       (e-tools-definition-fingerprint definition-b)))
-        (should (equal key-a key-b))
-        (should-not (equal key-a key-c))))))
+                                :prompt-cache-default t
+                                :prompt-cache-key "default-key")))
+           (session-id "session-1"))
+      (e-harness-create-session harness :id session-id)
+      (e-harness-set-session-options
+       harness session-id
+       '(:model "gpt-5.6"
+         :prompt-cache nil
+         :prompt-cache-default nil
+         :prompt-cache-mode explicit
+         :prompt-cache-breakpoint-mode nil
+         :prompt-cache-key "caller-key"
+         :prompt-cache-retention "in_memory"
+         :prompt-cache-ttl "5m"
+         :reserved-effect-carrier context-curate-wire))
+      (let ((stored (e-harness-session-options harness session-id))
+            (options (e-harness-turn-options harness session-id)))
+        (dolist (key '(:prompt-cache :prompt-cache-default :prompt-cache-mode
+                       :prompt-cache-breakpoint-mode :prompt-cache-key
+                       :prompt-cache-retention :prompt-cache-ttl
+                       :reserved-effect-carrier))
+          (should-not (plist-member stored key))
+          (should-not (plist-member options key)))
+        (should (equal (plist-get options :model) "gpt-5.6"))
+        (should (eq (plist-get
+                     (e-harness-context-capabilities harness options)
+                     :reserved-effect-carrier)
+                    'none))))))
 
 (ert-deftest e-harness-test-provider-diagnostics-retain-websocket-lifecycle ()
   "Durable provider diagnostics retain bounded WebSocket lifecycle state."
@@ -1633,10 +1575,11 @@ backend-error-message helper must return only the bare reason."
           (e-backend-create
            :name "context-lifetime-segment-ownership"
            :context-capabilities
-           '(:observation-delivery request-local-replaceable)))
+           '(:observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)))
          (harness (e-harness-create :backend backend)))
     (e-harness-create-session harness :id "session-1")
-    (let* ((capabilities '(:observation-delivery request-local-replaceable))
+    (let* ((capabilities (e-backend-context-capabilities backend nil))
            (projected
             (e-harness-context-lifetime-apply-projection
              harness "session-1" "turn-1" context capabilities))
@@ -1707,7 +1650,10 @@ backend-error-message helper must return only the bare reason."
   (let* ((directory (make-temp-file "e-harness-erase-only-" t))
          (store (e-session-persistent-store-create directory))
          (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
+                   :backend (e-backend-fake-create
+                             :items nil
+                             :context-capabilities
+                             '(:reserved-effect-carrier context-curate-wire))
                    :sessions store))
          frame entry
          (events nil)
@@ -1754,7 +1700,8 @@ backend-error-message helper must return only the bare reason."
                (e-context-lifetime-frame-consumed-p
                 (e-harness-context-lifetime-commit-response
                  harness "erase-only" "turn-erase" entry
-                 (list :frame frame
+                 (list :provider-request-options '(:model "supported-fixture")
+                       :frame frame
                        :response-entry-id "response-erase-only"
                        :curation-effects
                        (list
@@ -1834,7 +1781,10 @@ backend-error-message helper must return only the bare reason."
   (let* ((directory (make-temp-file "e-harness-mixed-curation-" t))
          (store (e-session-persistent-store-create directory))
          (harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)
+                   :backend (e-backend-fake-create
+                             :items nil
+                             :context-capabilities
+                             '(:reserved-effect-carrier context-curate-wire))
                    :sessions store))
          frame entry
          events)
@@ -1855,7 +1805,8 @@ backend-error-message helper must return only the bare reason."
              (e-context-lifetime-frame-consumed-p
               (e-harness-context-lifetime-commit-response
                harness "mixed" "turn-mixed" entry
-               (list :frame frame
+               (list :provider-request-options '(:model "supported-fixture")
+                       :frame frame
                      :response-entry-id "response-mixed"
                      :curation-effects
                      (list
@@ -1903,7 +1854,8 @@ backend-error-message helper must return only the bare reason."
               (should-error
                (e-harness-context-lifetime-commit-response
                 harness "mixed-invalid" "turn-mixed-invalid" bad-entry
-                (list :frame bad-frame
+                (list :provider-request-options '(:model "supported-fixture")
+                       :frame bad-frame
                       :response-entry-id "response-mixed-invalid"
                       :curation-effects
                       (list
@@ -1935,7 +1887,8 @@ backend-error-message helper must return only the bare reason."
                 (should-error
                  (e-harness-context-lifetime-commit-response
                   harness "mixed-failure" "turn-mixed-failure" failure-entry
-                  (list :frame failure-frame
+                  (list :provider-request-options '(:model "supported-fixture")
+                       :frame failure-frame
                         :response-entry-id "response-mixed-failure"
                         :curation-effects
                         (list
@@ -1959,7 +1912,10 @@ backend-error-message helper must return only the bare reason."
 (ert-deftest e-harness-test-context-lifetime-curation-binds-payload-frame-over-descendant ()
   "Curation labels bind to the response frame, not a newer tool descendant."
   (let* ((harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)))
+                   :backend (e-backend-fake-create
+                             :items nil
+                             :context-capabilities
+                             '(:reserved-effect-carrier context-curate-wire))))
          (store (e-harness-sessions harness))
          frame-a frame-b entry consumed)
     (e-harness-create-session harness :id "session-1")
@@ -1981,7 +1937,8 @@ backend-error-message helper must return only the bare reason."
       (setq consumed
             (e-harness-context-lifetime-commit-response
              harness "session-1" "turn-1" entry
-             (list :frame frame-a
+             (list :provider-request-options '(:model "supported-fixture")
+                       :frame frame-a
                    :provider-request-id "response-a"
                    :response-entry-id "response-a"
                    :curation-effects
@@ -2041,7 +1998,10 @@ backend-error-message helper must return only the bare reason."
 (ert-deftest e-harness-test-context-lifetime-curation-appends-before-consuming ()
   "A valid curation appends its record before the frame body is consumed."
   (let* ((harness (e-harness-create
-                   :backend (e-backend-fake-create :items nil)))
+                   :backend (e-backend-fake-create
+                             :items nil
+                             :context-capabilities
+                             '(:reserved-effect-carrier context-curate-wire))))
          (store (e-harness-sessions harness))
          frame entry
          (order nil)
@@ -2071,7 +2031,8 @@ backend-error-message helper must return only the bare reason."
          entry
          (e-harness-context-lifetime-commit-response
           harness "session-1" "turn-1" entry
-          (list :frame frame
+          (list :provider-request-options '(:model "supported-fixture")
+                       :frame frame
                 :provider-request-id "response-1"
                 :response-entry-id "response-1"
                 :curation-effects

@@ -1,6 +1,17 @@
 #+title: Generational Context with Ephemeral Frames
 #+startup: overview
 
+* Curation availability amendment (2026-10-05)
+
+[[file:../98-growing-conversation-prompt-cache/plan.org][Feature 98, F98-C6]] owns availability of the reserved curation carrier.
+Wire-carrier support alone is insufficient: the effective adapter/API/model
+must have accepted repeated cache-efficiency evidence.  Unconfirmed sessions
+publish no curation tool, guidance, or source labels and reject forced effects.
+The lifetime projection still applies, including previously accepted
+keep/summary/erase effects.  Tests of positive curation semantics use a
+supported test-owned backend declaration, never a caller option.  This amends
+availability without changing the effect contracts below.
+
 * Status
 
 In-review (origin-authoritative Addendum 7 integrated implementation;

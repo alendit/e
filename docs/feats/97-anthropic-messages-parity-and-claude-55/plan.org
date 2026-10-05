@@ -1,6 +1,19 @@
 #+title: Anthropic Messages Parity and Claude 5.5 Gateway Models
 #+startup: overview
 
+* Cache and availability supersession (2026-10-05)
+
+[[file:../98-growing-conversation-prompt-cache/plan.org][Feature 98]] supersedes F97-C04's opt-in, stable-only caching policy,
+F97-C05's unconditional carrier availability, and F97-C07's configured cache
+options.  Messages requests now use automatic moving cache boundaries with a
+stable explicit guard and adapter-selected TTL.  The real Doom factory no
+longer supplies cache-policy options.  Native signed reasoning and tool replay,
+usage accounting, lifetime projection, and already accepted curation effects
+retain their existing semantics.  Curation is unavailable for shipped profiles
+until repeated efficient cache-plus-curation evidence passes F98-P3.  Earlier
+stable-prefix write/read measurements below are historical and do not establish
+growing-history cache efficiency.
+
 * Status
 
 =In-review=.  Independent plan review reached

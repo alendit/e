@@ -437,14 +437,17 @@ board activity message unpublishable."
   "Return named scalar provider DIAGNOSTICS safe for durable activity."
   (let (projected)
     (dolist (key '(:model :reasoning-effort :reasoning-summary :effort :response-store
-                   :prompt-cache-key-present :prompt-cache-retention-present
-                   :prompt-cache-mode :prompt-layout-revision
+                   :prompt-cache-key-present :prompt-cache-mode
+                   :prompt-cache-capability-evidence
+                   :prompt-cache-boundary-policy
+                   :prompt-cache-stable-guard-count
+                   :prompt-cache-retention :prompt-layout-revision
                    :provider-continuation :previous-response-id-present
                    :provider-anchor-present :input-message-count :tool-count
                    :observation-delivery :replaceable-current-state-present
                    :current-state-fingerprint :context-rendering-strategy
                    :provider-anchor-safety
-                   :responses-transport :max-tokens :prompt-cache
+                   :responses-transport :max-tokens
                    :websocket-connection-id :websocket-reused
                    :websocket-reuse-count :websocket-request-mode
                    :websocket-idle-close-seconds

@@ -28,7 +28,8 @@
 
 (ert-deftest e-openai-test-gpt56-full-fallback-restores-breakpoint ()
   "The safe body for a failed continuation contains the stable marker."
-  (let* ((revision e-openai-gpt56-explicit-cache-layout-revision)
+  (e-openai-test--with-prefix-cache-capability 'automatic-explicit
+    (let* ((revision e-openai-gpt56-automatic-cache-layout-revision)
          (messages '((:role system :content "Stable instructions.")
                      (:role system :content "Fresh dynamic state.")
                      (:role user :content "new prompt")))
@@ -63,7 +64,9 @@
     (should (equal (plist-get incremental :previous_response_id) "resp-1"))
     (should-not (plist-member full :previous_response_id))
     (should (equal (plist-get stable-block :prompt_cache_breakpoint)
-                   '(:mode "explicit")))))
+                   '(:mode "explicit")))
+    (should (equal (plist-get full :prompt_cache_options)
+                   '(:mode "implicit"))))))
 
 (ert-deftest e-openai-test-replays-encrypted-reasoning-before-carrier-message ()
   "Stateless replay restores opaque reasoning immediately before its output."
@@ -187,7 +190,8 @@
 
 (ert-deftest e-openai-test-gpt56-invalidates-legacy-layout-anchor ()
   "An anchor without the explicit-layout revision forces a safe full request."
-  (let* ((body
+  (e-openai-test--with-prefix-cache-capability 'automatic-explicit
+    (let* ((body
           (e-openai-codex-request-body
            :messages '((:role system :content "Stable instructions.")
                        (:role system :content "Fresh dynamic state.")
@@ -213,7 +217,9 @@
     (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
                    '("developer" "developer" "user")))
     (should (equal (plist-get stable-block :prompt_cache_breakpoint)
-                   '(:mode "explicit")))))
+                   '(:mode "explicit")))
+    (should (equal (plist-get body :prompt_cache_options)
+                   '(:mode "implicit"))))))
 
 (ert-deftest e-openai-test-reasoning-summary-fences-continuation-anchor ()
   "A changed effective reasoning summary cannot reuse a Responses anchor."
@@ -499,8 +505,8 @@
     (should-not (assoc "originator" (plist-get captured :headers)))
     (should-not (assoc "OpenAI-Beta" (plist-get captured :headers)))))
 
-(ert-deftest e-openai-test-codex-provider-omits-prompt-cache-retention ()
-  "The ChatGPT-backed Codex endpoint keeps cache keys but omits retention."
+(ert-deftest e-openai-test-codex-provider-ignores-caller-cache-policy ()
+  "The ChatGPT-backed Codex endpoint owns caching without caller keys."
   (let* ((token (e-openai-test--jwt))
          (auth-file (make-temp-file "e-auth" nil ".json"
                                     (e-json-serialize
@@ -525,13 +531,13 @@
                                        :prompt-cache-key "cache-key"
                                        :prompt-cache-retention "24h")
                             :on-item #'ignore)
-          (should (equal (plist-get captured :prompt_cache_key)
-                         "cache-key"))
-          (should-not (plist-member captured :prompt_cache_retention)))
+          (should-not (plist-member captured :prompt_cache_key))
+          (should-not (plist-member captured :prompt_cache_retention))
+          (should-not (plist-member captured :prompt_cache_options)))
       (delete-file auth-file))))
 
-(ert-deftest e-openai-test-token-provider-keeps-prompt-cache-retention ()
-  "Token-auth Responses providers keep explicit prompt-cache retention."
+(ert-deftest e-openai-test-custom-provider-ignores-caller-cache-policy ()
+  "A custom Responses endpoint cannot inherit cache keys or TTL from callers."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-openai-model-providers
@@ -557,11 +563,12 @@
                                  :prompt-cache-key "cache-key"
                                  :prompt-cache-retention "24h")
                       :on-item #'ignore)
-    (should (equal (plist-get captured :prompt_cache_key) "cache-key"))
-    (should (equal (plist-get captured :prompt_cache_retention) "24h"))))
+    (should-not (plist-member captured :prompt_cache_key))
+    (should-not (plist-member captured :prompt_cache_retention))
+    (should-not (plist-member captured :prompt_cache_options))))
 
-(ert-deftest e-openai-test-gpt56-omits-deprecated-prompt-cache-retention ()
-  "GPT-5.6 keeps its cache key but omits the legacy retention policy."
+(ert-deftest e-openai-test-custom-gpt56-provider-ignores-caller-cache-policy ()
+  "Custom GPT-5.6 endpoints cannot claim first-party cache routing."
   (let* ((process-environment
           (cons "OPENAI_GATEWAY_API_KEY=test-gateway-token" process-environment))
          (e-openai-model-providers
@@ -588,9 +595,92 @@
                 :prompt-cache-key "cache-key"
                 :prompt-cache-retention "24h")
      :on-item #'ignore)
-    (should (equal (plist-get captured :prompt_cache_key) "cache-key"))
+    (should-not (plist-member captured :prompt_cache_key))
     (should-not (plist-member captured :prompt_cache_retention))
     (should-not (plist-member captured :prompt_cache_options))))
+
+(ert-deftest e-openai-test-first-party-api-derives-maximal-cache-policy ()
+  "The official Responses API selects implicit caching and a stable guard."
+  (let* ((process-environment
+          (cons "OPENAI_API_KEY=unit-test-token" process-environment))
+         (messages '((:role system :content "stable instructions")
+                     (:role user :content "first question")
+                     (:role system :content "current state")))
+         (segments '((:kind stable-context
+                      :messages ((:role system
+                                  :content "stable instructions")))
+                    (:kind history
+                     :messages ((:role user :content "first question")))
+                    (:kind current-state
+                     :messages ((:role system :content "current state")))))
+         (gpt56
+          (e-openai--request-context
+           :provider 'openai
+           :messages messages
+           :options `(:model "gpt-5.6"
+                      :session-id "session-one"
+                      :segments ,segments
+                      :prompt-cache-default nil
+                      :prompt-cache-mode off
+                      :prompt-cache-breakpoint-mode nil
+                      :prompt-cache-key "forged-key"
+                      :prompt-cache-retention "24h"
+                      :prompt-cache-ttl "5m")))
+         (gpt56-body (plist-get gpt56 :body-data))
+         (gpt56-diagnostics
+          (plist-get (plist-get gpt56 :metadata) :diagnostics))
+         (stable-input
+          (seq-find
+           (lambda (item)
+             (string-match-p "stable instructions" (prin1-to-string item)))
+           (append (plist-get gpt56-body :input) nil)))
+         (stable-content (aref (plist-get stable-input :content) 0))
+         (old-model-options
+          `(:model "gpt-5.5"
+            :session-id "session-one"
+            :segments ,segments
+            :prompt-cache-default nil
+            :prompt-cache-key "forged-key"
+            :prompt-cache-retention "5m"))
+         (gpt55
+          (e-openai--request-context
+           :provider 'openai :messages messages :options old-model-options))
+         (gpt55-same-session
+          (e-openai--request-context
+           :provider 'openai :messages messages :options old-model-options))
+         (gpt55-other-session
+          (e-openai--request-context
+           :provider 'openai :messages messages
+           :options (plist-put (copy-sequence old-model-options)
+                               :session-id "session-two")))
+         (gpt55-body (plist-get gpt55 :body-data)))
+    (should (equal (plist-get gpt56-body :prompt_cache_options)
+                   '(:mode "implicit")))
+    (should (equal (plist-get stable-content :prompt_cache_breakpoint)
+                   '(:mode "explicit")))
+    (should-not (plist-member gpt56-body :prompt_cache_key))
+    (should-not (plist-member gpt56-body :prompt_cache_retention))
+    (should (equal (plist-get gpt56-diagnostics :prompt-cache-mode)
+                   "implicit-plus-stable-guard"))
+    (should (eq (plist-get gpt56-diagnostics
+                           :prompt-cache-capability-evidence)
+                'first-party-responses-documented))
+    (should (eq (plist-get gpt56-diagnostics :prompt-cache-boundary-policy)
+                'implicit-latest-eligible-plus-stable-guard))
+    (should (= (plist-get gpt56-diagnostics
+                           :prompt-cache-stable-guard-count)
+               1))
+    (should (equal (plist-get gpt56-diagnostics :prompt-cache-retention)
+                   "30m-default"))
+    (should (equal (plist-get gpt55-body :prompt_cache_retention) "24h"))
+    (should (string-prefix-p "e:" (plist-get gpt55-body :prompt_cache_key)))
+    (should-not (equal (plist-get gpt55-body :prompt_cache_key) "forged-key"))
+    (should (equal (plist-get gpt55-body :prompt_cache_key)
+                   (plist-get (plist-get gpt55-same-session :body-data)
+                              :prompt_cache_key)))
+    (should-not (equal (plist-get gpt55-body :prompt_cache_key)
+                       (plist-get (plist-get gpt55-other-session :body-data)
+                                  :prompt_cache_key)))))
 
 (ert-deftest e-openai-test-backend-captures-default-provider-at-create-time ()
   "Backends created from the default provider do not follow later default changes."
@@ -662,8 +752,7 @@
             :requires-openai-auth t))))
     (let ((profile (e-openai-provider-profile 'codex)))
       (should (eq (plist-get profile :response-store) :json-false))
-      (should (plist-member profile :prompt-cache-breakpoint-mode))
-      (should-not (plist-get profile :prompt-cache-breakpoint-mode))
+      (should-not (plist-member profile :prompt-cache-breakpoint-mode))
       (should (eq (plist-get profile :responses-context-layout)
                   'developer-input))
       (should (plist-get profile :include-encrypted-reasoning))
@@ -727,7 +816,9 @@
     (should (eq (plist-get profile :response-store) :json-false))
     (should (eq (plist-get profile :responses-context-layout)
                 'developer-input))
-    (should (eq (plist-get profile :prompt-cache-breakpoint-mode) 'explicit))
+    (should-not (plist-member profile :prompt-cache-breakpoint-mode))
+    (should (eq (plist-get capabilities :prefix-cache) 'automatic-explicit))
+    (should (eq (plist-get capabilities :reserved-effect-carrier) 'none))
     (should (eq (plist-get profile :observation-delivery)
                 'inherited))
     (should (plist-get profile :include-encrypted-reasoning))

@@ -26,9 +26,10 @@
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 
-(ert-deftest e-openai-test-context-curation-wire-is-opt-in ()
-  "The curation carrier is present only in an opted-in Responses request."
-  (let* ((messages '((:role user :content "prompt")))
+(ert-deftest e-openai-test-context-curation-schema-under-test-capability ()
+  "The renderer preserves the shared schema under synthetic test evidence."
+  (e-openai-test--with-curation-capability
+    (let* ((messages '((:role user :content "prompt")))
          (enabled
           (e-openai-codex-request-body
            :messages messages
@@ -38,10 +39,11 @@
              :reserved-effect-carrier context-curate-wire)
            :tools nil))
          (disabled
-          (e-openai-codex-request-body
-           :messages messages
-           :options '(:model "gpt-test")
-           :tools nil))
+          (let ((e-openai-profile--effective-context-curation-capability nil))
+            (e-openai-codex-request-body
+             :messages messages
+             :options '(:model "gpt-test")
+             :tools nil)))
          (enabled-tools (plist-get enabled :tools)))
     (should (= (length enabled-tools) 1))
     (should (equal (plist-get (aref enabled-tools 0) :name)
@@ -91,11 +93,12 @@
       (should-not (string-match-p
                    "frame-id\\|source-observation-ids\\|schema-version"
                    (e-json-serialize enabled))))
-    (should-not (plist-member disabled :tools))))
+    (should-not (plist-member disabled :tools)))))
 
 (ert-deftest e-openai-test-context-curation-schema-core-shape-agrees-on-transports ()
   "HTTP and WebSocket requests expose the same optional core shape."
-  (dolist (transport '(http websocket))
+  (e-openai-test--with-curation-capability
+    (dolist (transport '(http websocket))
     (let* ((body
             (e-openai-codex-request-body
              :messages '((:role user :content "prompt"))
@@ -131,10 +134,10 @@
        (equal
         (e-context-lifetime-normalize-curation-disposition
          '(:keep [] :summaries []))
-        '(:keep [] :summaries [] :erase []))))))
+        '(:keep [] :summaries [] :erase [])))))))
 
-(ert-deftest e-openai-test-context-curation-schema-is-captured-by-both-transports ()
-  "The native HTTP and WebSocket starts capture the same optional carrier."
+(ert-deftest e-openai-test-context-curation-caller-control-is-ignored-by-both-transports ()
+  "Caller-carried curation permission cannot enable either native transport."
   (let* ((process-environment
           (cons "E_OPENAI_TEST_TOKEN=test-token" process-environment)))
     (dolist (transport '(http websocket))
@@ -163,7 +166,8 @@
              backend
              :messages '((:role user :content "prompt"))
              :options (list :model "gpt-test"
-                            :context-lifetime-enabled t)
+                            :context-lifetime-enabled t
+                            :reserved-effect-carrier 'context-curate-wire)
              :on-item #'ignore
              :on-done #'ignore
              :on-error #'ignore
@@ -173,48 +177,9 @@
                      0.2))
             (let* ((body (if (eq transport 'http)
                              (e-json-parse-string captured-http)
-                           captured-websocket))
-                   (tool (aref (plist-get body :tools) 0))
-                   (parameters (plist-get tool :parameters))
-                   (properties (plist-get parameters :properties))
-                   (erase (plist-get properties :erase)))
+                           captured-websocket)))
               (should body)
-              (should
-               (equal
-                (plist-get tool :description)
-                "Call context-curate at most once for the currently presented set of labeled ephemeral sources. After its acknowledgement, continue with ordinary tools or a normal answer. Call it again only after later tool work or context refresh presents a new set of labeled ephemeral sources; labels belong only to the currently presented frame and cannot be reused for an earlier frame. Use keep for exact retention and summaries for compact durable replacements. Use erase only for labels whose source marker says erase-eligible; never erase a label marked erase-ineligible. Any presented label you omit loses its exact content; it is valid to omit every label when none should be retained or erased. Separately owned derived context such as receipts may remain."))
-              (should-not (plist-member parameters :required))
-              (should (eq (plist-get parameters :additionalProperties)
-                          :json-false))
-              (should (equal (sort (copy-sequence
-                                    (cl-loop for (key value) on properties by #'cddr
-                                             collect key))
-                                   (lambda (left right)
-                                     (string< (symbol-name left)
-                                              (symbol-name right))))
-                             '(:erase :keep :summaries)))
-              (should (equal (plist-get erase :type) "array"))
-              (should (equal (plist-get erase :maxItems) 16))
-              (should (equal (plist-get (plist-get erase :items) :type)
-                             "integer"))
-              (should (equal (plist-get (plist-get erase :items) :minimum)
-                             1))
-              (should (equal (plist-get (plist-get properties :keep)
-                                        :maxItems)
-                             16))
-              (should (equal (plist-get (plist-get properties :summaries)
-                                        :maxItems)
-                             16))
-              (should (equal
-                       (plist-get
-                        (plist-get (plist-get properties :summaries) :items)
-                        :required)
-                       ["sources" "text"]))
-              (should
-               (equal
-                (e-context-lifetime-normalize-curation-disposition
-                 '(:keep [] :summaries []))
-                '(:keep [] :summaries [] :erase [])))
+              (should-not (plist-member body :tools))
               (when request
                 (e-backend-cancel-request request)))))))))
 
@@ -322,6 +287,8 @@
          (backend
           (e-backend-create
            :name "openai-late-promotion-ack"
+           :context-capabilities
+           '(:reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key messages options on-item &allow-other-keys)
@@ -600,7 +567,8 @@ Flattened Responses layouts carry the trusted stable prefix in instructions;
 segmented layouts carry it as fresh developer input while current state stays
 in instructions.  Neither path copies the covered checkpoint outside opaque
 provider output."
-  (let* ((output '((:type "encrypted" :marker "C1-COVERED")))
+  (let* ((e-openai-profile--effective-prefix-cache 'automatic-explicit)
+         (output '((:type "encrypted" :marker "C1-COVERED")))
          (delta '((:role user :content "post-coverage")))
          (messages '((:role system :content "STATIC-STABLE-POLICY")
                      (:role system :content "STABLE-CONTEXT")

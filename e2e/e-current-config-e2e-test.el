@@ -347,7 +347,7 @@
     (should-not (plist-get retired-runs :commandp))))
 
 (ert-deftest e-current-config-e2e-test-default-harness-is-configured ()
-  "The current config selects cached Opus 5.5 chat and keeps GPT-6 subagents."
+  "The current config selects Opus 5.5 chat and keeps GPT-6 subagents."
   (should (memq :chat-default (e-harness-registry-list)))
   (let* ((harness (e-harness-registry-get-or-create :chat-default))
          (backend (e-harness-backend harness))
@@ -369,8 +369,16 @@
                    "Engineering AI Model Gateway / Opus 5.5 (Messages)"))
     (should (equal (plist-get options :model) "claude-opus-5-5"))
     (should (= (plist-get options :max-tokens) 128000))
-    (should (eq (plist-get options :prompt-cache) t))
-    (should (equal (plist-get options :prompt-cache-ttl) "1h"))
+    (dolist (key '(:prompt-cache :prompt-cache-default :prompt-cache-mode
+                   :prompt-cache-breakpoint-mode :prompt-cache-key
+                   :prompt-cache-retention :prompt-cache-ttl
+                   :reserved-effect-carrier))
+      (should-not (plist-member options key)))
+    (let ((capabilities (e-harness-context-capabilities harness options)))
+      (should (eq (plist-get capabilities :prefix-cache)
+                  'automatic-explicit))
+      (should (eq (plist-get capabilities :reserved-effect-carrier)
+                  'none)))
     (should (e-harness-effective-layer-ids harness))
     (dolist (case '((eng-ai-gateway-opus "claude-opus-4-8")
                     (eng-ai-gateway-sonnet "claude-sonnet-5")

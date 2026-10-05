@@ -324,12 +324,12 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
    (equal
     (e-openai-codex-parse-stream
      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\"}}\n\n"
-     e-openai-gpt56-explicit-cache-layout-revision)
+     e-openai-gpt56-automatic-cache-layout-revision)
     `((:type provider-anchor-candidate
        :provider-id openai
        :metadata (:response-id "resp-1"
                   :prompt-layout-revision
-                  ,e-openai-gpt56-explicit-cache-layout-revision))
+                  ,e-openai-gpt56-automatic-cache-layout-revision))
       (:type done :reason stop)))))
 
 (ert-deftest e-openai-test-parse-identical-canonical-messages-are-preserved ()

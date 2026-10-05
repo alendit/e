@@ -121,8 +121,8 @@
                    "auto"))))
 
 
-(ert-deftest e-openai-test-context-curation-revision-fences-material-layout ()
-  "Curation revision fences continuation identity without source leakage."
+(ert-deftest e-openai-test-unavailable-curation-does-not-fence-layout ()
+  "Caller permission cannot advertise unavailable production curation."
   (let* ((base-options
           '(:model "gpt-5.6-sol"
             :responses-context-layout developer-input
@@ -150,9 +150,8 @@
          (first (e-openai-responses-prompt-layout-revision first-options))
          (second (e-openai-responses-prompt-layout-revision second-options)))
     (should (equal first second))
-    (should (equal
-             (plist-get first :context-curation-revision-identity)
-             (e-context-lifetime-curation-revision-identity)))
+    (should-not (string-match-p "context-curation-revision-identity"
+                                (prin1-to-string first)))
     (should-not (string-match-p
                  "SOURCE-ONE\|SOURCE-TWO\|frame\|generation\|observation\|fingerprint"
                  (prin1-to-string first)))
@@ -163,17 +162,17 @@
                   :options first-options)
                  :prompt_cache_options))
     (let ((e-context-budget-estimate-bytes-per-token 2.0))
-      (should-not
+      (should
        (equal first
               (e-openai-responses-prompt-layout-revision first-options))))
     (let ((e-context-lifetime-curation-presentation-revision
            "context-curation-presentation-test-v2"))
-      (should-not
+      (should
        (equal first
               (e-openai-responses-prompt-layout-revision first-options))))
     (let ((e-context-lifetime-curation-schema-revision
            "context-curate-test-v3"))
-      (should-not
+      (should
        (equal first
               (e-openai-responses-prompt-layout-revision first-options))))
     (let* ((anchor
@@ -190,9 +189,15 @@
                 continuation-options)
                "response-curation"))
       (let ((e-context-budget-estimate-bytes-per-token 2.0))
-        (should-not
+        (should
+         (equal first
+                (e-openai-responses-prompt-layout-revision
+                 continuation-options)))
+        (should
+         (equal
          (e-openai-responses--continuation-response-id
-          continuation-options))))))
+          continuation-options)
+         "response-curation"))))))
 
 
 (ert-deftest e-openai-test-request-context-reports-continuation-metadata ()
@@ -238,8 +243,12 @@
                      :reasoning-effort "high"
                      :reasoning-summary "auto"
                      :response-store t
-                     :prompt-cache-key-present t
-                     :prompt-cache-retention-present t
+                     :prompt-cache-key-present nil
+                     :prompt-cache-mode "implicit"
+                     :prompt-cache-capability-evidence endpoint-default-unverified
+                     :prompt-cache-boundary-policy implicit-latest-eligible
+                     :prompt-cache-stable-guard-count 0
+                     :prompt-cache-retention "provider-default"
                      :provider-continuation used
                      :previous-response-id-present t
                      :provider-anchor-present t
@@ -411,7 +420,7 @@
                      (plist-get
                       (plist-get (plist-get context :metadata) :diagnostics)
                       :prompt-cache-mode)
-                     "implicit-segmented"))
+                     "implicit"))
             (should (eq (plist-get (plist-get (plist-get context :metadata)
                                               :diagnostics)
                                    :response-store)
@@ -421,7 +430,7 @@
 
 
 (ert-deftest e-openai-test-normalizes-builtin-codex-wire-requirements ()
-  "Reloaded built-in Codex profiles retain store=false and disable breakpoints."
+  "Reloaded built-in Codex profiles retain semantic WebSocket requirements."
   (should
    (equal
     (e-openai-profile--normalize-model-providers
@@ -449,7 +458,6 @@
        :response-store :json-false
        :continuation t
        :requires-openai-auth t
-       :prompt-cache-breakpoint-mode nil
        :responses-context-layout developer-input
        :include-encrypted-reasoning t
        :observation-delivery inherited)
@@ -468,7 +476,6 @@
        :responses-transport websocket
        :response-store :json-false
        :responses-context-layout developer-input
-       :prompt-cache-breakpoint-mode explicit
        :observation-delivery inherited
        :include-encrypted-reasoning t
        :continuation t
@@ -572,7 +579,7 @@
                  (api-body (plist-get api :body-data)))
             (should-not (plist-member codex-body :prompt_cache_options))
             (should (equal (plist-get api-body :prompt_cache_options)
-                           '(:mode "explicit")))
+                           '(:mode "implicit")))
             (should
              (equal
               (e-openai-test--without-explicit-cache-fields codex-body)
@@ -1557,7 +1564,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
 (ert-deftest e-openai-test-context-curation-v8-guidance-is-frame-scoped ()
   "Reserved carrier guidance states the complete per-frame invocation rule."
-  (let* ((carrier (e-context-lifetime-curation-carrier-descriptor))
+  (e-openai-test--with-curation-capability
+    (let* ((carrier (e-context-lifetime-curation-carrier-descriptor))
          (tool (e-openai-responses-context-curation-tool-definition))
          (description (plist-get tool :description)))
     (should (equal e-context-lifetime-curation-schema-revision
@@ -1587,7 +1595,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                (append (plist-get body :tools) nil))))
         (should wire-tool)
         (should (equal (plist-get wire-tool :description) description))
-        (should-not
+        (should
          (seq-find
           (lambda (candidate)
             (equal (plist-get candidate :name) "context-curate"))
@@ -1598,7 +1606,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
              :options (plist-put (copy-sequence options)
                                  :reserved-effect-carrier nil))
             :tools)
-           nil)))))))
+           nil))))))))
 
 
 (ert-deftest e-openai-test-context-curation-full-replay-pair-is-not-anchored-call ()

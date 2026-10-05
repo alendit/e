@@ -203,9 +203,18 @@
         (funcall url-callback nil))
       (should
        (equal (mapcar (lambda (item) (plist-get item :type))
-                      (reverse items))
+              (reverse items))
               '(assistant-delta assistant-message tool-call
-                provider-replay-item provider-replay-item done)))
+                provider-replay-item provider-replay-item
+                provider-anchor-candidate done)))
+      (let* ((candidate
+              (seq-find (lambda (item)
+                          (eq (plist-get item :type)
+                              'provider-anchor-candidate))
+                        items))
+             (metadata (plist-get candidate :metadata)))
+        (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
+        (should (eq (plist-get metadata :full-history) t)))
       (should (= (cl-count 'tool-call
                            (mapcar (lambda (item) (plist-get item :type))
                                    items))
@@ -353,6 +362,7 @@
     '(:model "claude-test"
       :max_tokens 1024
       :stream t
+      :cache_control (:type "ephemeral" :ttl "1h")
       :messages [(:role "user"
                   :content [(:type "text" :text "hello")])
                  (:role "assistant"
@@ -373,7 +383,11 @@
     '(:model "claude-test"
       :max_tokens 1024
       :stream t
-      :system "Base instructions.\n\nLayer instructions.\n\nVisible buffer context."
+      :system [(:type "text" :text "Base instructions."
+                :cache_control (:type "ephemeral" :ttl "1h"))
+               (:type "text" :text "Layer instructions.")
+               (:type "text" :text "Visible buffer context.")]
+      :cache_control (:type "ephemeral" :ttl "1h")
       :messages [(:role "user"
                   :content [(:type "text" :text "hello")])]
       :thinking (:type "adaptive")
@@ -438,6 +452,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                        `(:model ,model
                          :max_tokens 1024
                          :stream t
+                         :cache_control (:type "ephemeral" :ttl "1h")
                          :messages [(:role "user"
                                      :content [(:type "text" :text "hello")])]
                          :thinking (:type "adaptive")
@@ -460,12 +475,13 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                 :parameters (:type "object")
                 :strict :json-false)))
      :tools)
-    [(:name "read"
+     [(:name "read"
       :description "Read a URI."
-      :input_schema (:type "object"))])))
+      :input_schema (:type "object")
+      :cache_control (:type "ephemeral" :ttl "1h"))])))
 
 (ert-deftest e-anthropic-test-context-curation-carrier-shares-core-policy ()
-  "The reserved Messages tool translates the shared descriptor and capability."
+  "Production Messages profiles cannot publish curation from caller controls."
   (let* ((descriptor (e-context-lifetime-curation-carrier-descriptor))
          (tool (e-anthropic--context-curation-tool-definition))
          (backend (e-anthropic-backend-create))
@@ -486,14 +502,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                    (plist-get descriptor :guidance)))
     (should (equal (plist-get tool :input_schema)
                    (plist-get descriptor :schema)))
-    (should (eq (plist-get capabilities :reserved-effect-carrier)
-                'context-curate-wire))
-    (should (= (length wire-tools) 1))
-    (should (equal (car wire-tools) (list :name "context-curate"
-                                          :description
-                                          (plist-get descriptor :guidance)
-                                          :input_schema
-                                          (plist-get descriptor :schema))))
+    (should (eq (plist-get capabilities :reserved-effect-carrier) 'none))
+    (should-not wire-tools)
     (should-not
      (plist-get
       (e-anthropic-request-body
@@ -679,8 +689,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
             (should
              (equal (plist-get (aref cached-tools 1) :cache_control)
                     '(:type "ephemeral" :ttl "1h")))
-            (dolist (tool (append uncached-tools nil))
-              (should-not (plist-member tool :cache_control)))
+            (should
+             (equal cached-tools uncached-tools))
             (should
              (equal
               (mapcar (lambda (message)
@@ -919,7 +929,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                     (eq recovery 'invalid)))))))
 
 (ert-deftest e-anthropic-test-request-body-adds-cache-control-on-system ()
-  "Prompt caching attaches a cache_control breakpoint to the system block."
+  "Automatic writes remain enabled and add a stable system guard."
   (should
    (equal
     (plist-get
@@ -930,10 +940,10 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
      :system)
     [(:type "text"
       :text "Stable instructions."
-      :cache_control (:type "ephemeral"))])))
+      :cache_control (:type "ephemeral" :ttl "1h"))])))
 
 (ert-deftest e-anthropic-test-request-body-cache-control-honors-ttl ()
-  "An explicit prompt-cache-ttl is forwarded to cache_control."
+  "Caller cache policy cannot disable caching or change adapter-owned TTL."
   (should
    (equal
     (plist-get
@@ -941,14 +951,15 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
       :messages '((:role system :content "Stable instructions.")
                   (:role user :content "hello"))
       :options '(:model "claude-test" :max-tokens 1024
-                 :prompt-cache t :prompt-cache-ttl "1h"))
+                 :prompt-cache nil :prompt-cache-default nil
+                 :prompt-cache-mode none :prompt-cache-ttl "5m"))
      :system)
     [(:type "text"
       :text "Stable instructions."
       :cache_control (:type "ephemeral" :ttl "1h"))])))
 
 (ert-deftest e-anthropic-test-request-body-cache-control-uses-segment-breakpoint ()
-  "Segment-aware caching stops before current-state system context."
+  "The stable guard precedes current state under automatic caching."
   (let* ((body
           (e-anthropic-request-body
            :messages '((:role system :content "Stable instructions.")
@@ -973,7 +984,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
     (should (equal system
                    [(:type "text"
                      :text "Stable instructions."
-                     :cache_control (:type "ephemeral"))
+                     :cache_control (:type "ephemeral" :ttl "1h"))
                     (:type "text"
                      :text "Current buffer.")]))
     (should (equal messages
@@ -1028,7 +1039,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                            (append cached-system nil))
                    '("Stable guidance." "Fresh context after retirement.")))
     (should (equal (plist-get (aref cached-system 0) :cache_control)
-                   '(:type "ephemeral" :ttl "5m")))
+                   '(:type "ephemeral" :ttl "1h")))
     (should-not (plist-member (aref cached-system 1) :cache_control))
     (should (equal (e-anthropic-test--stable-cache-prefix cached)
                    (list :tools nil :system (list (aref cached-system 0)))))
@@ -1091,7 +1102,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
             (should-not (plist-member (aref system 1) :cache_control))
             (should-not (plist-member (aref system 2) :cache_control))
             (should (equal (plist-get (aref system 0) :cache_control)
-                           '(:type "ephemeral" :ttl "5m")))
+                           '(:type "ephemeral" :ttl "1h")))
             (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
                            "live-prefix"))))
         (should (equal (e-anthropic-test--stable-cache-prefix
@@ -1152,7 +1163,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
       (should (equal (aref base-system 1) (aref dynamic-system 1)))
       (should-not (equal (aref base-system 2) (aref dynamic-system 2)))
       (should (equal (plist-get (aref base-system 1) :cache_control)
-                     '(:type "ephemeral" :ttl "5m")))
+                     '(:type "ephemeral" :ttl "1h")))
       (should-not (plist-member (aref dynamic-system 2) :cache_control))
       (should-not (equal (e-anthropic-test--stable-cache-prefix base)
                          (e-anthropic-test--stable-cache-prefix
@@ -1161,7 +1172,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                          (e-anthropic-test--stable-cache-prefix tool-change))))))
 
 (ert-deftest e-anthropic-test-request-body-top-level-cache-control ()
-  "Top-level automatic cache mode leaves system as plain content."
+  "Top-level automatic caching preserves the stable system guard."
   (let ((body (e-anthropic-request-body
                :messages '((:role system :content "Stable instructions.")
                            (:role user :content "hello"))
@@ -1172,7 +1183,9 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                           :prompt-cache-ttl "1h"))))
     (should (equal (plist-get body :cache_control)
                    '(:type "ephemeral" :ttl "1h")))
-    (should (equal (plist-get body :system) "Stable instructions."))))
+    (should (equal (plist-get body :system)
+                   [(:type "text" :text "Stable instructions."
+                     :cache_control (:type "ephemeral" :ttl "1h"))]))))
 
 (ert-deftest e-anthropic-test-request-body-sends-container-when-configured ()
   "Container ids are sent only when configured in turn options."
@@ -1197,10 +1210,10 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                 :tools)))
     (should-not (plist-member (aref tools 0) :cache_control))
     (should (equal (plist-get (aref tools 1) :cache_control)
-                   '(:type "ephemeral")))))
+                   '(:type "ephemeral" :ttl "1h")))))
 
 (ert-deftest e-anthropic-test-request-body-system-plain-without-caching ()
-  "Without caching the system field stays a plain string."
+  "Caller omission cannot disable the stable guard or automatic writes."
   (should
    (equal
     (plist-get
@@ -1209,7 +1222,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                   (:role user :content "hello"))
       :options '(:model "claude-test" :max-tokens 1024))
      :system)
-    "Stable instructions.")))
+    [(:type "text" :text "Stable instructions."
+      :cache_control (:type "ephemeral" :ttl "1h"))])))
 
 (ert-deftest e-anthropic-test-parse-text-stream ()
   "Messages SSE text events become backend-neutral stream items."
@@ -1227,13 +1241,13 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
       (:type assistant-delta :content "llo")
       (:type assistant-message :content "hello")
       (:type token-usage
-       :usage (:context-input-tokens 10
+               :usage (:context-input-tokens nil
                :input-tokens 10
                :cached-input-tokens nil
                :cache-creation-input-tokens nil
                :output-tokens 5
                :reasoning-output-tokens nil
-               :total-tokens 15))
+               :total-tokens nil))
       (:type done :reason stop)))))
 
 (ert-deftest e-anthropic-test-parse-thinking-delta-as-raw-reasoning ()
@@ -1802,7 +1816,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                  "https://gateway.example.test/v1/messages")))
 
 (ert-deftest e-anthropic-test-request-context-uses-bearer-auth ()
-  "Bearer providers send x-api-key and anthropic-version headers."
+  "Bearer headers and adapter-owned automatic cache fields reach the request."
   (let* ((process-environment
           (cons "ANTHROPIC_GATEWAY_KEY=test-token" process-environment))
          (e-anthropic-model-providers
@@ -1826,6 +1840,7 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                    '(:model "claude-test"
                      :max_tokens 1024
                      :stream t
+                     :cache_control (:type "ephemeral" :ttl "1h")
                      :messages [(:role "user"
                                  :content [(:type "text" :text "hello")])]
                      :thinking (:type "adaptive")
@@ -1868,9 +1883,9 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                          :messages ((:role system
                                      :content "Current buffer.")))))))
          (metadata (plist-get context :metadata)))
-    (should (equal (plist-get metadata :anthropic-cache-mode) 'explicit))
+    (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
     (should (equal (plist-get metadata :anthropic-cache-breakpoint)
-                   'system-stable-prefix))
+                   'automatic-plus-stable-system))
     (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
                    "stable-instructions"))
     (should (equal (plist-get metadata :anthropic-breakpoint-fingerprint)
@@ -1889,9 +1904,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                    '(:model "claude-test"
                      :effort "low"
                      :max-tokens 1024
-                     :prompt-cache t
-                     :anthropic-cache-mode explicit
-                     :anthropic-cache-breakpoint system-stable-prefix
+                     :anthropic-cache-mode automatic
+                     :anthropic-cache-breakpoint automatic-plus-stable-system
                      :anthropic-cache-ttl "1h"
                      :anthropic-container-id-present t
                      :input-message-count 1
@@ -1967,9 +1981,9 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
                       :prompt-cache t
                       :prompt-cache-mode top-level)))
          (metadata (plist-get context :metadata)))
-    (should (equal (plist-get metadata :anthropic-cache-mode) 'top-level))
+    (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
     (should (equal (plist-get metadata :anthropic-cache-breakpoint)
-                   'provider-managed))
+                   'automatic-last-eligible-block))
     (should (eq (plist-get metadata :full-history) t))))
 
 (ert-deftest e-anthropic-test-request-context-authorization-header ()
@@ -2058,10 +2072,21 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                       :messages '((:role user :content "hello"))
                       :options '(:model "claude-test" :max-tokens 1024)
                       :on-item (lambda (item) (push item seen)))
-    (should (equal (nreverse seen)
-                   '((:type assistant-delta :content "gateway answer")
-                     (:type assistant-message :content "gateway answer")
-                     (:type done :reason stop))))
+    (let* ((items (nreverse seen))
+           (candidate (nth 2 items))
+           (metadata (plist-get candidate :metadata))
+           (diagnostics (plist-get metadata :diagnostics)))
+      (should (equal (mapcar (lambda (item) (plist-get item :type)) items)
+                     '(assistant-delta assistant-message
+                       provider-anchor-candidate done)))
+      (should (equal (plist-get (nth 0 items) :content) "gateway answer"))
+      (should (equal (plist-get (nth 1 items) :content) "gateway answer"))
+      (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
+      (should (equal (plist-get metadata :anthropic-cache-breakpoint)
+                     'automatic-last-eligible-block))
+      (should (equal (plist-get diagnostics :anthropic-cache-mode) 'automatic))
+      (should (equal (plist-get diagnostics :anthropic-cache-breakpoint)
+                     'automatic-last-eligible-block)))
     (should (equal (plist-get captured :url)
                    "https://gateway.example.test/v1/messages"))
     (should (equal (cdr (assoc "x-api-key" (plist-get captured :headers)))

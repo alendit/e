@@ -468,9 +468,9 @@ guessing from message shape."
 CONTINUATION-RESPONSE-ID suppresses a new explicit breakpoint because the
 retained response already carries the stable segment and its earlier marker."
   (let ((stable-left
-         (if (and (e-openai-profile-wire-prompt-layout-revision options)
-                  (eq (e-openai-profile-prompt-cache-breakpoint-mode options)
-                      'explicit)
+    (if (and (e-openai-profile-wire-prompt-layout-revision options)
+                  (eq e-openai-profile--effective-prefix-cache
+                      'automatic-explicit)
                   (null continuation-response-id))
              (e-openai-profile-stable-system-message-count options)
            0))
@@ -622,6 +622,13 @@ value selects full stateless replay."
           :description (plist-get carrier :guidance)
           :parameters (plist-get carrier :schema))))
 
+(defun e-openai-responses--ordinary-tools (tools)
+  "Return TOOLS without caller copies of the reserved curation carrier."
+  (seq-remove
+   (lambda (tool)
+     (member (plist-get tool :name) '("context-curate" context-curate)))
+   (copy-tree tools)))
+
 (defun e-openai-responses--text-verbosity (model options)
   "Return Responses text verbosity for MODEL under OPTIONS."
   (or (plist-get options :text-verbosity)
@@ -634,6 +641,7 @@ value selects full stateless replay."
   "Build a Codex Responses request body from MESSAGES, OPTIONS, and TOOLS."
   (let* ((model (or (plist-get options :model)
                     e-openai-default-model))
+         (ordinary-tools (e-openai-responses--ordinary-tools tools))
          (text-verbosity (e-openai-responses--text-verbosity model options))
          (continuation-response-id
           (e-openai-responses--continuation-response-id options))
@@ -653,17 +661,17 @@ value selects full stateless replay."
                               messages options continuation-response-id)
                       :tool_choice "auto"
                       :parallel_tool_calls t))))
-    (when (or tools
-              (eq (plist-get options :reserved-effect-carrier)
+    (when (or ordinary-tools
+              (eq e-openai-profile--effective-context-curation-capability
                   'context-curate-wire))
       (setq body
             (append body
                     (list :tools
                           (vconcat
-                           (append (copy-tree tools)
-                                   (when (eq (plist-get options
-                                                       :reserved-effect-carrier)
-                                             'context-curate-wire)
+                           (append ordinary-tools
+                                   (when (eq
+                                          e-openai-profile--effective-context-curation-capability
+                                          'context-curate-wire)
                                      (list
                                       (e-openai-responses--context-curation-tool-definition)))))))))
     (when text-verbosity
@@ -679,22 +687,26 @@ value selects full stateless replay."
             (append body
                     (list :previous_response_id
                           continuation-response-id))))
-    (when (plist-member options :prompt-cache-key)
+    (when (and (stringp e-openai-profile--effective-cache-routing-key)
+               (not (string-empty-p
+                     e-openai-profile--effective-cache-routing-key)))
       (setq body
             (append body
                     (list :prompt_cache_key
-                          (plist-get options :prompt-cache-key)))))
+                          e-openai-profile--effective-cache-routing-key))))
     (when (and (e-openai-profile-wire-prompt-layout-revision options)
-               (eq (e-openai-profile-prompt-cache-breakpoint-mode options)
-                   'explicit))
+               (eq e-openai-profile--effective-prefix-cache
+                   'automatic-explicit))
       (setq body
             (append body
-                    (list :prompt_cache_options (list :mode "explicit")))))
-    (when (plist-member options :prompt-cache-retention)
+                    (list :prompt_cache_options (list :mode "implicit")))))
+    (when (and (stringp e-openai-profile--effective-cache-retention)
+               (not (string-empty-p
+                     e-openai-profile--effective-cache-retention)))
       (setq body
             (append body
                     (list :prompt_cache_retention
-                          (plist-get options :prompt-cache-retention)))))
+                          e-openai-profile--effective-cache-retention))))
     body))
 
 
@@ -752,6 +764,16 @@ value selects full stateless replay."
 (defun e-openai-responses-prompt-cache-mode-label (options)
   "Return the diagnostic cache mode label for OPTIONS."
   (e-openai-profile-prompt-cache-mode-label options))
+
+(defun e-openai-responses-cache-breakpoint-count (body)
+  "Return the number of explicit stable markers present in request BODY."
+  (cl-loop for message across (or (plist-get body :input) [])
+           for content = (plist-get message :content)
+           when (vectorp content)
+           sum (cl-count-if
+                (lambda (block)
+                  (plist-member block :prompt_cache_breakpoint))
+                (append content nil))))
 
 (defun e-openai-responses-options-without-provider-anchor (options)
   "Return OPTIONS without provider-anchor continuation state."

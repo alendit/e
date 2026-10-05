@@ -1716,26 +1716,27 @@ stand in for the pure curation preparation path."
             (should-not (plist-member canvas :last-focus))))
       (delete-directory directory t))))
 
-(ert-deftest e-session-test-turn-options-persist-through-session-info ()
-  "Session turn options survive persistent replay."
+(ert-deftest e-session-test-turn-options-persist-with-cache-controls-stripped ()
+  "Session options retain model/reasoning while cache policy is adapter-owned."
   (let* ((directory (make-temp-file "e-session-" t))
          (store (e-session-persistent-store-create directory))
          (session-id (plist-get (e-session-create store) :id)))
     (unwind-protect
         (progn
-          (e-session-set-turn-options
-           store
-           session-id
-           '(:model "gpt-test"
-             :reasoning-effort "high"
-             :prompt-cache-default t
-             :prompt-cache-retention "24h"))
+          (should
+           (equal
+            (e-session-set-turn-options
+             store session-id
+             '(:model "gpt-test"
+               :reasoning-effort "high"
+               :prompt-cache-default t
+               :prompt-cache-key "caller-key"
+               :prompt-cache-retention "24h"))
+            '(:model "gpt-test" :reasoning-effort "high")))
           (let ((loaded (e-session-persistent-store-create directory)))
             (should (equal (e-session-local-turn-options loaded session-id)
                            '(:model "gpt-test"
-                             :reasoning-effort "high"
-                             :prompt-cache-default t
-                             :prompt-cache-retention "24h")))))
+                             :reasoning-effort "high")))))
       (delete-directory directory t))))
 
 (ert-deftest e-session-test-branch-summary-persists-through-replay ()

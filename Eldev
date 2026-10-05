@@ -82,7 +82,8 @@
 (when (and (getenv "E_E2E")
            (not (getenv "CI")))
   (setf eldev-test-fileset
-        (list :or eldev-test-fileset "./e2e/e-live-e2e-test.el")))
+        (list :or eldev-test-fileset "./e2e/e-live-e2e-test.el"
+              "./e2e/e-cache-efficiency-e2e-test.el")))
 
 ;; The bytecode smoke test inspects checkout-local source-adjacent artifacts,
 ;; so it is useful only when requested as a development diagnostic.

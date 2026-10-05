@@ -969,8 +969,13 @@ are mapped to strings without changing the persisted domain record."
               tools))
 
 (defun e-process-reporting--request-snapshot (messages options)
-  "Return one backend-neutral provider request value."
+  "Return one backend-neutral request value without adapter-owned policy."
   (let ((copy (copy-tree options)))
+    (dolist (key '(:prompt-cache :prompt-cache-default :prompt-cache-mode
+                   :prompt-cache-breakpoint-mode :prompt-cache-key
+                   :prompt-cache-retention :prompt-cache-ttl
+                   :reserved-effect-carrier))
+      (cl-remf copy key))
     (plist-put copy :messages (copy-tree messages))
     copy))
 
@@ -1004,7 +1009,7 @@ needed."
           (paired
            (e-process-reporting--request-snapshot
             paired-messages paired-options)))
-      (list :revision "request-shape-v2"
+      (list :revision "request-shape-v3"
             :serialization "backend-neutral-elisp-v1"
             :tokenizer-revision (plist-get options :tokenizer-revision)
             :actual-shape (e-process-reporting--shape-value actual)
@@ -1015,14 +1020,7 @@ needed."
             :paired-shape (e-process-reporting--shape-value paired)
             :model (plist-get options :model)
             :reasoning-effort (or (plist-get options :reasoning-effort)
-                                  (plist-get options :effort))
-            :prompt-cache-key-present
-            (and (plist-get options :prompt-cache-key) t)
-            :prompt-cache-key-sha256
-            (when-let* ((key (plist-get options :prompt-cache-key)))
-              (secure-hash 'sha256 (format "%s" key)))
-            :prompt-cache-retention
-            (plist-get options :prompt-cache-retention)))))
+                                  (plist-get options :effort))))))
 
 (defun e-process-reporting--shape-measure-projection (measure)
   "Return the content-free fields from request-shape MEASURE."
@@ -1038,20 +1036,12 @@ needed."
   (when (listp shape)
     (let (projected)
       (dolist (key '(:revision :serialization :tokenizer-revision :model
-                     :reasoning-effort :prompt-cache-key-sha256
-                     :prompt-cache-retention))
+                     :reasoning-effort))
         (when-let* ((value (plist-get shape key)))
           (when (stringp value)
             (setq projected
                   (append projected
                           (list key (e-telemetry-redact-string value)))))))
-      (when (plist-member shape :prompt-cache-key-present)
-        (setq projected
-              (append projected
-                      (list :prompt-cache-key-present
-                            (and (plist-get shape
-                                            :prompt-cache-key-present)
-                                 t)))))
       (dolist (key '(:actual-shape :without-passive-shape
                      :without-active-shape :paired-shape))
         (when-let* ((measure

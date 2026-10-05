@@ -85,33 +85,36 @@ materializing tool definitions.  Presentation code uses it for status text."
 
 (defun e-harness-context-runtime--set-session-options (harness session-id options)
   "Replace SESSION-ID turn OPTIONS in HARNESS and emit an update event."
-  (let ((result
+  (let ((options
+         (e-harness-context-runtime--strip-caller-adapter-policy-options
+          options)))
+    (let ((result
          (e-session-set-turn-options
           (e-harness-sessions harness)
           session-id
           options)))
-    (if (e-work-handle-p result)
-        (progn
-          (e-work-on-settle
-           result
-           (lambda (settled)
-             (when (eq (plist-get (e-work-status settled) :state) 'finished)
-               (e-harness-activity-emit
-                harness
-                (e-events-make :type 'session-options-changed
-                               :session-id session-id
-                               :turn-id "session-options"
-                               :payload
-                               (list :turn-options
-                                     (copy-tree options t)))))))
-          result)
-      (e-harness-activity-emit
-       harness
-       (e-events-make :type 'session-options-changed
-                      :session-id session-id
-                      :turn-id "session-options"
-                      :payload (list :turn-options result)))
-      result)))
+      (if (e-work-handle-p result)
+          (progn
+            (e-work-on-settle
+             result
+             (lambda (settled)
+               (when (eq (plist-get (e-work-status settled) :state) 'finished)
+                 (e-harness-activity-emit
+                  harness
+                  (e-events-make :type 'session-options-changed
+                                 :session-id session-id
+                                 :turn-id "session-options"
+                                 :payload
+                                 (list :turn-options
+                                       (copy-tree options t)))))))
+            result)
+        (e-harness-activity-emit
+         harness
+         (e-events-make :type 'session-options-changed
+                        :session-id session-id
+                        :turn-id "session-options"
+                        :payload (list :turn-options result)))
+        result))))
 
 (defun e-harness-set-session-model (harness session-id model)
   "Set SESSION-ID's model override to MODEL in HARNESS."
@@ -136,64 +139,23 @@ helper through the facade."
       (cl-remf options :reasoning-effort))
     (e-harness-context-runtime--set-session-options harness session-id options)))
 
-(defconst e-harness-prompt-cache-key-version "pcctx2"
-  "Version marker for derived prompt cache keys.")
-
-(defconst e-harness-prompt-cache-key-max-length 64
-  "Maximum length of an OpenAI-compatible prompt cache key.")
-
-(defun e-harness-context-runtime--prompt-cache-hash (value length)
-  "Return a deterministic LENGTH-character hash for VALUE."
-  (substring (secure-hash 'sha256 (format "%S" value)) 0 length))
-
 (defun e-harness-context-runtime--effective-layer-id-strings (harness &optional session-id turn-id)
   "Return JSON-stable effective layer ids for HARNESS SESSION-ID TURN-ID."
   (mapcar #'symbol-name
           (e-harness-effective-layer-ids harness session-id turn-id)))
 
-(defun e-harness-context-runtime--derived-prompt-cache-key (harness session-id options)
-  "Return the default prompt cache key for HARNESS SESSION-ID OPTIONS.
-The active tool set participates in the key so mid-session tool activation
-\(e.g. MCP progressive disclosure) does not silently reuse a cache prefix
-built without those tools."
-  (let* ((prefix (format "e:%s:" e-harness-prompt-cache-key-version))
-         (identity
-          (list :model (plist-get options :model)
-                :project-root (e-harness-project-root harness session-id)
-                :layer-ids
-                (e-harness-effective-layer-ids harness session-id)
-                :tool-definitions
-                (mapcar
-                 (lambda (tool)
-                   (list :name (plist-get tool :name)
-                         :fingerprint
-                         (e-tools-definition-fingerprint tool)))
-                 (or (plist-get options :tools)
-                     (e-tools-definitions
-                      (e-harness-tools harness session-id)))))))
-    (concat prefix
-            (e-harness-context-runtime--prompt-cache-hash
-             identity
-             (- e-harness-prompt-cache-key-max-length (length prefix))))))
+(defconst e-harness-context-runtime--caller-adapter-policy-option-keys
+  '(:context-capabilities
+    :prompt-cache :prompt-cache-default :prompt-cache-mode
+    :prompt-cache-breakpoint-mode :prompt-cache-key
+    :prompt-cache-retention :prompt-cache-ttl :reserved-effect-carrier)
+  "Caller-owned cache and curation capability controls removed before dispatch.")
 
-(defun e-harness-context-runtime--apply-prompt-cache-defaults (harness session-id options)
-  "Apply opt-in prompt cache defaults to OPTIONS."
+(defun e-harness-context-runtime--strip-caller-adapter-policy-options (options)
+  "Return OPTIONS without caller-owned cache or curation capability controls."
   (let ((options (copy-sequence options)))
-    (when (and (plist-member options :prompt-cache-key)
-               (null (plist-get options :prompt-cache-key)))
-      (cl-remf options :prompt-cache-key))
-    (when (and (plist-get options :prompt-cache-default)
-               (not (plist-member options :prompt-cache-key)))
-      (setq options
-            (plist-put options
-                       :prompt-cache-key
-                       (e-harness-context-runtime--derived-prompt-cache-key
-                        harness
-                        session-id
-                        options))))
-    (cl-remf options :prompt-cache-default)
-    (unless (plist-member options :prompt-cache-key)
-      (cl-remf options :prompt-cache-retention))
+    (dolist (key e-harness-context-runtime--caller-adapter-policy-option-keys)
+      (cl-remf options key))
     options))
 
 (defun e-harness-context-runtime--apply-deadline-default (options)
@@ -210,8 +172,7 @@ built without those tools."
 
 (defun e-harness-turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID.
-Tool definitions are attached before deriving the prompt cache key so the key
-reflects the active tool set."
+Tool definitions are attached before backend-owned policy is derived."
   (let* ((merged (e-harness-context-runtime--merge-turn-options
                   (e-harness-default-options harness)
                   (e-harness-session-options harness session-id)))
@@ -221,7 +182,8 @@ reflects the active tool set."
                          (plist-put merged :tools tool-definitions)
                        merged)))
     (e-harness-context-runtime--apply-deadline-default
-     (e-harness-context-runtime--apply-prompt-cache-defaults harness session-id with-tools))))
+     (e-harness-context-runtime--strip-caller-adapter-policy-options
+      with-tools))))
 
 (defun e-harness-context-runtime--turn-options (harness session-id)
   "Return backend-neutral turn options for HARNESS and SESSION-ID."
@@ -313,8 +275,8 @@ the live dynamic providers needed for the model-facing request."
                          (plist-put merged :tools tool-definitions)
                        merged)))
     (e-harness-context-runtime--apply-deadline-default
-     (e-harness-context-runtime--apply-prompt-cache-defaults
-      harness session-id with-tools))))
+          (e-harness-context-runtime--strip-caller-adapter-policy-options
+           with-tools))))
 
 (defun e-harness-context-runtime--detached-lifetime-projection (path)
   "Return context-lifetime inputs from one detached selected PATH.
@@ -715,14 +677,21 @@ binding and never cross the model-facing boundary."
            :content (copy-sequence (plist-get source :marker))))
    (e-context-lifetime-frame-curation-presentation frame)))
 
-(defun e-harness-context-lifetime-present-tool-observation (payload)
+(defun e-harness-context-lifetime-present-tool-observation (payload &optional context)
   "Add the fresh tool source marker to both request projections in PAYLOAD.
 
 The loop owns the two in-memory message sequences; the harness owns the
 provider-neutral presentation.  Keep the raw tool envelope in place and add
 only the marker immediately before its matching result so full/stateless and
-continuation-delta requests expose the same label-to-frame binding."
-  (let* ((frame (plist-get payload :frame))
+continuation-delta requests expose the same label-to-frame binding.  CONTEXT
+is the current harness-built request context; unsupported carriers keep their
+semantic frame without publishing a curation affordance."
+  (if (not (e-harness-context-runtime--context-curation-carrier-active-p
+            context))
+      (list :turn-messages (plist-get payload :turn-messages)
+            :provider-followup-messages
+            (plist-get payload :provider-followup-messages))
+    (let* ((frame (plist-get payload :frame))
          (previous-frame (plist-get payload :previous-frame))
          (previous-presentation
           (when (and (e-context-lifetime-frame-p previous-frame)
@@ -778,7 +747,7 @@ continuation-delta requests expose the same label-to-frame binding."
             (insert-marker (plist-get payload :turn-messages))
             :provider-followup-messages
             (insert-marker
-             (plist-get payload :provider-followup-messages))))))
+             (plist-get payload :provider-followup-messages)))))))
 
 (defun e-harness-context-lifetime-apply-projection
     (harness session-id turn-id context capabilities &optional detached-projection)
@@ -872,7 +841,10 @@ installed in the session store."
          ;; system messages so tool/result envelopes remain intact and each
          ;; semantic source occurs exactly once.
          (curation-markers
-          (e-harness-context-runtime--context-lifetime-curation-marker-messages frame))
+          (when (eq (plist-get capabilities :reserved-effect-carrier)
+                    'context-curate-wire)
+            (e-harness-context-runtime--context-lifetime-curation-marker-messages
+             frame)))
          (observation-kinds e-context-lifetime-observation-kinds)
          (filtered-segments
           (let ((marker-tail (copy-tree curation-markers))
@@ -889,8 +861,7 @@ installed in the session store."
                   (plist-put copy :messages
                              (append checkpoint durable-tail))
                   (push copy ordinary-segments))
-                 ((and curation-markers
-                       (member (format "%s" kind) observation-kinds))
+                 ((member (format "%s" kind) observation-kinds)
                   ;; Keep the original observation segment as the ownership
                   ;; boundary.  Only its model-facing message sequence is
                   ;; transformed; kind, id, fingerprint, and any other fields
@@ -901,7 +872,7 @@ installed in the session store."
                     (dolist (source (plist-get segment :messages))
                       (setq source-count (1+ source-count))
                       (let ((marker (pop marker-tail)))
-                        (unless marker
+                        (when (and curation-markers (not marker))
                           (signal 'e-context-lifetime-invalid-record
                                   (list 'curation-source
                                         :presentation-source-count-mismatch
@@ -909,7 +880,8 @@ installed in the session store."
                                         source-count)))
                         (setq messages
                               (append messages
-                                      (list marker (copy-tree source))))))
+                                      (when marker (list marker))
+                                      (list (copy-tree source))))))
                     (plist-put copy :messages messages)
                     (push copy observation-segments)))
                  (t
@@ -996,6 +968,14 @@ Resolve the provider-request frame before any assistant message is appended.
     (let* ((payload-frame (plist-get payload :frame))
            (active-frame (e-harness-turn-state-context-frame active-entry))
            (effects (plist-get payload :curation-effects))
+           (request-options (plist-get payload :provider-request-options))
+           (request-capabilities
+            (when request-options
+              (e-harness-context-capabilities
+               harness
+               (e-harness-context-runtime--strip-caller-adapter-policy-options
+                (e-harness-context-runtime--strip-reserved-derived-context-options
+                 request-options)))))
            (assistant-content (plist-get payload :assistant-content))
            (reserved-response-p
             (and effects
@@ -1021,6 +1001,12 @@ Resolve the provider-request frame before any assistant message is appended.
         (signal 'e-context-lifetime-invalid-record
                 (list 'curation :effect-count (length effects))))
       (when (and effects
+                 (not (eq (plist-get request-capabilities
+                                     :reserved-effect-carrier)
+                          'context-curate-wire)))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation :carrier-unavailable)))
+      (when (and effects
                  (not (and (e-context-lifetime-frame-p frame)
                            (not (e-context-lifetime-frame-consumed-p frame)))))
         (signal 'e-context-lifetime-invalid-record
@@ -1032,6 +1018,9 @@ Resolve the provider-request frame before any assistant message is appended.
                 (plist-get (car effects) :arguments)
                 response-id))))
         (list :frame frame
+              :curation-carrier-available-p
+              (eq (plist-get request-capabilities :reserved-effect-carrier)
+                  'context-curate-wire)
               :consumer-request-id
               (and (e-context-lifetime-frame-p frame)
                    (e-context-lifetime-frame-consumer-request-id frame))
@@ -1064,9 +1053,30 @@ append precedes frame consumption and the next provider request."
            (response-id (plist-get preflight :response-id))
            (record (plist-get preflight :record))
            (package (plist-get preflight :package))
+           (request-options (plist-get payload :provider-request-options))
+           (request-capabilities
+            (when request-options
+              (e-harness-context-capabilities
+               harness
+               (e-harness-context-runtime--strip-caller-adapter-policy-options
+                (e-harness-context-runtime--strip-reserved-derived-context-options
+                 request-options)))))
+           (prepared-curation-p
+            (or (plist-get payload :curation-effects)
+                package record
+                (plist-get preflight :erasure-record)
+                (plist-get preflight :curation-preparation)))
            (curation-projection
             (e-context-lifetime-curation-activity-projection
              (plist-get preflight :curation-preparation))))
+      (when (and prepared-curation-p
+                 (not (and (plist-get preflight
+                                     :curation-carrier-available-p)
+                           (eq (plist-get request-capabilities
+                                          :reserved-effect-carrier)
+                               'context-curate-wire))))
+        (signal 'e-context-lifetime-invalid-record
+                (list 'curation :carrier-unavailable-at-commit)))
       (when (and frame (e-context-lifetime-frame-p frame)
                  (not (e-context-lifetime-frame-consumed-p frame)))
         (let* ((consumer-id
@@ -1311,18 +1321,14 @@ ambiguous and is rejected by the provider adapter."
 (defun e-harness-context-runtime--context-curation-carrier-active-p (context)
   "Return non-nil when CONTEXT uses the reserved curation carrier.
 
-The OpenAI capability advertises the reserved carrier even when the semantic
-lifetime projection is disabled.  Treat the carrier as active only when the
-trusted derived option enables the projection, unless a caller has explicitly
-provided the carrier option itself."
+Only the adapter-derived capability and the harness-derived lifetime
+projection can activate the carrier.  A copied capability or carrier option
+on a caller request is not authority."
   (let* ((options (plist-get context :options))
-         (capabilities (plist-get options :context-capabilities))
-         (carrier
-          (if (plist-member options :reserved-effect-carrier)
-              (plist-get options :reserved-effect-carrier)
-            (and (plist-get options :context-lifetime-enabled)
-                 (plist-get capabilities :reserved-effect-carrier)))))
-    (eq carrier 'context-curate-wire)))
+         (capabilities (plist-get options :context-capabilities)))
+    (and (plist-get options :context-lifetime-enabled)
+         (eq (plist-get capabilities :reserved-effect-carrier)
+             'context-curate-wire))))
 
 (defun e-harness-context-runtime--provider-anchor-fingerprints (context)
   "Return JSON-stable provider-relevant fingerprints from CONTEXT."
@@ -1371,11 +1377,6 @@ provided the carrier option itself."
            :provider-options
            (list :instructions (plist-get options :instructions)
                  :max-tokens (plist-get options :max-tokens)
-                 :prompt-cache (plist-get options :prompt-cache)
-                 :prompt-cache-mode (plist-get options :prompt-cache-mode)
-                 :prompt-cache-ttl (plist-get options :prompt-cache-ttl)
-                 :prompt-cache-key (plist-get options :prompt-cache-key)
-                 :prompt-cache-retention (plist-get options :prompt-cache-retention)
                  :anthropic-container-id (plist-get options :anthropic-container-id)
                  :anthropic-context-management
                  (plist-get options :anthropic-context-management)
@@ -1403,6 +1404,7 @@ provided the carrier option itself."
            (copy-tree delivery-map)
            :reserved-effect-carrier
            (plist-get capabilities :reserved-effect-carrier)
+           :prefix-cache (plist-get capabilities :prefix-cache)
            :lifetime-observation-safety
            (if (plist-get options :lifetime-ephemerals-clean-p)
                'clean

@@ -41,6 +41,27 @@
                        :on-item #'ignore)
      :type 'wrong-type-argument)))
 
+(ert-deftest e-backend-test-context-capabilities-ignore-copied-carrier-options ()
+  "Copied capability metadata never enters adapter-owned derivation."
+  (let ((seen-options nil)
+        (backend
+         (e-backend-create
+          :name "capability-boundary"
+          :context-capabilities
+          (lambda (options)
+            (setq seen-options options)
+            '(:reserved-effect-carrier none)))))
+    (let ((capabilities
+           (e-backend-context-capabilities
+            backend
+            '(:model "synthetic"
+              :reserved-effect-carrier context-curate-wire
+              :context-capabilities
+              (:reserved-effect-carrier context-curate-wire)))))
+      (should (eq (plist-get capabilities :reserved-effect-carrier) 'none))
+      (should-not (plist-member seen-options :reserved-effect-carrier))
+      (should-not (plist-member seen-options :context-capabilities)))))
+
 (ert-deftest e-backend-test-fake-exposes-cancellable-request ()
   "Fake backends can expose a cancellable request handle."
   (let ((cancelled nil)
@@ -137,7 +158,8 @@
                      :observation-delivery inherited
                      :prefix-cache none
                      :provider-compaction none
-                     :reasoning-state none)))))
+                     :reasoning-state none
+                     :reserved-effect-carrier none)))))
 
 (ert-deftest e-backend-test-context-capabilities-are-resolved-from-options ()
   "A backend capability resolver receives backend-neutral effective options."
@@ -150,7 +172,7 @@
               (setq seen options)
               (list :continuation 'branchable
                     :observation-delivery 'request-local-replaceable
-                    :prefix-cache 'explicit
+                    :prefix-cache 'automatic-explicit
                     :provider-compaction 'opaque
                     :reasoning-state 'replayable))
             :provider-compaction
@@ -161,10 +183,11 @@
          (equal (e-backend-context-capabilities backend options)
                 '(:continuation branchable
                   :observation-delivery request-local-replaceable
-                  :prefix-cache explicit
+                  :prefix-cache automatic-explicit
                   :provider-compaction opaque
-                  :reasoning-state replayable)))
-        (should (eq seen options))))))
+                  :reasoning-state replayable
+                  :reserved-effect-carrier none)))
+        (should (equal seen options))))))
 
 (ert-deftest e-backend-test-opaque-compaction-requires-an-operation ()
   "An opaque capability cannot be advertised without an adapter operation."
@@ -253,7 +276,8 @@
                      :observation-delivery inherited
                      :prefix-cache none
                      :provider-compaction none
-                     :reasoning-state none)))))
+                     :reasoning-state none
+                     :reserved-effect-carrier none)))))
 
 (ert-deftest e-backend-test-context-capabilities-reject-unknown-semantic-values ()
   "Unknown values and misspelled capability keys fail visibly."

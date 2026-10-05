@@ -25,7 +25,6 @@
          :response-store :json-false
          :continuation nil
          :responses-context-layout developer-input
-         :prompt-cache-breakpoint-mode explicit
          :include-encrypted-reasoning t
          :requires-openai-auth nil
          :env-key "ENG_AI_MODEL_GW_KEY"
@@ -36,15 +35,10 @@
   "Create a context-free Engineering AI gateway harness for live E2E.
 LAYER-IDS and DIRECTORY are ignored so tests cannot send project context."
   (ignore layer-ids directory)
-  (let ((harness
-         (e-openai-create-harness
-          :provider (or provider e-openai-default-provider)
-          :model e-openai-default-model
-          :sessions (or sessions (e-default-session-store)))))
-    (setf (e-harness-default-options harness)
-          (append (e-harness-default-options harness)
-                  '(:prompt-cache-default t)))
-    harness))
+  (e-openai-create-harness
+   :provider (or provider e-openai-default-provider)
+   :model e-openai-default-model
+   :sessions (or sessions (e-default-session-store))))
 
 (setq e-default-harness-specs
       '((:id :chat-default

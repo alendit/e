@@ -101,6 +101,55 @@
                            :additionalProperties)
                 :json-false))))
 
+(ert-deftest e-openai-test-reserved-curation-tool-is-never-caller-published ()
+  "Only adapter-owned support can publish the reserved curation tool."
+  (let* ((ordinary '(:type "function" :name "ordinary-tool"
+                     :description "Ordinary work."
+                     :parameters (:type "object")))
+         (spoof '(:type "function" :name "context-curate"
+                  :description "Caller copy."
+                  :parameters (:type "object")))
+         (tools (list ordinary spoof))
+         unsupported-responses supported-responses chat)
+    (let ((e-openai-profile--effective-context-curation-capability nil))
+      (setq unsupported-responses
+            (e-openai-codex-request-body
+             :messages '((:role user :content "hello"))
+             :options '(:model "gpt-test"
+                        :reserved-effect-carrier context-curate-wire
+                        :context-capabilities
+                        (:reserved-effect-carrier context-curate-wire))
+             :tools tools)))
+    (let ((e-openai-profile--effective-context-curation-capability
+           'context-curate-wire))
+      (setq supported-responses
+            (e-openai-codex-request-body
+             :messages '((:role user :content "hello"))
+             :options '(:model "gpt-test")
+             :tools tools)))
+    (setq chat
+          (e-openai-chat-completion-request-body
+           :messages '((:role user :content "hello"))
+           :options '(:model "chat-test"
+                      :reserved-effect-carrier context-curate-wire
+                      :context-capabilities
+                      (:reserved-effect-carrier context-curate-wire))
+           :tools tools))
+    (let ((unsupported (append (plist-get unsupported-responses :tools) nil))
+          (supported (append (plist-get supported-responses :tools) nil))
+          (chat-tools (append (plist-get chat :tools) nil)))
+      (should (= (length unsupported) 1))
+      (should (equal (plist-get (car unsupported) :name) "ordinary-tool"))
+      (should (= (cl-count "context-curate" supported
+                           :key (lambda (tool) (plist-get tool :name))
+                           :test #'equal)
+                 1))
+      (should (equal (plist-get (car supported) :name) "ordinary-tool"))
+      (should (= (length chat-tools) 1))
+      (should (equal (plist-get
+                      (plist-get (car chat-tools) :function) :name)
+                     "ordinary-tool")))))
+
 (ert-deftest e-openai-test-request-body-defaults-to-gpt6-sol-high-effort ()
   "OpenAI request bodies default to GPT-6 Sol with high reasoning effort."
   (should
@@ -217,30 +266,23 @@
     (should-not (plist-member body :reasoning-summary))))
 
 (ert-deftest e-openai-test-request-body-maps-prompt-cache-options ()
-  "Backend-neutral prompt cache options map to Responses cache fields."
-  (should
-   (equal
-    (e-openai-codex-request-body
-     :messages '((:role user :content "hello"))
-     :options '(:model "gpt-test"
-                :prompt-cache-key "cache-key"
-                :prompt-cache-retention "24h"))
-    '(:model "gpt-test"
-      :store :json-false
-      :stream t
-      :instructions "You are a helpful assistant."
-      :input [(:type "message"
-               :role "user"
-               :content [(:type "input_text" :text "hello")])]
-      :tool_choice "auto"
-      :parallel_tool_calls t
-      :reasoning (:effort "high" :summary "auto")
-      :prompt_cache_key "cache-key"
-      :prompt_cache_retention "24h"))))
+  "Direct callers cannot select OpenAI cache routing or retention."
+  (let ((body
+         (e-openai-codex-request-body
+          :messages '((:role user :content "hello"))
+          :options '(:model "gpt-test"
+                     :prompt-cache-default t
+                     :prompt-cache-key "forged-key"
+                     :prompt-cache-retention "24h"))))
+    (should (equal (plist-get body :model) "gpt-test"))
+    (should-not (plist-member body :prompt_cache_key))
+    (should-not (plist-member body :prompt_cache_retention))
+    (should-not (plist-member body :prompt_cache_options))))
 
 (ert-deftest e-openai-test-gpt56-marks-stable-context-cache-boundary ()
-  "GPT-5.6 keeps the stable prefix before an inherited late frontier."
-  (let* ((options
+  "GPT-5.6 adds a stable guard while automatic caching stays enabled."
+  (e-openai-test--with-prefix-cache-capability 'automatic-explicit
+    (let* ((options
           '(:model "gpt-5.6-sol"
             :instructions "Base instructions."
             :prompt-cache-key "cache-key"
@@ -317,8 +359,8 @@
                    '(:mode "explicit")))
     (should-not (plist-member first-frontier-block :prompt_cache_breakpoint))
     (should (equal (plist-get first :prompt_cache_options)
-                   '(:mode "explicit")))
-    (should (equal (plist-get first :prompt_cache_key) "cache-key"))))
+                   '(:mode "implicit")))
+    (should-not (plist-member first :prompt_cache_key)))))
 
 (ert-deftest e-openai-test-gpt55-keeps-flattened-cache-prefix-shape ()
   "Older models keep automatic caching and flattened system instructions."
@@ -517,7 +559,8 @@
 
 (ert-deftest e-openai-test-gpt56-continuation-reuses-carried-breakpoint ()
   "A matching layout anchor sends dynamic context without stable duplication."
-  (let* ((revision e-openai-gpt56-explicit-cache-layout-revision)
+  (e-openai-test--with-prefix-cache-capability 'automatic-explicit
+    (let* ((revision e-openai-gpt56-automatic-cache-layout-revision)
          (body
           (e-openai-codex-request-body
            :messages '((:role system :content "Stable instructions.")
@@ -555,7 +598,7 @@
                  (aref (plist-get (car input) :content) 0)
                  :prompt_cache_breakpoint))
     (should (equal (plist-get body :prompt_cache_options)
-                   '(:mode "explicit")))))
+                   '(:mode "implicit"))))))
 
 (ert-deftest e-openai-test-gpt56-segmented-continuation-needs-no-breakpoint ()
   "A segmented implicit profile carries stable context without unsupported fields."
@@ -604,7 +647,8 @@
 
 (ert-deftest e-openai-test-request-local-current-state-replaces-instructions ()
   "A proven replaceable frontier stays in request-local instructions."
-  (let* ((segments
+  (let* ((e-openai-profile--effective-prefix-cache 'automatic-explicit)
+         (segments
           '((:kind static-prefix
              :id static
              :messages ((:role system :content "Static policy.")))
@@ -664,7 +708,7 @@
              (:provider-id openai
               :metadata (:response-id "resp-1"
                          :prompt-layout-revision
-                         ,e-openai-gpt56-explicit-cache-layout-revision
+                         ,e-openai-gpt56-automatic-cache-layout-revision
                          :reasoning-identity
                          (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages
@@ -708,7 +752,8 @@
 
 (ert-deftest e-openai-test-replaceable-frontier-does-not-delete-equal-durable-messages ()
   "Semantic segments retain equal durable messages in full and anchored input."
-  (let* ((same-message '(:role system :content "same value"))
+  (let* ((e-openai-profile--effective-prefix-cache 'automatic-explicit)
+         (same-message '(:role system :content "same value"))
          (segments `((:kind stable-context
                       :messages ((:role system :content "stable")))
                      (:kind history
@@ -738,12 +783,12 @@
                     :messages messages
                     :options
                     (append base-options
-                            '(:provider-continuation t
+                            `(:provider-continuation t
                               :provider-anchor
                               (:provider-id openai
                                :metadata (:response-id "resp-equal"
                                           :prompt-layout-revision
-                                          "responses-explicit-cache-v1"
+                                          ,e-openai-gpt56-automatic-cache-layout-revision
                                           :reasoning-identity
                                           (:effort "high" :summary "auto")))
                               :provider-anchor-delta-messages

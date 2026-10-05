@@ -4,8 +4,11 @@
 
 * Status
 
-Planned.  This document plans remediation; it does not claim that the cache
-behavior has been fixed or that new provider probes have passed.
+In-review.  Adapter-owned policy, caller-option removal, and curation admission
+are implemented.  Focused deterministic checks pass; the exact-revision broad
+suite, current-config cold start, independent implementation review, and external
+P1/P2 acceptance remain pending.  All shipped curation capabilities remain
+unconfirmed and unavailable.  No provider efficiency pass is claimed.
 
 * Goal and authority
 
@@ -39,10 +42,9 @@ subsequent unchanged history becomes reusable.  In a session without efficient
 cache-plus-curation support, curation is absent and ordinary chat still works.
 Cache hits must not preserve content excluded by an accepted projection.
 
-Behavioral status: failing for the observed Anthropic turn; OpenAI API request
-shape also restricts caching to fixed explicit boundaries.  Codex has observed
-growing cache reads; Chat Completions' effective cache benefit is unconfirmed.
-Remediation mechanism status: not-started.
+Behavioral status: the historical Anthropic failure remains the baseline.
+The corrected request shapes permit growing reuse; current provider benefit
+is unconfirmed.  Remediation mechanism status: implemented, pending final gates.
 
 * Evidence and cause
 
@@ -65,7 +67,7 @@ is uncached input plus cache read plus cache creation.  OpenAI total input
 already includes its cached portion.  These observations are historical
 baselines, not post-remediation acceptance.
 
-Current source anchors:
+Historical source anchors at the audited baseline:
 
 - [[file:../../../lisp/adapters/anthropic/e-anthropic.el][Anthropic adapter]]: =e-anthropic--top-level-cache-mode-p= requires an explicit
   =top-level= option.  Otherwise =e-anthropic--cache-breakpoint-selection=

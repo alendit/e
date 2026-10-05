@@ -2,6 +2,18 @@
 #+date: 2026-08-26
 #+startup: overview
 
+* Cache acceptance supersession (2026-10-05)
+
+[[file:../98-growing-conversation-prompt-cache/plan.org][Feature 98 P2/P3]] replaces static warm-prefix hits as proof of useful
+conversation reuse.  Existing warm-prefix scenarios remain observations of
+static reuse.  =e-cache-efficiency-e2e-test-growing-tool-history= drives large
+ordinary tool results through the configured harness and requires cache reads
+to advance on two successive requests.  The shared P3 classifier requires
+ordered accepted curation, rebuilt history, and repeated attributed reuse,
+including a material summary/erase phase; fixed ceilings and a lone warm hit
+cannot pass.  No shipped adapter currently advertises P3 support.  Historical
+cache acceptance below cannot grant that capability.
+
 * Status
 
 In-review (repository-controlled deterministic fixed point; configured Responses HTTP capability-confirmed/current; exact ChatGPT/WebSocket capability-unconfirmed).

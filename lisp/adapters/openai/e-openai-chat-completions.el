@@ -13,6 +13,7 @@
 (require 'cl-lib)
 (require 'e-json)
 (require 'e-tools)
+(require 'seq)
 (require 'e-openai-profile)
 
 (defun e-openai-chat-completions--message-content (content)
@@ -29,8 +30,21 @@
     (list :type "function" :function function)))
 
 (defun e-openai-chat-completions--tool-definitions (tools)
-  "Map backend-neutral TOOLS to Chat Completions tool definitions."
-  (vconcat (mapcar #'e-openai-chat-completions--tool-definition tools)))
+  "Map ordinary backend-neutral TOOLS to Chat Completions definitions."
+  (vconcat
+   (mapcar
+    #'e-openai-chat-completions--tool-definition
+    (seq-remove
+     (lambda (tool)
+       (member (plist-get tool :name) '("context-curate" context-curate)))
+     tools))))
+
+(defun e-openai-chat-completions--ordinary-tools (tools)
+  "Return TOOLS without caller copies of the reserved curation carrier."
+  (seq-remove
+   (lambda (tool)
+     (member (plist-get tool :name) '("context-curate" context-curate)))
+   tools))
 
 (defun e-openai-chat-completions--message (message)
   "Map backend-neutral MESSAGE to a Chat Completions message."
@@ -73,16 +87,19 @@
 
 (cl-defun e-openai-chat-completion-request-body (&key messages options tools)
   "Build a Chat Completions request body from MESSAGES, OPTIONS, and TOOLS."
-  (let ((body (list :model (or (plist-get options :model)
+  (let* ((ordinary-tools
+          (e-openai-chat-completions--ordinary-tools tools))
+         (body (list :model (or (plist-get options :model)
                                e-openai-default-model)
                     :stream t
                     :messages (e-openai-chat-completions--messages
                                messages
                                options))))
-    (when tools
+    (when ordinary-tools
       (setq body (append body
                          (list :tools
-                               (e-openai-chat-completions--tool-definitions tools)
+                               (e-openai-chat-completions--tool-definitions
+                                ordinary-tools)
                                :tool_choice "auto"))))
     body))
 

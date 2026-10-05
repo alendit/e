@@ -101,10 +101,6 @@ Keyed weakly by harness so a torn-down harness is re-configured if recreated.")
 (defconst e-subagent-max-intervention-reason-length 240
   "Maximum width of the audit reason retained for one intervention.")
 
-(defconst e-subagent--inherited-prompt-cache-options
-  '(:prompt-cache-default :prompt-cache-retention)
-  "Prompt-cache policy options inherited by child sessions when unspecified.")
-
 (defun e-subagent-publication-target (parent-harness parent-session-id)
   "Return the explicit SQL target for PARENT-HARNESS's parent session."
   (let ((binding
@@ -232,29 +228,6 @@ hand over, so nothing leaks that it did not name."
   (dolist (message (append seed-messages nil))
     (e-chat-service-append-seed-message
      child-harness child-session-id message)))
-
-(defun e-subagent--inherit-prompt-cache-policy
-    (parent-harness parent-session-id child-harness child-session-id)
-  "Give a child session its parent's prompt-cache policy when unspecified.
-The child derives its own cache key from its model, root, layers, and tools;
-an explicit child harness or session policy always wins."
-  (let ((parent-options
-         (e-harness-display-options parent-harness parent-session-id))
-        (child-defaults (e-harness-default-options child-harness))
-        (child-options
-         (copy-sequence
-          (e-harness-session-options child-harness child-session-id)))
-        changed)
-    (dolist (key e-subagent--inherited-prompt-cache-options)
-      (when (and (plist-member parent-options key)
-                 (not (plist-member child-defaults key))
-                 (not (plist-member child-options key)))
-        (setq child-options
-              (plist-put child-options key (plist-get parent-options key)))
-        (setq changed t)))
-    (when changed
-      (e-harness-set-session-options
-       child-harness child-session-id child-options))))
 
 (defconst e-subagent--progress-diagnostic-byte-limit 512
   "Maximum UTF-8 bytes retained for one progress projection diagnostic.")
@@ -1378,9 +1351,6 @@ supplied, fences both admission and later Board publications."
                        :assignment assignment)
                       (e-subagent--publish-lifecycle
                        producer-target record nil generation)
-                      (e-subagent--inherit-prompt-cache-policy
-                       parent-harness parent-session-id
-                       child-harness participant-id)
                       (when on-admitted
                         (funcall on-admitted (copy-tree record)))
                       (let ((drive-result
