@@ -93,8 +93,9 @@
       (should (= (plist-get result :count) 1)))))
 
 (ert-deftest e-dev-test-gpt56-serializes-instructions-as-text ()
-  "The real e-dev capability maps to a string-valued Responses text block."
-  (let* ((capability
+  "The real e-dev capability maps to a Responses text block under adapter policy."
+  (let* ((e-openai-profile--effective-prefix-cache 'automatic-explicit)
+         (capability
           (cl-find-if
            (lambda (candidate)
              (eq (e-capability-id candidate) 'e-dev))
@@ -107,7 +108,6 @@
            :messages messages
            :options
            (list :model "gpt-5.6-sol"
-                 :prompt-cache-key "e-dev-test"
                  :segments segments)))
          (input (append (plist-get body :input) nil))
          (text-blocks

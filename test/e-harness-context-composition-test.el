@@ -260,7 +260,8 @@
                        :observation-delivery inherited
                        :prefix-cache none
                        :provider-compaction none
-                       :reasoning-state none)))
+                       :reasoning-state none
+                       :reserved-effect-carrier none)))
       (should (equal (mapcar (lambda (message) (plist-get message :content))
                              (plist-get options :replaceable-current-state))
                      nil))

@@ -230,6 +230,8 @@
          (backend
           (e-backend-create
            :name "commentary-curation"
+           :context-capabilities
+           '(:reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key messages options on-item &allow-other-keys)
@@ -2208,6 +2210,10 @@
          (backend
           (e-backend-create
            :name "curation-carrier"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key on-item &allow-other-keys)
@@ -2232,14 +2238,7 @@
      :messages '((:role user :content "prompt"))
      :backend backend
      :tools (e-tools-registry-create)
-     :options
-     '(:model "fake"
-       :context-lifetime-enabled t
-       :reserved-effect-carrier context-curate-wire
-       :context-capabilities
-       (:continuation none
-        :observation-delivery request-local-replaceable
-        :reserved-effect-carrier context-curate-wire))
+     :options '(:model "fake" :context-lifetime-enabled t)
      :lifetime-frame frame
      :on-response-complete
      (lambda (payload)
@@ -2264,6 +2263,10 @@
          (backend
           (e-backend-create
            :name "candidate-before-curation"
+           :context-capabilities
+           '(:continuation linear
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key on-item &allow-other-keys)
@@ -2286,20 +2289,22 @@
                     (funcall on-item '(:type done :reason stop)))
                 (funcall on-item
                          '(:type assistant-message :content "answer"))
-                (funcall on-item '(:type done :reason stop))))))))
+                (funcall on-item '(:type done :reason stop)))))))
+         (options
+          (let ((base-options '(:model "fake"
+                                :provider-continuation t
+                                :provider-anchor-provider-id fake)))
+            (append base-options
+                    (list :context-capabilities
+                          (e-backend-context-capabilities
+                           backend base-options))))))
     (e-loop-run-turn-batch
      :session-id "session-candidate-before-curation"
      :turn-id "turn-candidate-before-curation"
      :messages '((:role user :content "prompt"))
      :backend backend
      :tools (e-tools-registry-create)
-     :options '(:model "fake"
-                :provider-continuation t
-                :provider-anchor-provider-id fake
-                :reserved-effect-carrier context-curate-wire
-                :context-capabilities
-                (:continuation linear
-                 :observation-delivery request-local-replaceable))
+     :options options
      :on-event
      (lambda (type payload)
        (push (list :type type :payload payload) events))
@@ -2326,6 +2331,10 @@
          (backend
           (e-backend-create
            :name "curation-only-followup"
+           :context-capabilities
+           '(:continuation linear
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key messages options on-item &allow-other-keys)
@@ -2397,14 +2406,15 @@
                              :status 'ok :content "inspected"))
               nil))))
          (durable-messages nil)
-         (options '(:model "gpt-test"
-                    :provider-continuation t
-                    :provider-anchor-provider-id openai
-                    :context-lifetime-enabled t
-                    :context-capabilities
-                    (:continuation linear
-                     :observation-delivery request-local-replaceable
-                     :reserved-effect-carrier context-curate-wire))))
+         (options
+          (let ((base-options '(:model "gpt-test"
+                                :provider-continuation t
+                                :provider-anchor-provider-id openai
+                                :context-lifetime-enabled t)))
+            (append base-options
+                    (list :context-capabilities
+                          (e-backend-context-capabilities
+                           backend base-options))))))
     (e-loop-run-turn-batch
      :session-id "session-curation-only"
      :turn-id "turn-curation-only"
@@ -2508,6 +2518,10 @@
          (backend
           (e-backend-create
            :name "repeated-curation-only"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery inherited
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key options on-item &allow-other-keys)
@@ -2554,12 +2568,7 @@
              :tools tools
              :tool-lifecycle tool-lifecycle
              :options '(:model "fake"
-                        :context-lifetime-enabled t
-                        :reserved-effect-carrier context-curate-wire
-                        :context-capabilities
-                        (:continuation none
-                         :observation-delivery inherited
-                         :reserved-effect-carrier context-curate-wire))
+                        :context-lifetime-enabled t)
              :lifetime-frame frame
              :on-response-complete
              (lambda (payload)
@@ -2642,6 +2651,8 @@
          (backend
           (e-backend-create
            :name "strict-duplicate-curation"
+           :context-capabilities
+           '(:reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key options on-item &allow-other-keys)
@@ -2669,8 +2680,7 @@
        :backend backend
        :tools (e-tools-registry-create)
        :options '(:model "fake"
-                  :context-lifetime-enabled t
-                  :reserved-effect-carrier context-curate-wire)
+                  :context-lifetime-enabled t)
        :lifetime-frame frame
        :on-response-complete
        (lambda (payload)
@@ -2717,6 +2727,10 @@
          (backend
           (e-backend-create
            :name "multi-frame-curation"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery inherited
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key options on-item &allow-other-keys)
@@ -2759,12 +2773,7 @@
      :tools (e-tools-registry-create)
      :tool-lifecycle tool-lifecycle
      :options '(:model "fake"
-                :context-lifetime-enabled t
-                :reserved-effect-carrier context-curate-wire
-                :context-capabilities
-                (:continuation none
-                 :observation-delivery inherited
-                 :reserved-effect-carrier context-curate-wire))
+                :context-lifetime-enabled t)
      :on-tool-observation
      (lambda (_payload)
        (let ((index tool-count))
@@ -2810,6 +2819,10 @@
          (backend
           (e-backend-create
            :name "stateless-curation-replay"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery inherited
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key messages options on-item &allow-other-keys)
@@ -2841,11 +2854,7 @@
                  (funcall on-item '(:type done :reason stop))))))))
          (options '(:model "gpt-test"
                     :provider-continuation nil
-                    :context-lifetime-enabled t
-                    :context-capabilities
-                    (:continuation none
-                     :observation-delivery inherited
-                     :reserved-effect-carrier context-curate-wire))))
+                    :context-lifetime-enabled t)))
     (e-loop-run-turn-batch
      :session-id "session-stateless-curation"
      :turn-id "turn-stateless-curation"
@@ -2952,6 +2961,10 @@
          (backend
           (e-backend-create
            :name "anchored-first-curation"
+           :context-capabilities
+           '(:continuation linear
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key messages options on-item &allow-other-keys)
@@ -2983,14 +2996,15 @@
                  (funcall on-item
                           '(:type assistant-message :content "answer"))
                  (funcall on-item '(:type done :reason stop))))))))
-         (options '(:model "gpt-test"
-                    :provider-continuation t
-                    :provider-anchor-provider-id openai
-                    :context-lifetime-enabled t
-                    :context-capabilities
-                    (:continuation linear
-                     :observation-delivery request-local-replaceable
-                     :reserved-effect-carrier context-curate-wire))))
+         (options
+          (let ((base-options '(:model "gpt-test"
+                                :provider-continuation t
+                                :provider-anchor-provider-id openai
+                                :context-lifetime-enabled t)))
+            (append base-options
+                    (list :context-capabilities
+                          (e-backend-context-capabilities
+                           backend base-options))))))
     (e-loop-run-turn-batch
      :session-id "session-anchored-first-curation"
      :turn-id "turn-anchored-first-curation"
@@ -3370,6 +3384,10 @@
          (backend
           (e-backend-create
            :name "invalid-curation-order"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key options on-item &allow-other-keys)
@@ -3412,11 +3430,7 @@
       :tool-lifecycle tool-lifecycle
       :options
       '(:model "fake"
-        :context-lifetime-enabled t
-        :context-capabilities
-        (:continuation none
-         :observation-delivery request-local-replaceable
-         :reserved-effect-carrier context-curate-wire))
+        :context-lifetime-enabled t)
       :lifetime-frame frame
       :on-response-preflight
       (lambda (payload)
@@ -3487,6 +3501,10 @@
          (backend
           (e-backend-create
            :name "invalid-curation-retry"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery request-local-replaceable
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key options on-item &allow-other-keys)
@@ -3513,11 +3531,7 @@
        :backend backend
        :tools (e-tools-registry-create)
        :options '(:model "fake"
-                  :context-lifetime-enabled t
-                  :context-capabilities
-                  (:continuation none
-                   :observation-delivery request-local-replaceable
-                   :reserved-effect-carrier context-curate-wire))
+                  :context-lifetime-enabled t)
        :lifetime-frame frame
        :on-response-preflight
        (lambda (payload)
@@ -3583,6 +3597,10 @@
          (backend
           (e-backend-create
            :name "mixed-curation-order"
+           :context-capabilities
+           '(:continuation none
+             :observation-delivery inherited
+             :reserved-effect-carrier context-curate-wire)
            :stream
            (cl-function
             (lambda (&key messages options on-item &allow-other-keys)
@@ -3623,11 +3641,7 @@
        :backend backend
        :tools tools
        :tool-lifecycle tool-lifecycle
-       :options '(:model "fake" :context-lifetime-enabled t
-                  :context-capabilities (:continuation none
-                                         :observation-delivery inherited
-                                         :reserved-effect-carrier
-                                         context-curate-wire))
+       :options '(:model "fake" :context-lifetime-enabled t)
        :lifetime-frame frame
        :on-response-preflight
        (lambda (payload)

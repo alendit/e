@@ -1066,7 +1066,7 @@ budget bounds a consecutive failure burst, not the turn's total wall clock."
                 (should (equal (mapcar (lambda (message)
                                          (plist-get message :role))
                                        messages)
-                               '(user tool-call system tool)))
+                               '(user tool-call tool)))
                 (funcall on-item
                          '(:type assistant-message
                            :content "done"))

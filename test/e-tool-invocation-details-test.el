@@ -957,7 +957,7 @@ keys."
                                                (plist-get message :role))
                                              messages)
                                      3)
-                               '(tool-call system tool))))
+                               '(user tool-call tool))))
                 (funcall on-item '(:type assistant-message :content "settled"))
                 (funcall on-item '(:type done :reason stop))))))
          (tools-capability

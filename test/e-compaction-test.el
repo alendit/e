@@ -835,13 +835,19 @@ later assistant/tool-call message instead of signalling no-boundary."
            :messages messages :options nil :tools nil))
          (anthropic
           (e-anthropic-request-body
-           :messages messages :options nil :tools nil)))
+           :messages messages :options nil :tools nil))
+         (anthropic-system (plist-get anthropic :system)))
     (should (string-match-p
              (regexp-quote "portable policy")
              (plist-get openai :instructions)))
     (should (equal (plist-get (aref (plist-get openai :input) 0) :role)
                    "user"))
-    (should (equal (plist-get anthropic :system) "portable policy"))
+    (should (vectorp anthropic-system))
+    (should (= (length anthropic-system) 1))
+    (should (equal (plist-get (aref anthropic-system 0) :type) "text"))
+    (should (equal (plist-get (aref anthropic-system 0) :text)
+                   "portable policy"))
+    (should (plist-member (aref anthropic-system 0) :cache_control))
     (should (equal (plist-get (aref (plist-get anthropic :messages) 0) :role)
                    "user"))))
 
