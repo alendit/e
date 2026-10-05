@@ -1,0 +1,321 @@
+#+title: Growing Conversation Prompt Cache Remediation
+#+date: 2026-10-05
+#+startup: overview
+
+* Status
+
+Planned.  This document plans remediation; it does not claim that the cache
+behavior has been fixed or that new provider probes have passed.
+
+* Goal and authority
+
+=F98-G1=: Ordinary chat and tool-heavy turns should reuse unchanged conversation
+history as it grows, including between provider requests inside one user turn.
+Caching should maximize the probability of useful reuse without changing the
+context the model is entitled to see.  A stable-prefix hit alone is insufficient.
+
+The product authority is the operator's 2026-10-05 instruction: nothing should
+cache only through the stable prefix or only through fixed explicit boundaries;
+the default should maximize the probability of doing the right thing.  The
+contracts below own that requirement.  This supersedes Feature 81's
+explicit-only cache policy and Feature 97's deferral of conversation boundaries.
+Their unrelated replay, transport, and reasoning contracts remain applicable.
+Feature 88's current context-curation and continuation semantics remain
+authoritative.  Older Feature 81 descriptions of Codex continuation are not
+evidence of the current profile, which disables continuation.
+
+Direct scenario: submit through the ordinary chat/Org Canvas harness, execute
+tools that add substantial results, and ask a data-dependent follow-up.  Earlier
+unchanged history becomes reusable in later subturns; the answer still uses the
+required current context.  Curate an earlier result, then continue: the next
+request obeys the curated projection and subsequent unchanged history warms
+again.  Cache hits must not preserve content excluded by that projection.
+
+Behavioral status: failing for the observed Anthropic turn; OpenAI API request
+shape also restricts caching to fixed explicit boundaries.  Codex has observed
+growing cache reads; Chat Completions' effective cache benefit is unconfirmed.
+Remediation mechanism status: not-started.
+
+* Evidence and cause
+
+The read-only audit of Board =brd_7ff2575c7de6831fdb419b74f7330376= associated
+main session =ses_4b298bd0373d2fabbf1b4b3c02aadd5f= with the Org Canvas owner.
+In user turn =01M45SSH06HZFQP78EHY5Y8SFQ=, its 45 provider requests recorded:
+
+| Request | Total input | Cache read | Cache creation | Uncached input |
+|---------+-------------+------------+----------------+----------------|
+|       1 |      66,648 |          0 |         52,493 |         14,155 |
+|       2 |      67,701 |     52,493 |              0 |         15,208 |
+|      44 |     112,384 |     52,493 |              0 |         59,891 |
+|      45 |     116,531 |     52,493 |              0 |         64,038 |
+
+Requests 2--45 all read the same 52,493 tokens and created no new cache entries.
+The issue is the fixed ceiling and absence of writes for growing history, not
+input growth by itself.  Uncached input means input processed without a cache
+read; it does not mean newly appended content.  For Anthropic, total input here
+is uncached input plus cache read plus cache creation.  OpenAI total input
+already includes its cached portion.  These observations are historical
+baselines, not post-remediation acceptance.
+
+Current source anchors:
+
+- [[file:../../../lisp/adapters/anthropic/e-anthropic.el][Anthropic adapter]]: =e-anthropic--top-level-cache-mode-p= requires an explicit
+  =top-level= option.  Otherwise =e-anthropic--cache-breakpoint-selection=
+  selects a stable system block; =e-anthropic-request-body= adds no rolling
+  message boundary.  Top-level mode currently omits the stable block marker.
+- The configured Anthropic factory in =~/.doom.d/config.org= enables
+  =:prompt-cache t= and =:prompt-cache-ttl "1h"= without choosing top-level
+  mode.  That activates the fixed-prefix path.  Changing only this user's
+  configuration would leave the adapter default defective.
+- [[file:../../../lisp/adapters/openai/e-openai-profile.el][OpenAI profiles]] select =:prompt-cache-breakpoint-mode explicit= for the API
+  profile.  [[file:../../../lisp/adapters/openai/e-openai-responses.el][Responses rendering]] marks only the last stable developer block
+  and emits =prompt_cache_options.mode= =explicit=.  An isolated renderer
+  reproduction grows from two to four input items with the marker remaining
+  solely on the initial developer item.
+- The current Codex profile disables explicit fields and continuation.  Recorded
+  GUS cache reads grew from 4,608 to 28,160 tokens.  This contradicts a claim
+  that every adapter currently has the same fixed ceiling.
+- [[file:../../../lisp/adapters/openai/e-openai-chat-completions.el][Chat Completions]] emits no explicit cache policy and relies on provider
+  implicit behavior.  The absence of cache controls is not proof of a defect.
+- [[file:../../../e2e/e-live-e2e-test.el][Live E2E]] currently accepts positive cache reads as warm.  It cannot
+  distinguish useful growing-history reuse from the reproduced fixed ceiling.
+
+The Gmail/agentic repeated state-curation behavior is a separate issue.  This
+package covers its cache interaction, not curation-loop or worker-deadline repair.
+
+* Contracts
+
+These rows are the single normative authority.  Design and scenarios below
+reference them rather than introducing additional product requirements.
+
+| ID | Observable contract | Semantic owner | Public composition | Evidence | Establishing package |
+|----+---------------------+----------------+--------------------+----------+----------------------|
+| F98-C1 | With caching enabled or unspecified, unchanged growing history is eligible for reuse on every request. No adapter defaults or silently falls back to a fixed stable-prefix-only policy. An explicit user disable remains a disable. | Provider adapters and effective profile/default configuration | Chat/Org Canvas tool subturns and next user turn | S1, S2, S4, P1, P2 | DP1 |
+| F98-C2 | Unknown or unsupported optional cache controls use the endpoint's compatible automatic/implicit path where available. Unsupported fields are not sent; limited or unknown capability is reported without claiming growing reuse. An endpoint with no cache support remains usable with that limitation visible. | Provider profile capability declarations and adapter serialization | API, gateway, Codex, and Chat Completions dispatch | S1, S4, P1 | DP1 |
+| F98-C3 | Cache policy changes preserve the authorized semantic projection: current dynamic context, tool-call/result order, reasoning replay, and curation keep/summary/erase effects. Full replay, admitted continuation, reconnect, and fallback obey the same projection; a cache hit never authorizes retained context. | Existing context/lifetime and continuation owners; adapters translate | Tool continuation, curated follow-up, reopen/reconnect | S2, S3, P2 | DP1 |
+| F98-C4 | Existing cache options have an explicit migration to the new default. Normal requests cannot select the retired fixed-prefix-only policy through a legacy default, direct renderer, or configured factory. Material request-layout changes invalidate incompatible continuation anchors. | Adapter option/profile normalization and existing anchor identity | Configured startup, direct render, existing-session follow-up | S1, S3, S4 | DP1 |
+| F98-C5 | Per-request diagnostics describe the effective policy and eligible boundaries. Usage distinguishes total, uncached, read, and creation inputs according to provider accounting, preserving missing counters as unknown. Acceptance distinguishes a static hit from growing-history reuse and distinguishes semantic success from cache capability evidence. | Adapter diagnostics/usage mapping and existing E2E evidence helpers | Developer request evidence and canonical cache acceptance | S2, S4, P1, P2 | DP1 |
+
+No cache hit rate or latency percentage is a product guarantee.  Provider routing,
+eviction, expiry, minimum cache size, and legitimate prefix changes can cause
+misses.  Ratios, cost, and latency are observational unless a separate measured
+performance contract is adopted.
+
+* Supporting design
+
+** Adapter-owned policy, unchanged semantic owners
+
+F98-C1/C2 use the existing adapter/profile seams.  Core continues to own semantic
+segments and curation; adapters own provider cache syntax.  The smallest useful
+design changes request rendering and effective defaults, with focused evidence
+in the existing test/evidence helpers.  It adds no durable cache state, second
+history authority, cache coordinator, or universal breakpoint configuration API.
+Derived boundaries live only for the request; provider caches remain disposable.
+
+The fixed-boundary alternative leaves the observed growing suffix repeatedly
+uncached.  Merely choosing a rolling boundary without a stable guard can lose
+the otherwise reusable static prefix after a legitimate late-context change.
+The proposed automatic/implicit path plus a supported stable guard addresses
+both cases with existing segment identities.  It does not rearrange semantic
+history to manufacture a hit.
+
+** OpenAI Responses API
+
+For F98-C1/C2/C4, separate support for explicit markers from the policy that
+disables implicit caching.  Stop emitting explicit-only mode by default.
+Retain a stable developer marker when the endpoint/model supports it while
+allowing implicit boundaries over growing messages and tool results.  The
+documented combination preserves a stable guard without capping conversation
+reuse.  Keep segmented developer-input layout and cache-key routing independent
+of cache policy; a missing key must not select a restrictive cache policy.
+
+Use the effective endpoint/model capability, not a model-name guess alone, to
+emit optional fields.  Existing =explicit= profile settings represent the old
+coupling of capability and policy: migrate them to marker support with implicit
+conversation caching.  Remove obsolete renderer defaults and mechanism tests
+that require explicit-only mode.  Do not create an adapter-controlled cache-key
+rotation on every subturn; that would undermine reuse.
+
+For F98-C3/C4, review the material layout/anchor identity when the wire shape
+changes.  Continued requests and full replay must use the same effective cache
+policy, but continuation admission remains a semantic decision.  A retained
+response ID is not evidence of a cache hit.
+
+** Anthropic Messages
+
+For F98-C1/C4, make automatic top-level caching the enabled default, including
+when the cache-mode option is absent.  Preserve an explicit stable system guard
+alongside the moving conversation boundary when supported.  Normalize existing
+=top-level= and enabled cache configurations to this behavior.  Treat an
+explicit =:prompt-cache nil= as a user disable; absence is not an implicit disable.
+Keep documented TTL behavior, provider breakpoint limits, and block lookback
+rules local to this adapter.
+
+For F98-C2, verify automatic-plus-explicit support on the actual configured
+gateway.  If that endpoint lacks automatic caching but supports explicit
+breakpoints, use a stable guard plus an advancing eligible conversation block;
+do not degrade to the stable guard alone.  Resolve this compatibility choice
+with a bounded capability probe and a profile-local declaration, not broad
+error-catching retries on real turns.  If neither path is available, expose
+the limitation under F98-C2.
+
+For F98-C3, choose only provider-eligible blocks.  Never insert explicit cache
+markers into signed thinking or change native replay order.  Exercise enough
+tool blocks to challenge lookback behavior, and match stable/moving TTLs so the
+hybrid request is valid.
+
+** Codex, older Responses models, and Chat Completions
+
+F98-C1/C2 preserve their compatible implicit behavior.  Do not send private
+Responses cache fields to Codex or Chat Completions.  Do not enable Codex
+continuation as a cache fix; its current detached-store capability remains
+unchanged.  Test request evolution and effective defaults for these paths,
+including profiles without usage counters.  Missing counters establish neither
+a hit nor a miss.  Any explicit-only mode for a future endpoint needs advancing
+conversation boundaries and endpoint proof; the retired fixed policy is not a
+fallback.
+
+** Configuration and documentation
+
+F98-C4 applies to adapter constructors, profile materialization, turn overrides,
+direct renderer calls, E2E factories, and the real configured Anthropic factory.
+Inspect those paths before choosing migration code.  Give obsolete values a
+clear bounded migration notice or configuration error; do not perpetuate a
+fixed-prefix policy for compatibility.  Preserve deliberate disabling and
+compatible retention options.  A user configuration edit is conditional on
+whether the corrected defaults already make it unnecessary.
+
+Update Feature 81 and Feature 97 cache sections to point to this authority,
+Feature 88 Addendum 3's canonical cache acceptance to use P2, and the
+[[file:../../research/prompt-cache-dynamic-context-boundary.org][dynamic-context cache research]] to distinguish semantic placement from cache
+policy.  Keep historical measurements identified as historical.
+
+* Evidence portfolio
+
+** Deterministic release gates
+
+- =S1: Effective defaults and compatibility=.  Cover F98-C1/C2/C4 through
+  ordinary profile/factory materialization and direct render, not just a helper.
+  Capture request shapes for API, gateway, Codex, older Responses, and Chat
+  Completions, with caching unspecified/enabled/disabled and key present/absent.
+  The invariant is eligible growing reuse without unsupported fields or a
+  hidden fixed-only path.  Localize failures to normalization or serialization.
+- =S2: Growing tool turn=.  Cover F98-C1/C3/C5 through the real harness with a
+  deterministic provider fixture: stable guidance, an ordinary tool call, a
+  substantial result, and later tool subturns.  Earlier unmodified messages
+  retain their identity/content; current observations arrive at the correct
+  semantic frontier; cache eligibility advances.  A data-dependent answer
+  proves the tool result was consumed.  Localize wire-boundary failures
+  separately from harness history/semantic failures.
+- =S3: Curate, replay, and reconnect=.  Cover F98-C3/C4 with current keep,
+  summary, and erase semantics; next-turn lifetime exclusion; admitted
+  continuation where supported; and reconnect/fallback/reopen.  Assert the
+  correct projection and anchor disposition, then growing cache eligibility
+  on the rebuilt history.  An intentional prefix rewrite need not hit the old
+  cache.  Localize curation ownership versus adapter replay failures.
+- =S4: Evidence cannot report a fixed ceiling as success=.  Cover
+  F98-C1/C2/C4/C5.  Use the observed fixed-read/no-write sequence as a negative
+  control for the new classifier.  Check cold, growing, missing-counter,
+  expired-cache, and unsupported-capability evidence.  Verify provider-specific
+  accounting and diagnostics match the emitted body.  Exercise the configured
+  startup path when configuration or packaging changes.
+
+Owner tests belong primarily in =test/e-openai-request-composition-test.el=,
+=test/e-openai-owner-test.el=, =test/e-anthropic-test.el=, and existing
+context-lifetime/continuation composition tests.  Strengthen behavioral tests;
+replace assertions that freeze the retired explicit-only request shape.  Extend
+existing E2E evidence helpers rather than add an independent cache test system.
+
+** External compatibility evidence
+
+=P1: Endpoint capability= is separate from semantic composition.  On each
+configured cache-capable endpoint/model family, send the smallest valid repeated
+request above that provider's cache minimum and prove the selected cache fields
+are accepted and their boundaries work.  This covers F98-C2/C5.  Record actual
+gateway/profile, model, protocol/headers, material options, UTC completion time,
+accepted commit, response status, and ordered usage counters without credentials
+or prompt contents.  Official API documentation is design evidence, not gateway
+compatibility evidence.
+
+=P2: Growing-history reuse= covers F98-C1/C3/C5 through the public harness.
+Hold model, endpoint, tools, stable prefix, and routing identity constant.  Use
+at least three append-only requests: establish a baseline; append a substantial
+tool result; then append another exchange so the earlier result is reusable.
+Size that result to exceed the endpoint's documented cache granularity/minimum,
+and retain a content digest to identify the unchanged suffix.  Run immediately
+within the TTL and record every subturn, including reads and creation where
+available.  Separate a static-prefix control from the growing-history case.
+
+The positive predicate is cache reads attributable to the earlier conversation
+suffix beyond the stable-only control, with provider granularity accounted for.
+A nonzero read alone cannot pass.  Constant reads at the stable ceiling while
+the controlled eligible suffix grows fail this predicate.  Creation counters
+are supporting evidence where available, not a requirement for providers that
+omit them.  Repeat the curation transition as a separate phase: semantic
+projection must pass, a changed prefix may miss, and unchanged rebuilt history
+must become reusable again.  Assess the TTL-expiry control separately from a
+warm reuse failure.
+
+Initial P1/P2 evidence is required for each deployed adapter/profile whose cache
+benefit is claimed.  Reuse evidence only for the same endpoint/team, model
+family, protocol, material shape, and accepted revision within 24 hours; this
+uses Feature 97's existing evidence window.  Any relevant change requires a new
+probe.  Authentication/configuration failure, provider/infrastructure failure,
+inconclusive timeout, unavailable counters, and stale evidence leave capability
+unconfirmed.  A valid controlled contradictory run is a product-contract
+failure.  Adapters without observable cache counters retain an explicit unknown
+benefit status rather than blocking independent semantic release gates or
+receiving a fabricated cache pass.
+
+Official design references, consulted 2026-10-05:
+
+- [[https://developers.openai.com/api/docs/guides/prompt-caching][OpenAI prompt caching]]: implicit message boundaries, explicit-only behavior,
+  and explicit markers combined with implicit caching.
+- [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching][Anthropic prompt caching]]: automatic moving boundaries, hybrid stable
+  checkpoints, eligible blocks, TTLs, and lookback limits.
+
+* Delivery plan
+
+The implementation handoff includes the
+[[file:../../../AGENTS.md][required architecture self-check questions]].  The owner, state, compatibility,
+performance, and test decisions below provide their starting evidence.
+
+=DP1: Correct defaults and prove growing conversation reuse= establishes
+F98-C1--C5.  It is one release package because adapter policy, option migration,
+diagnostics, and replacement acceptance must agree before the project can claim
+the issue is closed.  Internal steps can be committed coherently, but a helper
+or a static-prefix hit is not an accepted stopping point.
+
+1. Capture S1--S4 regressions against the current source.  Preserve the failing
+   policy shapes and the fixed-ceiling negative control.  Inventory effective
+   configured endpoints and defaults; settle P1 capability questions before
+   emitting optional syntax.
+2. Correct OpenAI API policy/profile normalization and Anthropic automatic or
+   advancing-explicit policy.  Preserve the compatible Codex/Chat Completions
+   paths and F98-C3's semantic owners.  Update material anchor identities where
+   needed; remove obsolete fixed-only branches and defaults.
+3. Align request diagnostics, provider accounting, canonical E2E classifiers,
+   configured factories where necessary, and the superseded documentation.
+4. Run focused owner/composition gates, then the relevant canonical tool-heavy
+   E2E on the exact candidate.  Run =bash e2e/run-current-config-tests.sh= if
+   configured startup, profile configuration, or packaging changes.  Collect
+   P1/P2 independently on that candidate and record their capability status.
+
+The package changes no SQLite schema and needs no stored-history migration.
+Its likely changing decisions are endpoint syntax and cache capability; keep
+them local to profiles/adapters.  Semantic projection and disposable provider
+caches are stable decisions.  Expected unsupported options are resolved before
+dispatch; unexpected failures stay visible through existing adapter errors.
+Avoid broad automatic retry paths that conceal an incompatible request.
+
+Review risks are loss of signed reasoning validity, stale continuation anchors,
+cache-key churn, early dynamic-context changes, and a misleading positive-cache
+gate.  S1--S4/P1/P2 target those existing seams without creating new persistent
+machinery.  Cache writes can increase when growing history is first stored;
+compare subsequent reads and uncached input against the fixed-prefix baseline.
+Report cost and latency as observations, not guaranteed improvements.
+
+At handoff, report F98-G1 behavioral status separately from implementation
+completion, identify unresolved external cells, and state whether using the
+adapter changes requires an Emacs restart.  Do not reload or restart the user's
+running Emacs or mutate the audited Board/store during verification.
