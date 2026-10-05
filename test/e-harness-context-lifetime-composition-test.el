@@ -1301,16 +1301,28 @@
                       :input (list :keep []
                                    :summaries []
                                    :erase (vector frame-b-label))))))
-        (should
-         (equal
-          (seq-filter
-           (lambda (block)
-             (and (equal (plist-get block :type) "tool_result")
-                  (equal (plist-get block :tool_use_id)
-                         "toolu-curate-frame-b")))
-           (append (plist-get b-curation-result :content) nil))
-          '((:type "tool_result" :tool_use_id "toolu-curate-frame-b"
-             :content "Curation applied."))))
+        (let* ((curation-result-blocks
+                (seq-filter
+                 (lambda (block)
+                   (and (equal (plist-get block :type) "tool_result")
+                        (equal (plist-get block :tool_use_id)
+                               "toolu-curate-frame-b")))
+                 (append (plist-get b-curation-result :content) nil)))
+               (curation-result-block (car curation-result-blocks))
+               (semantic-curation-result-blocks
+                (mapcar (lambda (block)
+                          (let ((semantic-block (copy-sequence block)))
+                            (cl-remf semantic-block :cache_control)
+                            semantic-block))
+                        curation-result-blocks)))
+          (should (= (length curation-result-blocks) 1))
+          (should
+           (equal (plist-get curation-result-block :cache_control)
+                  '(:type "ephemeral" :ttl "1h")))
+          (should
+           (equal semantic-curation-result-blocks
+                  '((:type "tool_result" :tool_use_id "toolu-curate-frame-b"
+                     :content "Curation applied.")))))
         (dolist (marker a-marker-strings)
           (should-not (string-match-p (regexp-quote marker) body-b-text))
           (should-not

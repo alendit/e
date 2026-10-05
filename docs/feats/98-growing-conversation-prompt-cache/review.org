@@ -1015,3 +1015,15 @@ the complete implementation scope.
 Complete clean-revision gates, independent implementation review and fresh
 committed-code P1/P2 remain pending.  The diagnostic override is not acceptance.
 All production P3 capabilities remain none/unconfirmed and curation unavailable.
+
+** Canonical-gate fixture reconciliation
+
+The clean =403126fe= canonical gate passed 2,855/2,857.  Both failures shared
+a composition fixture that compared the complete latest native tool result
+without its newly selected cache marker.  The correction asserts exactly one
+matching result and the expected 1h marker, then compares every semantic field
+with only request-derived cache metadata removed.  Production is unchanged.
+Parent inspection accepted this narrow fixture reconciliation; both affected
+tests passed 2/2 and the complete composition owner suite passed 21/21.
+The private current-configuration check at =403126fe= passed 9/9.
+The complete source gate must pass on the reconciled clean revision before Tick.
