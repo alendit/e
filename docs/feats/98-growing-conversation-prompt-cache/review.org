@@ -79,11 +79,14 @@ the operator explicitly required fixing baseline failures too.
 - The readiness test observed a removed claim transition.  It now observes the
   actual atomic pickup-message admission while retaining no-admission-before-
   readiness and failure-path assertions.
-- A production queue guard prevented ready inputs reaching an active turn's
-  inbox.  Removing it restores the existing committed-message queue path.
-  Request-local context filtering excludes future queued input until its turn
-  consumes it; the public SQL-backed test proves isolation during refresh,
-  later exact-once exposure, and a single durable append.
+- The queue test expected the pre-SQLite in-memory inbox.  The first attempted
+  repair removed the active-turn guard; the complete gate at =b272015e= caught
+  two restart/FIFO custody regressions (2,851/2,853 expected).  The guard is
+  restored: follow-ups remain durable ready Board pickups until the busy turn
+  ends.  The corrected public SQL-backed witness verifies durable custody,
+  metadata, active-context isolation, later exact-once exposure, and a single
+  durable append.  It and both restart/FIFO witnesses pass 3/3.  No additional
+  request-path filter is retained.
 - Detached SQLite context unconditionally rejected provider anchor configuration
   because persisted-anchor lookup is unfinished.  It now uses complete projected
   replay and reports =detached-anchor-query-unavailable=.  This does not invent
@@ -91,8 +94,9 @@ the operator explicitly required fixing baseline failures too.
   continuation remains at its existing loop owner.  Concurrent-session,
   cancellation, and terminal-error provider tests now pass 3/3.
 
-The corrected affected-owner and baseline composition gate passes 211/211.  Final exact-revision
-canonical and current-config gates remain pending.
+The intermediate affected-owner gate at =b272015e= passed 211/211; its later
+complete gate exposed the custody regressions above.  Final exact-revision
+canonical and current-config gates remain pending after their correction.
 
 * Configuration and external evidence
 

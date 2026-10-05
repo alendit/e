@@ -176,8 +176,8 @@
             (should-not (plist-member metadata :e-chat-read-markers))))
       (delete-directory project-root t))))
 
-(ert-deftest e-chat-session-test-queue-validates-and-routes-to-inbox ()
-  "Queued input is admitted once and remains hidden until its owning turn."
+(ert-deftest e-chat-session-test-queue-validates-and-retains-durable-custody ()
+  "Queued input remains durable and hidden until its owning turn consumes it."
   (let (requests finish)
     (e-chat-session-test--with-sqlite-harness
         (harness store
@@ -210,19 +210,29 @@
               :metadata '(:source chat-composer))))
         (should (e-work-handle-p admission))
         (e-chat-session-test--await admission)
-        (should (e-chat-session-test--wait-until
-                 (lambda () (e-harness-queued-prompts harness "session-1"))))
-        (let* ((item (car (e-harness-queued-prompts harness "session-1")))
+        (let* ((binding (e-chat-service-binding harness "session-1"))
+               (board (e-chat-session-test--await
+                       (e-board-sqlite-service-board-get-start
+                        (e-chat-service-binding-sqlite-service binding)
+                        (e-chat-service-binding-board-id binding))))
+               (pickups
+                (e-chat-session-test--await
+                 (e-board-sqlite-service-pickup-page-start
+                  (e-chat-service-binding-sqlite-service binding)
+                  (e-chat-service-binding-board-id binding)
+                  (plist-get board :generation)
+                  (e-chat-service-binding-participant-id binding) 16)))
+               (item (seq-find (lambda (pickup)
+                                 (equal (plist-get pickup :content) "queued"))
+                               pickups))
                (active (e-chat-service-active-turn harness "session-1"))
                (context
                 (e-chat-session-test--await
                  (e-harness-turn-context-start harness "session-1"
                                                (plist-get active :id)))))
-          (should (equal (plist-get item :prompt) "queued"))
-          (should (equal (plist-get (plist-get item :metadata) :references)
-                         '((:uri "buffer://source"))))
-          (should (equal (plist-get (plist-get item :metadata) :source)
-                         'chat-composer))
+          (should item)
+          (should (eq (plist-get item :state) 'ready))
+          (should-not (e-harness-queued-prompts harness "session-1"))
           (should-not (seq-find (lambda (message)
                                  (equal (plist-get message :content) "queued"))
                                (plist-get context :messages))))
@@ -233,6 +243,13 @@
                              :key (lambda (message) (plist-get message :content))
                              :test #'equal)
                    1))
+        (let* ((message (seq-find (lambda (item)
+                                   (equal (plist-get item :content) "queued"))
+                                 (car requests)))
+               (metadata (plist-get message :metadata)))
+          (should (equal (plist-get metadata :references)
+                         '((:uri "buffer://source"))))
+          (should (equal (plist-get metadata :source) 'chat-composer)))
         (let ((page (e-chat-session-test--await
                      (e-session-async-visible-message-page store "session-1"))))
           (should (= (cl-count "queued" (plist-get page :messages)
