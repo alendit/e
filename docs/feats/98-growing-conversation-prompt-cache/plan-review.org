@@ -59,3 +59,146 @@ checks passed.  The reviewer changed no files or live state.
 Gateway hybrid controls, growing-history cache benefit, and efficient repeated
 curation require future P1/P2/P3 execution.  Missing P3 evidence keeps curation
 unavailable; ordinary chat remains independently valid.
+
+* Rolling-marker plan-delta admission
+
+** Decision and scope
+
+=implementation-plan-fixed-point= for the bounded implementation-plan delta at
+=3b659523a00147494ebd6bb63061bc0f3bb3e034=.  No actionable plan findings or
+required implementation-plan unknowns remain.  This admits the owner-local
+Anthropic rolling-marker correction within DP1; it does not establish that the
+correction is implemented, independently reviewed, or accepted by an endpoint.
+
+The independent reviewer performed a read-only incremental review of the plan
+and its source/evidence dependencies.  F98-G1 and F98-C1--C6 remain the product
+authority.  The existing plan review's unchanged contract and package cells are
+carried forward; changed C1/C2 selection and its C3/C5/acceptance dependents were
+reopened.  Implementation and external fixed-point claims are explicitly not
+carried across the newly observed contradiction.
+
+** Identity
+
+| Reviewed object | Git identity |
+|-----------------+--------------|
+| Revision | 3b659523a00147494ebd6bb63061bc0f3bb3e034 |
+| plan.org | bf6ea36ad6a0706cd3c0138d93db9c49c46750f2 |
+| Feature index | 8cb1fe50bb3b66a78c6c7ac12235394556fa30d9 |
+| lisp tree | 7895bed56c4e212236f63f4545dabae2d2183450 |
+| Anthropic adapter | e6596ce8e4c84744b14c62daf944e3428fd0beef |
+| test tree | cdcc568cb99972c7bcc69cad9fe0b8cd724f1bd5 |
+| e2e tree | a85c1fc9eb67cbf841d20dfed71ae85290ee014a |
+| AGENTS.md | 1772d96d0021d432a8f7f5eab0f8b81d8cc5430b |
+| Architecture | 48dc0e6e445a2a3a68630d40fba749f7444c58ae |
+| Static-ceiling evidence | d969c7fcf3ef927bcf70a3b6b5ce7d2b8f7e45b5 |
+| Rolling diagnostic | 50d0a5f0fb019fdb56b7667557174662f00fa004 |
+
+** Evidence disposition
+
+The stored =gateway-static-ceiling-20261005T195518Z.json= identifies unchanged
+repository code at =0007cb80447f37a9be328e4f4300a93603736985= and no shape
+override.  All four requests preserve endpoint, model, and stable fingerprint.
+Context input grows from 27,291 to 39,252, while reads remain 26,875 and creation
+remains zero.  Semantic success is recorded separately.  This is the controlled
+F98-C1 failure required by the existing P2 predicate, not an infrastructure
+unknown or an accounting ambiguity.
+
+The =gateway-rolling-diagnostic-20261005T195928Z.json= explicitly identifies a
+diagnostic-only shape override.  Its reads advance through 26,875, 27,289,
+31,277, and 35,264; the last two exceed its 27,293-token whole-initial-request
+control.  Creation records the newly appended suffix.  It supports choosing a
+compatible local mechanism for this gateway; it supplies no acceptance of the
+repository's proposed selection algorithm or its other input partitions.
+
+The consulted [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching][primary native API documentation]] supports same-TTL automatic and
+explicit controls, a no-op automatic field when the last eligible block already
+has that TTL, a four-explicit-marker limit, and a bounded twenty-position lookup
+window.  Thinking blocks cannot receive explicit markers.  These are design
+constraints, not proof of gateway behavior.
+
+** Feasibility, ownership, and acceptance partitions
+
+The selected shape is feasible at the existing adapter serialization boundary.
+=e-anthropic-request-body= constructs the final native messages at lines
+1259--1303; =e-anthropic--messages= copies replay blocks before grouping at
+lines 894--974, and the grouped native follow-up owns ordering at lines
+697--791.  A request-local transformation of that completed projection can
+place the latest eligible conversation marker and preceding user boundary
+without changing the neutral transcript, native signed replay, or durable
+history.  It need not introduce a registry, capability override, public option,
+or a core-to-provider dependency.
+
+The stable guard is already owned by system/tool construction.  Its one slot
+plus at most two distinct rolling positions yields at most three explicit
+markers and leaves room for automatic placement when it is active.  Equal
+adapter-owned TTLs avoid a mixed-TTL ordering conflict.  The preceding user
+boundary provides a reachable previously written history position in ordinary
+user/tool continuations; it is not evidence that arbitrary append shapes or
+every prior last-block position are covered by the same gateway behavior.
+
+The existing S1/S2/C3 acceptance requires these derived owner partitions:
+
+- Stable system guard, tool-only guard, and no stable guard; zero, one, and two
+  distinct conversation boundaries.  Duplicate latest/preceding positions
+  consume one slot, and absent/ineligible positions create no synthetic block.
+- Latest eligible user text/tool result and assistant text/tool use; trailing
+  signed or redacted thinking is skipped without changing bytes or order.
+  Direct rendering and native replay retain the authorized projection and
+  their input objects unchanged.
+- Several user/tool exchanges and native grouped results, including enough
+  actual cache positions to challenge the documented lookback.  The additional
+  marker must preserve a previously written eligible boundary rather than
+  merely attach two markers somewhere in history.
+- All emitted markers share the adapter TTL, stay within the slot budget, and
+  ignore retired caller controls.  C5 diagnostics describe the actual rolling
+  boundaries as well as the stable guard; current metadata at lines 1321--1366
+  describes only the prior automatic-plus-stable shape and must change with
+  the body.
+
+These are acceptance partitions of the already admitted contracts, not a new
+public policy or additional delivery package.  Existing replay/lifetime owners
+continue to decide retained content and continuation admission.  Production
+curation remains unavailable under C6 until separate valid P3 qualification.
+
+** Required implementation-plan cells
+
+| Cell | Disposition |
+|------+-------------|
+| Single normative authority | Cleared; unchanged F98-G1/C1--C6 rows own behavior; rolling selection is supporting design. |
+| Behavioral design trace | Cleared anew; actual P2 contradiction reopens C1/C2, and the smallest local marker correction addresses growing reuse. |
+| Durable contract boundary | Cleared; the plan selects a private adapter mechanism without changing the durable outcome. |
+| Scenario diagnosability | Cleared anew; S1/S2 separate boundary/eligibility defects from replay defects; S4 retains the static-ceiling negative control. |
+| Evidence topology | Cleared anew; unchanged-code failure, diagnostic override, deterministic implementation proof, and fresh P1/P2 have distinct roles. |
+| External freshness | Cleared; accepted revision/material shape identity and the existing 24-hour window remain required. |
+| Telemetry decision power | Cleared anew; total/read/creation accounting and two reads beyond the initial bound distinguish the observed failure and diagnostic. |
+| Exact-limit justification | Cleared for this delta; twenty positions and four permitted explicit slots come from the API; three selected slots are the stable plus two rolling boundaries, not an invented product cap. |
+| Defensive actionability | Cleared anew; the prior-user guard addresses bounded lookup of an already written growing prefix, and eligibility/equal-TTL protection preserves valid replay/dispatch. |
+| Change locality | Cleared anew; body and truthful metadata remain in the Anthropic owner; no new durable owner or configuration surface. |
+| Workflow boundary | Cleared; lifecycle status describes the reopening without changing normative product authority. |
+| Decision level and plan disposition | Cleared; this is plan admission, with implementation and provider results explicitly pending. |
+| Contract-to-package coverage | Carried cleared; C1--C6 map to the single establishing DP1. |
+| Useful stopping point | Carried cleared; a helper or diagnostic alone is not accepted DP1 closure. |
+| Cohesion and transaction closure | Cleared; local correction, serialization, diagnostics, replay safety, and acceptance close within existing DP1. |
+| Dependency order | Cleared anew; marker design can be implemented now; endpoint acceptance follows independently reviewed committed code. |
+| Package-size tradeoff | Carried cleared; no additional release package is needed for this correction. |
+| Acceptance-cost topology | Cleared anew; focused marker/replay partitions precede complete gates and new P1/P2 at the informative material-shape boundary. |
+| Checkpoint/package distinction | Cleared; neither diagnostic nor plan admission is implementation/package acceptance. |
+
+** Architecture and external boundary
+
+The architectural direction and AGENTS.md self-check dispositions are
+unchanged: provider uncertainty stays local and reversible; interfaces remain
+narrow; stable core ownership is preserved; derived marker state has one-request
+lifetime.  The correction adds bounded linear inspection of already serialized
+messages and at most two explicit positions; provider writes and read benefit
+must be reported from subsequent observations.  It introduces no persistence or
+restart requirement by design.  Exact implementation behavior and reload needs
+remain implementation acceptance decisions.
+
+No required plan unknown remains.  Fresh P1/P2 on the independently reviewed,
+committed rolling correction is still required before claiming repository cache
+benefit or closing the observed product-contract failure.  Other endpoint/model
+families retain their existing explicit external status.  P3 remains unconfirmed
+for all shipped combinations and curation remains unavailable.  No provider
+calls, repository changes, Git writes, live state operations, or log reads were
+performed during this review.  log-read: none.
