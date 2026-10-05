@@ -138,3 +138,245 @@ curation remains unavailable.  First-party OpenAI API credentials are absent.
     remain provider errors, and missing cache evidence remains unknown.
 14. Credential-free request, forced-effect, lifetime, replay, and classifier
     tests prove owner behavior; public harness composition gates prove joins.
+
+* Review 2: Independent exact-revision Tick
+
+** Decision and scope
+
+In-review.  This pass confirms three Medium/P2 findings below.  A
+=deterministic-fixed-point= result is not established, despite passing complete
+test gates.  No P0/P1 defect was confirmed.  All selected deterministic contract
+cells were examined; the remaining contradictions are explicit findings rather
+than unexamined cells.  External cache benefit and efficient cache-plus-curation
+remain unconfirmed.
+
+Reviewed the clean exact revision
+=d6cbba6e8e6df83bbc51417ff831a82b515eab81= against original implementation base
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=.  Authority is the admitted Feature 98
+plan, F98-G1 and F98-C1--C6, with unchanged product requirements: adapters own
+maximum compatible caching; callers cannot weaken it; curation stays unavailable
+without efficient repeated-curation evidence.  The plan-review admission remains
+an implementation-plan result, not proof that provider capabilities passed.
+
+This was an independent read-only rebaseline.  It covered changed adapter policy,
+direct renderers, capability publication/admission/preflight/commit, semantic
+projection and continuation identity, evidence classifiers and their configured
+harness join, configuration migration, and the authorized SQLite/queue baseline
+repairs.  No repository or live Emacs/Board/store writes and no provider calls
+were performed.  Only disposable review probes and this handoff were written
+under =/private/tmp/e-feature98/=.
+
+** Prior finding dispositions
+
+| Review 1 finding | Disposition at the exact target | Independent proof |
+|------------------+---------------------------------+-------------------|
+| C6 publication disabled but labels/effects available | Closed | =e-harness-context-runtime.el:846= gates labels separately from late observation placement; =e-loop.el:661= derives trusted request capability; forced items reject before replay/effects at =1773=; lifetime preflight/commit recheck originating/current capability at =1005= and =1058=. Public composition witnesses at =e-harness-context-lifetime-composition-test.el:1888= and =1966= cover forged options, absent labels, no promotion/curation mutation, and capability revocation before commit. |
+| C6 supplied OpenAI tools republish reserved carrier | Closed | Responses filters reserved names before ordinary tools are appended; Chat Completions filters at =e-openai-chat-completions.el:30=; =e-openai-request-composition-test.el:104= proves ordinary tools survive, spoofed reserved tools disappear, and only trusted supported Responses emits one generated carrier. |
+| C5/C6 static cache reads accepted as P3 | Original fixed-ceiling reproducer closed; broader attribution closure incomplete | The ordered classifier rejects the historical 52,493-token ceiling and legacy boolean/pass evidence. R2-F3 proves cold static warming and repeated keep cache destruction can still pass. |
+
+** Findings
+
+*** TODO Medium/P2 R2-F1: Optional retention overrides unqualified organization capability
+
+F98-C2 requires unknown optional controls to use the endpoint's compatible
+automatic path.  =e-openai-profile-cache-retention= at
+=lisp/adapters/openai/e-openai-profile.el:526--536= returns ="24h"= for listed
+older first-party Responses models using provider, endpoint, model, and wire
+API alone.  There is no organization capability qualification.  The renderer
+always emits that derived value at =e-openai-responses.el:703--709=.
+
+The current official OpenAI prompt-caching guide distinguishes model support
+from organization availability: older models supporting both policies default
+to extended retention without ZDR and to in-memory retention with ZDR, and the
+guide requires verifying model and organization policies before selecting a
+value.  Thus this branch demonstrably overrides an organization-dependent
+provider default without evidence that the organization supports the override.
+The model list proves syntax/model support only.  An HTTP rejection was not
+observed or established by the documentation, and is not claimed here.
+
+Source authority: [[https://developers.openai.com/api/docs/guides/prompt-caching][OpenAI prompt-caching guide]],
+Cache lifetime / Retention defaults and Zero Data Retention, and Summary of
+model differences (consulted 2026-10-05).  This supports provider design only;
+it provides no gateway or configured-account acceptance evidence.
+
+Smallest owning correction: omit optional retention while organization
+capability is unknown and preserve the provider's eligible default.  The
+documented non-ZDR default already selects extended retention; the provider
+selects the eligible default for other organizations.  Keep stable internally
+derived routing keys for older supported first-party requests.  Add no caller
+policy or organization override.  Update the public request witness currently
+expecting unconditional =24h= (=e-openai-continuation-composition-test.el:675=)
+and diagnostics to describe the provider-selected default.  Parent independently
+accepted this capability-boundary correction; the issue is actionable without
+introducing a runtime registry or retry framework.
+
+*** TODO Medium/P2 R2-F2: Growing evidence compares Anthropic fresh input instead of total context
+
+F98-C5 requires provider-specific total and uncached inputs to stay distinct.
+=e-anthropic--usage-item= at =lisp/adapters/anthropic/e-anthropic.el:1451--1477=
+correctly emits fresh =:input-tokens= and total
+=:context-input-tokens= as input plus read plus creation, only when all are
+known.  OpenAI's =:input-tokens= is already provider total.  However the new
+configured harness probe joins usage unchanged at
+=e2e/e-cache-efficiency-e2e-test.el:106--115=, and
+=e-live-e2e--classify-growing-cache-evidence= at
+=e2e/e-live-e2e-test.el:1313--1330= requires strictly growing raw
+=:input-tokens=.  P3 calls the same classifier.
+
+A credential-free probe using the actual Anthropic normalizer and actual
+classifier produced:
+
+#+begin_example
+total context:  18000 30000 42000
+fresh input:    18000 12000 12000
+cache reads:        0 18000 30000
+creation:           0     0     0
+classifier: "history-not-growing"
+#+end_example
+
+The endpoint/model/static identity was held fixed.  This is efficient growing
+reuse, but the public evidence composition rejects it because fresh input falls
+then stays flat.  When Anthropic total cannot be derived, fresh input is also not
+an honest substitute for missing total.  Parent independently verified the
+normalizer/join/classifier composition.
+
+Smallest owning correction: normalize evidence once at the shared classifier
+boundary using provider total context; retain raw fresh/read/creation separately.
+Use Anthropic's known context total (or its exact known constituent sum), and
+OpenAI's already-total input.  Missing required total remains unavailable;
+never fill absent counters with zero or require nonexistent OpenAI write counts
+to establish OpenAI total.  Strengthen the public usage join tests with actual
+provider-normalized payloads, decreasing/equal fresh input, and missing totals.
+This corrects acceptance evidence rather than altering production usage events.
+
+*** TODO Medium/P2 R2-F3: P3 qualification does not prove static attribution or repeated keep continuity
+
+F98-C5/C6 and plan P3 (=plan.org:306--322=) require reads attributable to
+unchanged conversation history through repeated projection-preserving curation.
+Only a material summary/erase rewrite may miss at its changed boundary; keep
+must not repeatedly make unchanged history cold.  The shared P3 classifier at
+=e2e/e-live-e2e-test.el:1342--1428= has two proven counterexamples at the same
+qualification boundary.
+
+First, the initial =stable-only-baseline= accepts a cold or partly warm read
+count at =1376--1379=.  Subsequent reads only need exceed that observed count
+at =1394--1396=, which is not a static-token upper bound.  A static-only input
+of 4,096 tokens with zero baseline reads, followed by accepted keep and summary
+phases each using inputs =10000,14000,18000= and reads =0,1024,2048=, returns
+=pass=.  Every read can fit entirely within the 4,096-token static prefix.
+Matching provider/static/history fingerprints and ordered phases do not make
+those reads conversation reuse.
+
+Second, a warm 4,096-token static baseline followed by =keep1,keep2,summary1=
+also returns =pass= when every rebuilt request reads only 4,096 tokens, then
+later subturns read 8,192 and 12,288.  Inputs grow across phases
+=(10000,14000,18000), (22000,26000,30000), (34000,38000,42000)=.  Both keep
+phases have the same unchanged-history fingerprint.  The second keep therefore
+drops the preceding warm 12,288-token read to the static 4,096-token read, then
+rewarm proceeds.  The classifier ignores immediate rebuilt-request reuse and
+cross-keep continuity; it accepts exactly the recurring cache loss P3 forbids.
+The pure temporal probe is =/private/tmp/e-feature98/review2-temporal-probe.el=.
+
+These are acceptance false positives, not proof that any current production
+adapter advertises curation: all shipped curation declarations remain
+none/unconfirmed.  They are still material because this helper can qualify
+future capability evidence.  Parent verified and accepted both counterexamples.
+
+Smallest owning correction: qualify a conservative static-only token/cache
+ceiling with matching accounting and identity; cold or partial reads cannot
+serve as that ceiling.  Require history-attributed reuse beyond it and repeated
+state-only/keep transitions retaining the previously reusable unchanged history
+at the immediate request, subject to provider granularity.  Distinguish those
+transitions from material summary/erase rebuilds, which may warm again.  Prove
+the repeated-keep phase and material rebuild phases separately, using the P2
+append-only control.  Preserve missing or incomplete attribution as unconfirmed.
+Strengthen classifier contract fixtures with both counterexamples and genuine
+positive continuity evidence; a single keep-plus-summary warming sequence is
+insufficient.
+
+** Contract coverage at the reviewed revision
+
+All rows use deterministic source/contract-test evidence at the exact target.
+Provider measurements have a separate decision role and remain unconfirmed.
+No non-gating architectural deferral or follow-up ledger was introduced.
+
+| Cell | Status | Owners, public composition, and disposition |
+|------+--------+--------------------------------------------|
+| F98-C1 maximum compatible growing cache policy | cleared, subject to C2 retention finding | Anthropic automatic-plus-stable guard replaces fixed-only paths; OpenAI known first-party GPT-5.6+ preserves implicit boundaries plus stable guard; older models use internal stable routing keys; Codex/custom/Chat Completions retain automatic/default paths. Request composition tests challenge stale disable/mode/key/TTL values and direct render. This clears deterministic selection, not measured provider reuse. |
+| F98-C2 optional-field compatibility | candidate: confirmed R2-F1 | Endpoint/model gates withhold GPT-5.6 private fields on unknown/custom/Codex paths and preserve ordinary chat. Older first-party retention still overrides unknown organization capability. Unknown benefit diagnostics are honest. |
+| F98-C3 authorized projections/replay | cleared | Existing lifetime projections, tool ordering and native reasoning replay remain semantic truth. Late observations are independent of absent labels. Retired marker cleanup includes follow-up messages; accepted keep/summary/erase projections survive carrier loss. Continuation identity fences changed layouts; detached SQLite uses honest complete projected replay without claiming persisted anchors. Existing replay/lifetime/transport contract witnesses and complete gates cover these seams. |
+| F98-C4 caller migration and identity | cleared | Defaults, session normalization, subagent inheritance, factory options and direct adapter overrides are removed/stripped. Trusted adapters overwrite copied capabilities. Request-shape/layout/cache capability participates in incompatible-anchor fencing. Read-only configured factory inspection and fresh isolated current-config gate cover startup; no live user reload was needed. |
+| F98-C5 truthful accounting/acceptance | candidate: confirmed R2-F2/R2-F3 | Diagnostics describe actual adapter policy; missing production usage remains unknown. Public configured-probe usage join and P2/P3 classifier fail provider total semantics and static attribution. Semantic success remains separate from cache result. |
+| F98-C6 capability-gated curation | runtime cleared; qualification candidate R2-F3 | All production carriers none/unconfirmed. Tool definitions/instructions/labels/frame affordances are absent, spoofed tools are filtered, forced effects reject before mutation, and preflight/commit recheck trusted capability. Positive test-owned capability covers retained projections and duplicate recovery. The future qualification helper still accepts inefficient evidence. |
+
+S1/S4 migration, direct-render and unsupported-operation routes are covered by
+adapter/backend and configured harness witnesses.  S2/S3 semantic continuation,
+replay and accepted projection routes are covered by lifetime/public harness
+composition.  The restored active-turn queue guard preserves durable restart/
+FIFO custody; the corrected SQL-backed public witness tests delayed exact-once
+exposure and append metadata.  Readiness now observes atomic pickup-message
+admission and still proves no admission before readiness or on readiness failure.
+Detached SQLite replay removes an unconditional admission failure without adding
+synchronous aggregate lookup.  The historical steering nil slot remains a
+fixture correction, with no unrelated production steering change.
+
+** Architecture self-check
+
+1. The package improves deterministic policy and unavailable-curation safety;
+   the three findings prevent accepting it as fixed-point yet.
+2. It moves toward provider-capability-owned growing reuse with semantic
+   projection as independent truth.
+3. Provider optional syntax and proof are uncertain, local and reversible;
+   R2-F1 removes an unqualified assumption rather than adding abstraction.
+4. Adapters own cache syntax/capability; core loop/lifetime owns publication,
+   admission and effects; shared E2E helpers own qualification accounting.
+5. Removed caller policy APIs reduce coupling.  New interfaces describe real
+   capability variation and do not add general cache management.
+6. Core consumes backend semantic capabilities; no core dependency on provider
+   wire fields or concrete adapters was introduced.
+7. Network/auth/provider-cache effects remain at adapter/test-runner boundaries.
+8. Derived policy is request-local, cache state remains disposable, and existing
+   durable projections remain authoritative.  No cache registry was added.
+9. Automatic boundaries may incur writes for growing history; measured cost/
+   latency is unproved.  P3 must reject repeat cold-history rebuilds as R2-F3 shows.
+10. Ordinary chat works without a carrier; unsupported effects are explicitly
+    rejected.  All production substitutions currently expose no curation.
+11. Stale controls cannot alter policy and old persisted records remain readable;
+    incompatible continuation shapes fall back to authorized complete replay.
+12. Obsolete public cache defaults, inheritance, explicit-only selection and
+    factory assignments are removed; no migration switch is retained.
+13. Unsupported effects fail at admission/preflight/commit; missing cache
+    counters remain unknown.  Provider failures remain visible rather than
+    silently claiming benefit.
+14. Credential-free request/replay/effect tests prove semantic owners.  Actual
+    accounting/classifier counterexamples challenge public evidence joins.
+    Corrections belong to local adapter/evidence owners and narrow contract tests.
+
+No new architectural defect was confirmed outside the three owning corrections.
+The selected glossary scope remains unchanged; no new public term required a
+glossary change.  No architectural cleanup was relabeled as required remediation.
+
+** Verification and external boundary
+
+Consumed exact-target gate evidence supplied by the parent: canonical
+=eldev -s test= with local sockets enabled passed 2,853/2,853; fresh private
+configured-daemon =bash e2e/run-current-config-tests.sh= passed 9/9.  Read only
+=/private/tmp/e-feature98/canonical-final-sockets.log:3760--3775= and
+=/private/tmp/e-feature98/current-config-final.log:1--4=.  The full gates were
+not redundantly rerun.  =git diff --check 39407dd7 d6cbba6e= passed.  The clean
+target identity was read back.  Actual classifier/normalizer pure probes
+confirmed the findings; green existing tests cannot negate their counterexamples.
+
+F98-G1's original Board/main-chat scenario remains the behavioral goal.  The
+historical fixed-read ceiling is not fresh acceptance; deterministic mechanisms
+are implemented but fresh P1/P2 must establish deployed endpoint/team/model/
+protocol/material-shape/revision benefit.  The earlier gateway diagnostic of
+two 4,203-token creations with zero reads is field-acceptance diagnosis only.
+No first-party OpenAI credential or fresh external proof was available here.
+P3 remains intentionally unavailable because no shipped combination is
+qualified; no external benefit, capability-confirmed result, or Done status is
+claimed.  After local corrections and a new independent Tick, external evidence
+must retain the plan's identity/freshness rules and unknown outcomes honestly.
+
+log-read: =canonical-final-sockets.log:3760--3775=;
+=current-config-final.log:1--4=.  No other execution logs read.
