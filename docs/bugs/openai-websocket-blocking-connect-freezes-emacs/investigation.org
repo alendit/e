@@ -1,0 +1,101 @@
+#+title: Investigation
+#+startup: overview
+
+* Summary
+
+Mostly confirmed from source and durable store records.
+Board behaved as designed: it cancelled the agentic worker when the Daily run's 900-second deadline passed.
+The faults are in the OpenAI WebSocket adapter:
+1. It opens a new connection with a blocking TLS connect on the main thread.
+   That froze all of Emacs for about 150 seconds.
+2. Its idle timers do not check real elapsed idle time.
+   When the freeze ended, every in-flight request failed at once with a false idle timeout.
+3. It has no total time limit per request and writes no durable progress while a response streams.
+   So the agentic worker's request ran until the Daily run deadline stopped it.
+
+Two points remain open: why the connect took about 150 seconds, and what the agentic request did after the connection opened.
+
+* Timeline (2026-10-05, UTC)
+
+Taken from the runtime store records for the Daily run and its participants.
+
+- 07:25:14 :: The Daily run starts with a 900-second deadline (=grimoire-daily-run--deadline-seconds=).
+- 07:25:14–07:25:27 :: The agentic task runs =scripts/agentic-sessions.py=.
+  The collector finishes in about 13 seconds and writes =agentic-sessions.json=.
+- 07:25:26 :: The other workers send their first requests over reused connections =e-ws-1=, =e-ws-2=, =e-ws-5= and =e-ws-6=.
+- 07:25:27.851 :: The agentic worker's turn ID is created.
+- 07:25:27–07:27:58 :: No session writes any store record.
+- 07:27:58 :: Six in-flight requests close together with "OpenAI WebSocket idle timed out after 60 seconds", 150–160 seconds after they started.
+- 07:27:58.113 :: The agentic worker's =provider-request-started= event is written: connection =e-ws-7=, =websocket-reused nil=, model =gpt-6-luna=, reasoning effort =max=.
+  =e-ws-7= is the only new connection opened in the window.
+- 07:27:59 :: The Gmail worker fails with "Runtime-store request expired before submission".
+- 07:28–07:35 :: OpenAI returns =server_is_overloaded= several times to other workers.
+  They retry and finish between 07:29:57 and 07:36:57.
+- 07:27:58–07:40:14 :: The agentic request writes no further record: no reply, no error, no =turn-retrying=.
+- 07:40:14 :: The run deadline passes and Board cancels =subagent/693= with =e-work-deadline-exceeded=.
+
+* Source inspected
+
+** The connect blocks the main thread
+
+- =lisp/adapters/openai/e-openai-websocket.el=, =e-openai-websocket--session-open= (line 146) calls =websocket-open= without =:nowait=.
+- The websocket package (=websocket.el= line 622) defaults =nowait= to nil.
+  It then calls =open-network-stream ... :type tls :nowait nil= (line 717).
+  DNS, the TCP connect and the TLS handshake all run synchronously on the main thread.
+  No timer, process filter or other session can run until they finish.
+- =e-openai-websocket-request-start= (line 313) opens the connection inside the call (lines 371 and 578) when no compatible connection exists.
+- =lisp/core/e-loop.el= writes =provider-request-started= through =publish-provider-request= only after request start returns (lines 791, 1954, 2089).
+  This is why the agentic worker's event carries 07:27:58 while its turn began at 07:25:27.
+
+** The idle timeout fires falsely after a freeze
+
+- The idle timeout is a one-shot =run-at-time= timer created by =arm-timeout= (line 381) and re-armed on each frame (lines 496, 518).
+- When Emacs is blocked, due timers cannot fire.
+  When the block ends, the timers run before the waiting socket data is read.
+  Each timer fails its request without checking when the last frame actually arrived.
+- This matches the six requests that all failed at 07:27:58 with a 60-second message after 150–160 seconds.
+
+** The queued store write expires during the freeze
+
+- =lisp/core/e-runtime-store.el=, =e-runtime-store--expire-overdue-queued= (line 1607) fails a queued write that has waited longer than =e-runtime-store-request-timeout= (60 seconds, line 74).
+- The Gmail worker's write was queued during the freeze, so it expired as soon as the store's timer could run.
+
+** The agentic request has no total time limit
+
+- The adapter limits only the time between frames.
+  There is no per-request total deadline.
+- e writes nothing durable while a response streams.
+  Other sessions write =token-usage= and reasoning records only at completion.
+- After =e-ws-7= opened, =arm-timeout= ran (line 571) and the body was sent.
+  If no frame had arrived, the timer would have fired around 07:28:58 and written an error and a =turn-retrying= event.
+  Neither exists.
+  The likely reading is that frames kept arriving and kept re-arming the timer, for example a long =max=-effort response while OpenAI was overloaded.
+  This is an inference.
+- =send-current-body= (line 481) calls =websocket-send-text= right after the blocking open returns.
+  The code does not wait for the server's =101= upgrade reply.
+  A request stuck before the upgrade completed cannot be ruled out.
+
+* Live access
+
+The WebSocket process for =e-ws-7= no longer existed when this was investigated.
+No live connection state could be inspected.
+The evidence above comes from durable runtime store records and the Daily run's raw outputs.
+
+* Rejected explanations
+
+- The collector script blocked Emacs.
+  Its post-exit work is parsing a 44 KB JSON file, and it finished before the agentic turn began.
+- Board mishandled the deadline.
+  The cancellation happened exactly at the configured 900-second run deadline.
+
+* Next steps
+
+1. Open the WebSocket with =:nowait t=.
+   Send the body only after the =101= upgrade completes, and add a separate connect timeout.
+   This affects every session that opens a new connection, not only Daily runs.
+2. Make the idle timer compare real elapsed time since the last frame before failing a request.
+   Re-arm it for the remaining time when the request is not actually idle.
+3. Add a total time limit per provider request.
+   Write a bounded durable progress record while frames stream, so a long response is distinguishable from a hang.
+4. Consider a lighter model and effort for Daily gatherers whose work is a deterministic render of already collected data.
+   This is a Grimoire configuration choice, not an e bug.

@@ -1,0 +1,14 @@
+#+title: OpenAI WebSocket blocking connect freezes Emacs and hangs a Daily worker
+#+startup: overview
+
+* Report
+
+The user asked why the Grimoire Daily run =daily:2026-10-05:20261005T072514814721000= lost two of its gatherers.
+The Daily note recorded that the agentic-sessions worker "exceeded its deadline and produced no accepted fragment".
+The Gmail worker failed in the same run with "Runtime-store request expired before submission".
+The user suspected a bug in e or in Board handling and asked for a source-level explanation.
+
+Expected behavior:
+- Opening a provider connection must not block the Emacs main thread.
+- A main-thread stall must not turn healthy in-flight requests into idle timeouts.
+- A provider request must have a bounded total lifetime that does not depend on the caller's run deadline.

@@ -8,6 +8,7 @@ State values for coding agents:
 
 | State  | Path | Title |
 |--------+------+-------|
+| New    | openai-websocket-blocking-connect-freezes-emacs/ | OpenAI WebSocket blocking connect freezes Emacs and hangs a Daily worker |
 | Closed | board-steered-input-strands-fifo/ | Board-backed steering does not settle its input |
 | Closed | canonical-json-text-leaks-utf8-bytes/ | Canonical JSON text leaks UTF-8 bytes |
 | Closed | stale-doom-autoload-retains-retired-subagent-command/ | Stale Doom autoload retains retired subagent command |
