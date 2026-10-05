@@ -802,6 +802,10 @@ This leaves the global minor mode enabled for every other buffer."
   "Return MAP configured as the local keymap for composed chat input."
   (let ((map (or map (make-sparse-keymap))))
     (set-keymap-parent map e-chat-mode-map)
+    (define-key map (kbd "DEL") #'e-chat-delete-backward-char)
+    (define-key map (kbd "<backspace>") #'e-chat-delete-backward-char)
+    (define-key map (kbd "C-d") #'e-chat-delete-forward-char)
+    (define-key map (kbd "<delete>") #'e-chat-delete-forward-char)
     (define-key map (kbd "<escape>") #'e-chat-composer-enter-navigation)
     map))
 
@@ -811,19 +815,22 @@ This leaves the global minor mode enabled for every other buffer."
 
 (defun e-chat--configure-evil-composer-bindings ()
   "Configure the composer bindings that Evil would otherwise shadow.
-Evil binds `C-w' as the window-command prefix in its insert and emacs
-states, shadowing the composer's own binding.  Evil also consumes the first
-Escape in insert state merely to enter normal state.  Define both commands on
-the dedicated composer map in every relevant Evil state so one Escape crosses
-the pane boundary and subsequent keys come from transcript navigation.
+Evil's deletion commands bypass atomic reference removal.  Its editing states
+also shadow `C-w' and consume Escape before it can cross the pane boundary.
+Keep these composer operations on the dedicated map in relevant Evil states.
 A no-op when Evil is absent."
   (when (fboundp 'evil-define-key*)
     (dolist (state '(insert emacs))
-      (funcall #'evil-define-key*
-               state
-               e-chat-composer-mode-map
-               (kbd "C-w")
-               #'e-chat-kill-region-or-backward-word))
+      (dolist (binding '(("C-w" . e-chat-kill-region-or-backward-word)
+                         ("DEL" . e-chat-delete-backward-char)
+                         ("<backspace>" . e-chat-delete-backward-char)
+                         ("C-d" . e-chat-delete-forward-char)
+                         ("<delete>" . e-chat-delete-forward-char)))
+        (funcall #'evil-define-key*
+                 state
+                 e-chat-composer-mode-map
+                 (kbd (car binding))
+                 (cdr binding))))
     (dolist (state '(insert normal emacs))
       (funcall #'evil-define-key*
                state

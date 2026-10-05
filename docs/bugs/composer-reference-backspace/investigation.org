@@ -1,0 +1,58 @@
+#+title: Composer reference Backspace investigation
+
+* Result
+Status: Done. The composer now binds Backspace, Delete, and =C-d= directly
+to its existing reference-aware deletion commands, including Evil insert
+and Emacs states. Deleting an inline reference removes the whole atom and
+its submission metadata while preserving surrounding text.
+
+* Cause and evidence
+Inline references carry =read-only= text properties so ordinary editing
+cannot corrupt their labels or metadata. The deletion commands in
+=lisp/shells/chat/e-chat-composer.el= explicitly remove a complete reference
+with =inhibit-read-only= bound around that operation.
+
+The facade previously relied on command remappings in =e-chat-mode-map=.
+In the displayed composer under the current user configuration, =DEL=
+resolved to =evil-delete-backward-char-and-join=. That command calls
+=delete-backward-char= directly, bypassing the composer command and raising
+=text-read-only=. The existing batch boundary test and a fresh daemon's
+undisplayed composer both passed before the fix; the graphical command-loop
+test reproduced the reported failure.
+
+Bounded live probes confirmed that the selected buffer was the Daily
+composer, the session was idle, and the loaded deletion and keymap functions
+came from this checkout's straight.el build. These probes did not inspect
+the placeholder contents or establish the live key binding; the latter was
+observed in the private graphical reproduction.
+
+* Change
+=e-chat--make-composer-mode-map= now assigns the deletion keys directly.
+=e-chat--configure-evil-composer-bindings= also assigns them on the
+composer's Evil maps for insert and Emacs states, where host bindings can
+otherwise take precedence. The existing atomic-deletion implementation and
+reference protection remain the owners of deletion semantics.
+
+* Verification
+- Composer owner and composition ERT: 40/40 passed, including real Evil
+  insert/Emacs state deletion and the existing directional boundary test.
+- Graphical =composer-deletes-reference-atoms=: 1/1 passed with the current
+  configuration and 1/1 passed with the isolated configuration. The test
+  sends =DEL=, =<backspace>=, =C-d=, and =<delete>= through the command loop.
+- =bash e2e/run-current-config-tests.sh=: 9/9 passed in a fresh private
+  daemon with test-owned runtime state.
+- =git diff --check=: passed.
+
+Before/after PNGs and their exact window-state sidecars were inspected in
+=/tmp/e-composer-reference-before/= and =/tmp/e-composer-reference-after/=.
+The failing capture retains =@[source]=; the passing Backspace capture
+contains only =before  after=.
+
+The first graphical reproduction's normal startup encountered the live
+runtime's ownership lock and refused access. The subsequent graphical
+verification used an explicit temporary runtime root.
+
+* Live application
+The user's running Emacs was left unchanged apart from read-only probes.
+This shell/keymap change is reloadable. Applying it immediately requires a
+user-approved =e-dev-reload=, which may block the UI; a restart also loads it.

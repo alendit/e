@@ -1174,6 +1174,31 @@ than the invisible insertion position."
           (e-chat-behavior-test--assert-tail-near-bottom fixture))
       (e-chat-behavior-test--cleanup fixture configuration frame-size))))
 
+(ert-deftest e-chat-behavior-test-composer-deletes-reference-atoms ()
+  "Keyboard deletion removes whole reference atoms in a displayed composer."
+  (let ((configuration (current-window-configuration))
+        (frame-size (cons (frame-width) (frame-height)))
+        fixture)
+    (unwind-protect
+        (progn
+          (setq fixture (e-chat-behavior-test--open-surface))
+          (select-window (cdr (e-chat-behavior-test--fixture-windows fixture)))
+          (dolist (key '("DEL" "<backspace>" "C-d" "<delete>"))
+            (insert "before ")
+            (let ((start (point)))
+              (e-chat-composer-insert-context-reference
+               '(:uri "buffer://source" :label "source" :text "body"))
+              (insert " after")
+              (search-backward " after")
+              (when (member key '("C-d" "<delete>"))
+                (goto-char start)))
+            (ert-info ((format "%s binding: %S" key (key-binding (kbd key))))
+              (e-graphical-test-send-keys key)
+              (should (equal (e-chat-composer-text) "before  after"))
+              (should-not (plist-get (e-chat-composer-submission) :references)))
+            (delete-region (e-chat-composer-start-position) (point-max))))
+      (e-chat-behavior-test--cleanup fixture configuration frame-size))))
+
 (ert-deftest e-chat-behavior-test-focused-composer-shows-configured-context-limit ()
   "The focused composer shows the configured model context limit."
   (should (display-graphic-p))

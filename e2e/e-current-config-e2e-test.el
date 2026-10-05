@@ -314,6 +314,23 @@
   (should (file-equal-p (e-source-directory) e-e2e-project-root))
   (should (eq (plist-get (e-core-status) :state) 'ready)))
 
+(ert-deftest e-current-config-e2e-test-composer-backspace-removes-reference ()
+  "Configured editing modes allow Backspace to remove a reference atom."
+  (require 'e-chat)
+  (with-temp-buffer
+    (e-chat-composer-mode)
+    (e-chat-transcript-reset)
+    (e-chat-composer-initialize)
+    (e-chat-composer-insert-context-reference
+     '(:uri "buffer://source" :label "source" :text "body"))
+    (ert-info ((format "DEL binding: %S; active modes: %S"
+                       (key-binding (kbd "DEL"))
+                       (seq-filter (lambda (mode)
+                                     (and (boundp mode) (symbol-value mode)))
+                                   minor-mode-list)))
+      (call-interactively (key-binding (kbd "DEL")))
+      (should (equal (e-chat-composer-text) "")))))
+
 (ert-deftest e-current-config-e2e-test-package-command-inventory-is-current ()
   "Normal startup exposes the replacement command and no retired command."
   (let ((board-activity

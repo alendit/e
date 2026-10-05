@@ -561,6 +561,32 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-test-composer-deletes-references-with-evil ()
+  "Evil editing states route reference deletion through composer commands."
+  (require 'evil)
+  (e-chat-startup)
+  (let ((buffer (e-chat-test--buffer nil "chat-reference-delete-evil")))
+    (unwind-protect
+        (with-current-buffer (e-chat-test--composer buffer)
+          (evil-local-mode 1)
+          (dolist (state '(insert emacs))
+            (evil-change-state state)
+            (dolist (key '("DEL" "<backspace>" "C-d" "<delete>"))
+              (insert "before ")
+              (let ((start (point)))
+                (e-chat-composer-insert-context-reference
+                 '(:uri "buffer://source" :label "source" :text "body"))
+                (insert " after")
+                (search-backward " after")
+                (when (member key '("C-d" "<delete>"))
+                  (goto-char start)))
+              (call-interactively (key-binding (kbd key)))
+              (should (equal (e-chat-composer-text) "before  after"))
+              (should-not (plist-get (e-chat-composer-submission) :references))
+              (delete-region (e-chat-composer-start-position) (point-max)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest e-chat-test-composer-disables-completion ()
   "The composer does not trigger completion UI or completion-at-point."
   (let (company-mode-argument corfu-mode-argument buffer)

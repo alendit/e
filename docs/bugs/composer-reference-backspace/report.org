@@ -1,0 +1,8 @@
+#+title: Composer reference placeholders cannot be removed
+
+Reported on 2026-10-05: inline placeholders in the composer can no longer
+be removed, including with Backspace. Expected behavior is to remove the
+whole reference atom while keeping surrounding prompt text editable.
+
+The attached screenshot shows the Space overview rather than the Emacs
+composer; it does not establish the failing key binding or reference state.
