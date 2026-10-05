@@ -843,3 +843,18 @@ Feature status stays In-review; no =capability-confirmed= or Done claim is made.
 
 log-read: =/private/tmp/e-feature98/canonical-sql-evidence.log:3760--3775=;
 =/private/tmp/e-feature98/current-config-sql-evidence.log:1--4=.
+
+* Public evidence serialization correction
+
+The fresh =9e09ef50= gateway attempt reached durable usage collection, then the
+new report called canonical =e-json-serialize= with Elisp provider/phase enum
+symbols.  Canonical wire JSON rejects those values.  No P2 result is claimed
+from the failed emission.  The report now uses the existing shared E2E value
+conversion and JSON encoder, leaving provider wire serialization unchanged.
+
+A direct join/normalizer/emission witness parses the emitted record and proves
+provider/phase strings, preserved numeric fresh/read counts, and JSON null for
+an unknown total.  It, the durable SQL pagination witness, and the initial-control
+join witness pass 3/3.  This small runner-only C5 correction returns the emission
+cell to independent closure review; prior unchanged production and classifier
+coverage remains applicable.  Exact-revision gates precede the next external run.

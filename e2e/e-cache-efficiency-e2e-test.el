@@ -38,6 +38,35 @@ is a conservative ceiling for stable instructions and initial context."
                                '(:phase initial-context-baseline))
                              counters))))
 
+(defun e-cache-efficiency-e2e--report-evidence (record)
+  "Emit bounded cache RECORD using the shared E2E value conversion."
+  (message "E98_CACHE_EVIDENCE %s"
+           (json-encode (e-live-e2e--json-plist record))))
+
+(ert-deftest e-cache-efficiency-e2e-test-evidence-emits-provider-values ()
+  "The reporting boundary serializes joined provider enums and missing totals."
+  (let* ((identity '(:provider anthropic :endpoint "https://anthropic.test/messages"
+                    :model "claude-cache-test" :stable-prefix-fingerprint "hash"))
+         (usage (plist-get (e-anthropic--usage-item 12000 100 18000 nil) :usage))
+         (evidence (e-cache-efficiency-e2e--join-request-usage
+                    (list identity) (list usage)))
+         emitted)
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (setq emitted (apply #'format format-string args)))))
+      (e-cache-efficiency-e2e--report-evidence
+       (list :semantic-result "pass" :cache-result "unavailable"
+             :requests (vconcat evidence))))
+    (let* ((record (e-json-parse-string
+                    (substring emitted (length "E98_CACHE_EVIDENCE "))))
+           (request (aref (plist-get record :requests) 0)))
+      (should (equal (plist-get record :semantic-result) "pass"))
+      (should (equal (plist-get request :provider) "anthropic"))
+      (should (equal (plist-get request :phase) "initial-context-baseline"))
+      (should (= (plist-get request :input-tokens) 12000))
+      (should (= (plist-get request :cached-input-tokens) 18000))
+      (should (eq (plist-get request :context-input-tokens) e-json-null)))))
+
 (defun e-cache-efficiency-e2e--tool-register (registry)
   "Register a three-step probe with substantial reproducible output."
   (e-tools-register
@@ -222,14 +251,13 @@ is a conservative ceiling for stable instructions and initial context."
                 (e-cache-efficiency-e2e--join-request-usage ordered usage)))
           (setq cache-result
                 (e-live-e2e--classify-growing-cache-evidence :evidence evidence))
-          (message "E98_CACHE_EVIDENCE %s"
-                   (e-json-serialize
+          (e-cache-efficiency-e2e--report-evidence
                     (list :scenario "growing-tool-history"
                           :repository-revision (e-live-e2e--repository-revision)
                           :timestamp (format-time-string "%FT%TZ" nil t)
                           :elapsed-seconds (- (float-time) started-at)
                           :semantic-result semantic-result :cache-result cache-result
-                          :requests (vconcat evidence))))))
+                          :requests (vconcat evidence)))))
       (when condition (signal (car condition) (cdr condition)))
       (cond ((equal cache-result "growing-history-reuse") t)
             ((equal cache-result "static-prefix-only")
