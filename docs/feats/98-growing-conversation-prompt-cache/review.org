@@ -968,3 +968,28 @@ Feature status stays In-review; no capability-confirmed or Done claim is made.
 log-read: =/private/tmp/e-feature98/evidence-emission-gate.log:1--9=;
 =/private/tmp/e-feature98/canonical-emission.log:3760--3775=;
 =/private/tmp/e-feature98/current-config-emission.log:1--4=.
+
+* External product-contract failure and rolling compatibility design
+
+Fresh P2 on =0007cb80= produced semantic pass but =static-prefix-only=.  Total
+input grew 27,291 / 31,277 / 35,263 / 39,252; every request read 26,875 cached
+tokens and created zero tokens.  Endpoint, model and stable-prefix fingerprint
+were fixed, with four substantial sequential tool requests inside 16 seconds.
+Top-level 1h automatic control and the stable guard were present.  This is a
+valid controlled contradiction of F98-C1/C2, reopening the selection cells;
+field acceptance is not proof of automatic growing-history behavior.
+
+A temporary, synthetic diagnostic added last-two-user explicit markers with
+the same TTL, retaining automatic and stable controls.  It passed the unchanged
+public predicate: reads 26,875 / 27,289 / 31,277 / 35,264; creation
+414 / 3,988 / 3,987 / 3,986; fresh input 4 / 2 / 2 / 2.  This does not establish
+repository-code acceptance because request shape was overridden in the driver.
+Both content-free evidence records are retained under =external-evidence/=.
+
+The plan now makes the native rolling compatibility shape explicit: stable
+guard, latest eligible block, and a preceding user boundary within three explicit
+slots, with supported automatic control and equal TTL.  API documentation and
+the diagnostic support this owner-local design.  Signed reasoning, semantic
+projection and curation absence remain authoritative.  Required plan-delta
+admission precedes adapter edits; fresh complete gates, independent Tick and
+provider P1/P2 follow the correction.

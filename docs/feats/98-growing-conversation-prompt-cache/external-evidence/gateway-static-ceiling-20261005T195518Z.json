@@ -1,0 +1,170 @@
+{
+  "evidence-role": "product-contract-failure",
+  "shape-override": false,
+  "configured-provider": "eng-ai-gateway-opus-5-5",
+  "protocol": "anthropic-messages-http-sse",
+  "records": [
+    {
+      "scenario": "growing-tool-history",
+      "repository-revision": "0007cb80447f37a9be328e4f4300a93603736985",
+      "timestamp": "2026-10-05T19:55:18Z",
+      "elapsed-seconds": 15.068473815917969,
+      "semantic-result": "pass",
+      "cache-result": "static-prefix-only",
+      "requests": [
+        {
+          "provider": "anthropic",
+          "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+          "model": "claude-opus-5-5",
+          "stable-prefix-fingerprint": "5505375a71bd3aea7cc19e4e203a19e86b8d0d2e192400a1b515df1c2caca8c7",
+          "phase": "initial-context-baseline",
+          "context-input-tokens": 27291,
+          "input-tokens": 416,
+          "cached-input-tokens": 26875,
+          "cache-creation-input-tokens": 0,
+          "output-tokens": 49,
+          "total-tokens": 27340,
+          "provider-request-ordinal": 1,
+          "provider-request-id": "01M46T4M0YB2MYVNX0VZYRJQYW",
+          "caused-by-tool-calls": []
+        },
+        {
+          "provider": "anthropic",
+          "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+          "model": "claude-opus-5-5",
+          "stable-prefix-fingerprint": "5505375a71bd3aea7cc19e4e203a19e86b8d0d2e192400a1b515df1c2caca8c7",
+          "context-input-tokens": 31277,
+          "input-tokens": 4402,
+          "cached-input-tokens": 26875,
+          "cache-creation-input-tokens": 0,
+          "output-tokens": 49,
+          "total-tokens": 31326,
+          "provider-request-ordinal": 2,
+          "provider-request-id": "01M46T4PYA6ZK1MFP6QH04T428",
+          "caused-by-tool-call-id": "toolu_bdrk_012iqbs5dwsCtFWwvfhtaoW1",
+          "caused-by-tool-name": "cache_probe",
+          "caused-by-tool-calls": [
+            {
+              "id": "toolu_bdrk_012iqbs5dwsCtFWwvfhtaoW1",
+              "name": "cache_probe"
+            }
+          ]
+        },
+        {
+          "provider": "anthropic",
+          "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+          "model": "claude-opus-5-5",
+          "stable-prefix-fingerprint": "5505375a71bd3aea7cc19e4e203a19e86b8d0d2e192400a1b515df1c2caca8c7",
+          "context-input-tokens": 35263,
+          "input-tokens": 8388,
+          "cached-input-tokens": 26875,
+          "cache-creation-input-tokens": 0,
+          "output-tokens": 49,
+          "total-tokens": 35312,
+          "provider-request-ordinal": 3,
+          "provider-request-id": "01M46T4SP1B361R1G0QMZ13P1Z",
+          "caused-by-tool-call-id": "toolu_bdrk_01YR7QPf51a4cFt3JhHjAu2M",
+          "caused-by-tool-name": "cache_probe",
+          "caused-by-tool-calls": [
+            {
+              "id": "toolu_bdrk_01YR7QPf51a4cFt3JhHjAu2M",
+              "name": "cache_probe"
+            }
+          ]
+        },
+        {
+          "provider": "anthropic",
+          "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+          "model": "claude-opus-5-5",
+          "stable-prefix-fingerprint": "5505375a71bd3aea7cc19e4e203a19e86b8d0d2e192400a1b515df1c2caca8c7",
+          "context-input-tokens": 39252,
+          "input-tokens": 12377,
+          "cached-input-tokens": 26875,
+          "cache-creation-input-tokens": 0,
+          "output-tokens": 247,
+          "total-tokens": 39499,
+          "provider-request-ordinal": 4,
+          "provider-request-id": "01M46T4WCXGSZAA11PPCV92PFB",
+          "caused-by-tool-call-id": "toolu_bdrk_01QGkfBdtGrtcc7kqkhYEpeC",
+          "caused-by-tool-name": "cache_probe",
+          "caused-by-tool-calls": [
+            {
+              "id": "toolu_bdrk_01QGkfBdtGrtcc7kqkhYEpeC",
+              "name": "cache_probe"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "request-shapes": [
+    {
+      "repository-revision": "0007cb80447f37a9be328e4f4300a93603736985",
+      "timestamp": "2026-10-05T19:55:03Z",
+      "provider-id": "eng-ai-gateway-opus-5-5",
+      "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+      "model": "claude-opus-5-5",
+      "protocol": "anthropic-messages-http-sse",
+      "authorization-realm": "configured ENG_AI_MODEL_GW_KEY",
+      "cache-control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+      },
+      "stable-system-marker-count": 1,
+      "tool-count": 17,
+      "message-count": 1,
+      "material-request-sha256": "21bc5525f431d78877a8ff324d3ef7386b0e986c91220dc49cc3298d9c94b39f"
+    },
+    {
+      "repository-revision": "0007cb80447f37a9be328e4f4300a93603736985",
+      "timestamp": "2026-10-05T19:55:06Z",
+      "provider-id": "eng-ai-gateway-opus-5-5",
+      "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+      "model": "claude-opus-5-5",
+      "protocol": "anthropic-messages-http-sse",
+      "authorization-realm": "configured ENG_AI_MODEL_GW_KEY",
+      "cache-control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+      },
+      "stable-system-marker-count": 1,
+      "tool-count": 17,
+      "message-count": 3,
+      "material-request-sha256": "c6a6a59185cf46220222e3b42e0ec611cd45a4a56366b854321f20ec6a7b4714"
+    },
+    {
+      "repository-revision": "0007cb80447f37a9be328e4f4300a93603736985",
+      "timestamp": "2026-10-05T19:55:09Z",
+      "provider-id": "eng-ai-gateway-opus-5-5",
+      "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+      "model": "claude-opus-5-5",
+      "protocol": "anthropic-messages-http-sse",
+      "authorization-realm": "configured ENG_AI_MODEL_GW_KEY",
+      "cache-control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+      },
+      "stable-system-marker-count": 1,
+      "tool-count": 17,
+      "message-count": 5,
+      "material-request-sha256": "9961ccdaaa0bad370362c527249be3f7db0acb6d0e429d28bb6a717989bb969e"
+    },
+    {
+      "repository-revision": "0007cb80447f37a9be328e4f4300a93603736985",
+      "timestamp": "2026-10-05T19:55:12Z",
+      "provider-id": "eng-ai-gateway-opus-5-5",
+      "endpoint": "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages",
+      "model": "claude-opus-5-5",
+      "protocol": "anthropic-messages-http-sse",
+      "authorization-realm": "configured ENG_AI_MODEL_GW_KEY",
+      "cache-control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+      },
+      "stable-system-marker-count": 1,
+      "tool-count": 17,
+      "message-count": 7,
+      "material-request-sha256": "8b4ef64f98319a85d7a14c8f54b63322fed673ca46113629b20cc0a41baaa71c"
+    }
+  ]
+}

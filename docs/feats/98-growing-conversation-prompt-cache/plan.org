@@ -4,12 +4,13 @@
 
 * Status
 
-In-review.  Adapter-owned policy, caller-option removal, and curation admission
-are implemented.  Independent Review 6 establishes =deterministic-fixed-point=
-at =0008889f=, with 2,853/2,853 complete tests and 9/9 fresh current-config
-checks.  External P1/P2 acceptance remains pending.  All shipped curation
-capabilities remain unconfirmed and unavailable.  No provider efficiency pass
-is claimed.
+In-review.  Caller-option removal and curation admission are implemented.
+Review 6 cleared the deterministic candidate at =0008889f=, but fresh gateway
+P2 at =0007cb80= reproduced a static cache ceiling and reopens F98-C1/C2.
+The native Messages adapter must include compatible explicit rolling history
+markers as well as automatic caching and the stable guard.  A diagnostic-only
+override demonstrates growing reuse; it is not acceptance of repository code.
+All shipped curation capabilities remain unconfirmed and unavailable.
 
 * Goal and authority
 
@@ -45,8 +46,9 @@ Cache hits must not preserve content excluded by an accepted projection.
 
 Behavioral status: the historical Anthropic failure remains the baseline.
 The corrected request shapes permit growing reuse; current provider benefit
-is unconfirmed.  Remediation mechanism status: deterministic fixed point;
-external acceptance pending.
+is unconfirmed on committed code.  Remediation mechanism status: the configured
+gateway disproved automatic-plus-stable selection; rolling fallback correction
+and fresh acceptance are pending.
 
 * Evidence and cause
 
@@ -193,6 +195,23 @@ do not degrade to the stable guard alone.  Resolve this compatibility choice
 with a bounded capability probe and an adapter/API declaration, not broad
 error-catching retries on real turns.  If neither path is available, expose
 the limitation under F98-C2.
+
+The configured Opus 5.5 gateway accepted top-level automatic caching but fresh
+P2 read only the same 26,875-token stable prefix as tool history grew.  The
+compatible native Messages shape therefore includes an explicit marker on the
+latest eligible conversation block on every request, plus a preceding user
+boundary to preserve lookup of the prior written history when an append crosses
+the 20-block lookback window.  Keep the stable system/tool guard and supported
+top-level automatic field; all markers use the same adapter-owned TTL and at
+most three explicit slots.  Derive these temporary boundaries from the current
+serialized projection, with no durable cache owner or caller policy setting.
+Do not explicitly mark thinking/redacted-thinking or mutate replay inputs.
+
+The [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching][native API documentation]] permits combined automatic/explicit controls;
+a same-TTL marker on the last eligible block makes the automatic field a no-op.
+The bounded gateway diagnostic with last-two-user markers produced advancing
+reads and suffix writes.  That diagnostic selects the compatibility design;
+fresh P1/P2 on the committed, independently reviewed correction is still required.
 
 For F98-C3, choose only provider-eligible blocks.  Never insert explicit cache
 markers into signed thinking or change native replay order.  Exercise enough
