@@ -564,3 +564,26 @@ No provider benefit, capability-confirmed result, or Done status is claimed.
 log-read: =/private/tmp/e-feature98/canonical-r2-remediation.log:3760--3775=;
 =/private/tmp/e-feature98/current-config-r2-remediation.log:1--4=;
 =/private/tmp/e-feature98/evidence-acceptance-final.log:1--16=.
+
+* Review 3 remediation
+
+R3-F1 requires every supplied provider-total input count before emitting an
+aggregate.  Mixed known/unknown and entirely missing totals remain unavailable;
+all-known counts sum exactly.  Raw provider accounting remains intact.
+
+R3-F2 makes the conservative initial control mandatory for growing-cache
+qualification.  The public probe captures the entire first request before any
+tool result, then runs three sequential substantial tools.  Two later cache-read
+advances must exceed that full initial-input ceiling by provider granularity;
+static warming within the ceiling cannot pass.  The composed request/usage join
+witness covers missing control, static warming, one versus two qualifying
+advances, and Anthropic normalization.  Parent acceptance additionally caught
+an all-zero read sequence being mislabeled static-only; it now remains
+=cold-or-inconclusive=, preserving legitimate provider misses as unconfirmed.
+
+The plan clarifies this conservative control as an evidence procedure; product
+contracts and admitted delivery ownership are unchanged.  Parent accepted the
+settled correction after owner inspection.  Focused classifier/external-record
+checks pass 11/11 and the public join witness passes 1/1.  No provider request or
+user live-state mutation was made in this correction.  Exact-revision complete
+gates and independent Tick remain required.

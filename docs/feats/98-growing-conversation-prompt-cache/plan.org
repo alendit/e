@@ -292,6 +292,9 @@ Size that result to exceed the endpoint's documented cache granularity/minimum,
 and retain a content digest to identify the unchanged suffix.  Run immediately
 within the TTL and record every subturn, including reads and creation where
 available.  Separate a static-prefix control from the growing-history case.
+The public tool probe may conservatively bound static input by the entire first
+request, captured before any tool result.  Two later cache-read advances must
+exceed that initial total; warming within it cannot establish history reuse.
 
 The positive predicate is cache reads attributable to the earlier conversation
 suffix beyond the stable-only control, with provider granularity accounted for.

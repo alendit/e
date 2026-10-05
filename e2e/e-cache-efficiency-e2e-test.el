@@ -25,23 +25,109 @@
                    collect (plist-get segment :messages))
           (plist-get body :tools)))))
 
+(defun e-cache-efficiency-e2e--join-request-usage (requests usage)
+  "Join chronological REQUESTS and USAGE, marking the initial input control.
+The first captured request is sent before any tool result, so its total input
+is a conservative ceiling for stable instructions and initial context."
+  (when (= (length requests) (length usage))
+    (cl-loop for request in requests
+             for counters in usage
+             for index from 0
+             collect (append request
+                             (when (= index 0)
+                               '(:phase initial-context-baseline))
+                             counters))))
+
 (defun e-cache-efficiency-e2e--tool-register (registry)
-  "Register a data-dependent probe with substantial reproducible output."
+  "Register a three-step probe with substantial reproducible output."
   (e-tools-register
    registry :name "cache_probe"
-   :description "Read one synthetic cache probe. Call with step 1, then step 2."
+   :description "Read synthetic cache probes sequentially with steps 1, 2, and 3."
    :parameters '(:type "object" :required ["step"]
-                 :properties (:step (:type "integer" :enum [1 2])))
+                 :properties (:step (:type "integer" :enum [1 2 3])))
    :work
    (e-tools-cheap-work
     "e2e.cache-probe"
     (lambda (arguments)
       (let ((step (plist-get arguments :step)))
-        (unless (memq step '(1 2)) (error "Invalid probe step"))
+        (unless (memq step '(1 2 3)) (error "Invalid probe step"))
         (concat (format "PROBE-%d-CODE=%d\n" step (+ 731 step))
                 (mapconcat
                  (lambda (index) (format "row-%d-%d synthetic cache evidence" step index))
                  (number-sequence 1 1200) "\n")))))))
+
+(ert-deftest e-cache-efficiency-e2e-test-joined-initial-control-qualifies-history ()
+  "The public request/usage join rejects static warming and needs two advances."
+  (let* ((identity '(:provider openai :endpoint "https://openai.test/responses"
+                     :model "gpt-cache-test"
+                     :stable-prefix-fingerprint "stable"))
+         (requests (make-list 4 identity))
+         (usage '((:input-tokens 4096 :cached-input-tokens 0)
+                  (:input-tokens 10000 :cached-input-tokens 4096)
+                  (:input-tokens 14000 :cached-input-tokens 8192)
+                  (:input-tokens 18000 :cached-input-tokens 12288)))
+         (evidence
+          (e-cache-efficiency-e2e--join-request-usage requests usage)))
+    (should (= (length evidence) 4))
+    (should (eq (plist-get (car evidence) :phase) 'initial-context-baseline))
+    (should (equal (mapcar (lambda (event)
+                             (plist-get event :input-tokens))
+                           evidence)
+                   '(4096 10000 14000 18000)))
+    (should (equal (e-live-e2e--classify-growing-cache-evidence
+                    :evidence evidence)
+                   "growing-history-reuse"))
+    (let* ((anthropic-requests
+            (make-list
+             4 '(:provider anthropic
+                 :endpoint "https://anthropic.test/messages"
+                 :model "claude-cache-test"
+                 :stable-prefix-fingerprint "stable")))
+           (anthropic-usage
+            (mapcar (lambda (values)
+                      (plist-get (apply #'e-anthropic--usage-item values) :usage))
+                    '((18000 100 0 0) (30000 100 0 0)
+                      (42000 100 0 0) (54000 100 0 0))))
+           (cold-evidence
+            (e-cache-efficiency-e2e--join-request-usage
+             anthropic-requests anthropic-usage)))
+      (should (equal (mapcar #'e-live-e2e--cache-total-input-tokens
+                             cold-evidence)
+                     '(18000 30000 42000 54000)))
+      (should (equal (mapcar (lambda (event)
+                               (plist-get event :cached-input-tokens))
+                             cold-evidence)
+                     '(0 0 0 0)))
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence cold-evidence)
+                     "cold-or-inconclusive")))
+    (let* ((static-usage '((:input-tokens 4096 :cached-input-tokens 0)
+                           (:input-tokens 10000 :cached-input-tokens 1024)
+                           (:input-tokens 14000 :cached-input-tokens 2048)))
+           (static-evidence
+            (e-cache-efficiency-e2e--join-request-usage
+             (seq-take requests 3) static-usage)))
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence static-evidence)
+                     "static-prefix-only")))
+    (let* ((one-advance-usage
+            '((:input-tokens 4096 :cached-input-tokens 0)
+              (:input-tokens 10000 :cached-input-tokens 4096)
+              (:input-tokens 14000 :cached-input-tokens 8192)
+              (:input-tokens 18000 :cached-input-tokens 8192)))
+           (one-advance
+            (e-cache-efficiency-e2e--join-request-usage
+             requests one-advance-usage)))
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence one-advance)
+                     "insufficient-history-reuse")))
+    (let ((missing-control (copy-tree evidence)))
+      (cl-remf (car missing-control) :phase)
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence missing-control)
+                     "missing-initial-control")))
+    (should-not (e-cache-efficiency-e2e--join-request-usage
+                 requests (butlast usage)))))
 
 (ert-deftest e-cache-efficiency-e2e-test-growing-tool-history ()
   "Subturn cache reads advance beyond the first unchanged-history boundary."
@@ -95,12 +181,13 @@
                 (let* ((result
                         (e-live-e2e--prompt-batch-before-deadline
                          harness session-id
-                         (concat "Call cache_probe with step 1. Wait for its result, "
-                                 "then call cache_probe with step 2. Finally return "
-                                 "only the sum of their PROBE codes. Do not call other tools.")
+                         (concat "Call cache_probe with step 1 and wait for its result. "
+                                 "Then call step 2 and wait for its result, then step 3. "
+                                 "Finally return only the sum of their PROBE codes. "
+                                 "Do not call other tools.")
                          deadline))
                        (answer (e-live-e2e--assistant-content result)))
-                  (should (string-match-p "1465" answer))
+                  (should (string-match-p "2199" answer))
                   (setq semantic-result "pass")))
             (error (setq condition caught)))
         (let* ((usage (mapcar (lambda (event) (plist-get event :payload))
@@ -108,9 +195,7 @@
                               harness session-id 'token-usage)))
                (ordered (reverse requests))
                (evidence
-                (and (= (length ordered) (length usage))
-                     (cl-mapcar (lambda (request counters) (append request counters))
-                                ordered usage))))
+                (e-cache-efficiency-e2e--join-request-usage ordered usage)))
           (setq cache-result
                 (e-live-e2e--classify-growing-cache-evidence :evidence evidence))
           (message "E98_CACHE_EVIDENCE %s"

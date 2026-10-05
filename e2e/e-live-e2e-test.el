@@ -1320,61 +1320,66 @@ cache providers report their total in `:input-tokens'."
 
 (cl-defun e-live-e2e--classify-growing-cache-evidence
     (&key evidence (granularity 128))
-  "Classify ordered request EVIDENCE without mistaking static reads for growth.
-GRANULARITY is the provider's cache-read reporting step.  A cold request or
-missing counters leaves reuse unconfirmed; it does not prove a product defect."
+  "Classify ordered request EVIDENCE against an explicit initial control.
+The first event must use `stable-only-baseline' or
+`initial-context-baseline'; later reads only count as history reuse when each
+advance clears that total-input ceiling by GRANULARITY."
   (let* ((baseline (car evidence))
-         (static-only-baseline-p
-          (eq (plist-get baseline :phase) 'stable-only-baseline))
+         (baseline-phase (plist-get baseline :phase))
+         (control-present-p
+          (memq baseline-phase '(stable-only-baseline initial-context-baseline)))
          (static-ceiling
-          (and static-only-baseline-p
+          (and control-present-p
                (e-live-e2e--cache-total-input-tokens baseline))))
     (cond
-      ((or (< (length evidence) 3)
-           (not (cl-every
-                 (lambda (event)
-                   (and (numberp
-                         (e-live-e2e--cache-total-input-tokens event))
-                        (numberp (plist-get event :cached-input-tokens))
-                        (plist-get event :stable-prefix-fingerprint)))
-                 evidence)))
-       "unavailable")
-      ((seq-some (lambda (event) (plist-get event :expired)) evidence)
-       "expired")
-      ((not (cl-every
-             (lambda (event)
-               (cl-every (lambda (key)
-                           (equal (plist-get event key)
-                                  (plist-get (car evidence) key)))
-                         '(:stable-prefix-fingerprint :provider :endpoint :model)))
-             evidence))
-       "prefix-changed")
-      ((not (cl-loop for previous in evidence
-                     for current in (cdr evidence)
-                     always (> (e-live-e2e--cache-total-input-tokens current)
-                               (e-live-e2e--cache-total-input-tokens previous))))
-       "history-not-growing")
-      ((and static-ceiling
-            (not (cl-every
-                  (lambda (event)
-                    (and (<= (plist-get event :cached-input-tokens)
-                             (e-live-e2e--cache-total-input-tokens event))
-                         (>= (plist-get event :cached-input-tokens)
-                             (+ static-ceiling granularity))))
-                  (cdr evidence))))
-       "static-prefix-only")
-      ((cl-loop for previous in evidence
-                for current in (cdr evidence)
-                count (>= (- (plist-get current :cached-input-tokens)
-                              (plist-get previous :cached-input-tokens))
-                           granularity) into increases
-                finally return (>= increases 2))
-       "growing-history-reuse")
-      ((cl-every (lambda (event)
-                   (> (plist-get event :cached-input-tokens) 0))
-                 evidence)
-       "static-prefix-only")
-      (t "cold-or-inconclusive"))))
+     ((not control-present-p) "missing-initial-control")
+     ((or (< (length evidence) 3)
+          (not (cl-every
+                (lambda (event)
+                  (let ((total (e-live-e2e--cache-total-input-tokens event))
+                        (cached (plist-get event :cached-input-tokens)))
+                    (and (numberp total)
+                         (numberp cached)
+                         (<= cached total)
+                         (plist-get event :stable-prefix-fingerprint))))
+                evidence)))
+      "unavailable")
+     ((seq-some (lambda (event) (plist-get event :expired)) evidence)
+      "expired")
+     ((not (cl-every
+            (lambda (event)
+              (cl-every (lambda (key)
+                          (equal (plist-get event key)
+                                 (plist-get baseline key)))
+                        '(:stable-prefix-fingerprint :provider :endpoint :model)))
+            evidence))
+      "prefix-changed")
+     ((not (cl-loop for previous in evidence
+                    for current in (cdr evidence)
+                    always (> (e-live-e2e--cache-total-input-tokens current)
+                              (e-live-e2e--cache-total-input-tokens previous))))
+      "history-not-growing")
+     ((>= (cl-loop for previous in evidence
+                   for current in (cdr evidence)
+                   count (and (>= (- (plist-get current :cached-input-tokens)
+                                     (plist-get previous :cached-input-tokens))
+                                  granularity)
+                              (>= (plist-get current :cached-input-tokens)
+                                  (+ static-ceiling granularity)))
+                   into advances
+                   finally return advances)
+         2)
+      "growing-history-reuse")
+     ((cl-every (lambda (event)
+                  (= (plist-get event :cached-input-tokens) 0))
+                evidence)
+      "cold-or-inconclusive")
+     ((cl-every (lambda (event)
+                  (< (plist-get event :cached-input-tokens)
+                     (+ static-ceiling granularity)))
+                (cdr evidence))
+      "static-prefix-only")
+     (t "insufficient-history-reuse"))))
 
 (defun e-live-e2e--cache-evidence-identity (event)
   "Return EVENT's complete provider/request/prefix identity, or nil."
@@ -1585,8 +1590,9 @@ rebuild before warming."
        (t "pass")))))
 
 (ert-deftest e-live-e2e-test-growing-classifier-rejects-observed-fixed-ceiling ()
-  "A growing input and a static cache ceiling cannot establish suffix reuse."
-  (let ((fixed '((:input-tokens 66648 :cached-input-tokens 52493
+  "Only repeated reads beyond an explicit initial ceiling prove suffix reuse."
+  (let ((fixed '((:phase initial-context-baseline
+                  :input-tokens 66648 :cached-input-tokens 52493
                   :stable-prefix-fingerprint "s")
                  (:input-tokens 112384 :cached-input-tokens 52493
                   :stable-prefix-fingerprint "s")
@@ -1594,39 +1600,83 @@ rebuild before warming."
                   :stable-prefix-fingerprint "s"))))
     (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
                    "static-prefix-only"))
+    (let ((missing-control (copy-tree fixed)))
+      (cl-remf (car missing-control) :phase)
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence missing-control)
+                     "missing-initial-control")))
     (setf (plist-get (nth 1 fixed) :cached-input-tokens) 110000
           (plist-get (nth 2 fixed) :cached-input-tokens) 114000)
     (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
                    "growing-history-reuse"))
     (setf (plist-get (nth 1 fixed) :cached-input-tokens) nil)
     (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
-                   "unavailable"))))
+                   "unavailable")))
+  (let ((static-only
+         '((:phase initial-context-baseline :input-tokens 4096
+            :cached-input-tokens 0 :stable-prefix-fingerprint "s")
+           (:input-tokens 10000 :cached-input-tokens 1024
+            :stable-prefix-fingerprint "s")
+           (:input-tokens 14000 :cached-input-tokens 2048
+            :stable-prefix-fingerprint "s"))))
+    (should (equal (e-live-e2e--classify-growing-cache-evidence
+                    :evidence static-only)
+                   "static-prefix-only")))
+  (let ((one-advance
+         '((:phase initial-context-baseline :input-tokens 4096
+            :cached-input-tokens 0 :stable-prefix-fingerprint "s")
+           (:input-tokens 10000 :cached-input-tokens 4096
+            :stable-prefix-fingerprint "s")
+           (:input-tokens 14000 :cached-input-tokens 8192
+            :stable-prefix-fingerprint "s")
+           (:input-tokens 18000 :cached-input-tokens 8192
+            :stable-prefix-fingerprint "s"))))
+    (should (equal (e-live-e2e--classify-growing-cache-evidence
+                    :evidence one-advance)
+                   "insufficient-history-reuse")))
+  (let ((warm-then-growing
+         '((:phase initial-context-baseline :input-tokens 4096
+            :cached-input-tokens 0 :stable-prefix-fingerprint "s")
+           (:input-tokens 10000 :cached-input-tokens 4096
+            :stable-prefix-fingerprint "s")
+           (:input-tokens 14000 :cached-input-tokens 8192
+            :stable-prefix-fingerprint "s")
+           (:input-tokens 18000 :cached-input-tokens 12288
+            :stable-prefix-fingerprint "s"))))
+    (should (equal (e-live-e2e--classify-growing-cache-evidence
+                    :evidence warm-then-growing)
+                   "growing-history-reuse"))))
 
 (ert-deftest e-live-e2e-test-growing-classifier-uses-provider-total-input ()
   "Growing reuse uses total Anthropic context and preserves raw counters."
-  (let* ((requests '((:provider anthropic :endpoint "https://anthropic.test/messages"
-                      :model "claude-cache-test" :stable-prefix-fingerprint "s")
-                     (:provider anthropic :endpoint "https://anthropic.test/messages"
-                      :model "claude-cache-test" :stable-prefix-fingerprint "s")
-                     (:provider anthropic :endpoint "https://anthropic.test/messages"
-                      :model "claude-cache-test" :stable-prefix-fingerprint "s")))
+  (let* ((requests
+          '((:phase initial-context-baseline :provider anthropic
+             :endpoint "https://anthropic.test/messages"
+             :model "claude-cache-test" :stable-prefix-fingerprint "s")
+            (:provider anthropic :endpoint "https://anthropic.test/messages"
+             :model "claude-cache-test" :stable-prefix-fingerprint "s")
+            (:provider anthropic :endpoint "https://anthropic.test/messages"
+             :model "claude-cache-test" :stable-prefix-fingerprint "s")
+            (:provider anthropic :endpoint "https://anthropic.test/messages"
+             :model "claude-cache-test" :stable-prefix-fingerprint "s")))
          (payloads
           (mapcar (lambda (values)
                     (plist-get (apply #'e-anthropic--usage-item values) :usage))
-                  '((18000 100 0 0) (12000 100 18000 0) (12000 100 30000 0))))
+                  '((18000 100 0 0) (12000 100 18000 0)
+                    (12000 100 30000 0) (12000 100 42000 0))))
          (evidence (cl-mapcar (lambda (request usage)
                                 (append request usage))
                               requests payloads)))
     (should (equal (mapcar (lambda (event)
                              (plist-get event :input-tokens))
                            evidence)
-                   '(18000 12000 12000)))
+                   '(18000 12000 12000 12000)))
     (should (equal (mapcar (lambda (event)
                              (plist-get event :context-input-tokens))
                            evidence)
-                   '(18000 30000 42000)))
+                   '(18000 30000 42000 54000)))
     (should (equal (mapcar #'e-live-e2e--cache-total-input-tokens evidence)
-                   '(18000 30000 42000)))
+                   '(18000 30000 42000 54000)))
     (should (equal (e-live-e2e--classify-growing-cache-evidence
                     :evidence evidence)
                    "growing-history-reuse"))
@@ -1635,23 +1685,62 @@ rebuild before warming."
                  :scenario "provider-total-input" :provider 'anthropic
                  :usage-payloads payloads)
                 :total-input-tokens)
-               90000))
+               144000))
+    (let* ((missing-usage
+            (plist-get (e-anthropic--usage-item 12000 100 18000 nil) :usage))
+           (missing-cached-usage (copy-tree (car payloads)))
+           (missing-cached-record nil)
+           (partial-record
+            (e-live-e2e--external-evidence-record
+             :scenario "partial-total" :provider 'anthropic
+             :usage-payloads (list (car payloads) missing-usage)))
+           (unknown-record
+            (e-live-e2e--external-evidence-record
+             :scenario "unknown-total" :provider 'anthropic
+             :usage-payloads (list missing-usage)))
+           (empty-record
+            (e-live-e2e--external-evidence-record
+             :scenario "missing-usage" :provider 'anthropic)))
+      (setf (plist-get missing-cached-usage :cached-input-tokens) nil)
+      (setq missing-cached-record
+            (e-live-e2e--external-evidence-record
+             :scenario "partial-cache" :provider 'anthropic
+             :usage-payloads (list (car payloads) missing-cached-usage)))
+      (should (equal (plist-get partial-record :total-input-tokens)
+                     "unavailable"))
+      (should (equal (plist-get partial-record :cached-input-tokens) 18000))
+      (should (= (plist-get missing-cached-record :total-input-tokens) 36000))
+      (should (equal (plist-get missing-cached-record :cached-input-tokens)
+                     "unavailable"))
+      (should (equal (plist-get unknown-record :total-input-tokens)
+                     "unavailable"))
+      (should (equal (plist-get empty-record :total-input-tokens)
+                     "unavailable"))
+      (should (equal (plist-get empty-record :cached-input-tokens)
+                     "unavailable"))
+      (should (= (plist-get (car payloads) :input-tokens) 18000))
+      (should (= (plist-get (car payloads) :cached-input-tokens) 0))
+      (should (= (plist-get (car payloads) :cache-creation-input-tokens) 0)))
     (let ((known-components (copy-sequence (nth 1 evidence))))
       (cl-remf known-components :context-input-tokens)
       (should (= (e-live-e2e--cache-total-input-tokens known-components) 30000)))
-    (let* ((missing-usage
-            (plist-get (e-anthropic--usage-item 12000 100 18000 nil) :usage))
-           (missing (append (copy-sequence (nth 1 requests)) missing-usage)))
+    (let ((missing
+           (append (copy-sequence (nth 1 requests))
+                   (plist-get (e-anthropic--usage-item 12000 100 18000 nil)
+                              :usage))))
       (should-not (e-live-e2e--cache-total-input-tokens missing))
       (should (equal (e-live-e2e--classify-growing-cache-evidence
                       :evidence (list (car evidence) missing (nth 2 evidence)))
                      "unavailable")))
     (let ((openai-evidence
-           '((:provider openai :input-tokens 18000 :cached-input-tokens 0
+           '((:phase initial-context-baseline :provider openai
+              :input-tokens 18000 :cached-input-tokens 0
               :stable-prefix-fingerprint "s")
              (:provider openai :input-tokens 30000 :cached-input-tokens 18000
               :stable-prefix-fingerprint "s")
              (:provider openai :input-tokens 42000 :cached-input-tokens 30000
+              :stable-prefix-fingerprint "s")
+             (:provider openai :input-tokens 54000 :cached-input-tokens 42000
               :stable-prefix-fingerprint "s"))))
       (should (equal (e-live-e2e--classify-growing-cache-evidence
                       :evidence openai-evidence)
@@ -1967,11 +2056,17 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                             collect (plist-get metadata
                                                 :websocket-connection-id))))))
          (input-token-values
-          (delq nil
-                (mapcar (lambda (payload)
-                          (e-live-e2e--cache-total-input-tokens
-                           (append (list :provider-id provider) payload)))
-                        usage-payloads)))
+          (and usage-payloads
+               (cl-every
+                (lambda (payload)
+                  (numberp
+                   (e-live-e2e--cache-total-input-tokens
+                    (append (list :provider-id provider) payload))))
+                usage-payloads)
+               (mapcar (lambda (payload)
+                         (e-live-e2e--cache-total-input-tokens
+                          (append (list :provider-id provider) payload)))
+                       usage-payloads)))
          (cached-token-values
           (and usage-payloads
                (cl-every (lambda (payload)
