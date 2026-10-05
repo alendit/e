@@ -1081,6 +1081,71 @@ immediate curation recovery transcript and its unexecuted ordinary calls."
         :description (plist-get tool :description)
         :input_schema (plist-get tool :parameters)))
 
+(defun e-anthropic--cacheable-conversation-block-p (role block)
+  "Return non-nil when ROLE/BLOCK is an eligible rolling cache boundary."
+  (let ((type (plist-get block :type))
+        (content (plist-get block :content)))
+    (cond
+     ((and (member role '("user" "assistant"))
+           (equal type "text"))
+      (let ((text (plist-get block :text)))
+        (and (stringp text) (not (string-empty-p text)))))
+     ((and (equal role "assistant") (equal type "tool_use")) t)
+     ((and (equal role "user") (equal type "tool_result"))
+      (or (and (stringp content) (not (string-empty-p content)))
+          (and (vectorp content) (not (stringp content))
+               (> (length content) 0))))
+     ((and (equal role "user") (member type '("image" "document"))) t)
+     (t nil))))
+
+(defun e-anthropic--rolling-cache-boundaries (messages)
+  "Return up to two eligible rolling boundary positions in native MESSAGES.
+The newest eligible block advances the cache.  A prior user block keeps the
+last written boundary reachable after a growing suffix crosses the lookback."
+  (let ((messages (if (and (vectorp messages) (not (stringp messages)))
+                      messages
+                    (vconcat messages)))
+        eligible)
+    (cl-loop for message across messages
+             for message-index from 0
+             for role = (plist-get message :role)
+             for content = (plist-get message :content)
+             when (and (vectorp content) (not (stringp content)))
+             do (cl-loop for block across content
+                         for content-index from 0
+                         when (e-anthropic--cacheable-conversation-block-p
+                               role block)
+                         do (push (list :message-index message-index
+                                        :content-index content-index
+                                        :role role)
+                                  eligible)))
+    (setq eligible (nreverse eligible))
+    (let* ((latest (car (last eligible)))
+           (latest-message-index (plist-get latest :message-index))
+           (previous-user
+            (and latest
+                 (seq-find
+                  (lambda (boundary)
+                    (and (equal (plist-get boundary :role) "user")
+                         (< (plist-get boundary :message-index)
+                            latest-message-index)))
+                  (reverse eligible)))))
+      (delq nil (list previous-user latest)))))
+
+(defun e-anthropic--rolling-cache-projection (messages cache-control)
+  "Return a copied native MESSAGES vector with rolling CACHE-CONTROL markers."
+  (let* ((messages (copy-tree messages t))
+         (boundaries (e-anthropic--rolling-cache-boundaries messages)))
+    (dolist (boundary boundaries)
+      (let* ((message (aref messages (plist-get boundary :message-index)))
+             (content (plist-get message :content))
+             (content-index (plist-get boundary :content-index))
+             (block (aref content content-index)))
+        (aset content content-index
+              (append block
+                      (list :cache_control (copy-tree cache-control))))))
+    (list :messages messages :boundaries boundaries)))
+
 (defun e-anthropic--tool-definitions (tools)
   "Map backend-neutral TOOLS to Messages tool definitions."
   (vconcat (mapcar #'e-anthropic--tool-definition tools)))
@@ -1270,6 +1335,14 @@ placement are adapter-owned."
                          messages options cache-control))
          (turns (seq-remove #'e-anthropic--system-message-p messages))
          (tool-defs (e-anthropic--request-tool-definitions tools options))
+         (native-messages
+          (vconcat
+           (e-anthropic--messages
+            turns
+            (plist-get options :provider-request-replay-items)
+            (plist-get options :provider-request-skipped-calls))))
+         (rolling-projection
+          (e-anthropic--rolling-cache-projection native-messages cache-control))
          (body (list :model (or (plist-get options :model)
                                 e-anthropic-default-model)
                      :max_tokens (or (plist-get options :max-tokens)
@@ -1292,15 +1365,8 @@ placement are adapter-owned."
               (append (aref tool-defs last)
                       (list :cache_control cache-control)))))
     (setq body (append body
-                        (list :messages (vconcat
-                                         (e-anthropic--messages
-                                          turns
-                                          (plist-get
-                                           options
-                                           :provider-request-replay-items)
-                                          (plist-get
-                                           options
-                                           :provider-request-skipped-calls))))))
+                        (list :messages
+                              (plist-get rolling-projection :messages))))
     ;; Extended thinking is opt-outable per request: some gateway models (e.g.
     ;; Haiku) reject `adaptive' thinking outright.  `:anthropic-thinking' nil
     ;; omits the thinking + effort knobs entirely; absent it, keep the adaptive
@@ -1320,6 +1386,43 @@ placement are adapter-owned."
       (setq body (append body (list :tools tool-defs))))
     body))
 
+(defun e-anthropic--message-cache-boundaries (messages)
+  "Return the explicit rolling positions present in native MESSAGES."
+  (let (boundaries)
+    (cl-loop for message across messages
+             for message-index from 0
+             for content = (plist-get message :content)
+             when (and (vectorp content) (not (stringp content)))
+             do (cl-loop for block across content
+                         for content-index from 0
+                         when (plist-member block :cache_control)
+                         do (push (list :role (plist-get message :role)
+                                        :message-index message-index
+                                        :content-index content-index)
+                                  boundaries)))
+    (nreverse boundaries)))
+
+(defun e-anthropic--cache-breakpoint-description
+    (mode stable-guard boundaries)
+  "Describe MODE, STABLE-GUARD, and the selected rolling BOUNDARIES."
+  (if (eq mode 'automatic)
+      (format "automatic+%s+rolling-%d[%s]"
+              (pcase stable-guard
+                ('system "stable-system")
+                ('tools "stable-tools")
+                (_ "no-stable-guard"))
+              (length boundaries)
+              (if boundaries
+                  (mapconcat
+                   (lambda (boundary)
+                     (format "%s@%d.%d"
+                             (plist-get boundary :role)
+                             (plist-get boundary :message-index)
+                             (plist-get boundary :content-index)))
+                   boundaries ",")
+                "none"))
+    "unavailable"))
+
 (defun e-anthropic--request-metadata (options body &optional messages)
   "Return sanitized Anthropic request metadata for OPTIONS and BODY.
 MESSAGES is the current neutral projection used to identify a stable segment."
@@ -1335,19 +1438,32 @@ MESSAGES is the current neutral projection used to identify a stable segment."
                  (cl-some (lambda (tool)
                             (plist-member tool :cache_control))
                           (append (plist-get body :tools) nil))))
+           (stable-guard (cond (system-guard-p 'system)
+                               (tool-guard-p 'tools)
+                               (t 'none)))
+           (rolling-boundaries
+            (e-anthropic--message-cache-boundaries
+             (plist-get body :messages)))
+           (rolling-marker-count (length rolling-boundaries))
+           (explicit-marker-count
+            (+ rolling-marker-count (if (eq stable-guard 'none) 0 1)))
            (mode (if (plist-member body :cache_control)
                      'automatic
                    'unavailable))
            (breakpoint
-            (cond (system-guard-p 'automatic-plus-stable-system)
-                  (tool-guard-p 'automatic-plus-stable-tools)
-                  ((plist-member body :cache_control)
-                   'automatic-last-eligible-block)
-                  (t 'none))))
+            (e-anthropic--cache-breakpoint-description
+             mode stable-guard rolling-boundaries)))
       (setq metadata
             (append metadata
                     (list :anthropic-cache-mode mode
                           :anthropic-cache-breakpoint breakpoint
+                          :anthropic-cache-stable-guard stable-guard
+                          :anthropic-cache-rolling-marker-count
+                          rolling-marker-count
+                          :anthropic-cache-explicit-marker-count
+                          explicit-marker-count
+                          :anthropic-cache-rolling-boundaries
+                          rolling-boundaries
                           :full-history t)))
       (when-let* ((breakpoint-segment
                   (and system-guard-p
@@ -1398,6 +1514,18 @@ MESSAGES is the current neutral projection used to identify a stable segment."
                               (plist-get metadata :anthropic-cache-mode)
                               :anthropic-cache-breakpoint
                               (plist-get metadata :anthropic-cache-breakpoint)
+                              :anthropic-cache-stable-guard
+                              (plist-get metadata
+                                         :anthropic-cache-stable-guard)
+                              :anthropic-cache-rolling-marker-count
+                              (plist-get metadata
+                                         :anthropic-cache-rolling-marker-count)
+                              :anthropic-cache-explicit-marker-count
+                              (plist-get metadata
+                                         :anthropic-cache-explicit-marker-count)
+                              :anthropic-cache-rolling-boundaries
+                              (plist-get metadata
+                                         :anthropic-cache-rolling-boundaries)
                               :anthropic-cache-ttl
                               (plist-get metadata :anthropic-cache-ttl)
                               :anthropic-container-id-present

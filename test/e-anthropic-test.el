@@ -333,6 +333,50 @@
       (list :tools (plist-get body :tools)
             :system (seq-take system (1+ breakpoint))))))
 
+(defun e-anthropic-test--messages-without-cache-controls (messages)
+  "Return a copy of native MESSAGES with request-local cache controls removed."
+  (let ((copy (copy-tree messages t)))
+    (cl-loop for message across copy
+             for content = (plist-get message :content)
+             when (and (vectorp content) (not (stringp content)))
+             do (cl-loop for block across content
+                         for index from 0
+                         do (let ((semantic-block (copy-sequence block)))
+                              (cl-remf semantic-block :cache_control)
+                              (aset content index semantic-block))))
+    copy))
+
+(defun e-anthropic-test--blocks-without-cache-controls (blocks)
+  "Return a copy of native BLOCKS with request-local cache controls removed."
+  (let ((copy (copy-tree blocks t)))
+    (cl-loop for block across copy
+             for index from 0
+             do (let ((semantic-block (copy-sequence block)))
+                  (cl-remf semantic-block :cache_control)
+                  (aset copy index semantic-block)))
+    copy))
+
+(defun e-anthropic-test--body-without-rolling-cache-controls (body)
+  "Return BODY with rolling message controls removed, preserving stable guards."
+  (let ((copy (copy-tree body t)))
+    (plist-put copy :messages
+               (e-anthropic-test--messages-without-cache-controls
+                (plist-get copy :messages)))
+    copy))
+
+(defun e-anthropic-test--explicit-cache-control-count (body)
+  "Count explicit block-level cache controls in request BODY."
+  (+ (cl-count-if (lambda (block) (plist-member block :cache_control))
+                  (append (plist-get body :system) nil))
+     (cl-count-if (lambda (tool) (plist-member tool :cache_control))
+                  (append (plist-get body :tools) nil))
+     (cl-loop for message across (plist-get body :messages)
+              for content = (plist-get message :content)
+              when (and (vectorp content) (not (stringp content)))
+              sum (cl-count-if (lambda (block)
+                                 (plist-member block :cache_control))
+                               (append content nil)))))
+
 (defun e-anthropic-test--tool-definitions-without-cache-control (body)
   "Return BODY's tool definitions without their cache boundary metadata."
   (mapcar (lambda (tool)
@@ -351,14 +395,237 @@
     (e-anthropic--context-curation-effect
      (plist-get call :input) (plist-get call :id) blocks)))
 
+(ert-deftest e-anthropic-test-request-body-rolls-cache-across-distinct-messages ()
+  "A stable guard and two moving boundaries retain semantic message content."
+  (let* ((input '((:role system :content "Stable guidance.")
+                  (:role user :content "Earlier user turn.")
+                  (:role assistant :content "Earlier response.")))
+         (input-copy (copy-tree input t))
+         (options '(:model "claude-test" :max-tokens 1024))
+         (body (e-anthropic-request-body :messages input :options options))
+         (messages (plist-get body :messages))
+         (metadata (e-anthropic--request-metadata options body input)))
+    (should (equal input input-copy))
+    (should (equal (e-anthropic-test--messages-without-cache-controls messages)
+                   (vconcat
+                    (e-anthropic--messages
+                     (seq-remove #'e-anthropic--system-message-p input)))))
+    (should (equal (plist-get (aref (plist-get body :system) 0) :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (plist-get (aref (plist-get (aref messages 0) :content) 0)
+                              :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (plist-get (aref (plist-get (aref messages 1) :content) 0)
+                              :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (= (e-anthropic-test--explicit-cache-control-count body) 3))
+    (should (equal (plist-get body :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (plist-get metadata :anthropic-cache-stable-guard) 'system))
+    (should (= (plist-get metadata :anthropic-cache-rolling-marker-count) 2))
+    (should (= (plist-get metadata :anthropic-cache-explicit-marker-count) 3))
+    (should (equal (plist-get metadata :anthropic-cache-rolling-boundaries)
+                   '((:role "user" :message-index 0 :content-index 0)
+                     (:role "assistant" :message-index 1 :content-index 0))))
+    (should (equal (plist-get metadata :anthropic-cache-breakpoint)
+                   "automatic+stable-system+rolling-2[user@0.0,assistant@1.0]"))
+    (should-not (plist-member metadata :anthropic-cache-benefit))))
+
+(ert-deftest e-anthropic-test-request-body-selects-native-tool-boundaries ()
+  "Tool-only requests keep a tool guard and mark eligible user/tool content."
+  (let* ((tool '(:name "inspect" :description "Inspect a path."
+                 :parameters (:type "object")))
+         (options '(:model "claude-test" :max-tokens 1024
+                    :prompt-cache nil :prompt-cache-default nil
+                    :prompt-cache-mode none :prompt-cache-breakpoint-mode none
+                    :prompt-cache-key "caller-key"
+                    :prompt-cache-retention "24h" :prompt-cache-ttl "5m"))
+         (pending-call
+          (e-anthropic-request-body
+           :messages '((:role user :content "Inspect this path.")
+                       (:role tool-call
+                        :content (:id "call-one" :name "inspect"
+                                  :arguments (:path "one"))))
+           :options options :tools (list tool)))
+         (pending-messages (plist-get pending-call :messages))
+         (result-call
+          (e-anthropic-request-body
+           :messages '((:role user :content "Inspect this path.")
+                       (:role tool-call
+                        :content (:id "call-one" :name "inspect"
+                                  :arguments (:path "one")))
+                       (:role tool
+                        :content (:tool-call-id "call-one"
+                                  :content "Result body.")))
+           :options options :tools (list tool)))
+         (result-messages (plist-get result-call :messages))
+         (metadata (e-anthropic--request-metadata
+                    options result-call nil)))
+    (should-not (plist-member pending-call :system))
+    (should (equal (plist-get pending-call :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (plist-get (aref (plist-get pending-call :tools) 0)
+                              :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (mapcar (lambda (message)
+                             (plist-get message :role))
+                           (append pending-messages nil))
+                   '("user" "assistant")))
+    (should (equal (plist-get (aref (plist-get (aref pending-messages 1)
+                                              :content)
+                                    0)
+                              :type)
+                   "tool_use"))
+    (should (equal (plist-get (aref (plist-get (aref pending-messages 1)
+                                              :content)
+                                    0)
+                              :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal (mapcar (lambda (boundary)
+                             (plist-get boundary :message-index))
+                           (plist-get (e-anthropic--request-metadata
+                                       options pending-call nil)
+                                      :anthropic-cache-rolling-boundaries))
+                   '(0 1)))
+    (should (= (e-anthropic-test--explicit-cache-control-count pending-call) 3))
+    (should (equal (mapcar (lambda (message)
+                             (plist-get message :role))
+                           (append result-messages nil))
+                   '("user" "assistant" "user")))
+    (should-not (plist-member (aref (plist-get (aref result-messages 1) :content)
+                                    0)
+                              :cache_control))
+    (should (equal (plist-get (aref (plist-get (aref result-messages 2)
+                                              :content)
+                                    0)
+                              :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (= (e-anthropic-test--explicit-cache-control-count result-call) 3))
+    (should (eq (plist-get metadata :anthropic-cache-stable-guard) 'tools))
+    (should (= (plist-get metadata :anthropic-cache-explicit-marker-count) 3))))
+
+(ert-deftest e-anthropic-test-request-body-retains-written-boundary-past-lookback ()
+  "A previously written user marker remains when growth exceeds twenty blocks."
+  (let* ((previous-user '(:role user :content "Previously written boundary."))
+         (options '(:model "claude-test" :max-tokens 1024
+                    :prompt-cache nil :prompt-cache-mode none
+                    :prompt-cache-ttl "5m"))
+         (first-body
+          (e-anthropic-request-body :messages (list previous-user)
+                                    :options options))
+         (messages
+          (append (list previous-user)
+                  (mapcar (lambda (index)
+                            (list :role 'assistant
+                                  :content (format "Intermediate block %d." index)))
+                          (number-sequence 1 21))
+                  '((:role user :content "Latest user boundary."))))
+         (messages-copy (copy-tree messages t))
+         (body (e-anthropic-request-body :messages messages :options options))
+         (wire (plist-get body :messages))
+         (boundaries (e-anthropic--message-cache-boundaries wire)))
+    (should (equal (plist-get (aref (plist-get (aref (plist-get first-body :messages)
+                                                    0)
+                                            :content)
+                                  0)
+                   :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (equal messages messages-copy))
+    (should (= (length wire) 23))
+    (should (equal (mapcar (lambda (boundary)
+                             (plist-get boundary :message-index))
+                           boundaries)
+                   '(0 22)))
+    (should (> (- (plist-get (cadr boundaries) :message-index)
+                  (plist-get (car boundaries) :message-index))
+               20))
+    (should (equal (plist-get (aref (plist-get (aref wire 0) :content) 0)
+                              :cache_control)
+                   (plist-get (aref (plist-get
+                                     (aref (plist-get first-body :messages) 0)
+                                     :content)
+                                    0)
+                             :cache_control)))
+    (should (equal (plist-get (aref (plist-get (aref wire 22) :content) 0)
+                              :cache_control)
+                   '(:type "ephemeral" :ttl "1h")))
+    (should (= (e-anthropic-test--explicit-cache-control-count body) 2))
+    (should (equal (e-anthropic-test--messages-without-cache-controls wire)
+                   (vconcat (e-anthropic--messages messages))))))
+
+(ert-deftest e-anthropic-test-rolling-cache-skips-empty-and-thinking-blocks ()
+  "Rolling markers skip empty text and signed or redacted thinking blocks."
+  (let* ((messages
+          [(:role "user"
+            :content [(:type "text" :text "Prior user boundary.")])
+           (:role "assistant"
+            :content [(:type "text" :text "Visible answer.")
+                      (:type "text" :text "")
+                      (:type "thinking" :thinking "Signed thought."
+                       :signature "sig-rolling")
+                      (:type "redacted_thinking" :data "opaque-redaction")])])
+         (messages-copy (copy-tree messages t))
+         (cache-control '(:type "ephemeral" :ttl "1h"))
+         (projection
+          (e-anthropic--rolling-cache-projection messages cache-control))
+         (wire (plist-get projection :messages))
+         (user-blocks (plist-get (aref wire 0) :content))
+         (assistant-blocks (plist-get (aref wire 1) :content))
+         (ineligible
+          (e-anthropic--rolling-cache-projection
+           [(:role "assistant"
+             :content [(:type "text" :text "")
+                       (:type "thinking" :thinking "Private.")
+                       (:type "redacted_thinking" :data "opaque")])]
+           cache-control))
+         (multimodal
+          (e-anthropic--rolling-cache-projection
+           [(:role "user"
+             :content [(:type "image" :source (:type "base64"))
+                       (:type "document" :source (:type "url"))])]
+           cache-control))
+         (multimodal-blocks (plist-get (aref (plist-get multimodal :messages) 0)
+                                      :content)))
+    (should (equal messages messages-copy))
+    (should (equal (mapcar (lambda (boundary)
+                             (list (plist-get boundary :message-index)
+                                   (plist-get boundary :content-index)))
+                           (plist-get projection :boundaries))
+                   '((0 0) (1 0))))
+    (should (equal (plist-get (aref user-blocks 0) :cache_control)
+                   cache-control))
+    (should (equal (plist-get (aref assistant-blocks 0) :cache_control)
+                   cache-control))
+    (should-not (plist-member (aref assistant-blocks 1) :cache_control))
+    (should-not (plist-member (aref assistant-blocks 2) :cache_control))
+    (should-not (plist-member (aref assistant-blocks 3) :cache_control))
+    (should (equal (aref assistant-blocks 2)
+                   '(:type "thinking" :thinking "Signed thought."
+                     :signature "sig-rolling")))
+    (should (equal (aref assistant-blocks 3)
+                   '(:type "redacted_thinking" :data "opaque-redaction")))
+    (should-not (plist-get ineligible :boundaries))
+    (should (= (e-anthropic-test--explicit-cache-control-count
+                (list :messages (plist-get ineligible :messages)))
+               0))
+    (should (equal (mapcar (lambda (boundary)
+                             (list (plist-get boundary :message-index)
+                                   (plist-get boundary :content-index)))
+                           (plist-get multimodal :boundaries))
+                   '((0 1))))
+    (should-not (plist-member (aref multimodal-blocks 0) :cache_control))
+    (should (equal (plist-get (aref multimodal-blocks 1) :cache_control)
+                   cache-control))))
+
 (ert-deftest e-anthropic-test-request-body-maps-neutral-messages ()
   "Anthropic request body uses Messages turns with explicit max_tokens."
   (should
    (equal
-    (e-anthropic-request-body
-     :messages '((:role user :content "hello")
-                 (:role assistant :content "hi"))
-     :options '(:model "claude-test" :max-tokens 1024 :effort "high"))
+    (e-anthropic-test--body-without-rolling-cache-controls
+     (e-anthropic-request-body
+      :messages '((:role user :content "hello")
+                  (:role assistant :content "hi"))
+      :options '(:model "claude-test" :max-tokens 1024 :effort "high")))
     '(:model "claude-test"
       :max_tokens 1024
       :stream t
@@ -374,12 +641,13 @@
   "System messages and the instructions option fold into the top-level system field."
   (should
    (equal
-    (e-anthropic-request-body
-     :messages '((:role system :content "Layer instructions.")
-                 (:role system :content "Visible buffer context.")
-                 (:role user :content "hello"))
-     :options '(:model "claude-test" :max-tokens 1024
-                :instructions "Base instructions."))
+    (e-anthropic-test--body-without-rolling-cache-controls
+     (e-anthropic-request-body
+      :messages '((:role system :content "Layer instructions.")
+                  (:role system :content "Visible buffer context.")
+                  (:role user :content "hello"))
+      :options '(:model "claude-test" :max-tokens 1024
+                 :instructions "Base instructions.")))
     '(:model "claude-test"
       :max_tokens 1024
       :stream t
@@ -448,7 +716,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
         (should (equal (plist-get context :url)
                        (concat (plist-get profile :base-url) "/messages")))
         (should (equal (plist-get body :model) model))
-        (should (equal body
+        (should (equal (e-anthropic-test--body-without-rolling-cache-controls
+                        body)
                        `(:model ,model
                          :max_tokens 1024
                          :stream t
@@ -548,18 +817,19 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
   "Tool-call messages become tool_use blocks; tool results become user tool_result turns."
   (should
    (equal
-    (plist-get
-     (e-anthropic-request-body
-      :messages '((:role user :content "hello")
-                  (:role tool-call
-                   :content (:id "call-1"
-                             :name "read"
-                             :arguments (:uri "file://README.md")))
-                  (:role tool
-                   :content (:tool-call-id "call-1"
-                             :content (:ok t))))
-      :options '(:model "claude-test" :max-tokens 1024))
-     :messages)
+    (e-anthropic-test--messages-without-cache-controls
+     (plist-get
+      (e-anthropic-request-body
+       :messages '((:role user :content "hello")
+                   (:role tool-call
+                    :content (:id "call-1"
+                              :name "read"
+                              :arguments (:uri "file://README.md")))
+                   (:role tool
+                    :content (:tool-call-id "call-1"
+                              :content (:ok t))))
+       :options '(:model "claude-test" :max-tokens 1024))
+      :messages))
     [(:role "user"
       :content [(:type "text" :text "hello")])
      (:role "assistant"
@@ -653,8 +923,11 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
              (uncached-tools (plist-get uncached :tools)))
         (should (equal (e-anthropic-test--system-text cached)
                        (e-anthropic-test--system-text uncached)))
-        (should (equal (plist-get cached :messages)
-                       (plist-get uncached :messages)))
+        (should (equal
+                 (e-anthropic-test--messages-without-cache-controls
+                  (plist-get cached :messages))
+                 (e-anthropic-test--messages-without-cache-controls
+                  (plist-get uncached :messages))))
         (if (eq projection full-projection)
             (let ((followup
                    (aref cached-messages (1- (length cached-messages)))))
@@ -673,7 +946,10 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
               (should-not (plist-member (aref cached-system 3) :cache_control))
               (should-not (plist-member (aref cached-system 4) :cache_control))
               (should
-               (equal (append (plist-get followup :content) nil)
+               (equal (append
+                       (e-anthropic-test--blocks-without-cache-controls
+                        (plist-get followup :content))
+                       nil)
                       (list '(:type "tool_result" :tool_use_id "call-one"
                               :content "[ephemeral context source 2, ~8 tokens]\n\nresult one")
                             '(:type "tool_result" :tool_use_id "call-two"
@@ -694,7 +970,10 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
             (should
              (equal
               (mapcar (lambda (message)
-                        (append (plist-get message :content) nil))
+                        (append
+                         (e-anthropic-test--blocks-without-cache-controls
+                          (plist-get message :content))
+                         nil))
                       (append cached-messages nil))
               (list (list '(:type "tool_result" :tool_use_id "call-one"
                             :content "[ephemeral context source 2, ~8 tokens]\n\nresult one"))
@@ -724,7 +1003,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                 :options '(:model "claude-test" :max-tokens 1024))))
     (should-not (plist-member body :system))
     (should
-     (equal (plist-get body :messages)
+     (equal (e-anthropic-test--messages-without-cache-controls
+             (plist-get body :messages))
             [(:role "user"
               :content [(:type "tool_result" :tool_use_id "call-one"
                          :content "[ephemeral context source 1, ~5 tokens]\n\ntool output")])]))))
@@ -733,8 +1013,9 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
   "A tool-call cannot extend provider replay beyond the settled result."
   (should
    (equal
-    (plist-get
-     (e-anthropic-request-body
+    (e-anthropic-test--messages-without-cache-controls
+     (plist-get
+      (e-anthropic-request-body
       :messages
       '((:role tool-call
          :content (:id "call-1"
@@ -753,8 +1034,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                             :input (:uri "file://README.md"))))))
         (:role tool
          :content (:tool-call-id "call-1" :content "read result")))
-      :options '(:model "claude-test" :max-tokens 1024))
-     :messages)
+       :options '(:model "claude-test" :max-tokens 1024))
+      :messages))
     [(:role "assistant"
       :content [(:type "tool_use" :id "call-1" :name "read"
                  :input (:uri "file://README.md"))])
@@ -783,7 +1064,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
            :options '(:model "claude-test" :max-tokens 1024)))
          (wire (append (plist-get body :messages) nil)))
     (should
-     (equal wire
+     (equal (append (e-anthropic-test--messages-without-cache-controls
+                     (vconcat wire)) nil)
             (list '(:role "user"
                     :content [(:type "text" :text "Curate this source.")])
                   (list :role "assistant" :content (vconcat blocks))
@@ -865,10 +1147,15 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                   :content "Curation applied.")])))
         (should (= (length wire) 3))
         (should (equal (plist-get (nth 1 wire) :role) "assistant"))
-        (should (equal (append (plist-get (nth 1 wire) :content) nil)
+        (should (equal (append
+                        (e-anthropic-test--blocks-without-cache-controls
+                         (plist-get (nth 1 wire) :content))
+                        nil)
                        blocks))
         (should (equal (plist-get (nth 2 wire) :role) "user"))
-        (should (equal (plist-get (nth 2 wire) :content) result-blocks))))))
+        (should (equal (e-anthropic-test--blocks-without-cache-controls
+                        (plist-get (nth 2 wire) :content))
+                       result-blocks))))))
 
 (ert-deftest e-anthropic-test-request-body-replays-skipped-mixed-curation-calls ()
   "Rejected and duplicate mixed responses return every matched native result."
@@ -892,22 +1179,27 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                          (if (eq recovery 'invalid)
                              :provider-invalid-replay-items
                            :provider-corrective-replay-items)))
+             (replay-copy (copy-tree replay t))
+             (skipped-calls
+              '((:id "ordinary-before" :name "inspect-before"
+                 :arguments (:path "before"))
+                (:id "ordinary-after" :name "inspect-after"
+                 :arguments (:path "after"))))
+             (skipped-calls-copy (copy-tree skipped-calls t))
              (body
               (e-anthropic-request-body
                :messages '((:role user :content "Inspect both."))
                :options
                (list :model "claude-test" :max-tokens 1024
                      :provider-request-replay-items replay
-                     :provider-request-skipped-calls
-                     '((:id "ordinary-before" :name "inspect-before"
-                        :arguments (:path "before"))
-                       (:id "ordinary-after" :name "inspect-after"
-                        :arguments (:path "after"))))))
+                     :provider-request-skipped-calls skipped-calls)))
              (wire (append (plist-get body :messages) nil))
              (assistant (nth 1 wire))
              (results (append (plist-get (nth 2 wire) :content) nil))
              (curation-result (nth 1 results)))
         (should (= (length wire) 3))
+        (should (equal replay replay-copy))
+        (should (equal skipped-calls skipped-calls-copy))
         (should (equal (plist-get assistant :role) "assistant"))
         (should (equal (append (plist-get assistant :content) nil) blocks))
         (should (equal (mapcar (lambda (block)
@@ -987,7 +1279,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                      :cache_control (:type "ephemeral" :ttl "1h"))
                     (:type "text"
                      :text "Current buffer.")]))
-    (should (equal messages
+    (should (equal (e-anthropic-test--messages-without-cache-controls
+                    messages)
                    [(:role "user"
                      :content [(:type "text" :text "hello")])]))))
 
@@ -1836,7 +2129,8 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
     (should (equal (cdr (assoc "anthropic-version" (plist-get context :headers)))
                    e-anthropic-version))
     (should (assoc "Content-Type" (plist-get context :headers)))
-    (should (equal (e-json-parse-string (plist-get context :body))
+    (should (equal (e-anthropic-test--body-without-rolling-cache-controls
+                    (e-json-parse-string (plist-get context :body)))
                    '(:model "claude-test"
                      :max_tokens 1024
                      :stream t
@@ -1885,7 +2179,10 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
          (metadata (plist-get context :metadata)))
     (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
     (should (equal (plist-get metadata :anthropic-cache-breakpoint)
-                   'automatic-plus-stable-system))
+                   "automatic+stable-system+rolling-1[user@0.0]"))
+    (should (eq (plist-get metadata :anthropic-cache-stable-guard) 'system))
+    (should (= (plist-get metadata :anthropic-cache-rolling-marker-count) 1))
+    (should (= (plist-get metadata :anthropic-cache-explicit-marker-count) 2))
     (should (equal (plist-get metadata :anthropic-breakpoint-segment-id)
                    "stable-instructions"))
     (should (equal (plist-get metadata :anthropic-breakpoint-fingerprint)
@@ -1900,16 +2197,28 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
     (should (equal (plist-get metadata :anthropic-beta-headers) nil))
     (should (eq (plist-get metadata :full-history) t))
     (should (= (plist-get metadata :segment-fingerprint-count) 2))
-    (should (equal (plist-get metadata :diagnostics)
-                   '(:model "claude-test"
-                     :effort "low"
-                     :max-tokens 1024
-                     :anthropic-cache-mode automatic
-                     :anthropic-cache-breakpoint automatic-plus-stable-system
-                     :anthropic-cache-ttl "1h"
-                     :anthropic-container-id-present t
-                     :input-message-count 1
-                     :tool-count 1)))))
+    (let ((diagnostics (plist-get metadata :diagnostics)))
+      (should (equal (plist-get diagnostics :model) "claude-test"))
+      (should (equal (plist-get diagnostics :effort) "low"))
+      (should (= (plist-get diagnostics :max-tokens) 1024))
+      (should (eq (plist-get diagnostics :anthropic-cache-mode) 'automatic))
+      (should (equal (plist-get diagnostics :anthropic-cache-breakpoint)
+                     "automatic+stable-system+rolling-1[user@0.0]"))
+      (should (equal (plist-get diagnostics :anthropic-cache-ttl) "1h"))
+      (should (eq (plist-get diagnostics :anthropic-container-id-present) t))
+      (should (eq (plist-get diagnostics :anthropic-cache-stable-guard)
+                  'system))
+      (should (= (plist-get diagnostics
+                            :anthropic-cache-rolling-marker-count)
+                 1))
+      (should (= (plist-get diagnostics
+                            :anthropic-cache-explicit-marker-count)
+                 2))
+      (should (equal (plist-get diagnostics
+                                :anthropic-cache-rolling-boundaries)
+                     '((:role "user" :message-index 0 :content-index 0))))
+      (should (= (plist-get diagnostics :input-message-count) 1))
+      (should (= (plist-get diagnostics :tool-count) 1)))))
 
 (ert-deftest e-anthropic-test-request-context-sends-gated-context-management ()
   "Raw Anthropic context_management is sent only with explicit beta headers."
@@ -1983,7 +2292,10 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
          (metadata (plist-get context :metadata)))
     (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
     (should (equal (plist-get metadata :anthropic-cache-breakpoint)
-                   'automatic-last-eligible-block))
+                   "automatic+no-stable-guard+rolling-1[user@0.0]"))
+    (should (eq (plist-get metadata :anthropic-cache-stable-guard) 'none))
+    (should (= (plist-get metadata :anthropic-cache-rolling-marker-count) 1))
+    (should (= (plist-get metadata :anthropic-cache-explicit-marker-count) 1))
     (should (eq (plist-get metadata :full-history) t))))
 
 (ert-deftest e-anthropic-test-request-context-authorization-header ()
@@ -2083,10 +2395,14 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
       (should (equal (plist-get (nth 1 items) :content) "gateway answer"))
       (should (equal (plist-get metadata :anthropic-cache-mode) 'automatic))
       (should (equal (plist-get metadata :anthropic-cache-breakpoint)
-                     'automatic-last-eligible-block))
+                     "automatic+no-stable-guard+rolling-1[user@0.0]"))
+      (should (= (plist-get metadata :anthropic-cache-rolling-marker-count)
+                 1))
       (should (equal (plist-get diagnostics :anthropic-cache-mode) 'automatic))
       (should (equal (plist-get diagnostics :anthropic-cache-breakpoint)
-                     'automatic-last-eligible-block)))
+                     "automatic+no-stable-guard+rolling-1[user@0.0]"))
+      (should (= (plist-get diagnostics :anthropic-cache-explicit-marker-count)
+                 1)))
     (should (equal (plist-get captured :url)
                    "https://gateway.example.test/v1/messages"))
     (should (equal (cdr (assoc "x-api-key" (plist-get captured :headers)))
@@ -2206,7 +2522,10 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
             (should (= request-count 3))
             (should (= (length bodies) 3))
             (should
-             (equal (append first-follow-up-messages nil)
+             (equal (append
+                     (e-anthropic-test--messages-without-cache-controls
+                      first-follow-up-messages)
+                     nil)
                     (list
                      '(:role "user"
                        :content [(:type "text"
@@ -2214,7 +2533,10 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                      expected-assistant
                      expected-results)))
             (should
-             (equal (append second-follow-up-messages nil)
+             (equal (append
+                     (e-anthropic-test--messages-without-cache-controls
+                      second-follow-up-messages)
+                     nil)
                     (list
                      '(:role "user"
                        :content [(:type "text"
@@ -2223,6 +2545,28 @@ event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
                      expected-results
                      expected-second-assistant
                      expected-second-results)))
+            (should (= (e-anthropic-test--explicit-cache-control-count
+                        (cadr bodies))
+                       2))
+            (should
+             (equal (mapcar (lambda (boundary)
+                              (plist-get boundary :message-index))
+                            (e-anthropic--message-cache-boundaries
+                             first-follow-up-messages))
+                    '(0 2)))
+            (should
+             (equal (mapcar (lambda (boundary)
+                              (plist-get boundary :message-index))
+                            (e-anthropic--message-cache-boundaries
+                             second-follow-up-messages))
+                    '(2 4)))
+            (should
+             (equal (plist-get
+                     (aref (plist-get (aref first-follow-up-messages 2)
+                                      :content)
+                           1)
+                     :cache_control)
+                    '(:type "ephemeral" :ttl "1h")))
             (should-not
              (seq-some (lambda (message)
                          (string-match-p

@@ -7,9 +7,11 @@
 In-review.  Caller-option removal and curation admission are implemented.
 Review 6 cleared the deterministic candidate at =0008889f=, but fresh gateway
 P2 at =0007cb80= reproduced a static cache ceiling and reopens F98-C1/C2.
-The native Messages adapter must include compatible explicit rolling history
-markers as well as automatic caching and the stable guard.  A diagnostic-only
-override demonstrates growing reuse; it is not acceptance of repository code.
+The native Messages adapter now includes compatible explicit rolling history
+markers as well as automatic caching and the stable guard.  Parent acceptance
+of the local correction is complete; clean-revision gates, independent review
+and fresh provider acceptance remain pending.  The diagnostic-only override
+is not acceptance of repository code.
 All shipped curation capabilities remain unconfirmed and unavailable.
 
 * Goal and authority
@@ -48,7 +50,7 @@ Behavioral status: the historical Anthropic failure remains the baseline.
 The corrected request shapes permit growing reuse; current provider benefit
 is unconfirmed on committed code.  Remediation mechanism status: the configured
 gateway disproved automatic-plus-stable selection; rolling fallback correction
-and fresh acceptance are pending.
+is parent-accepted and fresh acceptance remains pending.
 
 * Evidence and cause
 

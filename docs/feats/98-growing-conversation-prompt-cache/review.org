@@ -993,3 +993,25 @@ the diagnostic support this owner-local design.  Signed reasoning, semantic
 projection and curation absence remain authoritative.  Required plan-delta
 admission precedes adapter edits; fresh complete gates, independent Tick and
 provider P1/P2 follow the correction.
+
+* Rolling-boundary remediation acceptance (Tock)
+
+Parent acceptance covers the settled correction from =9599421e=.  The native
+Messages owner now derives latest eligible and preceding user boundaries from
+its completed request-local projection.  Together with the stable guard, this
+uses at most three equal-TTL explicit markers and retains automatic caching.
+Thinking blocks remain unmarked; signed replay and neutral input objects remain
+unchanged.  Diagnostics report actual positions and counts without claiming
+observed reuse.  No policy option or durable cache owner was added.
+
+The parent inspected the production selection, projection and metadata joins,
+the previously written boundary witness beyond twenty positions, native replay
+fixtures and diagnostic assertions.  A dropped baseline diagnostic assertion
+set was restored before acceptance.  Focused Anthropic evidence passed 99/99;
+the restored metadata witness passed 1/1.  Existing projection exclusions and
+semantic body assertions remain intact.  The two changed code/test files are
+the complete implementation scope.
+
+Complete clean-revision gates, independent implementation review and fresh
+committed-code P1/P2 remain pending.  The diagnostic override is not acceptance.
+All production P3 capabilities remain none/unconfirmed and curation unavailable.
