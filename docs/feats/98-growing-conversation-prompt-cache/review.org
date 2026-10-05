@@ -1258,3 +1258,152 @@ log-read: =/private/tmp/e-feature98/canonical-rolling-reconciled.log:3772--3779=
 =/private/tmp/e-feature98/current-config-rolling.log:1--4=;
 =/private/tmp/e-feature98/review7-rolling-focused.log:5--8,10=;
 =/private/tmp/e-feature98/review7-native-focused.log:5--7,9=.
+
+* External review: Committed rolling gateway acceptance
+
+** Decision and scope
+
+The fresh committed-code public P2 passes for the configured Opus 5.5 native
+Messages tool/thinking shape.  It closes the earlier static-ceiling failure for
+that material shape.  Compatible cache fields and operative growing boundaries
+are observed on that public path.  The separate minimal no-tools/no-thinking
+repeat accepts the fields and records creation, but does not qualify repeated
+cache-read benefit.  No family-wide P1 reuse pass, efficient curation capability,
+full-feature fixed point, or Done result is established.
+
+Reviewed code revision is
+=8cfb82d4851edccecbaf5870a6c605de20790481=.  It differs from independent Review 7's
+=197c6c519425d5d21a46f8d8b8e4181787c836ca= only in review prose.  The lisp/test/e2e
+trees remain =8894cb1025f6b23378b6b3724b6707a384d43410=,
+=d0412d53545c9f64503c55b32c88a121d675bdc0= and
+=a85c1fc9eb67cbf841d20dfed71ae85290ee014a=.  The normative plan and Review 7
+deterministic coverage/gates are unchanged.  The two inspected evidence JSONs
+are untracked review inputs; the parent owns their durable incorporation.
+
+** Public P2 evidence and capture integrity
+
+=gateway-rolling-acceptance-20261005T210950Z.json= identifies repository-code
+acceptance with =shape-override=false=.  Its four ordered requests preserve
+provider, endpoint, model and stable fingerprint.  The entire initial request
+is the 27,294-token static/initial-context ceiling.  Raw counters are:
+
+| Request | Context total | Cache read | Cache creation | Fresh input |
+|---------+---------------+------------+----------------+-------------|
+| 1 | 27294 | 0 | 27290 | 4 |
+| 2 | 31283 | 27290 | 3991 | 2 |
+| 3 | 35274 | 31281 | 3991 | 2 |
+| 4 | 39260 | 35272 | 3986 | 2 |
+
+The first later read stays within the whole-initial ceiling and is not credited
+as conversation-history attribution.  The next reads clear it by 3,987 and
+7,978 tokens, advancing by 3,991 each.  Both comfortably exceed the unchanged
+classifier's 128-token threshold.  Every context total equals fresh plus read
+plus creation.  Thus this proves reuse beyond static/initial input, rather
+than a positive static hit.  The controlled tool sequence's correct sum 2199
+separately passes semantic composition.  Creation describes newly stored
+suffixes; it is not counted as a cache read.
+
+The public runner at =e2e/e-cache-efficiency-e2e-test.el:185= captures the original
+request context without rewriting it, runs three sequential substantial
+synthetic tool outputs through the ordinary private harness, then joins every
+captured request with durable ordered usage.  The join at =28= refuses unequal
+request/usage lengths and labels the first request before any tool result as
+the initial control.  Its reporting path and SQL capture owners are unchanged
+from the independently reviewed evidence corrections.
+
+The temporary =provider-acceptance-driver.el= wraps the original context,
+parses its already serialized body, records hashes/actual rolling positions
+and counts, and returns that same context.  It changes neither body nor options.
+Its recorded native shapes have one stable guard, rolling user boundaries
+0 then 0/2, 2/4 and 4/6, and two then three explicit markers.  Material request
+hashes identify the actual dispatched bodies.  The reviewed owner supplies the
+shared 1h TTL.  Both captures use the same committed adapter.
+
+The raw log preserves those four shapes and the identical emitted public record,
+followed by the actual ERT 1/1 pass, zero unexpected.  Independently reapplying
+the unchanged classifier to the stored record yields =growing-history-reuse=;
+the earlier unchanged-code record still yields =static-prefix-only=.  This pure
+check converts only the persisted phase string back to its original enum and
+makes no provider request.
+
+** Minimal P1 disposition
+
+=gateway-minimal-repeat-20261005T211229Z.json= and the temporary minimal driver
+use the normal adapter/context/HTTP/parser route, not an overridden request.
+The synthetic body has no tools, explicitly omits adaptive thinking, uses a
+64-token output cap, and contains fixed system and user/assistant/user content.
+Both serialized body hashes are exactly
+=69b7753e0b8dc239113faa21e445c301d22e1f3c7bf622a8d2e697b06a3a29eb=.
+Both complete responses report context 13,029, fresh 4, creation 13,025 and
+read 0.  The raw capture records two complete usage payloads; the driver then
+exits with its explicit no-repeated-read failure.  This is not an unavailable
+counter, a parsing/credential failure, or a successful read qualification.
+
+Field acceptance and prefix creation are supported.  Repeated read benefit for
+this minimal shape is unconfirmed, with two observed zero reads retained as
+known numbers.  No explanation for the missing reads is established.  Unlike
+the old static-ceiling counterexample, this run has no known-warm/static read
+control and no growing suffix: it cannot isolate a failed growing-history
+selection or distinguish endpoint cache availability/routing from shape-specific
+behavior.  C1 requires maximum compatible eligibility, not an unconditional
+cache hit on every identical request.  The unchanged source emits eligible
+equal-TTL markers and the responses report creation through those boundaries;
+no alternative compatible owner correction is proven by this record.
+
+Accordingly, the positive repeated-read portion of minimal P1 is not satisfied.
+It remains required external qualification for any broad claim covering that
+material shape.  It neither erases the independently observed public P2 pass
+nor supports a blanket endpoint/model-family benefit claim.  Repeating the same
+provider request without a new discriminating control would add little decision
+power and is not justified by this review.  No additional code correction is
+source-proven.
+
+The minimal JSON's normalization of an absent reasoning-output count from the
+temporary serializer's empty object to null is disclosed.  Input/read/creation
+counters, ordinals and request hashes match the raw capture unchanged; no cache
+counter is manufactured or converted to a pass.
+
+** Identity, freshness, and remaining qualification
+
+Both records bind the accepted code revision, configured gateway profile,
+endpoint, Opus 5.5 model, native Messages SSE protocol, authorization realm,
+request hashes and material shapes.  The public run completes at
+=2026-10-05T21:09:50Z= after 99.68 seconds, inside the selected 1h TTL; the
+minimal captures are at =21:12:29Z=.  They are fresh at this review under the
+plan's existing 24-hour window.  Review 7's exact source trees prove code
+identity despite the intervening documentation commit.
+
+The configured native profile and reviewed transport supply the existing bearer
+realm and =anthropic-version= header without exposing credentials.  The captures
+do not preserve numeric HTTP status or gateway-resolved backend routing, so this
+review claims complete successful parsed responses and observed counters, not
+an independently recorded exact HTTP code or universal backend capability.
+Evidence reuse remains bounded by endpoint/team, model family, protocol,
+material shape, accepted revision and age.  A subsequent material change or
+valid controlled contradictory run must reopen the affected cells.
+
+| Contract/evidence cell | Current status |
+|------------------------+----------------|
+| F98-G1 | Growing reuse observed on the configured public tool probe; the user's live Board/main chat was not rerun. |
+| F98-C1 | Review 7 deterministic selection cleared; prior public static ceiling closed by fresh P2 for this shape. Broader material-shape reuse remains unconfirmed. |
+| F98-C2 / P1 | Selected native fields accepted and boundaries demonstrably operative on public P2; minimal creation accepted, minimal repeated-read qualification not satisfied. No family-wide P1 pass. |
+| F98-C3 / P2 semantics | Public append-only tool composition passes; unchanged deterministic projection/replay coverage carried. |
+| F98-C4 | Unchanged caller-option removal, configuration and semantic identity proof carried. |
+| F98-C5 | Raw normalized totals and scoped acceptance are consistent; zero minimal reads remain visible, separate from public growing reuse. |
+| F98-C6 / P3 | No external qualification; all production capabilities remain none/unconfirmed and curation unavailable. |
+
+No new deterministic P0--P3 finding or required deterministic unknown is
+identified.  Required remaining external evidence is minimal-shape repeated
+reuse if that benefit is claimed, qualification for any other advertised
+adapter/API/model/material shape, and P3 before exposing curation.  First-party
+OpenAI credentials remain absent and no other API cache benefit is claimed.
+These records justify a scoped observed growing-reuse result, not a false
+full-feature Done.
+
+The independent review made no repository edits, Git writes, provider calls or
+user live-state changes.  Review 7's canonical 2,857/2,857 and applicable fresh
+private current-config 9/9 gates are reused; no equivalent suite was rerun.
+
+log-read: =/private/tmp/e-feature98/provider-rolling-acceptance.log:1--14=;
+=/private/tmp/e-feature98/provider-minimal-p1-captured.log:1--9=;
+=/private/tmp/e-feature98/external-review-classification.log:4--5=.

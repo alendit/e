@@ -320,7 +320,10 @@ The plan makes cache policy adapter/API-owned, removes caller cache-policy
 options, and requires eligible history reuse across tool subturns.  Curation is
 available only for combinations proven to support it efficiently with caching;
 its accepted effects retain their semantics.  Acceptance cannot mistake a fixed
-stable-prefix hit for growing-history reuse.
+stable-prefix hit for growing-history reuse.  Committed code now passes the
+configured Opus 5.5 tool-history probe with advancing cache reads.  Minimal
+no-tools/no-thinking repeated-read benefit remains unconfirmed, and curation
+remains unavailable; these limits keep the feature In-review.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

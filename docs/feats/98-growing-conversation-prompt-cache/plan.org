@@ -4,15 +4,18 @@
 
 * Status
 
-In-review.  Caller-option removal and curation admission are implemented.
-Review 6 cleared the deterministic candidate at =0008889f=, but fresh gateway
-P2 at =0007cb80= reproduced a static cache ceiling and reopens F98-C1/C2.
-The native Messages adapter now includes compatible explicit rolling history
-markers as well as automatic caching and the stable guard.  Parent acceptance
-of the local correction is complete; clean-revision gates, independent review
-and fresh provider acceptance remain pending.  The diagnostic-only override
-is not acceptance of repository code.
-All shipped curation capabilities remain unconfirmed and unavailable.
+In-review.  Adapter-owned cache policy, caller-option removal and capability-gated
+curation admission are implemented.  Review 7 clears the deterministic rolling
+candidate at =197c6c51=: 2,857/2,857 canonical tests, with the applicable private
+current-configuration gate 9/9.  Fresh committed-code P2 at =8cfb82d4= closes the
+static ceiling for the configured Opus 5.5 tool/thinking shape: reads advance
+0 / 27,290 / 31,281 / 35,272 as history grows, with semantic success.
+
+The separate minimal no-tools/no-thinking repeat accepts fields and creates
+entries but reports zero reads twice.  Its reuse benefit remains unconfirmed;
+no family-wide or other-adapter benefit is claimed.  All shipped curation
+capabilities remain none/unconfirmed and unavailable.  Broader qualification
+keeps the feature In-review.  The user's running Emacs and Board were unchanged.
 
 * Goal and authority
 
@@ -46,11 +49,13 @@ subsequent unchanged history becomes reusable.  In a session without efficient
 cache-plus-curation support, curation is absent and ordinary chat still works.
 Cache hits must not preserve content excluded by an accepted projection.
 
-Behavioral status: the historical Anthropic failure remains the baseline.
-The corrected request shapes permit growing reuse; current provider benefit
-is unconfirmed on committed code.  Remediation mechanism status: the configured
-gateway disproved automatic-plus-stable selection; rolling fallback correction
-is parent-accepted and fresh acceptance remains pending.
+Behavioral status: the historical Anthropic failure remains the comparison
+baseline.  Independently reviewed committed code now demonstrates growing reuse
+in the configured public tool probe.  The actual live Board/main chat was not
+rerun.  Minimal-shape repeated-read benefit and other API benefit remain
+unconfirmed.  Remediation mechanism status: rolling selection, truthful
+diagnostics, caller-option removal and efficient-curation admission are complete;
+production curation remains unavailable pending P3.
 
 * Evidence and cause
 
@@ -213,7 +218,11 @@ The [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching][nati
 a same-TTL marker on the last eligible block makes the automatic field a no-op.
 The bounded gateway diagnostic with last-two-user markers produced advancing
 reads and suffix writes.  That diagnostic selects the compatibility design;
-fresh P1/P2 on the committed, independently reviewed correction is still required.
+fresh committed-code public P2 now confirms growing reuse for its configured
+tool/thinking shape.  The separate minimal repeated request accepts fields and
+creates entries but has no observed reads; its qualification remains unconfirmed.
+Both observations are retained under =external-evidence/= and independently
+dispositioned in =review.org=.
 
 For F98-C3, choose only provider-eligible blocks.  Never insert explicit cache
 markers into signed thinking or change native replay order.  Exercise enough
