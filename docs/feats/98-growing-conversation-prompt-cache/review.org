@@ -702,3 +702,21 @@ status remains In-review.  No =capability-confirmed= or Done claim is made.
 
 log-read: =/private/tmp/e-feature98/canonical-r3-remediation.log:3760--3775=;
 =/private/tmp/e-feature98/current-config-r3-remediation.log:1--4=.
+
+* Post-Tick public probe integration correction
+
+The first fresh configured gateway run at =46504a0a= dispatched four growing
+Messages requests with automatic 1h caching and one stable system guard.  The
+probe then failed while collecting usage: the pre-existing shared
+=e-live-e2e--activity-of-type= helper called a process-local aggregate API on an
+async SQLite store.  This is a repository evidence-path integration defect,
+not provider cache evidence, and no P2 result is claimed from that run.
+
+The helper now uses oldest-first bounded durable activity-record pages for
+async SQLite, preserving the local path for in-memory test stores.  A public
+SQL-backed witness writes 102 usage records plus a different event, verifies
+chronological collection across the 100-record page boundary, and rejects any
+local aggregate read.  It and the joined initial-control witness pass 2/2.
+The affected C5 public collection cell returns to deterministic verification and
+independent review before a fresh external attempt; prior unchanged adapter,
+semantic, and classifier coverage remains applicable.

@@ -367,9 +367,26 @@ assertion does not accidentally accept a top-level prompt-cache option."
 
 (defun e-live-e2e--activity-of-type (harness session-id type)
   "Return durable activity events of TYPE for SESSION-ID."
-  (seq-filter
-   (lambda (event) (eq (plist-get event :event-type) type))
-   (e-session-local-activity-events (e-harness-sessions harness) session-id)))
+  (let ((store (e-harness-sessions harness)))
+    (if (e-session-async-enabled-p store)
+        (let (after events next)
+          (setq next t)
+          (while next
+            (let ((page
+                   (e-chat-sql-e2e--await
+                    (e-session-async-record-page
+                     store session-id :record-type "activity-event"
+                     :order 'oldest :after after :limit 100))))
+              (dolist (record (plist-get page :records))
+                (let ((event (plist-get record :value)))
+                  (when (eq (plist-get event :event-type) type)
+                    (push event events))))
+              (setq next (plist-get page :next)
+                    after next)))
+          (nreverse events))
+      (seq-filter
+       (lambda (event) (eq (plist-get event :event-type) type))
+       (e-session-local-activity-events store session-id)))))
 
 (defun e-live-e2e--provider-metrics-record (finished-payload usage-payload)
   "Return bounded scalar metrics from FINISHED-PAYLOAD and USAGE-PAYLOAD.

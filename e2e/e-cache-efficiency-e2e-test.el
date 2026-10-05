@@ -129,6 +129,30 @@ is a conservative ceiling for stable instructions and initial context."
     (should-not (e-cache-efficiency-e2e--join-request-usage
                  requests (butlast usage)))))
 
+(ert-deftest e-cache-efficiency-e2e-test-durable-usage-collection-pages-sqlite ()
+  "Usage collection preserves order across durable bounded SQL pages."
+  (let* ((harness (e-chat-sql-e2e-make-harness
+                   :backend (e-backend-create :name "unused" :start #'ignore)))
+         (store (e-harness-sessions harness)))
+    (unwind-protect
+        (let ((session-id (e-chat-sql-e2e-create-session harness)))
+          (dotimes (index 102)
+            (e-chat-sql-e2e--await
+             (e-session-append-activity-event
+              store session-id nil 'token-usage (list :ordinal index))))
+          (e-chat-sql-e2e--await
+           (e-session-append-activity-event
+            store session-id nil 'provider-request-finished '(:status done)))
+          (cl-letf (((symbol-function 'e-session-local-activity-events)
+                     (lambda (&rest _) (ert-fail "SQL usage read a local aggregate"))))
+            (should
+             (equal
+              (mapcar (lambda (event)
+                        (plist-get (plist-get event :payload) :ordinal))
+                      (e-live-e2e--activity-of-type harness session-id 'token-usage))
+              (number-sequence 0 101)))))
+      (e-chat-sql-e2e-reset))))
+
 (ert-deftest e-cache-efficiency-e2e-test-growing-tool-history ()
   "Subturn cache reads advance beyond the first unchanged-history boundary."
   (e-live-e2e--require-enabled)
