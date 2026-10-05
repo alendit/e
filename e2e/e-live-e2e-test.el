@@ -1301,120 +1301,288 @@ directly so an acknowledgement cannot stand in for an ordinary continuation."
        :reserved-effect-carrier)
       'context-curate-wire))
 
+(defun e-live-e2e--cache-total-input-tokens (event)
+  "Return provider-total input tokens from usage EVENT, or nil if unknown.
+Anthropic reports fresh input separately from total context.  Other current
+cache providers report their total in `:input-tokens'."
+  (let ((provider (or (plist-get event :provider-id)
+                      (plist-get event :provider))))
+    (if (equal (format "%s" provider) "anthropic")
+        (or (let ((context (plist-get event :context-input-tokens)))
+              (when (numberp context) context))
+            (let ((fresh (plist-get event :input-tokens))
+                  (read (plist-get event :cached-input-tokens))
+                  (created (plist-get event :cache-creation-input-tokens)))
+              (when (cl-every #'numberp (list fresh read created))
+                (+ fresh read created))))
+      (let ((total (plist-get event :input-tokens)))
+        (when (numberp total) total)))))
+
 (cl-defun e-live-e2e--classify-growing-cache-evidence
     (&key evidence (granularity 128))
   "Classify ordered request EVIDENCE without mistaking static reads for growth.
 GRANULARITY is the provider's cache-read reporting step.  A cold request or
 missing counters leaves reuse unconfirmed; it does not prove a product defect."
-  (cond
-   ((or (< (length evidence) 3)
-        (not (cl-every
-              (lambda (event)
-                (and (numberp (plist-get event :input-tokens))
-                     (numberp (plist-get event :cached-input-tokens))
-                     (plist-get event :stable-prefix-fingerprint)))
-              evidence)))
-    "unavailable")
-   ((seq-some (lambda (event) (plist-get event :expired)) evidence) "expired")
-   ((not (cl-every
-          (lambda (event)
-            (cl-every (lambda (key)
-                        (equal (plist-get event key)
-                               (plist-get (car evidence) key)))
-                      '(:stable-prefix-fingerprint :provider :endpoint :model)))
-          evidence)) "prefix-changed")
-   ((not (cl-loop for previous in evidence
-                  for current in (cdr evidence)
-                  always (> (plist-get current :input-tokens)
-                            (plist-get previous :input-tokens))))
-    "history-not-growing")
-   ((cl-loop for previous in evidence
-             for current in (cdr evidence)
-             count (>= (- (plist-get current :cached-input-tokens)
-                           (plist-get previous :cached-input-tokens))
-                        granularity) into increases
-             finally return (>= increases 2))
-    "growing-history-reuse")
-   ((cl-every (lambda (event) (> (plist-get event :cached-input-tokens) 0))
-              evidence) "static-prefix-only")
-   (t "cold-or-inconclusive")))
+  (let* ((baseline (car evidence))
+         (static-only-baseline-p
+          (eq (plist-get baseline :phase) 'stable-only-baseline))
+         (static-ceiling
+          (and static-only-baseline-p
+               (e-live-e2e--cache-total-input-tokens baseline))))
+    (cond
+      ((or (< (length evidence) 3)
+           (not (cl-every
+                 (lambda (event)
+                   (and (numberp
+                         (e-live-e2e--cache-total-input-tokens event))
+                        (numberp (plist-get event :cached-input-tokens))
+                        (plist-get event :stable-prefix-fingerprint)))
+                 evidence)))
+       "unavailable")
+      ((seq-some (lambda (event) (plist-get event :expired)) evidence)
+       "expired")
+      ((not (cl-every
+             (lambda (event)
+               (cl-every (lambda (key)
+                           (equal (plist-get event key)
+                                  (plist-get (car evidence) key)))
+                         '(:stable-prefix-fingerprint :provider :endpoint :model)))
+             evidence))
+       "prefix-changed")
+      ((not (cl-loop for previous in evidence
+                     for current in (cdr evidence)
+                     always (> (e-live-e2e--cache-total-input-tokens current)
+                               (e-live-e2e--cache-total-input-tokens previous))))
+       "history-not-growing")
+      ((and static-ceiling
+            (not (cl-every
+                  (lambda (event)
+                    (and (<= (plist-get event :cached-input-tokens)
+                             (e-live-e2e--cache-total-input-tokens event))
+                         (>= (plist-get event :cached-input-tokens)
+                             (+ static-ceiling granularity))))
+                  (cdr evidence))))
+       "static-prefix-only")
+      ((cl-loop for previous in evidence
+                for current in (cdr evidence)
+                count (>= (- (plist-get current :cached-input-tokens)
+                              (plist-get previous :cached-input-tokens))
+                           granularity) into increases
+                finally return (>= increases 2))
+       "growing-history-reuse")
+      ((cl-every (lambda (event)
+                   (> (plist-get event :cached-input-tokens) 0))
+                 evidence)
+       "static-prefix-only")
+      (t "cold-or-inconclusive"))))
+
+(defun e-live-e2e--cache-evidence-identity (event)
+  "Return EVENT's complete provider/request/prefix identity, or nil."
+  (let ((provider (or (plist-get event :provider-id)
+                      (plist-get event :provider)))
+        (endpoint (plist-get event :endpoint))
+        (model (plist-get event :model))
+        (prefix (plist-get event :stable-prefix-fingerprint)))
+    (when (and provider
+               (stringp endpoint) (not (string-empty-p endpoint))
+               (stringp model) (not (string-empty-p model))
+               (stringp prefix) (not (string-empty-p prefix)))
+      (list (format "%s" provider) endpoint model prefix))))
+
+(defun e-live-e2e--p3-append-only-control
+    (baseline append-only-events granularity)
+  "Return verified append-only history state or a non-pass result string."
+  (let* ((control (cons baseline append-only-events))
+         (history
+          (mapcar (lambda (event)
+                    (plist-get event :unchanged-history-suffix-fingerprint))
+                  (cdr control)))
+         (result (e-live-e2e--classify-growing-cache-evidence
+                  :evidence control :granularity granularity))
+         (last-event (car (last control))))
+    (cond
+     ((< (length append-only-events) 2) "missing-append-only-control")
+     ((not (and history
+                (stringp (car history))
+                (not (string-empty-p (car history)))
+                (cl-every (lambda (fingerprint)
+                            (equal fingerprint (car history)))
+                          history)))
+      "unattributed-cache-read")
+     ((equal result "static-prefix-only") result)
+     ((not (equal result "growing-history-reuse"))
+      "missing-append-only-control")
+     (t (list :history-fingerprint
+              (plist-get last-event :unchanged-history-suffix-fingerprint)
+              :last-reusable-read
+              (plist-get last-event :cached-input-tokens))))))
 
 (cl-defun e-live-e2e--classify-p3-curation-cache-evidence
     (&key capability-confirmed provider-id evidence (granularity 128))
   "Classify repeated curation and rebuilt-history reuse in ordered EVIDENCE.
-A stable-only baseline bounds static hits.  Each curation owns a rebuilt request
-and two subsequent reads over its unchanged history, including newly appended
-history.  A projection rewrite may miss on the rebuilt request."
-  (let (baseline pending rebuilt reads seen-ids
-                 (pairs 0) (material-rebuild-p nil) failure)
-    (cond
-     ((not capability-confirmed) "capability-unconfirmed")
-     ((null evidence) "unavailable")
-     ((seq-some (lambda (event) (eq (plist-get event :type) 'expired)) evidence)
-      "expired")
-     (t
-      (dolist (event evidence)
-        (unless failure
+The first usage must be a stable-only baseline, followed immediately by its
+append-only control.  The stable-only total bounds static reads.  Every keep
+must preserve the warm prefix at its rebuilt request; a summary or erase may
+rebuild before warming."
+  (catch 'p3-result
+    (let (baseline static-ceiling pending rebuilt reads seen-ids append-only-events
+                   remaining prefix-identity
+                   current-history-fingerprint last-reusable-read
+                   (keep-pairs 0) (material-pairs 0))
+      (unless capability-confirmed
+        (throw 'p3-result "capability-unconfirmed"))
+      (unless evidence
+        (throw 'p3-result "unavailable"))
+      (when (seq-some (lambda (event) (eq (plist-get event :type) 'expired))
+                      evidence)
+        (throw 'p3-result "expired"))
+      (setq baseline (car evidence))
+      (unless (and (eq (plist-get baseline :type) 'usage)
+                   (eq (plist-get baseline :phase) 'stable-only-baseline))
+        (throw 'p3-result "unavailable"))
+      (setq remaining (cdr evidence))
+      (while (and remaining
+                  (eq (plist-get (car remaining) :type) 'usage)
+                  (eq (plist-get (car remaining) :phase)
+                      'pre-curation-append-only))
+        (push (car remaining) append-only-events)
+        (setq remaining (cdr remaining)))
+      (setq append-only-events (nreverse append-only-events)
+            prefix-identity (e-live-e2e--cache-evidence-identity baseline))
+      (unless prefix-identity
+        (throw 'p3-result "unavailable"))
+      (dolist (event (cons baseline append-only-events))
+        (let ((event-provider (or (plist-get event :provider-id)
+                                  (plist-get event :provider)))
+              (identity (e-live-e2e--cache-evidence-identity event)))
+          (unless (equal (format "%s" event-provider)
+                         (format "%s" provider-id))
+            (throw 'p3-result "provider-mismatch"))
+          (unless (and identity (equal identity prefix-identity))
+            (throw 'p3-result "unavailable"))))
+      (let ((control
+             (e-live-e2e--p3-append-only-control
+              baseline append-only-events granularity)))
+        (when (stringp control)
+          (throw 'p3-result control))
+        (setq static-ceiling
+              (e-live-e2e--cache-total-input-tokens baseline)
+              current-history-fingerprint
+              (plist-get control :history-fingerprint)
+              last-reusable-read
+              (plist-get control :last-reusable-read)))
+      (dolist (event remaining)
+        (let* ((type (plist-get event :type))
+               (provider (or (plist-get event :provider-id)
+                             (plist-get event :provider)))
+               (identity (e-live-e2e--cache-evidence-identity event)))
+          (unless (equal (format "%s" provider) (format "%s" provider-id))
+            (throw 'p3-result "provider-mismatch"))
+          (unless identity
+            (throw 'p3-result "unavailable"))
+          (when (and baseline
+                     (not (equal identity
+                                 (e-live-e2e--cache-evidence-identity baseline))))
+            (throw 'p3-result "unavailable"))
+          (when (and (eq type 'usage)
+                     (memq (plist-get event :phase)
+                           '(stable-only-baseline pre-curation-append-only)))
+            (throw 'p3-result "unexpected-append-only-control"))
           (cond
-           ((not (equal (format "%s" (plist-get event :provider-id))
-                        (format "%s" provider-id)))
-            (setq failure "provider-mismatch"))
-           ((eq (plist-get event :type) 'curation)
-            (if (and baseline (null pending)
-                     (eq (plist-get event :accepted) t)
-                     (plist-get event :curation-id)
-                     (not (member (plist-get event :curation-id) seen-ids)))
-                (setq pending event rebuilt nil reads nil
-                      seen-ids (cons (plist-get event :curation-id) seen-ids))
-              (setq failure "unattributed-cache-read")))
-           ((eq (plist-get event :type) 'usage)
-            (cond
-             ((not (and (numberp (plist-get event :input-tokens))
-                        (numberp (plist-get event :cached-input-tokens))
-                        (plist-get event :stable-prefix-fingerprint)))
-              (setq failure "unavailable"))
-             ((null baseline)
-              (if (eq (plist-get event :phase) 'stable-only-baseline)
-                  (setq baseline event)
-                (setq failure "unavailable")))
-             ((not (and pending
-                        (equal (plist-get event :after-curation-id)
-                               (plist-get pending :curation-id))
-                        (equal (plist-get event :stable-prefix-fingerprint)
-                               (plist-get baseline :stable-prefix-fingerprint))
-                        (plist-get event :unchanged-history-suffix-fingerprint)))
-              (setq failure "unattributed-cache-read"))
-             ((null rebuilt)
-              (if (eq (plist-get event :phase) 'rebuilt-history)
-                  (setq rebuilt event)
-                (setq failure "missing-rebuilt-history")))
-             ((not (and (eq (plist-get event :phase) 'post-curation-reuse)
-                        (equal (plist-get event :unchanged-history-suffix-fingerprint)
-                               (plist-get rebuilt :unchanged-history-suffix-fingerprint))
-                        (>= (- (plist-get event :cached-input-tokens)
-                               (plist-get baseline :cached-input-tokens))
-                            granularity)))
-              (setq failure "static-prefix-only"))
-             (t
-              (push event reads)
-              (when (= (length reads) 2)
-                (if (equal (e-live-e2e--classify-growing-cache-evidence
-                            :evidence (cons rebuilt (reverse reads))
-                            :granularity granularity)
-                           "growing-history-reuse")
-                    (setq pairs (1+ pairs)
-                          material-rebuild-p
-                          (or material-rebuild-p
-                              (memq (plist-get pending :projection-change)
-                                    '(summary erase)))
-                          pending nil rebuilt nil reads nil)
-                  (setq failure "static-prefix-only"))))))
-           (t (setq failure "unavailable")))))
-      (cond (failure failure)
-            (pending "insufficient-post-curation-reuse")
-            ((< pairs 2) "insufficient-repeated-curation")
-            ((not material-rebuild-p) "missing-material-rebuild")
-            (t "pass"))))))
+           ((eq type 'usage)
+            (let* ((total (e-live-e2e--cache-total-input-tokens event))
+                   (cached (plist-get event :cached-input-tokens))
+                   (previous (or (car reads) rebuilt)))
+              (unless (and (numberp total) (numberp cached) (<= cached total))
+                (throw 'p3-result "unavailable"))
+              (unless pending
+                (throw 'p3-result "missing-append-only-control"))
+              (unless (and
+                       (equal (plist-get event :after-curation-id)
+                              (plist-get pending :curation-id))
+                       (stringp
+                        (plist-get event :unchanged-history-suffix-fingerprint))
+                       (not (string-empty-p
+                             (plist-get event
+                                        :unchanged-history-suffix-fingerprint))))
+                (throw 'p3-result "unattributed-cache-read"))
+              (if (null rebuilt)
+                  (let* ((projection
+                          (plist-get pending :projection-change))
+                         (before
+                          (plist-get pending
+                                     :before-history-suffix-fingerprint))
+                         (after
+                          (plist-get event
+                                     :unchanged-history-suffix-fingerprint)))
+                    (unless (eq (plist-get event :phase) 'rebuilt-history)
+                      (throw 'p3-result "missing-rebuilt-history"))
+                    (when (<= total (+ static-ceiling granularity))
+                      (throw 'p3-result "static-prefix-only"))
+                    (cond
+                     ((memq projection '(keep state-only))
+                      (unless (equal before after)
+                        (throw 'p3-result "projection-unconfirmed"))
+                      (when (or (< cached (+ static-ceiling granularity))
+                                (< cached
+                                   (- last-reusable-read granularity)))
+                        (throw 'p3-result "keep-history-cache-lost")))
+                     ((memq projection '(summary erase))
+                      (when (equal before after)
+                        (throw 'p3-result "projection-unconfirmed")))
+                     (t (throw 'p3-result "projection-unconfirmed")))
+                    (setq rebuilt event))
+                (unless (eq (plist-get event :phase) 'post-curation-reuse)
+                  (throw 'p3-result "unattributed-cache-read"))
+                (unless (equal
+                         (plist-get event
+                                    :unchanged-history-suffix-fingerprint)
+                         (plist-get rebuilt
+                                    :unchanged-history-suffix-fingerprint))
+                  (throw 'p3-result "unattributed-cache-read"))
+                (unless (> total
+                           (e-live-e2e--cache-total-input-tokens previous))
+                  (throw 'p3-result "history-not-growing"))
+                (unless (and (>= cached (+ static-ceiling granularity))
+                             (>= cached
+                                 (+ (plist-get previous :cached-input-tokens)
+                                    granularity)))
+                  (throw 'p3-result "static-prefix-only"))
+                (push event reads)
+                (when (= (length reads) 2)
+                  (setq last-reusable-read
+                        (plist-get (car reads) :cached-input-tokens)
+                        current-history-fingerprint
+                        (plist-get rebuilt
+                                   :unchanged-history-suffix-fingerprint))
+                  (if (memq (plist-get pending :projection-change)
+                            '(keep state-only))
+                      (setq keep-pairs (1+ keep-pairs))
+                    (setq material-pairs (1+ material-pairs)))
+                  (setq pending nil rebuilt nil reads nil)))))
+           ((eq type 'curation)
+            (let ((projection (plist-get event :projection-change))
+                  (before
+                   (plist-get event :before-history-suffix-fingerprint))
+                  (curation-id (plist-get event :curation-id)))
+              (unless (and baseline (null pending)
+                           (eq (plist-get event :accepted) t)
+                           curation-id (not (member curation-id seen-ids)))
+                (throw 'p3-result "unattributed-cache-read"))
+              (unless (memq projection '(keep state-only summary erase))
+                (throw 'p3-result "projection-unconfirmed"))
+              (unless (and (stringp before) (not (string-empty-p before)))
+                (throw 'p3-result "unattributed-cache-read"))
+              (unless (equal before current-history-fingerprint)
+                (throw 'p3-result "unattributed-cache-read"))
+              (setq pending event seen-ids (cons curation-id seen-ids))))
+           (t (throw 'p3-result "unavailable")))))
+      (cond
+       (pending "insufficient-post-curation-reuse")
+       ((null baseline) "unavailable")
+       ((< keep-pairs 2) "insufficient-repeated-state-preserving-curation")
+       ((< material-pairs 1) "missing-material-rebuild")
+       (t "pass")))))
 
 (ert-deftest e-live-e2e-test-growing-classifier-rejects-observed-fixed-ceiling ()
   "A growing input and a static cache ceiling cannot establish suffix reuse."
@@ -1434,50 +1602,213 @@ history.  A projection rewrite may miss on the rebuilt request."
     (should (equal (e-live-e2e--classify-growing-cache-evidence :evidence fixed)
                    "unavailable"))))
 
-(ert-deftest e-live-e2e-test-p3-classifier-requires-ordered-attributed-reuse ()
-  "Repeated curation must reuse history, including after a material rebuild."
-  (let* ((baseline '(:type usage :provider-id openai :phase stable-only-baseline
-                     :input-tokens 4096 :cached-input-tokens 4096
-                     :stable-prefix-fingerprint "stable"))
-         (evidence (list baseline)))
-    (dolist (phase '(keep summary))
-      (let ((id (symbol-name phase)))
-        (setq evidence
-              (append evidence
-                      (list (list :type 'curation :provider-id 'openai
-                                  :accepted t :curation-id id
-                                  :projection-change phase))))
-        (cl-loop for input in '(10000 14000 18000)
-                 for read in '(4096 8192 12288)
+(ert-deftest e-live-e2e-test-growing-classifier-uses-provider-total-input ()
+  "Growing reuse uses total Anthropic context and preserves raw counters."
+  (let* ((requests '((:provider anthropic :endpoint "https://anthropic.test/messages"
+                      :model "claude-cache-test" :stable-prefix-fingerprint "s")
+                     (:provider anthropic :endpoint "https://anthropic.test/messages"
+                      :model "claude-cache-test" :stable-prefix-fingerprint "s")
+                     (:provider anthropic :endpoint "https://anthropic.test/messages"
+                      :model "claude-cache-test" :stable-prefix-fingerprint "s")))
+         (payloads
+          (mapcar (lambda (values)
+                    (plist-get (apply #'e-anthropic--usage-item values) :usage))
+                  '((18000 100 0 0) (12000 100 18000 0) (12000 100 30000 0))))
+         (evidence (cl-mapcar (lambda (request usage)
+                                (append request usage))
+                              requests payloads)))
+    (should (equal (mapcar (lambda (event)
+                             (plist-get event :input-tokens))
+                           evidence)
+                   '(18000 12000 12000)))
+    (should (equal (mapcar (lambda (event)
+                             (plist-get event :context-input-tokens))
+                           evidence)
+                   '(18000 30000 42000)))
+    (should (equal (mapcar #'e-live-e2e--cache-total-input-tokens evidence)
+                   '(18000 30000 42000)))
+    (should (equal (e-live-e2e--classify-growing-cache-evidence
+                    :evidence evidence)
+                   "growing-history-reuse"))
+    (should (= (plist-get
+                (e-live-e2e--external-evidence-record
+                 :scenario "provider-total-input" :provider 'anthropic
+                 :usage-payloads payloads)
+                :total-input-tokens)
+               90000))
+    (let ((known-components (copy-sequence (nth 1 evidence))))
+      (cl-remf known-components :context-input-tokens)
+      (should (= (e-live-e2e--cache-total-input-tokens known-components) 30000)))
+    (let* ((missing-usage
+            (plist-get (e-anthropic--usage-item 12000 100 18000 nil) :usage))
+           (missing (append (copy-sequence (nth 1 requests)) missing-usage)))
+      (should-not (e-live-e2e--cache-total-input-tokens missing))
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence (list (car evidence) missing (nth 2 evidence)))
+                     "unavailable")))
+    (let ((openai-evidence
+           '((:provider openai :input-tokens 18000 :cached-input-tokens 0
+              :stable-prefix-fingerprint "s")
+             (:provider openai :input-tokens 30000 :cached-input-tokens 18000
+              :stable-prefix-fingerprint "s")
+             (:provider openai :input-tokens 42000 :cached-input-tokens 30000
+              :stable-prefix-fingerprint "s"))))
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence openai-evidence)
+                     "growing-history-reuse")))))
+
+(defun e-live-e2e-test--p3-cache-evidence ()
+  "Return identity-complete P3 evidence with two keeps and a summary rebuild."
+  (let ((identity '(:provider-id openai :endpoint "https://openai.test/responses"
+                    :model "gpt-cache-test"
+                    :stable-prefix-fingerprint "stable"))
+        (history "append-only-history")
+        evidence)
+    (push (append '(:type usage :phase stable-only-baseline
+                    :input-tokens 4096 :cached-input-tokens 4096)
+                  identity)
+          evidence)
+    (dolist (observation '((10000 8192) (14000 12288)))
+      (push (append (list :type 'usage :phase 'pre-curation-append-only
+                          :input-tokens (car observation)
+                          :cached-input-tokens (cadr observation)
+                          :unchanged-history-suffix-fingerprint history)
+                    identity)
+            evidence))
+    (dolist (phase
+             '((keep "keep1" "append-only-history"
+                ((18000 12288) (22000 16384) (26000 20480)))
+               (keep "keep2" "append-only-history"
+                ((30000 20480) (34000 24576) (38000 28672)))
+               (summary "summary1" "summary-history"
+                ((42000 4096) (46000 8192) (50000 12288)))))
+      (let ((projection (nth 0 phase))
+            (curation-id (nth 1 phase))
+            (next-history (nth 2 phase)))
+        (push (append (list :type 'curation :accepted t
+                            :curation-id curation-id
+                            :projection-change projection
+                            :before-history-suffix-fingerprint history)
+                      identity)
+              evidence)
+        (cl-loop for observation in (nth 3 phase)
                  for ordinal from 0 do
-                 (setq evidence
-                       (append evidence
-                               (list (list :type 'usage :provider-id 'openai
-                                           :phase (if (= ordinal 0) 'rebuilt-history
-                                                    'post-curation-reuse)
-                                           :after-curation-id id
-                                           :input-tokens input :cached-input-tokens read
-                                           :stable-prefix-fingerprint "stable"
-                                           :unchanged-history-suffix-fingerprint id)))))))
+                 (push (append (list :type 'usage
+                                     :phase (if (= ordinal 0)
+                                                'rebuilt-history
+                                              'post-curation-reuse)
+                                     :after-curation-id curation-id
+                                     :input-tokens (car observation)
+                                     :cached-input-tokens (cadr observation)
+                                     :unchanged-history-suffix-fingerprint
+                                     next-history)
+                               identity)
+                       evidence))
+        (setq history next-history)))
+    (nreverse evidence)))
+
+(ert-deftest e-live-e2e-test-p3-classifier-requires-ordered-attributed-reuse ()
+  "P3 needs static attribution, repeated keep continuity, and a material rebuild."
+  (let ((evidence (e-live-e2e-test--p3-cache-evidence)))
     (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
                     :capability-confirmed t :provider-id 'openai :evidence evidence)
                    "pass"))
+    (let ((future-control
+           (append (nthcdr 3 evidence) (seq-take evidence 3))))
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai
+                      :evidence future-control)
+                     "unavailable")))
     (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
                     :capability-confirmed t :provider-id 'openai
-                    :evidence (seq-take evidence 5))
-                   "insufficient-repeated-curation"))
-    (let ((fixed (copy-tree evidence)))
-      (dolist (event (cdr fixed))
-        (when (eq (plist-get event :type) 'usage)
-          (setf (plist-get event :cached-input-tokens) 4096)))
+                    :evidence (cdr evidence))
+                   "unavailable"))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :capability-confirmed t :provider-id 'openai
+                    :evidence (seq-take evidence 2))
+                   "missing-append-only-control"))
+    (let* ((interleaved-control (copy-tree evidence))
+           (late-control (copy-tree (nth 2 interleaved-control))))
+      (setq interleaved-control
+            (append (seq-take interleaved-control 4)
+                    (list late-control)
+                    (nthcdr 4 interleaved-control)))
       (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
-                      :capability-confirmed t :provider-id 'openai :evidence fixed)
+                      :capability-confirmed t :provider-id 'openai
+                      :evidence interleaved-control)
+                     "unexpected-append-only-control")))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :capability-confirmed t :provider-id 'openai
+                    :evidence (seq-take evidence 6))
+                   "insufficient-post-curation-reuse"))
+    (let ((cold (copy-tree evidence)))
+      (setf (plist-get (car cold) :cached-input-tokens) 0
+            (plist-get (nth 1 cold) :cached-input-tokens) 1024
+            (plist-get (nth 2 cold) :cached-input-tokens) 2048)
+      (dolist (curation-id '("keep1" "keep2" "summary1"))
+        (cl-mapc (lambda (event read)
+                   (setf (plist-get event :cached-input-tokens) read))
+                 (seq-filter (lambda (event)
+                               (and (eq (plist-get event :type) 'usage)
+                                    (equal (plist-get event :after-curation-id)
+                                           curation-id)))
+                             cold)
+                 '(0 1024 2048)))
+      (should (equal (e-live-e2e--classify-growing-cache-evidence
+                      :evidence (seq-take cold 3))
+                     "static-prefix-only"))
+      (should (equal (e-live-e2e--p3-append-only-control
+                      (car cold) (list (nth 1 cold) (nth 2 cold)) 128)
+                     "static-prefix-only"))
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai :evidence cold)
                      "static-prefix-only")))
+    (let* ((cold-keep (copy-tree evidence))
+           (second-keep-rebuild
+            (seq-find (lambda (event)
+                        (and (eq (plist-get event :type) 'usage)
+                             (equal (plist-get event :phase) 'rebuilt-history)
+                             (equal (plist-get event :after-curation-id) "keep2")))
+                      cold-keep)))
+      (setf (plist-get second-keep-rebuild :cached-input-tokens) 4096)
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai
+                      :evidence cold-keep)
+                     "keep-history-cache-lost")))
+    (let* ((missing-identity (copy-tree evidence))
+           (baseline (car missing-identity)))
+      (cl-remf baseline :endpoint)
+      (setcar missing-identity baseline)
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai
+                      :evidence missing-identity)
+                     "unavailable")))
+    (let* ((missing-projection (copy-tree evidence))
+           (curation (seq-find (lambda (event)
+                                 (and (eq (plist-get event :type) 'curation)
+                                      (equal (plist-get event :curation-id) "keep1")))
+                               missing-projection)))
+      (cl-remf curation :projection-change)
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai
+                      :evidence missing-projection)
+                     "projection-unconfirmed")))
+    (let* ((missing-before (copy-tree evidence))
+           (curation (seq-find (lambda (event)
+                                 (and (eq (plist-get event :type) 'curation)
+                                      (equal (plist-get event :curation-id) "keep1")))
+                               missing-before)))
+      (cl-remf curation :before-history-suffix-fingerprint)
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :capability-confirmed t :provider-id 'openai
+                      :evidence missing-before)
+                     "unattributed-cache-read")))
     (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
                     :capability-confirmed t :provider-id 'openai
                     :evidence '((:type expired))) "expired"))
     (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
-                    :capability-confirmed nil :provider-id 'openai :evidence evidence)
+                    :capability-confirmed nil :provider-id 'openai
+                    :evidence evidence)
                    "capability-unconfirmed"))))
 
 (cl-defun e-live-e2e--external-evidence-record
@@ -1636,10 +1967,11 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
                             collect (plist-get metadata
                                                 :websocket-connection-id))))))
          (input-token-values
-          (delq nil (mapcar (lambda (payload)
-                              (and (numberp (plist-get payload :input-tokens))
-                                   (plist-get payload :input-tokens)))
-                            usage-payloads)))
+          (delq nil
+                (mapcar (lambda (payload)
+                          (e-live-e2e--cache-total-input-tokens
+                           (append (list :provider-id provider) payload)))
+                        usage-payloads)))
          (cached-token-values
           (and usage-payloads
                (cl-every (lambda (payload)

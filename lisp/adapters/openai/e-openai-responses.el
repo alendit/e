@@ -700,13 +700,6 @@ value selects full stateless replay."
       (setq body
             (append body
                     (list :prompt_cache_options (list :mode "implicit")))))
-    (when (and (stringp e-openai-profile--effective-cache-retention)
-               (not (string-empty-p
-                     e-openai-profile--effective-cache-retention)))
-      (setq body
-            (append body
-                    (list :prompt_cache_retention
-                          e-openai-profile--effective-cache-retention))))
     body))
 
 

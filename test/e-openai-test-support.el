@@ -33,7 +33,6 @@ Production adapters derive these values from the endpoint and model."
   (declare (indent 1) (debug t))
   `(let ((e-openai-profile--effective-prefix-cache ,capability)
          (e-openai-profile--effective-cache-routing-key nil)
-         (e-openai-profile--effective-cache-retention nil)
          (e-openai-profile--effective-cache-capability-evidence 'test-owned))
      ,@body))
 

@@ -599,8 +599,8 @@
     (should-not (plist-member captured :prompt_cache_retention))
     (should-not (plist-member captured :prompt_cache_options))))
 
-(ert-deftest e-openai-test-first-party-api-derives-maximal-cache-policy ()
-  "The official Responses API selects implicit caching and a stable guard."
+(ert-deftest e-openai-test-first-party-api-preserves-provider-cache-default ()
+  "The official Responses API keeps its stable key and provider retention default."
   (let* ((process-environment
           (cons "OPENAI_API_KEY=unit-test-token" process-environment))
          (messages '((:role system :content "stable instructions")
@@ -653,7 +653,9 @@
            :provider 'openai :messages messages
            :options (plist-put (copy-sequence old-model-options)
                                :session-id "session-two")))
-         (gpt55-body (plist-get gpt55 :body-data)))
+         (gpt55-body (plist-get gpt55 :body-data))
+         (gpt55-diagnostics
+          (plist-get (plist-get gpt55 :metadata) :diagnostics)))
     (should (equal (plist-get gpt56-body :prompt_cache_options)
                    '(:mode "implicit")))
     (should (equal (plist-get stable-content :prompt_cache_breakpoint)
@@ -672,7 +674,9 @@
                1))
     (should (equal (plist-get gpt56-diagnostics :prompt-cache-retention)
                    "30m-default"))
-    (should (equal (plist-get gpt55-body :prompt_cache_retention) "24h"))
+    (should-not (plist-member gpt55-body :prompt_cache_retention))
+    (should (equal (plist-get gpt55-diagnostics :prompt-cache-retention)
+                   "provider-default"))
     (should (string-prefix-p "e:" (plist-get gpt55-body :prompt_cache_key)))
     (should-not (equal (plist-get gpt55-body :prompt_cache_key) "forged-key"))
     (should (equal (plist-get gpt55-body :prompt_cache_key)

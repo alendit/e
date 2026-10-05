@@ -38,9 +38,6 @@
 (defvar e-openai-profile--effective-cache-routing-key nil
   "Dynamically bound to an adapter-derived prompt-cache routing identity.")
 
-(defvar e-openai-profile--effective-cache-retention nil
-  "Dynamically bound to retention supported by the effective API/model.")
-
 (defvar e-openai-profile--effective-cache-capability-evidence nil
   "Dynamically bound to the cache capability evidence label.")
 
@@ -454,12 +451,6 @@ When PROVIDER is nil, use `e-openai-default-provider'."
   "responses-segmented-context-v1"
   "Anchor revision for GPT-5.6 segmented input without explicit caching.")
 
-(defconst e-openai-profile--24h-cache-models
-  '("gpt-5.5" "gpt-5.5-pro" "gpt-5.4" "gpt-5.2" "gpt-5.1-codex-max"
-    "gpt-5.1" "gpt-5.1-codex" "gpt-5.1-codex-mini"
-    "gpt-5.1-chat-latest" "gpt-5" "gpt-5-codex" "gpt-4.1")
-  "OpenAI model families with documented 24-hour cache retention support.")
-
 (defun e-openai-profile-cache-capability (profile provider base-url model)
   "Return trusted prefix-cache capability for PROFILE at BASE-URL and MODEL.
 The automatic API path stays selected for compatible Responses and Chat
@@ -522,18 +513,6 @@ uses OpenAI's automatic routing and does not need an explicit key."
       (concat "e:" (substring (secure-hash 'sha256
                                              (prin1-to-string identity))
                                0 62)))))
-
-(defun e-openai-profile-cache-retention (profile provider base-url model)
-  "Return adapter-selected retention for a documented model, or nil.
-Nil preserves the provider's effective default, including organization data
-retention policy.  GPT-5.6 and later accept only their default 30-minute TTL."
-  (when (and (eq provider 'openai)
-             (not (e-openai-profile-model-gpt56-or-later-p model))
-             (e-openai-profile-context-base-url-equal-p
-              base-url e-openai-api-default-base-url)
-             (member model e-openai-profile--24h-cache-models)
-             (eq (e-openai-provider-wire-api profile) 'responses))
-    "24h"))
 
 (defun e-openai-profile--stable-cache-segment-p (segment)
   "Return non-nil when SEGMENT belongs to the stable prompt prefix."

@@ -380,3 +380,33 @@ must retain the plan's identity/freshness rules and unknown outcomes honestly.
 
 log-read: =canonical-final-sockets.log:3760--3775=;
 =current-config-final.log:1--4=.  No other execution logs read.
+
+* Review 2 remediation
+
+R2-F1 removes the unqualified retention selector and optional wire field.
+Older first-party requests retain their stable internal routing key and report
+=provider-default= retention; organization eligibility stays with the provider.
+No new caller control or capability registry is introduced.
+
+R2-F2 normalizes total input at the shared evidence boundary while preserving
+raw fresh/read/creation counters.  Actual Anthropic usage payloads with falling
+then flat fresh input correctly establish growing total context and cache reuse;
+incomplete totals remain unavailable.  OpenAI needs no cache-creation counter
+for its already-total input.
+
+R2-F3 uses a conservative static-only total ceiling, an earlier append-only
+control, two projection-preserving keep/state-only phases with immediate warm
+history continuity, and a material summary/erase rebuild.  Cold static warming,
+repeat keep cache loss, and missing attribution cannot qualify curation.  Parent
+acceptance additionally found future baseline/control observations could qualify
+past curation; the final classifier consumes a leading chronological control
+prefix and rejects late or interleaved controls.
+
+Parent accepted the settled owner correction after source inspection and
+11/11 pure classifier/external-record witnesses.  Implementer mechanism tests
+passed 45/45 and request composition passed 26/26.  The changed older-model
+request witness passed; its broader file's local socket test was blocked by the
+sandbox, with no product defect established.  Complete local-socket-enabled and
+fresh current-config gates will run on the clean correction commit.  The earlier
+=d6cbba6e= gates passed 2,853/2,853 and 9/9, respectively; they do not replace
+the new gates or independent Tick.

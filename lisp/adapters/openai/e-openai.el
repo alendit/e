@@ -68,11 +68,10 @@
                       (e-openai-responses-cache-breakpoint-count body)
                     0)
                   :prompt-cache-retention
-                  (or e-openai-profile--effective-cache-retention
-                      (if (eq e-openai-profile--effective-prefix-cache
-                              'automatic-explicit)
-                          "30m-default"
-                        "provider-default"))
+                  (if (eq e-openai-profile--effective-prefix-cache
+                          'automatic-explicit)
+                      "30m-default"
+                    "provider-default")
                   :provider-continuation continuation-state
                   :previous-response-id-present
                   (not (null (plist-member body :previous_response_id)))
@@ -243,9 +242,6 @@ OpenAI request and backend-neutral context."
              (e-openai-profile-cache-routing-key
               profile provider effective-base-url effective-model
               effective-options))
-            (e-openai-profile--effective-cache-retention
-             (e-openai-profile-cache-retention
-              profile provider effective-base-url effective-model))
             (e-openai-profile--effective-cache-capability-evidence
              (e-openai-profile-cache-capability-evidence
               profile provider effective-base-url effective-model))
