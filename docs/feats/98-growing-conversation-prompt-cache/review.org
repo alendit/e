@@ -1027,3 +1027,234 @@ Parent inspection accepted this narrow fixture reconciliation; both affected
 tests passed 2/2 and the complete composition owner suite passed 21/21.
 The private current-configuration check at =403126fe= passed 9/9.
 The complete source gate must pass on the reconciled clean revision before Tick.
+
+* Review 7: Independent rolling Anthropic selection Tick
+
+** Decision and exact scope
+
+The deterministic rolling-selection candidate is cleared at exact clean
+=197c6c519425d5d21a46f8d8b8e4181787c836ca=.  This independent review found no
+remaining P0--P3 functional or architectural defect and no required deterministic
+unknown.  The valid external F98-C1/C2 product-contract failure remains open
+until fresh P1/P2 accepts independently reviewed, committed repository code.
+This result establishes neither full fixed point, observed cache benefit,
+capability-confirmed, nor Done.
+
+The original implementation base remains
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=.  The incremental implementation range
+is =9599421e..197c6c51=.  Supporting design was independently admitted at
+=3b659523a00147494ebd6bb63061bc0f3bb3e034=, with plan blob
+=bf6ea36ad6a0706cd3c0138d93db9c49c46750f2=.  Current plan blob
+=051a4b514b65a9951c0bec6c31538630678bca30= changes status only.  Normative
+F98-G1/C1--C6 and the DP1 delivery relation remain unchanged.
+
+Reviewed the changed Anthropic cache selection/projection/metadata owner, direct
+renderer and ordinary request-context composition, native grouped replay and
+signed reasoning, greater-than-lookback retention, caller controls, and the
+canonical native-composition fixture repair.  Reopened affected C1/C2 and C3/C5
+dependencies; carried unaffected Review 6 whole-scope cells and earlier closed
+finding dispositions.  No repository edits, Git writes, provider calls, or user
+live Emacs/Board/store operations were performed.  This temporary handoff is the
+only review-authored artifact.
+
+| Current dependency | Git identity |
+|--------------------+--------------|
+| Anthropic adapter | 1594d9f2d47f012e545367eabe70950b7fb100b2 |
+| lisp tree | 8894cb1025f6b23378b6b3724b6707a384d43410 |
+| test tree | d0412d53545c9f64503c55b32c88a121d675bdc0 |
+| e2e tree | a85c1fc9eb67cbf841d20dfed71ae85290ee014a |
+
+** Prior findings and external contradiction
+
+| Prior item | Current disposition | Proof boundary |
+|------------+---------------------+----------------|
+| Review 1 C6 publication versus effects | Closed, carried | Trusted availability gates publication, labels, admission, preflight and commit; no owner changed. |
+| Review 1 caller tools republish curation | Closed, carried | Responses/Chat Completions reserved-tool filtering remains unchanged. |
+| Review 1 static reads qualify P3 | Closed, carried | Later R2/R3 qualification and attribution corrections remain unchanged. |
+| R2-F1 unqualified optional retention | Closed, carried | Removed optional retention override and provider-default behavior are unchanged. |
+| R2-F2 fresh input used as context total | Closed, carried | Shared provider-total normalization and actual normalizer/public join remain unchanged. |
+| R2-F3 cold baseline/repeated keep falsely qualify P3 | Closed, carried | Chronological static control, immediate keep continuity and material rewrite/reuse predicate remain unchanged. |
+| R3-F1 partial aggregate reported as known | Closed, carried | All-known total aggregation remains unchanged. |
+| R3-F2 public P2 accepts static warming | Closed, carried | Mandatory whole-first-request control and two attributable read advances remain unchanged. |
+| Review 5 durable SQL collector integration | Closed, carried | Typed oldest-first paginated collection and chronological join remain unchanged. |
+| Review 6 enum/null evidence emission | Closed, carried | Shared report conversion and canonical parse composition remain unchanged. |
+| Fresh unchanged-code P2 static ceiling at 0007cb80 | Open external behavioral closure | Repository selection is corrected deterministically; diagnostic override supplies no acceptance of this revision. Fresh P1/P2 remains required. |
+
+The stored external failure remains a valid controlled contradiction: semantic
+success, unchanged model/endpoint/stable fingerprint, context growth
+27,291 to 39,252, reads fixed at 26,875, and zero creation.  The newly emitted
+rolling fields address its selection owner.  Presence of those fields, passing
+fixtures, and the earlier overridden diagnostic cannot establish cache benefit.
+
+** Changed owner and public composition proof
+
+=e-anthropic--cacheable-conversation-block-p= at
+=lisp/adapters/anthropic/e-anthropic.el:1084= selects nonempty text, native
+assistant tool-use, eligible user tool-result, and user image/document blocks.
+It excludes empty text, signed thinking and redacted thinking.  The selector at
+=1101= chooses the newest eligible position plus the newest eligible user
+position in an earlier message.  Positions are distinct by construction, so it
+returns zero, one or two markers rather than duplicating a last-user position.
+
+The projection at =1135= copies the complete native structure, including vectors,
+before adding cache metadata.  The request owner at =1324= first finishes
+=e-anthropic--messages=, including native grouping and recovery replay, then
+marks that request-local result.  It uses the existing adapter-owned =1h=
+control for automatic caching, stable guard and both rolling positions.  The
+stable system guard and tool-only fallback remain mutually exclusive; the
+ordinary request shape therefore has at most three explicit markers.  It adds
+no neutral-history mutation, caller setting, durable cache state, provider
+retry, or independent capability owner.
+
+The greater-than-lookback witness at =test/e-anthropic-test.el:507= first renders
+and marks a user boundary, then appends twenty-one distinct assistant text
+blocks and a later user boundary.  The subsequent body retains the same marker
+at the earlier user position while marking the new last position.  This proves
+selection of a previously written boundary beyond the latest marker's ordinary
+lookup window; it does not simulate a provider cache hit.  Ordinary tool-result
+follow-up tests separately prove the prior and newest user boundaries advance
+through the actual native grouped public route.
+
+The new owner witnesses at =398=, =434= and =556= cover a stable system guard,
+tool-only guard, absent guard, distinct assistant/user/tool boundaries, zero
+eligible blocks, one multimodal position, and signed/empty trailing blocks.
+They assert exact marker counts/TTL and semantic equality after removing only
+request-local metadata.  Retired disable/mode/key/retention/TTL options cannot
+change the emitted policy.  Input and replay object equality asserts that
+derivation does not alter the source projection.
+
+The public native replay witness at =2411= composes a private session, injected
+provider stream, signed/redacted two-tool response, ordinary tool execution, a
+second signed tool round and serialized follow-ups.  Exact replay order and
+content remain asserted; rolling positions move from user message indices
+0/2 to 2/4.  The full/result-only late observation witness at =845= preserves
+both semantic projections and their paired tool-result presentation.  The
+independent rerun of both witnesses passes.  Lifetime exclusion and unavailable
+curation enforcement remain at their unchanged semantic owners.
+
+The canonical fixture reconciliation at
+=test/e-harness-context-lifetime-composition-test.el:1304= asserts exactly one
+matching native curation result and its new =1h= marker, then compares every
+semantic field with only that cache key removed.  Source/frame exclusion and
+later-turn assertions below it remain intact.  This retains the old semantic
+decision power while asserting the changed private wire policy.
+
+** Diagnostics and consequential seams
+
+=e-anthropic--message-cache-boundaries= at =1389= inspects actual emitted native
+messages.  Metadata at =1426= combines those positions with the actual stable
+guard and reports rolling/explicit counts; it does not reuse a guessed selector
+result or advertise measured benefit.  Its breakpoint description includes
+guard, count, roles and indices.  The actual request-context witness at
+=test/e-anthropic-test.el:2143= checks those values alongside the retained model,
+effort, limits, TTL, container, stable fingerprint and input/tool counts.
+
+The existing durable diagnostic projection at
+=lisp/core/e-harness-activity.el:435= retains the breakpoint string as a named
+safe scalar.  Thus its structured new metadata is also represented in the
+existing durable description without a new core/provider schema dependency.
+No production consumer branches on the retired breakpoint enum.  Normalized
+usage, missing counters, public SQL capture/join/report and P2/P3 classifiers
+remain unchanged.  Changed diagnostics describe eligibility; observed reuse
+continues to require counter-based external evidence.
+
+The caller-option stripping boundary remains at
+=e-anthropic--request-context:2640=.  Direct body rendering independently derives
+its controls and ignores retired cache options.  Anthropic continues to send
+complete authorized projected native history; this change introduces no new
+provider continuation token or semantic anchor path requiring a separate
+layout migration.  Reserved-effect capability remains =none= at =1205=.
+
+** Complete current deterministic coverage
+
+| Contract | Status | Current disposition |
+|----------+--------+---------------------|
+| F98-G1 behavioral goal | External failure remains open | Growing eligibility is corrected; actual Board/main-chat benefit is not inferred. |
+| F98-C1 maximum compatible selection | Cleared deterministically | Rechecked rolling eligibility, distinct positions, stable guard, shared TTL, caller-option resistance and ordinary native tool-subturn composition. External P2 closure remains required. |
+| F98-C2 compatible capability/fields | Cleared deterministically | Native hybrid selection matches admitted supporting design; no extra caller policy or speculative fallback. Other adapter/API cells carry Review 6 proof. Actual endpoint acceptance and benefit remain external. |
+| F98-C3 authorized semantic projection/replay | Cleared | Rechecked request-local copying, signed/redacted replay, native tool/result ordering, late observations and full/result-only projections; carried lifetime/reconnect/fallback and durable custody proof. |
+| F98-C4 removal/migration/identity | Cleared, carried | Caller controls remain stripped; OpenAI/configuration cleanup and semantic anchor fencing are unchanged. No new retained continuation mechanism was added. |
+| F98-C5 truthful diagnostics/accounting/evidence | Cleared | Rechecked actual-body boundary descriptions and public/durable consumer; carried total/unknown accounting, static attribution, SQL collection and JSON emission proof. |
+| F98-C6 efficient capability-gated curation | Cleared deterministically, carried | All shipped carriers remain none/unconfirmed; publication absence, forced-effect rejection, prior accepted projection authority and P3 predicate remain unchanged. |
+
+All current required deterministic cells are cleared.  No candidate or required
+deterministic unknown remains.  S1/S2 and changed S4 diagnostics have current
+owner/public evidence; unaffected S3/S4 and OpenAI/Codex/Chat Completions coverage
+carry forward.  External capability and benefit are separate required evidence,
+not optional follow-ups or fabricated deterministic passes.
+
+** Architecture self-check delta
+
+The complete Review 2/6 architecture dispositions remain applicable, with these
+current answers to AGENTS.md's fourteen questions:
+
+1. The package improves growing eligibility and preserves unavailable-curation
+   safety; the new local selection is useful, but external failure closure is
+   still required before final acceptance.
+2. It moves toward capability-owned growing reuse with semantic projection as
+   independent truth.
+3. Provider syntax and demonstrated benefit remain uncertain, adapter-local and
+   reversible; the correction adds no speculative registry or public switch.
+4. The existing native cache owner owns eligibility, placement and truthful
+   metadata.  Replay and lifetime owners retain their separate responsibilities.
+5. Private helpers keep interfaces narrow; no additional caller capability or
+   cross-component cache-management interface is introduced.
+6. Core dependencies still point to backend semantic capability, not concrete
+   provider wire fields.  Existing scalar diagnostic projection is sufficient.
+7. Provider/network effects remain at adapter and isolated evidence-runner
+   boundaries; new selection/projection helpers are pure.
+8. Marker positions and copied native structure live for one request and are
+   rebuilt from its projection.  No durable state or migration is added.
+9. Selection, structure copying and diagnostic scanning are linear in native
+   request structure; strings are not rewritten or duplicated by the marker
+   step.  Existing serialization already processes the history.  Provider
+   write/read costs and latency remain observational external evidence.
+10. Ordinary chat retains its complete semantics; cache eligibility does not
+    grant curation.  All shipped adapters still substitute without that carrier.
+11. Signed replay and retired-option rejection are preserved.  The private
+    breakpoint enum is replaced by an actual-body description; no semantic
+    consumer depended on it.
+12. The obsolete automatic-plus-stable-only request selection/description is
+    replaced.  Retired caller controls and options are not reintroduced.
+13. Expected ineligible positions are skipped locally.  Existing validation and
+    provider errors remain visible; no broad retry or error swallowing is added.
+14. Pure boundary tests and injected native public composition prove the changed
+    owner independently of providers; complete canonical/current-config gates
+    cover integration.  Fresh external P1/P2 is still needed for measured reuse.
+
+No new physical owner, extraction obligation, architectural deferral, glossary
+term or follow-up ledger is required.  The change stays inside the existing
+native cache owner.  Deployment/reload of this adapter is an operator action;
+the user's running Emacs was not reloaded or restarted during review.
+
+** Verification and external boundary
+
+Consumed the exact =197c6c51= complete canonical gate: =eldev -s test=,
+2,857/2,857 expected, zero unexpected, supplied exit 0.  Consumed the fresh
+private configured-daemon gate at =403126fe=: 9/9, zero unexpected, supplied
+exit 0.  Reuse is valid because =403126fe..197c6c51= changes only the semantic
+test fixture and review prose, with no production/configuration delta.
+Equivalent complete gates were not rerun.  Parent-supplied focused owner
+99/99, restored metadata 1/1 and composition 21/21 evidence is supplementary;
+the independent proof below and exact complete gate carry this decision.
+
+Independently ran four new rolling owner witnesses and three consequential
+native/metadata composition witnesses on the exact current source: 4/4 and
+3/3, zero unexpected, both exit 0.  Commands used =eldev -s exec= to load
+=test/e-anthropic-test.el= and select only the named witnesses above.  They used
+pure request bodies or private injected providers/stores, with no provider
+network call or user live state.  =git diff --check 9599421e 197c6c51= passed;
+the exact clean HEAD and affected source/test/e2e identities were read back.
+
+The new field shape is eligible for fresh committed-code P1/P2 after this Tick.
+The external static-ceiling contradiction remains open until those probes prove
+compatible fields and attributable growing-history reads under the existing
+identity/freshness rules.  The diagnostic override is not repository acceptance.
+First-party OpenAI credentials remain absent.  Every production P3 capability
+remains none/unconfirmed and curation unavailable.  Feature status remains
+In-review; no Done or full fixed-point result is claimed.
+
+log-read: =/private/tmp/e-feature98/canonical-rolling-reconciled.log:3772--3779=;
+=/private/tmp/e-feature98/current-config-rolling.log:1--4=;
+=/private/tmp/e-feature98/review7-rolling-focused.log:5--8,10=;
+=/private/tmp/e-feature98/review7-native-focused.log:5--7,9=.
