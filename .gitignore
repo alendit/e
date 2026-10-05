@@ -10,3 +10,5 @@ ui/board/target/
 .e/perf-baselines/
 ui/modernchat/target/
 .opencode
+
+AGENTS.override.md
