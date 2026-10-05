@@ -410,3 +410,157 @@ sandbox, with no product defect established.  Complete local-socket-enabled and
 fresh current-config gates will run on the clean correction commit.  The earlier
 =d6cbba6e= gates passed 2,853/2,853 and 9/9, respectively; they do not replace
 the new gates or independent Tick.
+
+* Review 3: Independent incremental closure Tick
+
+** Decision and exact identity
+
+In-review.  Two Medium/P2 findings remain in invalidated F98-C5 evidence
+dependents.  The three original Review 2 defect reproducers are addressed,
+but the selected deterministic contract is not at fixed point.  This revision
+is not eligible for =deterministic-fixed-point=.  No P0/P1 defect or other
+required deterministic unknown was identified in this pass.  Fresh external
+benefit and efficient cache-plus-curation remain separately unconfirmed.
+
+Reviewed the settled clean revision
+=5d515373f19047d7c34ead4d0b2eaad09cc40c58=.  Original implementation base remains
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=; incremental review baseline is Review
+2's =d6cbba6e8e6df83bbc51417ff831a82b515eab81=.  The plan and admitted plan-review
+identity have no delta.  F98-G1 and F98-C1--C6 remain the authority.
+
+This pass independently audited R2-F1/F2/F3 closure, changed semantic owners,
+and their consequential evidence/diagnostic/public-probe dependents.  Unaffected
+whole-scope Review 2 coverage is carried forward.  No target edits, Git writes,
+provider calls, or user live Emacs/Board/store operations were performed.
+Temporary pure probes and this handoff were written only under
+=/private/tmp/e-feature98/=.
+
+** Review 2 finding dispositions
+
+| Finding | Current disposition | Closure evidence and invalidated dependents |
+|---------+---------------------+---------------------------------------------|
+| R2-F1 unqualified optional retention | Closed | The retention selector, model table, dynamic binding and Responses serializer field are removed. =e-openai.el:68= reports provider default for older paths and 30m default for known GPT-5.6+ paths. The public first-party request witness at =e-openai-continuation-composition-test.el:602= now proves absent optional retention, honest default diagnostics, caller override rejection, and stable internal routing keys across same-session requests. No caller organization policy was added. |
+| R2-F2 Anthropic fresh input used as total | Original classifier defect closed; dependent C5 coverage incomplete | =e-live-e2e--cache-total-input-tokens= at =e2e/e-live-e2e-test.el:1304= selects Anthropic context total or an exact all-known constituent sum; other current providers retain their already-total input. P2 and P3 share it. The actual normalizer/public usage join witness at =1604= passes total growth with fresh input decreasing/flat and rejects unknown Anthropic total; OpenAI needs no write counter. R3-F1 below identifies the invalidated aggregate-record dependent. |
+| R2-F3 cold static baseline and repeated keep cache loss qualify P3 | Closed for the P3 qualification owner | =e-live-e2e--classify-p3-curation-cache-evidence= at =1420= consumes an initial chronological static-total baseline and immediately following append-only control, requires complete matching provider/endpoint/model/static identity, proves history reads beyond total static ceiling, preserves prior warm history at each immediate keep/state-only request, requires two preserving transitions and a material rewrite with subsequent reuse. Future/interleaved controls, missing projection/before identity, cold static-only reads, and second-keep cache loss are rejected by the strengthened =1710= witness. The public P2 caller lacks this static control; R3-F2 is a distinct invalidated shared-classifier dependent. |
+
+The parent's additional future-control ordering correction is effective:
+prefix control observations are consumed before any curation, and later control
+phases are rejected.  Evidence after an operation cannot qualify the earlier
+operation.  P3's synthetic positive sequence returns =pass=; none of this enables
+a production curation carrier or proves provider efficiency.
+
+** Findings
+
+*** TODO Medium/P2 R3-F1: Aggregate evidence drops unknown totals and reports a partial sum as known
+
+F98-C5 requires missing input counters to remain unknown.  The corrected
+per-request normalization returns nil when an Anthropic total cannot be
+derived, but =e-live-e2e--external-evidence-record= drops those nil values with
+=delq nil= at =e2e/e-live-e2e-test.el:1969--1974=.  It then sums remaining
+values into =:total-input-tokens= at =2054--2057=.  One known request makes a
+partially unknown scenario appear to have a known total.
+
+A credential-free probe uses the actual Anthropic normalizer and actual public
+external-record function:
+
+#+begin_example
+request 1: input=18000, read=0, creation=0; total=18000
+request 2: input=12000, read=18000, creation=unknown; total=unknown
+per-request normalized totals: (18000 nil)
+record :total-input-tokens: 18000
+#+end_example
+
+The true scenario sum is unknown.  This silently omits the second request rather
+than preserving the missing total.  The new per-request helper is correct;
+the invalidated aggregate consumer is not.  Parent independently confirmed the
+source composition.  The reproducer is in
+=/private/tmp/e-feature98/review3-evidence-probe.el=.
+
+Smallest owning correction: require all supplied required usage totals to be
+numeric before producing the aggregate, mirroring the existing all-known
+=cached-token-values= rule.  Otherwise emit =unavailable=.  Preserve the raw
+usage and per-request unknowns.  Add a mixed-known/missing Anthropic-total public
+record witness, plus all-known and all-missing boundaries.  No production usage
+mapping, durable state, registry, or retry policy is needed.
+
+*** TODO Medium/P2 R3-F2: Public P2 probe can still qualify static warming as growing-history reuse
+
+Plan P2 (=plan.org:286--300=) requires a separate stable-only control and cache
+reads attributable to an earlier conversation suffix beyond that control.
+The changed growing classifier applies a conservative static ceiling only when
+the first event has phase =stable-only-baseline= at
+=e2e/e-live-e2e-test.el:1326--1331,1357--1367=.  Without that phase, two positive
+read advances can still qualify.
+
+The actual public configured-harness probe captures provider, endpoint, model,
+and stable fingerprint, joins usage at
+=e2e/e-cache-efficiency-e2e-test.el:106--115=, and calls this classifier without
+a static-only baseline or ceiling.  Its substantial stable instruction layer
+does not substitute for token-attributed control evidence.
+
+A pure actual-classifier counterexample holds provider/endpoint/model/static
+fingerprint fixed, uses growing total inputs =10000,14000,18000= and reads
+=0,1024,2048=, and returns =growing-history-reuse=.  Every reported read can lie
+within a 4,096-token stable prefix.  No conversation-history reuse is established.
+This is a public acceptance false positive; no production provider failure is
+inferred.  The source/reproducer are in the same temporary pure probe above.
+Parent accepted this distinct P2 attribution issue for remediation.
+
+Smallest owning correction: the public P2 route must supply a conservative
+initial/static control with matching request identity/accounting, and obtain
+sufficient tool subturns to establish history reads beyond that ceiling at the
+required granularity.  Increasing reads below the ceiling remain unconfirmed.
+Use an honest upper bound or controlled stable-only measurement rather than a
+cold/partly warm read count.  The shared classifier and actual public probe
+must agree on the required evidence; strengthen the composed caller witness
+with this static-warming negative and a genuine above-ceiling positive.  Keep
+semantic result and cache result independent.
+
+** Current contract-cell coverage
+
+| Cell | Current status | Evidence/disposition at 5d515373 |
+|------+----------------+----------------------------------|
+| F98-C1 maximum compatible growing cache policy | cleared for deterministic selection | Carry Review 2 adapter/direct-render coverage; removal of optional retention preserves provider-compatible maximum defaults and stable older routing keys. Actual deployed reuse remains external evidence. |
+| F98-C2 optional-field compatibility | cleared | R2-F1 is closed. Removed optional retention cannot override unknown organization policy; caller controls remain stripped; known GPT-5.6 fields and unknown/custom/Codex automatic defaults are unchanged. |
+| F98-C3 authorized projections/replay | cleared | Carry Review 2 semantic lifetime, observations, native reasoning/tool order, replay/continuation/fallback, detached SQLite projected replay, and durable queue/FIFO evidence. No production owner changed in this delta. |
+| F98-C4 caller migration/identity | cleared | Carry Review 2 defaults/session/subagent/factory and incompatible-anchor coverage. New removal narrows internal policy state without adding options or changing accepted projection identity. Fresh isolated configured startup still passes. |
+| F98-C5 truthful accounting/acceptance | candidate: confirmed R3-F1/R3-F2 | Per-request totals are corrected, but aggregate missing totals and actual public P2 static attribution remain contract contradictions. No other required accounting/diagnostic unknown was identified. |
+| F98-C6 capability-gated curation | cleared for deterministic enforcement and P3 classifier closure | Carry production absence/admission/effect rejection and capability reevaluation coverage. Corrected chronological P3 evidence owner rejects the prior false positives. All production curation remains none/unconfirmed; no external qualification is inferred. |
+
+No required deterministic cell remains unexamined or relabeled as an optional
+follow-up.  The two confirmed candidates block fixed-point eligibility.  Prior
+Review 1 publication/effect and reserved-tool findings remain closed.  S1--S4
+unchanged semantic/runtime evidence is carried; changed C5 evidence joins were
+rechecked through actual pure public composition rather than relying on test
+counts alone.
+
+** Architecture delta and verification
+
+The Review 2 architecture self-check remains applicable.  This delta removes
+unqualified adapter state and centralizes accounting in the existing E2E owner;
+P3 chronology/history continuity is temporary evidence-classifier state.  It
+adds no product cache registry, durable cache state, caller enable/policy option,
+or provider dependency in core.  Adapter syntax, lifetime semantic truth and
+side-effect ownership are unchanged.  The two required corrections are local
+evidence-owner changes and narrowly scoped contract witnesses.  There is no
+architectural deferral/follow-up-ledger delta or new glossary term.
+
+Exact-target canonical =eldev -s test= passed 2,853/2,853; a fresh private
+configured-daemon =bash e2e/run-current-config-tests.sh= passed 9/9; the pure
+evidence classifier/external-record focused gate passed 11/11.  Consumed only
+the supplied final ranges, not full verbose logs.  Complete gates were not
+redundantly rerun.  =git diff --check d6cbba6e 5d515373= passed.  The clean
+exact target identity was read back.  The independent pure probes confirmed
+positive P3 and both current C5 counterexamples.  Green existing gates cannot
+establish a fixed point against those concrete contradictions.
+
+F98-G1's original Board/main-chat cache-efficiency goal remains distinct from
+mechanism progress.  Fresh P1/P2 provider compatibility and benefit are still
+required after a deterministic Tick.  Historical gateway field acceptance is
+not reused as benefit evidence, and first-party OpenAI credentials remain absent.
+All shipped P3 combinations remain none/unconfirmed with curation unavailable.
+No provider benefit, capability-confirmed result, or Done status is claimed.
+
+log-read: =/private/tmp/e-feature98/canonical-r2-remediation.log:3760--3775=;
+=/private/tmp/e-feature98/current-config-r2-remediation.log:1--4=;
+=/private/tmp/e-feature98/evidence-acceptance-final.log:1--16=.
