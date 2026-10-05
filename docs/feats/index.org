@@ -316,9 +316,11 @@ and excludes raw/private reasoning from Board publication and detail lookup.
 Feature 98 is =Planned=.  Its
 [[file:98-growing-conversation-prompt-cache/plan.org][growing conversation prompt cache remediation]] supersedes Feature 81's
 explicit-only cache policy and Feature 97's stable-boundary-only starting point.
-The plan requires eligible history reuse across tool subturns, compatible
-provider defaults, unchanged context-curation semantics, and acceptance that
-cannot mistake a fixed stable-prefix hit for growing-history reuse.
+The plan makes cache policy adapter/API-owned, removes caller cache-policy
+options, and requires eligible history reuse across tool subturns.  Curation is
+available only for combinations proven to support it efficiently with caching;
+its accepted effects retain their semantics.  Acceptance cannot mistake a fixed
+stable-prefix hit for growing-history reuse.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
