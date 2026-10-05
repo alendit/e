@@ -587,3 +587,118 @@ settled correction after owner inspection.  Focused classifier/external-record
 checks pass 11/11 and the public join witness passes 1/1.  No provider request or
 user live-state mutation was made in this correction.  Exact-revision complete
 gates and independent Tick remain required.
+
+* Review 4: Independent incremental closure Tick
+
+** Decision, scope, and identity
+
+=deterministic-fixed-point= at exact clean revision
+=1d5b1f5c8fb77a10eb22f14b97ccb544ce878d2b= for the selected F98-G1/F98-C1--C6
+deterministic implementation contract.  This independent Tick found no remaining
+P0--P3 defect and no required deterministic unknown.  Prior findings are closed,
+all required deterministic cells are cleared, and exact-revision complete gates
+pass.  This result does not establish =capability-confirmed= or Done.
+
+Original implementation base remains
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=.  Incremental baseline is Review 3's
+=5d515373f19047d7c34ead4d0b2eaad09cc40c58=.  This pass reviewed R3-F1/F2 closure
+and invalidated aggregate accounting, growing/P3 control predicates, their
+public request/usage composition, and cold/unknown result dependents.  Unaffected
+whole-scope Review 2/3 coverage is carried forward at its unchanged owners.
+
+The plan adds only the conservative first-whole-request control clarification
+to P2.  This affected evidence procedure was reviewed here: the first request
+precedes every tool result and includes all static input plus initial context,
+so exceeding its total is a stronger conservative attribution bound than
+exceeding static input alone.  Normative C1--C6, delivery ownership, package
+relation and dependency order are unchanged; the admitted implementation-plan
+result remains applicable.  The clarification does not weaken the positive
+predicate or replace an external capability requirement.
+
+No repository edits, Git writes, provider calls, or user live Emacs/Board/store
+operations were performed.  Only the temporary pure closure probe and this
+handoff were written under =/private/tmp/e-feature98/=.
+
+** Prior finding dispositions
+
+| Finding | Disposition | Current proof |
+|---------+-------------+---------------|
+| R3-F1 partial aggregate reported as known | Closed | =e-live-e2e--external-evidence-record= at =e2e/e-live-e2e-test.el:2058= requires every supplied usage payload to yield numeric provider-total input before summing. Empty, all-unknown and mixed-known/unknown totals emit unavailable. The actual original normalizer/public record reproducer now returns =unavailable=. =e-live-e2e-test-growing-classifier-uses-provider-total-input= at =1650= covers all-known, missing creation, mixed unknown, empty usage and independently missing cache counters while preserving raw provider payloads. |
+| R3-F2 public P2 accepts static warming | Closed | =e-live-e2e--classify-growing-cache-evidence= at =1320= requires an initial control and counts only cache advances clearing its total by provider granularity. =e-cache-efficiency-e2e--join-request-usage= at =e2e/e-cache-efficiency-e2e-test.el:28= marks the first chronological captured request before tool results and refuses unequal request/usage counts. The actual public route calls that join at =198= and uses three sequential substantial outputs, permitting four requests and two history-attributed advances. Missing control, static warming and one advance cannot pass; genuine two-advance reuse can. |
+
+All Review 2 findings remain closed: optional unqualified retention is absent;
+Anthropic fresh/total accounting is distinct and missing total remains unknown;
+P3 uses chronological control plus repeated keep continuity and material
+rebuild reuse.  Review 1's publication/effects and spoofed reserved-tool findings
+also remain closed.  No earlier finding has been deferred or replaced by a
+non-gating architectural note.
+
+The parent's cold-evidence correction is independently confirmed through four
+actual Anthropic normalized payloads and the actual public join: totals grow
+=18000,30000,42000,54000= while reads/creation stay zero, and the classifier
+returns =cold-or-inconclusive=.  The public probe skips that unconfirmed outcome
+instead of declaring a static-hit contract failure.  A positive semantic answer
+does not promote cold/missing evidence into cache benefit.
+
+** Current required deterministic coverage
+
+| Cell | Status | Current acceptance boundary |
+|------+--------+-----------------------------|
+| F98-C1 maximum compatible growing cache policy | cleared | Carry adapter/direct-render maximum-compatible policy coverage; caller disable/mode/key/retention/TTL cannot weaken it. Optional OpenAI retention uses provider default, stable older routing keys remain derived internally. This is policy selection, not measured provider benefit. |
+| F98-C2 optional-field compatibility | cleared | Carry endpoint/model gating and ordinary-chat compatibility; unknown/custom/Codex paths do not receive unsupported private fields. Removed optional retention cannot override unqualified organization policy; diagnostics remain honest. |
+| F98-C3 semantic projection/replay | cleared | Carry lifetime observations/projections, tool ordering, native reasoning, continuation/reconnect/fallback, detached SQLite complete projected replay, and durable queue/FIFO custody coverage. No production owner changed in this delta. |
+| F98-C4 caller migration/identity | cleared | Carry defaults, session normalization, subagent/factory cleanup and incompatible-anchor fencing. No new caller options or migration mode appears. Fresh isolated configured startup passes. |
+| F98-C5 accounting/diagnostics/acceptance | cleared | Actual provider-normalized joins, all-known aggregate guards, mandatory conservative initial control, historical fixed ceiling, static warming, one/two advances, missing/zero counters and semantic/cache separation now have current contract evidence. |
+| F98-C6 capability-gated curation | cleared | Carry complete production publication absence and forced-effect rejection/rechecks; all shipped carriers remain none/unconfirmed. The unchanged P3 chronological control and repeated keep/material classifier dependents still pass with the revised shared predicate. No test-owned positive capability grants production support. |
+
+S1--S4 required deterministic routes remain covered by the carried adapter,
+public harness, lifetime/replay and startup evidence.  There are no candidate or
+unknown deterministic cells.  Fresh P1/P2/P3 capability evidence remains separate
+from this coverage decision.
+
+** Architecture delta and verification
+
+The Review 2 architecture self-check remains applicable.  This correction stays
+within existing E2E evidence owners: one aggregate all-known guard, a private
+chronological join, a conservative initial bound and three synthetic tool steps.
+The bound uses available provider accounting rather than adding a tokenizer,
+runtime cache registry or caller control.  No production persistent state,
+projection truth, dependency direction, side-effect boundary, public abstraction,
+or glossary term changes.  No architectural deferral/follow-up-ledger delta or
+unresolved activated follow-up was identified.
+
+Consumed supplied exact-target evidence: canonical =eldev -s test= with local
+sockets passed 2,853/2,853; fresh private configured-daemon
+=bash e2e/run-current-config-tests.sh= passed 9/9.  Read only final ranges listed
+below.  The child focused 11/11 evidence portfolio and 1/1 public join results
+are recorded in =/private/tmp/e-feature98/review3-tock-evidence.md= as preceding
+source evidence; they are not substituted for exact-revision complete gates.
+
+Independently ran the four affected actual pure contract witnesses from current
+source, including the public join and P3, without loading live application state
+or dispatching requests: 4/4 expected, zero unexpected.  The original mixed-total
+counterexample now yields unavailable.  Probe:
+=/private/tmp/e-feature98/review4-closure-probe.el=.  The independent execution
+was =emacs -Q --batch -l /private/tmp/e-feature98/review4-closure-probe.el=,
+exit 0.  =git diff --check 5d515373 1d5b1f5c= passed; clean exact HEAD was read
+back.  Equivalent complete gates were not redundantly rerun.
+
+** External and delivery boundary
+
+F98-G1's original Board/main-chat efficiency goal remains the behavioral goal;
+this Tick establishes deterministic mechanism correctness and acceptance
+qualification, not a measured deployed cache improvement.  No current or
+reusable successful P1/P2 endpoint benefit evidence was supplied.  Historical
+gateway field acceptance is diagnostic only, and first-party OpenAI credentials
+remain absent.  No valid external product-contract failure is being concealed
+as a provider unknown; external scenarios have not yet been run against this
+accepted candidate.
+
+All production cache-plus-curation capability remains none/unconfirmed, so
+curation is intentionally unavailable.  Required fresh external scenarios may
+follow this Tick; identity/freshness rules still apply, and any valid controlled
+contract contradiction must reopen the affected deterministic cells.  Feature
+status remains In-review.  No =capability-confirmed= or Done claim is made.
+
+log-read: =/private/tmp/e-feature98/canonical-r3-remediation.log:3760--3775=;
+=/private/tmp/e-feature98/current-config-r3-remediation.log:1--4=.

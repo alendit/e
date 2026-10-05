@@ -5,10 +5,11 @@
 * Status
 
 In-review.  Adapter-owned policy, caller-option removal, and curation admission
-are implemented.  Focused deterministic checks pass; the exact-revision broad
-suite, current-config cold start, independent implementation review, and external
-P1/P2 acceptance remain pending.  All shipped curation capabilities remain
-unconfirmed and unavailable.  No provider efficiency pass is claimed.
+are implemented.  Independent Review 4 establishes =deterministic-fixed-point=
+at =1d5b1f5c=, with 2,853/2,853 complete tests and 9/9 fresh current-config
+checks.  External P1/P2 acceptance remains pending.  All shipped curation
+capabilities remain unconfirmed and unavailable.  No provider efficiency pass
+is claimed.
 
 * Goal and authority
 
@@ -44,7 +45,8 @@ Cache hits must not preserve content excluded by an accepted projection.
 
 Behavioral status: the historical Anthropic failure remains the baseline.
 The corrected request shapes permit growing reuse; current provider benefit
-is unconfirmed.  Remediation mechanism status: implemented, pending final gates.
+is unconfirmed.  Remediation mechanism status: deterministic fixed point;
+external acceptance pending.
 
 * Evidence and cause
 
