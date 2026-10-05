@@ -366,6 +366,42 @@ This pure projection never consults or installs a session aggregate."
             nil)
           :promotion-frontier (nreverse frontier))))
 
+(defun e-harness-context-runtime--turn-visible-path
+    (harness session-id turn-id path)
+  "Exclude admitted future queue input from TURN-ID's request-local PATH."
+  (let* ((entry (gethash session-id (e-harness-active-turns harness)))
+         (prompt-id (and (equal (plist-get entry :id) turn-id)
+                         (plist-get entry :prompt-message-id)))
+         (pending-ids
+          (delq nil (mapcar (lambda (item)
+                             (plist-get (plist-get item :committed-message) :id))
+                           (e-harness-queued-prompts harness session-id))))
+         (messages (plist-get path :messages))
+         (indexes (plist-get path :message-path-indexes))
+         (prompt-seen nil)
+         visible visible-indexes)
+    (unless (= (length messages) (length indexes))
+      (error "Detached context path message indexes are misaligned"))
+    (cl-mapc
+     (lambda (message index)
+       (let ((id (plist-get message :id)))
+         (when (equal id prompt-id) (setq prompt-seen t))
+         ;; Atomic admission persists queue input before its later turn runs.
+         ;; Durable input is not authority to expose it to the current turn.
+         (unless (and turn-id
+                      (or (member id pending-ids)
+                          (and prompt-seen (not (equal id prompt-id))
+                               (eq (plist-get (plist-get message :metadata)
+                                              :board-input-mode)
+                                   'queue))))
+           (push message visible)
+           (push index visible-indexes))))
+     messages indexes)
+    (let ((copy (copy-sequence path)))
+      (plist-put copy :messages (nreverse visible))
+      (plist-put copy :message-path-indexes (nreverse visible-indexes))
+      copy)))
+
 (defun e-harness-context-runtime--detached-context
     (harness session-id turn-id path &optional context-purpose)
   "Build one model context from request-scoped selected PATH.
@@ -413,14 +449,19 @@ CONTEXT-PURPOSE defaults to `turn'."
     (e-harness-context-runtime--context-observation-frontier
      context context-capabilities)
     (e-harness-context-runtime--context-with-segment-message-boundary context)
-    ;; Anchor selection still needs additional detached relational fields.
-    ;; Fail inside this asynchronous request instead of reaching a synchronous
-    ;; session API when the active backend asks for that feature.
-    (when (plist-get (plist-get context :options)
-                     :provider-anchor-provider-id)
-      (signal 'e-session-storage-error
-              (list "SQLite detached provider-anchor query is not implemented"
-                    session-id)))
+    ;; This bounded query does not carry persisted anchor relations.  Complete
+    ;; projected replay is safe; querying the synchronous aggregate here is not.
+    (when (plist-get (plist-get context :options) :provider-anchor-provider-id)
+      (let ((options
+             (e-harness-context-runtime--strip-provider-anchor-derived-context-options
+              (plist-get context :options))))
+        (setq options (plist-put options :provider-anchor-invalidation-reason
+                                 'detached-anchor-query-unavailable))
+        (setq options (plist-put options :context-rendering-strategy 'stateless))
+        (setq options (plist-put options :provider-anchor-safety
+                                 (e-harness-context-runtime--provider-anchor-safety
+                                  options)))
+        (plist-put context :options options)))
     (e-harness-context-runtime--context-with-continuation-projection-identity
      context)))
 
@@ -492,7 +533,10 @@ query result remains request-scoped and is never installed as executing state."
            (if (not (eq (plist-get status :state) 'finished))
                (e-work-fail result (plist-get status :error))
              (condition-case error
-                 (let* ((path (copy-tree (plist-get status :result) t))
+                 (let* ((path
+                         (e-harness-context-runtime--turn-visible-path
+                          harness session-id turn-id
+                          (copy-tree (plist-get status :result) t)))
                         (entry (gethash session-id
                                         (e-harness-active-turns harness))))
                    (unless (and entry (equal (plist-get entry :id) turn-id))

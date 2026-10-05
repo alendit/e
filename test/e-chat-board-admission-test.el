@@ -924,16 +924,17 @@ presence or absence."
                          '(readiness-installed pickup-resume))))))))
 
 (ert-deftest e-chat-board-admission-test-pickup-waits-for-run-set-readiness ()
-  "A ready pickup neither claims nor runs while owner readiness restores.
+  "A ready pickup is neither admitted nor run while owner readiness restores.
 
 The success and failure halves use separate disposable stores so the held
 run-set query is the only readiness edge under test.  A durable ready pickup
-is visible before release, then exactly one turn is submitted only after the
-projection succeeds; a failed projection leaves its pickup unclaimed."
+is visible before release, then its atomic message admission and one turn
+submission happen only after projection succeeds."
   (let ((original-submit
          (symbol-function 'e-harness-attached-turn-port-submit))
-        (original-transition
-         (symbol-function 'e-board-sqlite-service-transition-pickup-start)))
+        (original-admission
+         (symbol-function
+          'e-board-sqlite-service-append-pickup-message-start)))
     (cl-labels
         ((run-case (settle)
            (e-chat-board-admission-test--with-fixture (store harness)
@@ -944,17 +945,15 @@ projection succeeds; a failed projection leaves its pickup unclaimed."
                                "held-run-set-success"
                              "held-run-set-failure")))
                     (submit-count 0)
-                    (claim-count 0))
+                    (admission-count 0))
                  (cl-letf
                    (((symbol-function 'e-board-orchestration-actions-run-set)
                      (lambda (&rest _arguments) held))
                     ((symbol-function
-                      'e-board-sqlite-service-transition-pickup-start)
-                     (lambda (service board-id delivery-id transition &optional data)
-                       (when (eq transition 'claim)
-                         (cl-incf claim-count))
-                       (funcall original-transition service board-id delivery-id
-                                transition data)))
+                      'e-board-sqlite-service-append-pickup-message-start)
+                     (lambda (&rest arguments)
+                       (cl-incf admission-count)
+                       (apply original-admission arguments)))
                     ((symbol-function 'e-harness-attached-turn-port-submit)
                      (lambda (port prompt &rest arguments)
                        (cl-incf submit-count)
@@ -1003,7 +1002,7 @@ projection succeeds; a failed projection leaves its pickup unclaimed."
                            (e-work-handle-lifecycle open)))))
                    (should-not (e-request-terminal-p
                                 (e-work-handle-lifecycle open)))
-                   (should (= claim-count 0))
+                   (should (= admission-count 0))
                    (should (= submit-count 0))
                    (let* ((board
                            (e-chat-board-admission-test--await
@@ -1028,7 +1027,7 @@ projection succeeds; a failed projection leaves its pickup unclaimed."
                                   (e-chat-service-binding harness session-id)))
                          (e-chat-board-admission-test--wait
                           (lambda () (= submit-count 1)))
-                         (should (= claim-count 1))
+                         (should (= admission-count 1))
                          (should (= submit-count 1)))
                      (e-work-fail held
                                   '(e-board-sqlite-error
@@ -1037,7 +1036,7 @@ projection succeeds; a failed projection leaves its pickup unclaimed."
                       (e-chat-board-admission-test--await open)
                       :type 'e-board-sqlite-error)
                      (should-not (e-chat-service-binding harness session-id))
-                     (should (= claim-count 0))
+                     (should (= admission-count 0))
                      (should (= submit-count 0))
                      (let* ((board
                              (e-chat-board-admission-test--await

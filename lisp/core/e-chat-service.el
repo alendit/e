@@ -2326,13 +2326,7 @@ semantic interpretation responsibility."
      (let* ((delivery-id (plist-get pickup :delivery-id))
             (executing (e-chat-service-binding-executing-turns binding)))
        (when (and (eq (plist-get pickup :state) 'ready)
-                  (not (gethash delivery-id executing))
-                  (not (and (eq (plist-get pickup :mode) 'queue)
-                            (eq (plist-get
-                                 (e-harness-attached-turn-port-active-turn
-                                  (e-chat-service-binding-turn-port binding))
-                                 :status)
-                                'running))))
+                  (not (gethash delivery-id executing)))
          (puthash (copy-tree delivery-id t) 'admitting executing)
          (condition-case error
              (let* ((port (e-chat-service-binding-turn-port binding))

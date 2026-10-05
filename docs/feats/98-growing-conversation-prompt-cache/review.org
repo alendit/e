@@ -67,6 +67,33 @@ Independent closure review remains pending.
 Verbose logs are under =/private/tmp/e-feature98/=; these are transient execution
 artifacts, not durable provider acceptance.
 
+* Canonical failure correction and authorized baseline follow-through
+
+The first complete candidate gate at =ce4f485e= ran 2,853 tests with 22
+unexpected results.  Seventeen were affected cache/capability fixtures not in
+the earlier focused portfolio.  Their supported backend declarations and
+provider wire expectations now match the new policy without weakening semantic
+assertions.  Five asynchronous failures reproduced on untouched =39407dd7=;
+the operator explicitly required fixing baseline failures too.
+
+- The readiness test observed a removed claim transition.  It now observes the
+  actual atomic pickup-message admission while retaining no-admission-before-
+  readiness and failure-path assertions.
+- A production queue guard prevented ready inputs reaching an active turn's
+  inbox.  Removing it restores the existing committed-message queue path.
+  Request-local context filtering excludes future queued input until its turn
+  consumes it; the public SQL-backed test proves isolation during refresh,
+  later exact-once exposure, and a single durable append.
+- Detached SQLite context unconditionally rejected provider anchor configuration
+  because persisted-anchor lookup is unfinished.  It now uses complete projected
+  replay and reports =detached-anchor-query-unavailable=.  This does not invent
+  persisted continuation support or query the synchronous aggregate.  Same-turn
+  continuation remains at its existing loop owner.  Concurrent-session,
+  cancellation, and terminal-error provider tests now pass 3/3.
+
+The corrected affected-owner and baseline composition gate passes 211/211.  Final exact-revision
+canonical and current-config gates remain pending.
+
 * Configuration and external evidence
 
 The configured Anthropic factory was cleaned in both =~/.doom.d/config.org=

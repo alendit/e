@@ -177,44 +177,68 @@
       (delete-directory project-root t))))
 
 (ert-deftest e-chat-session-test-queue-validates-and-routes-to-inbox ()
-  "Queueing validates prompt text and reaches the active turn's inbox."
-  (e-chat-session-test--with-sqlite-harness
-      (harness _store
-               (e-backend-create
-                :name "held"
-                :start
-                (cl-function
-                 (lambda (&key on-request-start &allow-other-keys)
-                   (let ((request (e-backend-request-create)))
-                     (funcall on-request-start request)
-                     request)))))
-    (e-chat-session-test--create-session harness "session-1")
-    (e-chat-session-test--await
-     (e-chat-session-submit harness "session-1" "running"))
-    (should (e-chat-session-test--wait-until
-             (lambda ()
-               (e-chat-service-active-turn-p harness "session-1"))))
-    (should-error
-     (e-chat-session-queue harness "session-1" "")
-     :type 'user-error)
-    (let ((admission
-           (e-chat-session-queue
-            harness
-            "session-1"
-            "queued"
-            :references '((:uri "buffer://source"))
-            :metadata '(:source chat-composer))))
-      (should (e-work-handle-p admission))
-      (e-chat-session-test--await admission)
-      (should
-       (e-chat-session-test--wait-until
-        (lambda () (e-harness-queued-prompts harness "session-1"))))
-      (let ((item (car (e-harness-queued-prompts harness "session-1"))))
-        (should (equal (plist-get item :prompt) "queued"))
-        (should (equal (plist-get (plist-get item :metadata) :references)
-                       '((:uri "buffer://source"))))
-        (should (equal (plist-get (plist-get item :metadata) :source)
-                       'chat-composer))))))
+  "Queued input is admitted once and remains hidden until its owning turn."
+  (let (requests finish)
+    (e-chat-session-test--with-sqlite-harness
+        (harness store
+                 (e-backend-create
+                  :name "held"
+                  :start
+                  (cl-function
+                   (lambda (&key messages on-item on-done on-request-start
+                                  &allow-other-keys)
+                     (push (copy-tree messages t) requests)
+                     (setq finish
+                           (lambda ()
+                             (funcall on-item
+                                      '(:type assistant-message :content "finished"))
+                             (funcall on-item '(:type done :reason stop))
+                             (funcall on-done '(:status done))))
+                     (let ((request (e-backend-request-create)))
+                       (funcall on-request-start request)
+                       request)))))
+      (e-chat-session-test--create-session harness "session-1")
+      (e-chat-session-test--await
+       (e-chat-session-submit harness "session-1" "running"))
+      (should (e-chat-session-test--wait-until
+               (lambda () (= (length requests) 1))))
+      (should-error (e-chat-session-queue harness "session-1" "") :type 'user-error)
+      (let ((admission
+             (e-chat-session-queue
+              harness "session-1" "queued"
+              :references '((:uri "buffer://source"))
+              :metadata '(:source chat-composer))))
+        (should (e-work-handle-p admission))
+        (e-chat-session-test--await admission)
+        (should (e-chat-session-test--wait-until
+                 (lambda () (e-harness-queued-prompts harness "session-1"))))
+        (let* ((item (car (e-harness-queued-prompts harness "session-1")))
+               (active (e-chat-service-active-turn harness "session-1"))
+               (context
+                (e-chat-session-test--await
+                 (e-harness-turn-context-start harness "session-1"
+                                               (plist-get active :id)))))
+          (should (equal (plist-get item :prompt) "queued"))
+          (should (equal (plist-get (plist-get item :metadata) :references)
+                         '((:uri "buffer://source"))))
+          (should (equal (plist-get (plist-get item :metadata) :source)
+                         'chat-composer))
+          (should-not (seq-find (lambda (message)
+                                 (equal (plist-get message :content) "queued"))
+                               (plist-get context :messages))))
+        (funcall finish)
+        (should (e-chat-session-test--wait-until
+                 (lambda () (= (length requests) 2))))
+        (should (= (cl-count "queued" (car requests)
+                             :key (lambda (message) (plist-get message :content))
+                             :test #'equal)
+                   1))
+        (let ((page (e-chat-session-test--await
+                     (e-session-async-visible-message-page store "session-1"))))
+          (should (= (cl-count "queued" (plist-get page :messages)
+                               :key (lambda (message) (plist-get message :content))
+                               :test #'equal)
+                     1)))))))
 
 (ert-deftest e-chat-session-test-steer-validates-and-routes-to-active-turn ()
   "Steering validates prompt text and reaches the active steering lane."
