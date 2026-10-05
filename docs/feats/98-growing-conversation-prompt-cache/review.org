@@ -720,3 +720,126 @@ local aggregate read.  It and the joined initial-control witness pass 2/2.
 The affected C5 public collection cell returns to deterministic verification and
 independent review before a fresh external attempt; prior unchanged adapter,
 semantic, and classifier coverage remains applicable.
+
+* Review 5: Independent public evidence integration Tick
+
+** Decision and scope
+
+=deterministic-fixed-point= for the selected F98-G1/F98-C1--C6 deterministic
+contract at exact clean revision
+=dcf75bbc265e51baaf0ac926193f6b24ebb3086a=.  This independent incremental Tick
+found no remaining P0--P3 defect and no required deterministic unknown.  The
+affected C5 public collection cell is cleared; unaffected Review 4 whole-scope
+coverage remains applicable.  This is not =capability-confirmed= or Done.
+
+Original implementation base remains
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=.  Review 4's
+=1d5b1f5c8fb77a10eb22f14b97ccb544ce878d2b= is the incremental review baseline.
+The plan delta updates status and mechanism evidence only; normative contracts,
+delivery relation, package ownership and dependency order are unchanged.
+
+Reviewed the shared E2E activity collector, async record-page API and worker
+pagination/value shape, explicit batch-await boundary, public SQLite witness,
+and the downstream request/usage join.  No production cache policy, capability,
+semantic projection/lifetime, or continuation owner changed.  No target edits,
+Git writes, provider calls, or user live Emacs/Board/store operations were made.
+The focused witness uses disposable test-owned SQLite; this handoff is the only
+new review artifact under =/private/tmp/e-feature98/=.
+
+** Integration defect disposition and current evidence
+
+The post-Tick configured gateway attempt exposed a repository evidence-path
+integration defect: =e-live-e2e--activity-of-type= tried to read a process-local
+aggregate from an async SQLite session.  The durable review records four
+dispatched requests and a subsequent collector failure; no P2 result or semantic
+success is carried from that attempt.  Its failure does not constitute provider
+cache benefit or a controlled provider-contract contradiction.
+
+The defect is closed at =e2e/e-live-e2e-test.el:368--392=.  Async stores now use
+=e-session-async-record-page= with =record-type "activity-event"=, oldest-first
+order, limit 100, and the returned =:next= position as the next =:after= cursor.
+The memory-store path retains the prior local aggregate/filter behavior.
+
+Independent consequential seam checks:
+
+- =e-session-async.el:289--313= defines =:after= as the stable journal-position
+  cursor for oldest-first pages.  The caller uses that contract without local
+  session reconstruction.
+- =e-runtime-store-session-worker.el:1161--1282= filters record type in SQLite,
+  orders by position ascending, uses a lookahead row and byte bound, returns
+  decoded records under =:records= with values under =:value=, and returns the
+  last emitted record's position when truncated.  Cursor progression therefore
+  remains correct for row-bound and byte-bound pages and journal gaps.
+- The collector filters =:event-type= from decoded values, pushes only matching
+  events, and reverses once after pagination.  Nonmatching activity does not
+  stop cursor progression, and event chronology is preserved across pages.
+- =e-chat-sql-e2e--await= at =e2e/e-chat-sql-e2e-support.el:61= uses the existing
+  explicit =e-work-with-batch-await= boundary.  =e-work.el:724= rejects waits
+  outside that boundary and in interactive hot paths.  Read failures propagate;
+  the collector does not invent fallback counters or cached history.
+- Durable collection is a late E2E query.  The public prompt helper observes
+  terminal activity and queries durable assistant content; the collection then
+  reads durable activity.  The public request/usage join rejects unequal counts,
+  so incomplete durable observations cannot qualify cache benefit.  The new
+  witness explicitly awaits each append's commit before its dependent query.
+
+The actual public SQL-backed witness at
+=e2e/e-cache-efficiency-e2e-test.el:132= creates a disposable async store,
+commits 102 token-usage events and another activity event, forbids any local
+aggregate call, and verifies ordinals 0--101 in exact order across the 100-record
+page boundary.  The existing joined-initial-control witness proves the resulting
+chronological evidence interface still distinguishes static warming, missing
+control, one/two advances and genuine normalized cold misses.
+
+** Required deterministic cells and architecture
+
+| Cell | Current status | Disposition |
+|------+----------------+-------------|
+| F98-C1 maximum compatible cache selection | cleared | Carry Review 4 adapter/direct-render/caller-policy coverage; no owner changed. |
+| F98-C2 optional-field compatibility | cleared | Carry provider-default retention and endpoint/model capability gates; no owner changed. |
+| F98-C3 semantic projection/replay | cleared | Carry lifetime, tool/reasoning order, replay/fallback, detached SQL projection and durable queue/FIFO evidence; no owner changed. |
+| F98-C4 migration/identity | cleared | Carry removed caller controls, configuration cleanup and anchor fencing; fresh isolated startup passes. |
+| F98-C5 accounting/public evidence | cleared | Rechecked durable SQL collection, pagination/filter/value shape, explicit late test query and request/usage join; prior accounting/control predicates remain unchanged and cleared. |
+| F98-C6 capability-gated curation | cleared | Carry complete production absence/forced-effect rejection and corrected P3 qualification coverage. All production carriers remain none/unconfirmed. |
+
+All prior Review 1--3 findings remain closed.  No current candidate, required
+unknown, architectural deferral or activated follow-up was identified.  S1--S4
+unaffected deterministic coverage is carried forward; the affected public C5
+integration route now has actual durable-store proof.
+
+The Review 2 architecture self-check remains applicable.  This delta routes an
+E2E-only observer through the existing durable inspection port rather than a
+process-local aggregate.  It adds no interactive query, production storage,
+cache registry, caller option, provider dependency in core, or glossary term.
+Bounded page work remains store-owned, and accumulating the selected test
+evidence remains runner-owned.  No production side-effect owner changed.
+
+** Verification and external boundary
+
+Consumed supplied exact-revision gates: canonical =eldev -s test= passed
+2,853/2,853; a fresh private configured daemon running
+=bash e2e/run-current-config-tests.sh= passed 9/9.  Only the final ranges below
+were read.  No equivalent complete suite was redundantly rerun.
+
+Independently loaded both E2E files from current source and ran the public durable
+SQLite collector and joined-initial-control witnesses with an exact two-test
+ERT selector: 2/2 expected, zero unexpected, exit 0.  Command:
+
+#+begin_example
+eldev -s exec '(progn (load "e2e/e-cache-efficiency-e2e-test.el" nil nil t) (ert-run-tests-batch-and-exit (quote (member e-cache-efficiency-e2e-test-durable-usage-collection-pages-sqlite e-cache-efficiency-e2e-test-joined-initial-control-qualifies-history))))'
+#+end_example
+
+=git diff --check 1d5b1f5c dcf75bbc= passed and the clean exact HEAD was read
+back.  This focused execution touched only disposable test-owned runtime state.
+
+F98-G1's original Board/main-chat efficiency goal remains separate from
+mechanism progress.  The previous collector-failed attempt supplies no accepted
+P1/P2 outcome.  Fresh external compatibility/benefit scenarios may proceed after
+this Tick under the plan's revision/identity/freshness rules.  No first-party
+OpenAI credential or successful external cache benefit is established here.
+All production P3 capabilities remain none/unconfirmed with curation unavailable.
+Any valid external contract contradiction must reopen its dependent cells.
+Feature status stays In-review; no =capability-confirmed= or Done claim is made.
+
+log-read: =/private/tmp/e-feature98/canonical-sql-evidence.log:3760--3775=;
+=/private/tmp/e-feature98/current-config-sql-evidence.log:1--4=.
