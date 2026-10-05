@@ -5,8 +5,8 @@
 * Status
 
 In-review.  Adapter-owned policy, caller-option removal, and curation admission
-are implemented.  Independent Review 5 establishes =deterministic-fixed-point=
-at =dcf75bbc=, with 2,853/2,853 complete tests and 9/9 fresh current-config
+are implemented.  Independent Review 6 establishes =deterministic-fixed-point=
+at =0008889f=, with 2,853/2,853 complete tests and 9/9 fresh current-config
 checks.  External P1/P2 acceptance remains pending.  All shipped curation
 capabilities remain unconfirmed and unavailable.  No provider efficiency pass
 is claimed.

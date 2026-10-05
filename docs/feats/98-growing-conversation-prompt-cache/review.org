@@ -858,3 +858,113 @@ an unknown total.  It, the durable SQL pagination witness, and the initial-contr
 join witness pass 3/3.  This small runner-only C5 correction returns the emission
 cell to independent closure review; prior unchanged production and classifier
 coverage remains applicable.  Exact-revision gates precede the next external run.
+
+* Review 6: Independent public evidence emission Tick
+
+** Decision and exact scope
+
+=deterministic-fixed-point= for the selected F98-G1/F98-C1--C6 deterministic
+implementation contract at clean exact revision
+=0008889feaef0232609e151c07461c5e6ca77ab2=.  This independent narrow Tick found
+no remaining P0--P3 defect and no required deterministic unknown.  The affected
+C5 emission cell is cleared; unaffected Review 5 whole-scope coverage carries
+forward.  No =capability-confirmed= or Done result is established.
+
+Original implementation base remains
+=39407dd76f50612cf65ae851aa8bb4fc54f67880=; incremental baseline is Review 5's
+=dcf75bbc265e51baaf0ac926193f6b24ebb3086a=.  Normative plan contracts, admitted
+delivery relation, package ownership and dependency order are unchanged.  The
+plan delta updates the prior reviewed revision in status evidence only.
+
+Reviewed the actual provider-normalizer/request-usage join/report/canonical JSON
+parse composition, the reused shared E2E conversion, missing-counter semantics,
+machine-readable record format, and its public caller.  No production policy,
+provider wire, lifetime, projection, classifier or durable collector owner
+changed.  No repository edits, Git writes, provider calls, or user live
+Emacs/Board/store operations were performed; this temporary review handoff is
+the only review-authored file.
+
+** Emission defect disposition
+
+The durable review records that the fresh =9e09ef50= gateway attempt reached
+durable usage collection, then canonical =e-json-serialize= rejected raw Elisp
+provider/phase enum symbols.  That failed emission supplies no accepted P2
+result.  This is an evidence-runner integration defect, not provider cache
+benefit or a controlled provider-contract contradiction.
+
+The defect is closed at =e2e/e-cache-efficiency-e2e-test.el:41--44=.
+=e-cache-efficiency-e2e--report-evidence= uses the existing shared
+=e-live-e2e--json-plist= conversion followed by =json-encode=.  The public
+growing-tool route calls it at =254= after the request/usage join and cache
+classification.  It retains the =E98_CACHE_EVIDENCE= prefix and the existing
+record fields: scenario, exact repository revision, UTC timestamp, elapsed
+time, separate semantic/cache results, and ordered request evidence.
+
+The conversion at =e2e/e-live-e2e-test.el:425--467= maps keyword object keys to
+JSON object keys, nested plists/vectors to JSON objects/arrays, raw enum symbols
+to strings, and leaves numeric values unchanged.  Nil unknown usage values
+remain JSON null.  No raw counter is replaced with zero or a success value.
+This is report-boundary conversion; internal classifier evidence retains its
+original types and production canonical JSON validation remains strict.
+
+The actual direct witness at =e-cache-efficiency-e2e-test.el:46= composes
+=e-anthropic--usage-item=, the public chronological join, the actual report
+helper and canonical =e-json-parse-string=.  It proves provider
+=anthropic= and phase =initial-context-baseline= emit as strings, input/read
+counters remain numeric =12000/18000=, and unknown context total parses as
+the canonical null sentinel.  The same nil conversion preserves the omitted
+creation-derived total rather than manufacturing a number.  Existing semantic
+and cache result values survive the report boundary.
+
+** Required deterministic cells and architecture
+
+| Cell | Current status | Disposition |
+|------+----------------+-------------|
+| F98-C1 maximum compatible cache selection | cleared | Carry Review 5 adapter/direct-render and caller-policy coverage; no owner changed. |
+| F98-C2 optional-field compatibility | cleared | Carry provider-default retention and endpoint/model gates; no owner changed. |
+| F98-C3 semantic projection/replay | cleared | Carry lifetime, observations, tool/reasoning order, replay/fallback and durable custody evidence; no owner changed. |
+| F98-C4 migration/identity | cleared | Carry configuration/options cleanup and anchor fencing; fresh isolated startup passes. |
+| F98-C5 accounting/public evidence | cleared | Rechecked actual enum/counter/null emission and canonical parsing through the public caller. Prior normalized accounting, aggregate unknown guard, static/initial control, durable SQL collection and chronological joins remain unchanged and cleared. |
+| F98-C6 capability-gated curation | cleared | Carry production absence/forced-effect rejection and P3 qualification coverage; all production carriers remain none/unconfirmed. |
+
+All Review 1--3 findings and the Review 5 collector defect remain closed.
+There is no candidate, required unknown, architectural deferral or activated
+follow-up in the selected deterministic contract.  S1--S4 unaffected coverage
+is carried forward; actual C5 emission now has direct composed proof.
+
+The Review 2 architecture self-check remains applicable.  This change reuses an
+existing E2E report conversion instead of weakening production canonical JSON
+or adding another value model.  It adds no runtime policy, durable cache state,
+caller option, provider dependency in core, interactive query, or glossary term.
+The runner remains the owner of evidence serialization.
+
+** Verification and external boundary
+
+Consumed exact-revision canonical =eldev -s test= evidence: 2,853/2,853 expected;
+fresh private configured-daemon =bash e2e/run-current-config-tests.sh=: 9/9.
+The supplied focused durable collector/join/emitter portfolio passed 3/3.
+Read only the exact final ranges listed below.  Equivalent complete suites
+were not redundantly rerun.
+
+Independently loaded the current source and ran the actual emission composition
+witness: 1/1 expected, zero unexpected, exit 0.  Command:
+
+#+begin_example
+eldev -s exec '(progn (load "e2e/e-cache-efficiency-e2e-test.el" nil nil t) (ert-run-tests-batch-and-exit (quote e-cache-efficiency-e2e-test-evidence-emits-provider-values)))'
+#+end_example
+
+=git diff --check dcf75bbc 0008889f= passed and the clean exact HEAD was read
+back.  The focused execution uses no provider request or live user state.
+
+F98-G1's original Board/main-chat cache-efficiency goal remains separate from
+deterministic mechanism progress.  Earlier collector-failed and emission-failed
+attempts supply no accepted P2 result.  Fresh external P1/P2 scenarios can follow
+this Tick under the plan's revision/identity/freshness rules; any valid controlled
+contract contradiction must reopen its affected cells.  External cache benefit
+remains unconfirmed, first-party OpenAI credentials remain absent, and all
+production P3 capabilities remain none/unconfirmed with curation unavailable.
+Feature status stays In-review; no capability-confirmed or Done claim is made.
+
+log-read: =/private/tmp/e-feature98/evidence-emission-gate.log:1--9=;
+=/private/tmp/e-feature98/canonical-emission.log:3760--3775=;
+=/private/tmp/e-feature98/current-config-emission.log:1--4=.
