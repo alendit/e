@@ -115,10 +115,12 @@
   (remhash session-id (e-chat-sql-e2e--event-table harness))
   (e-chat-service-submit-session harness session-id prompt))
 
-(defun e-chat-sql-e2e--assistant-content (harness session-id timeout)
-  "Return the newest durable assistant content for SESSION-ID.
-The terminal activity event can precede the detached SQLite append, so wait
-for the bounded chat view to include the assistant message."
+(defun e-chat-sql-e2e--assistant-message (harness session-id turn-id timeout)
+  "Return the durable assistant message for TURN-ID in SESSION-ID.
+The terminal activity event can precede its detached SQLite append, so wait
+for the bounded chat view to contain that turn's output row."
+  (unless (and (stringp turn-id) (> (length turn-id) 0))
+    (error "Terminal event has no usable turn identity"))
   (e-chat-sql-e2e-wait-until
    (lambda ()
      (let* ((view
@@ -126,13 +128,16 @@ for the bounded chat view to include the assistant message."
               (e-session-async-chat-view
                (e-harness-sessions harness) session-id :limit 64)
               timeout))
-            (messages (plist-get view :messages)))
-       (plist-get
-        (car (last (cl-remove-if-not
-                    (lambda (message)
-                      (eq (plist-get message :role) 'assistant))
-                    messages)))
-        :content)))
+            (messages
+             (cl-remove-if-not
+              (lambda (message)
+                (and (eq (plist-get message :record-kind) 'output)
+                     (eq (plist-get message :role) 'assistant)
+                     (equal (plist-get message :source-turn-id) turn-id)))
+              (plist-get view :messages))))
+       (when (> (length messages) 1)
+         (error "Multiple durable assistant messages for turn %s" turn-id))
+       (car messages)))
    timeout))
 
 (defun e-chat-sql-e2e-wait-batch (harness session-id &optional timeout)
@@ -147,13 +152,22 @@ for the bounded chat view to include the assistant message."
       (error "E2E turn did not settle within %.1f seconds" timeout))
     (pcase (plist-get event :type)
       ('turn-finished
-       (let ((content
-              (e-chat-sql-e2e--assistant-content
-               harness session-id timeout)))
-         (list :status 'done :assistant-content content
-               :result (list :assistant-content content
-                             :reason (plist-get (plist-get event :payload)
-                                                :reason)))))
+       (let* ((turn-id (plist-get event :turn-id))
+              (message
+               (e-chat-sql-e2e--assistant-message
+                harness session-id turn-id timeout)))
+         (unless message
+           (error "Durable assistant output for turn %s was not observed" turn-id))
+         (let ((content (plist-get message :content))
+               (message-id (plist-get message :id)))
+           (list :status 'done :id turn-id :turn-id turn-id
+                 :assistant-message-id message-id
+                 :assistant-content content
+                 :result (list :turn-id turn-id
+                               :assistant-message-id message-id
+                               :assistant-content content
+                               :reason (plist-get (plist-get event :payload)
+                                                  :reason))))))
       (_
        (list :status 'error
              :error (or (plist-get (plist-get event :payload) :error)

@@ -2561,3 +2561,40 @@ full-feature Done.
 log-read: /private/tmp/e-board-cache-audit-76eac/openai-r10-canonical.log:3785--3789;
 /private/tmp/e-board-cache-audit-76eac/openai-r10-current-config.log:1--4;
 /private/tmp/e-board-cache-audit-76eac/openai-r10-dependent-e2e.log:96--102.
+
+* External diagnostic invalidation and E2E boundary remediation
+
+Fresh normal Codex attempt at clean =676bc378= (source =36e11840=),
+2026-10-06T15:54Z, invalidates the affected evidence-method closure.
+Neither scenario is acceptance evidence.  P2 reached an undefined
+=e-live-e2e--report-evidence= call, losing its final record.  Repeated P1
+observed two requests (input 10,537 / 10,574; read 0 / 10,368) but returned
+the prior turn's marker after the second terminal event.  Its semantic
+scenario failed; the partial read does not qualify the portfolio.  No
+provider cache contract failure or historical Board cause is established.
+Raw attempt: =/private/tmp/e-board-cache-audit-76eac/codex-production-p1-p2.log:1--46=.
+
+The SQL helper previously accepted any most-recent assistant row.  A terminal
+event can precede detached SQLite append, leaving the previous answer visible.
+The parent-accepted correction joins the terminal turn ID to exactly one
+durable assistant output row's =source-turn-id=, retaining turn/message IDs.
+A real disposable SQLite regression holds the second append, proves the
+previous answer cannot satisfy the wait, then releases it and verifies the
+current answer/identities.  Missing output times out; ambiguity surfaces.
+
+The existing cache-evidence reporter now owns both P2 and the adjacent minimal
+P1 call.  A credential-free asynchronous backend exercises the ordinary SQL
+chat/tool lifecycle, derives 2,934 from all four actual synthetic tool results,
+checks observation/semantic secrecy and serializes the shared P2 record.
+Missing counters honestly remain unconfirmed; no synthetic cache benefit is
+claimed.  Focused cache selection passes 13 tests with four expected provider/
+configuration skips; SQL/UI integration passes 1/1.  Lisp parentheses and
+diff whitespace checks pass.
+
+Parent acceptance is limited to the E2E evidence owners.  Production adapter/
+core/profile/persistence behavior remains unchanged.  Architecture coverage
+carries with test-owned transient identity and request/output attribution
+strengthened; network effects remain external.  Exact clean gates and
+independent Review 12 precede a fresh normal provider attempt.  Public API
+credentials remain absent; curation remains unavailable; Feature 98 stays
+In-review.  No user Emacs, Board or live store changed.

@@ -554,6 +554,131 @@ evidence."
   (message "E98_CACHE_EVIDENCE %s"
            (json-encode (e-live-e2e--json-plist record))))
 
+(defun e-cache-efficiency-e2e--codex-growing-history-prompt ()
+  "Return the ordinary Codex P2 prompt used by provider and synthetic paths."
+  (concat
+   "Before calling any tool, solve CROSS + ROADS = DANGER as a decimal "
+   "cryptarithm with distinct digits and no leading zero. Work through the "
+   "column carries and verify the equation. Keep the solution in encrypted "
+   "reasoning, not in your final text. Then call cache_probe steps 1, 2, 3, "
+   "and 4 in order, waiting for each result before requesting the next. After "
+   "step 1 arrives, check the cryptarithm again and retain its solution in "
+   "reasoning. Use all four PROBE codes. Return only OBSERVATION=<the fixed "
+   "observation code> SUM=<the sum of the four codes>, and omit the "
+   "cryptarithm solution. Do not call other tools."))
+
+(defun e-cache-efficiency-e2e--assert-codex-growing-history-answer (answer)
+  "Assert the semantic contract for a Codex P2 ANSWER."
+  (should (string-match-p
+           (regexp-quote e-cache-efficiency-e2e--codex-observation)
+           answer))
+  (should (string-match-p "\\b2934\\b" answer))
+  (should-not (string-match-p "96233\\|62513\\|158746" answer)))
+
+(defun e-cache-efficiency-e2e--report-codex-growing-history-p2
+    (started-at requests usage semantic-result)
+  "Join REQUESTS and USAGE and emit the P2 evidence record.
+Return its cache classification."
+  (let* ((evidence
+          (e-cache-efficiency-e2e--join-request-usage requests usage))
+         (cache-result
+          (e-cache-efficiency-e2e--qualified-growing-cache-result evidence)))
+    (e-cache-efficiency-e2e--report-evidence
+     (list :scenario "codex-growing-tool-history-p2"
+           :repository-revision (e-live-e2e--repository-revision)
+           :timestamp (format-time-string "%FT%TZ" nil t)
+           :elapsed-seconds (- (float-time) started-at)
+           :semantic-result semantic-result
+           :cache-result cache-result
+           :usage-event-count (length usage)
+           :usage-join-complete
+           (e-cache-efficiency-e2e--usage-join-complete-p evidence)
+           :requests (vconcat evidence)))
+    cache-result))
+
+(defun e-cache-efficiency-e2e--synthetic-p2-answer (messages)
+  "Return a data-dependent P2 answer from ordinary harness MESSAGES."
+  (let* ((tool-results
+          (cl-remove-if-not
+           (lambda (message) (eq (plist-get message :role) 'tool))
+           messages))
+         (step-codes
+          (mapcar
+           (lambda (message)
+             (let* ((result (plist-get message :content))
+                    (content (plist-get result :content)))
+               (unless (and (stringp content)
+                            (string-match
+                             "PROBE-\\([0-9]+\\)-CODE=\\([0-9]+\\)"
+                             content))
+                 (error "Synthetic P2 backend received an invalid tool result"))
+               (cons (string-to-number (match-string 1 content))
+                     (string-to-number (match-string 2 content)))))
+           tool-results)))
+    (unless (equal (mapcar #'car step-codes) '(1 2 3 4))
+      (error "Synthetic P2 backend did not receive all ordered tool results"))
+    (unless (string-match-p
+             (regexp-quote e-cache-efficiency-e2e--codex-observation)
+             (prin1-to-string messages))
+      (error "Synthetic P2 backend did not receive the inherited observation"))
+    (format "OBSERVATION=%s SUM=%d"
+            e-cache-efficiency-e2e--codex-observation
+            (apply #'+ (mapcar #'cdr step-codes)))))
+
+(defun e-cache-efficiency-e2e--synthetic-p2-backend (request-counter)
+  "Return a normal asynchronous backend for P2 and update REQUEST-COUNTER."
+  (let ((respond
+         (lambda (messages options on-item)
+           (ignore options)
+           (let ((request-number (1+ (car request-counter))))
+             (setcar request-counter request-number)
+             (if (<= request-number 4)
+                 (progn
+                   (funcall on-item
+                            (list :type 'tool-call
+                                  :id (format "synthetic-p2-%d" request-number)
+                                  :name "cache_probe"
+                                  :arguments (list :step request-number)))
+                   (funcall on-item '(:type done :reason tool-use)))
+               (funcall on-item
+                        (list :type 'assistant-message
+                              :content
+                              (e-cache-efficiency-e2e--synthetic-p2-answer
+                               messages)))
+               (funcall on-item '(:type done :reason stop)))))))
+    (e-backend-create
+     :name "synthetic ordinary P2 backend"
+     :stream
+     (cl-function
+      (lambda (&key messages options on-item)
+        (funcall respond messages options on-item)))
+     :start
+     (cl-function
+      (lambda (&key messages options on-item on-done on-error on-request-start)
+        (let ((cancelled nil) timer
+              (request (e-backend-request-create
+                        :cancel (lambda ()
+                                  (setq cancelled t)
+                                  (when (timerp timer)
+                                    (cancel-timer timer))
+                                  t))))
+          (when on-request-start
+            (funcall on-request-start request))
+          (setq timer
+                (run-at-time
+                 0 nil
+                 (lambda ()
+                   (unless cancelled
+                     (condition-case condition
+                         (progn
+                           (funcall respond messages options on-item)
+                           (when on-done
+                             (funcall on-done '(:status done))))
+                       (error
+                        (when on-error
+                          (funcall on-error condition))))))))
+          request))))))
+
 (ert-deftest e-cache-efficiency-e2e-test-evidence-emits-provider-values ()
   "The reporting boundary serializes joined provider enums and missing totals."
   (let* ((identity '(:provider anthropic :endpoint "https://anthropic.test/messages"
@@ -1466,7 +1591,7 @@ STEPS defaults to the original three-step public-API scenario."
                          harness session-id 'token-usage)))
                (evidence
                 (e-cache-efficiency-e2e--join-request-usage requests usage)))
-          (e-live-e2e--report-evidence
+          (e-cache-efficiency-e2e--report-evidence
            (list :scenario "codex-session-affinity-p1-minimal"
                  :repository-revision (e-live-e2e--repository-revision)
                  :timestamp (format-time-string "%FT%TZ" nil t)
@@ -1630,29 +1755,12 @@ STEPS defaults to the original three-step public-API scenario."
                 (let* ((result
                         (e-live-e2e--prompt-batch-before-deadline
                         harness session-id
-                         (concat
-                          "Before calling any tool, solve CROSS + ROADS = DANGER "
-                          "as a decimal cryptarithm with distinct digits and no "
-                          "leading zero. Work through the column carries and verify "
-                          "the equation. Keep the solution in encrypted reasoning, "
-                          "not in your final text. Then call cache_probe steps 1, "
-                          "2, 3, and 4 in order, waiting for each result before "
-                          "requesting the next. After step 1 arrives, check the "
-                          "cryptarithm again and retain its solution in reasoning. "
-                          "Use all four PROBE codes. Return only "
-                          "OBSERVATION=<the fixed observation code> "
-                          "SUM=<the sum of the four codes>, and omit the "
-                          "cryptarithm solution. Do not call other tools.")
+                         (e-cache-efficiency-e2e--codex-growing-history-prompt)
                          deadline))
                        (answer (e-live-e2e--assistant-content result))
                        (requests (gethash session-id requests-by-session)))
-                  (should (string-match-p
-                           (regexp-quote
-                            e-cache-efficiency-e2e--codex-observation)
-                           answer))
-                  (should (string-match-p "\\b2934\\b" answer))
-                  (should-not
-                   (string-match-p "96233\\|62513\\|158746" answer))
+                  (e-cache-efficiency-e2e--assert-codex-growing-history-answer
+                   answer)
                   (should (>= (length requests) 5))
                   (should (equal (mapcar (lambda (request)
                                            (plist-get request :request-ordinal))
@@ -1691,30 +1799,229 @@ STEPS defaults to the original three-step public-API scenario."
         (let* ((requests (gethash session-id requests-by-session))
                (usage (mapcar (lambda (event) (plist-get event :payload))
                               (e-live-e2e--activity-of-type
-                               harness session-id 'token-usage)))
-               (evidence
-                (e-cache-efficiency-e2e--join-request-usage requests usage)))
+                               harness session-id 'token-usage))))
           (setq cache-result
-                (e-cache-efficiency-e2e--qualified-growing-cache-result evidence))
-          (e-live-e2e--report-evidence
-           (list :scenario "codex-growing-tool-history-p2"
-                 :repository-revision (e-live-e2e--repository-revision)
-                 :timestamp (format-time-string "%FT%TZ" nil t)
-                 :elapsed-seconds (- (float-time) started-at)
-                 :semantic-result semantic-result
-                 :cache-result cache-result
-                 :usage-event-count (length usage)
-                 :usage-join-complete
-                 (e-cache-efficiency-e2e--usage-join-complete-p evidence)
-                 :requests (vconcat evidence))))
+                (e-cache-efficiency-e2e--report-codex-growing-history-p2
+                 started-at requests usage semantic-result)))
         (when condition (signal (car condition) (cdr condition))))
       (cond
        ((equal cache-result "growing-history-reuse") t)
        ((equal cache-result "static-prefix-only")
         (ert-fail "Codex only reread static input as tool history grew."))
-       (t (ert-skip
+      (t (ert-skip
            (format "Codex growing-cache benefit is unconfirmed: %s"
                    cache-result)))))))
+
+(ert-deftest e-cache-efficiency-e2e-test-codex-growing-history-synthetic-lifecycle ()
+  "The P2 semantic and report path runs through ordinary SQL chat offline."
+  (let* ((request-counter (list 0))
+         (layer (e-cache-efficiency-e2e--codex-probe-layer))
+         (harness
+          (e-chat-sql-e2e-make-harness
+           :backend
+           (e-cache-efficiency-e2e--synthetic-p2-backend request-counter)))
+         (session-id nil)
+         (started-at (float-time))
+         (semantic-result "unavailable")
+         (emitted nil))
+    (unwind-protect
+        (progn
+          (e-harness-set-intrinsic-capabilities
+           harness (e-layer-capabilities layer))
+          (setq session-id (e-chat-sql-e2e-create-session harness))
+          (let* ((result
+                  (e-chat-sql-e2e-prompt-batch
+                   harness session-id
+                   (e-cache-efficiency-e2e--codex-growing-history-prompt)
+                   10.0))
+                 (answer (e-live-e2e--assistant-content result)))
+            (unless (eq (plist-get result :status) 'done)
+              (error "Synthetic P2 turn failed: %S" result))
+            (e-cache-efficiency-e2e--assert-codex-growing-history-answer answer)
+            (setq semantic-result "pass")
+            (should (= (car request-counter) 5))
+            (should (equal (plist-get result :turn-id)
+                           (plist-get result :id)))
+            (should (stringp (plist-get result :assistant-message-id))))
+          (cl-letf (((symbol-function 'message)
+                     (lambda (format-string &rest arguments)
+                       (setq emitted (apply #'format format-string arguments)))))
+            (let ((cache-result
+                   (e-cache-efficiency-e2e--report-codex-growing-history-p2
+                    started-at nil nil semantic-result)))
+              (should (equal cache-result "unconfirmed-incomplete-usage"))))
+          (let* ((record
+                  (e-json-parse-string
+                   (substring emitted (length "E98_CACHE_EVIDENCE ")))))
+            (should (equal (plist-get record :scenario)
+                           "codex-growing-tool-history-p2"))
+            (should (equal (plist-get record :semantic-result) "pass"))
+            (should (equal (plist-get record :cache-result)
+                           "unconfirmed-incomplete-usage"))
+            (should (= (length (plist-get record :requests)) 0))))
+      (e-chat-sql-e2e-reset))))
+
+(ert-deftest e-cache-efficiency-e2e-test-sql-output-waits-for-terminal-turn-row ()
+  "A previous assistant row cannot satisfy a later SQL turn wait."
+  (let* ((reply-count 0)
+         (backend
+          (e-backend-create
+           :name "delayed SQL output fixture"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                         on-request-start)
+              (ignore messages options)
+              (setq reply-count (1+ reply-count))
+              (let ((cancelled nil) timer
+                    (request (e-backend-request-create
+                              :cancel (lambda ()
+                                        (setq cancelled t)
+                                        (when (timerp timer)
+                                          (cancel-timer timer))
+                                        t))))
+                (when on-request-start
+                  (funcall on-request-start request))
+                (setq timer
+                      (run-at-time
+                       0 nil
+                       (lambda ()
+                         (unless cancelled
+                           (condition-case condition
+                               (progn
+                                 (funcall on-item
+                                          (list :type 'assistant-message
+                                                :content
+                                                (if (= reply-count 1)
+                                                    "first turn answer"
+                                                  "second turn answer")))
+                                 (funcall on-item '(:type done :reason stop))
+                                 (when on-done
+                                   (funcall on-done '(:status done))))
+                             (error
+                              (when on-error
+                                (funcall on-error condition))))))))
+                request)))))
+         (harness (e-chat-sql-e2e-make-harness :backend backend))
+         (session-id nil)
+         (append-count 0)
+         pending-append-work pending-append-arguments actual-append-work
+         release-append)
+    (unwind-protect
+        (cl-letf
+            (((symbol-function 'e-board-sqlite-service-record-append-start)
+              (let ((original
+                     (symbol-function
+                      'e-board-sqlite-service-record-append-start)))
+                (lambda (service board-id record-kind source-kind source-key
+                                &rest fields)
+                  (let ((turn-output
+                         (and (eq record-kind 'output)
+                              (eq source-kind 'output)
+                              (equal (car-safe source-key) "harness-output"))))
+                    (when turn-output
+                      (setq append-count (1+ append-count)))
+                    (if (and turn-output (= append-count 2))
+                        (progn
+                          (setq pending-append-arguments
+                                (append (list service board-id record-kind
+                                              source-kind source-key)
+                                        fields))
+                          (setq pending-append-work
+                                (e-work-start
+                                 (e-work-spec-create
+                                  :id "held-output-append"
+                                  :execution 'cooperative
+                                  :interactive-policy 'async
+                                  :runner
+                                  (lambda (_handle _arguments _context)
+                                    :deferred))
+                                 nil))
+                          (setq release-append
+                                (lambda ()
+                                  (when pending-append-work
+                                    (let ((held pending-append-work)
+                                          (arguments
+                                           pending-append-arguments))
+                                      (setq pending-append-work nil
+                                            pending-append-arguments nil
+                                            release-append nil)
+                                      (setq actual-append-work
+                                            (apply original arguments))
+                                      (e-work-on-settle
+                                       actual-append-work
+                                       (lambda (settled)
+                                         (let ((status
+                                                (e-work-status settled)))
+                                           (if (eq (plist-get status :state)
+                                                   'finished)
+                                               (e-work-finish
+                                                held
+                                                (plist-get status :result))
+                                             (e-work-fail
+                                              held
+                                              (plist-get status :error))))))
+                                      actual-append-work))))
+                          pending-append-work)
+                      (apply original
+                             (append (list service board-id record-kind
+                                           source-kind source-key)
+                                     fields))))))))
+          (setq session-id (e-chat-sql-e2e-create-session harness))
+          (let* ((first
+                  (e-chat-sql-e2e-prompt-batch
+                   harness session-id "first turn" 5.0))
+                 (first-turn-id (plist-get first :turn-id)))
+            (unless (eq (plist-get first :status) 'done)
+              (error "First SQL turn failed: %S" first))
+            (should (equal (plist-get first :assistant-content)
+                           "first turn answer"))
+            (should (equal (plist-get first :id) first-turn-id))
+            (should (stringp (plist-get first :assistant-message-id)))
+            (e-chat-sql-e2e-prompt-async
+             harness session-id "second turn")
+            (let* ((event
+                    (e-chat-sql-e2e-wait-until
+                     (lambda ()
+                       (and release-append
+                            (gethash
+                             session-id
+                             (e-chat-sql-e2e--event-table harness))))
+                     5.0))
+                   (second-turn-id (plist-get event :turn-id))
+                   (view
+                    (e-chat-sql-e2e--await
+                     (e-session-async-chat-view
+                      (e-harness-sessions harness) session-id :limit 64)
+                     5.0))
+                   (first-row
+                    (cl-find-if
+                     (lambda (message)
+                       (equal (plist-get message :source-turn-id)
+                              first-turn-id))
+                     (plist-get view :messages))))
+              (should (eq (plist-get event :type) 'turn-finished))
+              (should-not (equal second-turn-id first-turn-id))
+              (should first-row)
+              (should (equal (plist-get first-row :content)
+                             "first turn answer"))
+              (should-error
+               (e-chat-sql-e2e-wait-batch harness session-id 0.25)
+               :type 'error)
+              (should release-append)
+              (funcall release-append)
+              (let ((second
+                     (e-chat-sql-e2e-wait-batch harness session-id 5.0)))
+                (should (equal (plist-get second :assistant-content)
+                               "second turn answer"))
+                (should (equal (plist-get second :id) second-turn-id))
+                (should (equal (plist-get second :turn-id) second-turn-id))
+                (should (stringp (plist-get second :assistant-message-id)))))))
+      (when release-append
+        (ignore-errors (funcall release-append)))
+      (when actual-append-work
+        (ignore-errors (e-chat-sql-e2e--await actual-append-work 5.0)))
+      (e-chat-sql-e2e-reset))))
 
 (ert-deftest e-cache-efficiency-e2e-test-durable-usage-collection-pages-sqlite ()
   "Usage collection preserves order across durable bounded SQL pages."
