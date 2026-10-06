@@ -41,8 +41,10 @@ deterministic fixed point with zero findings.  Fresh committed-code Codex
 P1/P2 revealed two E2E defects: the P2 reporter was undefined and a repeated
 SQL turn could return the previous durable answer before its own append.
 Both evidence-owner corrections are parent-accepted with a synthetic tool
-lifecycle and delayed-append regression.  New gates/closure review and fresh
-provider attempts follow.  Public API benefit remains unconfirmed without
+lifecycle and delayed-append regression.  Clean =a1659e9b= passes 2,867/2,867
+canonical, 9/9 configured and 66 credential-free dependent E2E tests.
+Independent Review 12 restores deterministic fixed point with zero findings;
+fresh provider attempts follow.  Public API benefit remains unconfirmed without
 credentials.  The historical Codex observation is not
 yet explained.
 

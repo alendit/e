@@ -2598,3 +2598,228 @@ strengthened; network effects remain external.  Exact clean gates and
 independent Review 12 precede a fresh normal provider attempt.  Public API
 credentials remain absent; curation remains unavailable; Feature 98 stays
 In-review.  No user Emacs, Board or live store changed.
+
+* Review 12: Independent SQL turn attribution and P2 reporting closure Tick
+
+** Decision and exact scope
+
+=deterministic-fixed-point= for the selected F98-G1/F98-C1--C6 deterministic
+implementation contract at exact clean revision
+=a1659e9bb9e943daf7273b0d767bdb8447cd1ea9=.  The two repository evidence-method
+defects discovered after Review 11 are closed.  This independent Tick found no
+remaining P0--P3 functional or architectural finding and no required
+deterministic unknown.  Fresh committed external Codex P1/P2 remains pending;
+this result does not establish =capability-confirmed= or Done.  Keep Feature 98
+In-review and production curation unavailable.
+
+Incremental baseline is Review 11's
+=36e118402cbf8558e8fad0e0fa62d03a29f338b9=.  Original =e07f6273..HEAD=
+F98-G1/C1--C6 scope, DP1 and supporting-plan admission =a4f4913d= are unchanged.
+The plan diff updates status/evidence prose only.  The sole changed code owners
+are =e2e/e-chat-sql-e2e-support.el= and the existing cache E2E evidence helpers.
+=git diff --quiet 36e11840 a1659e9b -- lisp= confirms production trees are
+unchanged.  Review 11 whole-scope coverage carries after the affected public
+SQL output, semantic consumer and reporting joins were revalidated.
+
+| Reviewed identity | Value |
+|-------------------+-------|
+| Exact revision | a1659e9bb9e943daf7273b0d767bdb8447cd1ea9 |
+| Current plan blob | 94b5046848987d95f3a8d52e82b1d1a93a2a9d8c |
+| Unchanged OpenAI profile blob | cfb843fd0a09f04b25d996ff51e7b53898132006 |
+| SQL E2E support blob | 7dfa3988edaf6c6a11e6504e107babd0b2a2b16c |
+| Cache E2E source blob | 00a8f518b12376cea23034855c23b835d3e1cfc9 |
+| Current E2E tree | 0cb83fa4833e59844ed1ee5c9dca43309c169cf2 |
+
+The reviewer made no provider calls, source/Git writes, or user Emacs/Board/store
+mutations.  Focused public SQL checks use disposable test-owned SQLite.  Only
+this private immutable review artifact was authored.
+
+** Diagnostic disposition and closure proof
+
+The durable =review.org= section "External diagnostic invalidation and E2E
+boundary remediation" records the fresh normal attempt at =676bc378= with
+Review 11 source =36e11840=.  P2 cleanup called an undefined reporter, and
+repeated P1 returned the previous durable answer after the second terminal
+event.  The attempt is not acceptance evidence.  The recorded partial second
+request input/read counters do not qualify the portfolio or establish a
+provider cache contract failure.  These are repository evidence-method defects;
+the prior deterministic result required reopening at those affected cells.
+
+| Reopened method defect | Current disposition and public proof |
+|------------------------+--------------------------------------|
+| SQL terminal event can return a previous assistant output | Closed. The helper joins the observed terminal turn ID to exactly one durable assistant output row's =source-turn-id=. A real disposable SQL regression holds the second append, retains the prior answer in the view, proves the second wait fails while its row is absent, releases the append, and returns the second answer with its own turn/message identities. |
+| Undefined P2 cleanup reporter and adjacent minimal P1 reporter | Closed. Both routes use the existing cache evidence reporter. P2's extracted shared reporting function performs the existing request/usage join, qualified classifier and JSON emission; a complete ordinary SQL four-tool lifecycle reaches that function without provider credentials. |
+
+=e-chat-sql-e2e-support.el:118--141= requires a usable terminal turn identity,
+polls the bounded asynchronous chat view, and selects only rows whose
+=record-kind= is =output= and role is assistant, with matching =source-turn-id=.
+A previous answer, other
+record kind or user role cannot satisfy the wait.  More than one matching row
+raises an explicit ambiguity error.  Missing output waits to the supplied
+timeout and remains an error; it is not converted to the previous answer.
+
+At =:143--177= the done result carries terminal =:id/:turn-id= and durable
+=:assistant-message-id=, including the nested result, while retaining the
+existing =:assistant-content= and terminal reason consumed by live/cache E2E
+helpers.  Failure/cancellation handling is unchanged.  Selection is independent
+of row ordering within the bounded view.  The existing production writer at
+=e-chat-service.el:2549--2575= publishes one harness output keyed by session and
+turn, with the same =:source-turn-id=.  The SQL view at
+=e-runtime-store-worker.el:1131--1176= preserves the durable record fields and
+projects output role; the explicit asynchronous read remains bounded to 64.
+No production publication timing or persistence contract was rewritten.
+
+=e-cache-efficiency-e2e-test.el:578--597= now owns the shared P2 report.  It
+preserves semantic result separately from the complete-attribution-qualified
+cache result and emits the same content-bounded record through the existing
+=--report-evidence= serialization boundary.  The provider P2 cleanup at
+=:1799--1805= and adjacent minimal P1 at =:1594= use defined owner symbols;
+there are no remaining =e-live-e2e--report-evidence= calls in this file.
+
+The extracted prompt at =:557= and answer assertions at =:570= preserve the
+original four-step, inherited-observation, sum 2,934 and cryptarithm secrecy
+requirements.  Provider native replay/affinity assertions remain unchanged.
+The synthetic backend at =:599--680= derives its answer from all four actual
+ordered tool results and verifies the inherited observation rather than
+returning a canned sum.  Its ordinary asynchronous five-request SQL lifecycle
+at =:1815--1862= exercises the public prompt/result/report path.  Its absent
+provider usage is explicitly =unconfirmed-incomplete-usage=, with semantic
+success retained; it supplies no synthetic cache-benefit claim.
+
+** Prior finding dispositions
+
+| Prior findings | Current disposition |
+|----------------+---------------------|
+| R10-F1 flattened P1 and R9-F1 segmented P1 measurement | Closed and unchanged; both-layout native guidance count/digest, absence/mismatch controls and unchanged consumer guard carry. |
+| R9-F2 context endpoint asymmetry and R8-F1 effective selector/routing | Closed and unchanged; symmetric context composition, effective endpoint/API/auth/model identity, actual constructors/aliases and compatibility fences carry. |
+| R8-F2 complete public P2 attribution | Closed and retained through the new report wrapper; extra usage still blocks positive qualification and raw provenance remains visible. |
+| Earlier publication/effects and reserved-tool findings | Closed and carried; core/curation/tool producers are unchanged. |
+| R2 retention, total accounting and P3 material/chronological attribution | Closed and carried; no changed policy, accounting or curation classifier owner. |
+| R3 missing totals and static-only P2 attribution | Closed and carried; all-known totals and two advances beyond the initial whole-request ceiling remain unchanged. |
+| Reviews 5/6 SQL usage collection and JSON emission | Closed and carried; shared durable pagination/usage joins and enum/unknown serialization remain unchanged and compose with the corrected reporter. |
+| Review 7 rolling Anthropic and bounded external closure | Carried unchanged; accepted configured tool/thinking shape remains bounded, and the separate minimal repeated no-read outcome stays unconfirmed. |
+
+** Verification
+
+Exact HEAD was clean, the full incremental diff and consequential producer/
+consumer joins were read, and =git diff --check 36e11840 a1659e9b= passed.  No
+equivalent broad suite was rerun.  Supplied exact-revision summaries were read:
+
+| Gate | Result | Evidence |
+|------+--------+----------|
+| Canonical =eldev -s test= | 2867/2867 expected, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-sql-canonical.log:3785--3789= |
+| Fresh isolated current configuration | 9/9, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-sql-current-config.log:1--4= |
+| Dependent cache E2E | 92 selected; 66 expected passes, 26 expected provider/configuration-gated skips, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-sql-dependent-e2e.log:98--104= |
+
+Independent narrow =eldev -s eval= checks add evidence:
+
+- Actual disposable SQL delayed-output and synthetic four-tool lifecycle tests
+  pass 2/2, zero unexpected, exit 0.
+- Direct terminal-turn/output composition returns the current row and both
+  identities regardless of prior/current row order; prior-turn, wrong-kind,
+  wrong-role, missing output, missing identity and duplicate matching rows are
+  rejected.  Timeout cannot produce the old answer.
+- Actual shared report → join → classifier → JSON composition qualifies a
+  complete synthetic counter sequence, while an extra unjoined usage event
+  remains in provenance and returns =unconfirmed-incomplete-usage=.  The emitted
+  semantic result remains separate in both cases.
+- The shared semantic assertion rejects a leaked cryptarithm solution and a
+  missing inherited observation.  No provider request is made.
+
+An initial direct probe used a symbol instead of an actual harness object and
+failed its accessor type check before producing evidence.  The corrected probe
+uses an actual private harness; all assertions and the two public SQL tests
+pass.  That probe setup error is not product or provider evidence.
+
+These checks clear the affected public composition, not merely the reporter's
+existence or a pure classifier function.
+The leaf artifact was read back and parsed successfully as Org data; exact
+revision and content identities were verified from read-only Git output.
+
+** Complete contract and scenario coverage
+
+| Cell | Current disposition | Evidence boundary |
+|------+---------------------+-------------------|
+| F98-G1 | Cleared deterministic | All method reopenings and prior findings closed; external capability/feature completion remains separate. |
+| F98-C1 growing eligible reuse | Cleared deterministic, carried | Production capability-driven selection/constructors unchanged; fresh Codex benefit remains unconfirmed. |
+| F98-C2 compatible unknown/unsupported behavior | Cleared deterministic, carried | Strict effective API/auth/model/endpoint fences and compatible defaults; external P1 pending. |
+| F98-C3 authorized projection/replay | Cleared deterministic | Production replay/projection unchanged; terminal output is now attributed to its own turn and the four ordered SQL tool results reach the semantic answer. |
+| F98-C4 options/migration/anchors | Cleared deterministic, carried | No options or production identity/layout/anchor changes. |
+| F98-C5 diagnostics/accounting/evidence | Cleared deterministic | Correct turn/output attribution and shared public report compose with unchanged total/unknown accounting, complete usage and growth classification. |
+| F98-C6 efficient curation admission | Cleared deterministic, carried | All production capabilities none/unconfirmed; complete affordance absence and forced-effect rejection unchanged; accepted retained projections remain authoritative. |
+| S1 ordinary/direct requests | Cleared deterministic, carried | Actual constructors/defaults/aliases and both native P1 layouts unchanged; repeated SQL semantic answer now comes from the current turn. |
+| S2 growing tool/history evidence | Cleared deterministic | Real four-tool SQL lifecycle and shared P2 reporting; original public three-tool shape, native encrypted replay and durable hashes/IDs/ordinals unchanged. |
+| S3 curation/reopen/reconnect | Cleared deterministic, carried | Lifetime, continuation/fallback, anchor and curation absence/effect owners unchanged. |
+| S4 native/provider/configuration partitions | Cleared deterministic | Original native compatibility proof plus defined minimal P1/P2 reporting and correct SQL result shape. |
+| P1 method | Cleared deterministic; external pending | Native measurement unchanged; repeated-turn SQL result attribution and adjacent minimal report corrected. |
+| P2 method | Cleared deterministic; external pending | Public report/lifecycle corrected; complete qualified classifier and source-backed semantic/replay assertions preserved. |
+| P3 method | Cleared deterministic; production unavailable | Unchanged repeated projection-preserving qualification predicate and unavailable shipped capabilities. |
+
+All required deterministic cells are cleared; none remains candidate or
+unknown.  Untouched authentic counter-ID/ordinal/full-attribution joins, private
+adoption/finalizer, OpenAI profile/transport, Anthropic and core/lifetime
+coverage carry from Review 11.  The incremental diff provides no contradictory
+dependency change.
+
+** Architecture self-check
+
+All fourteen AGENTS.md answers retain whole-scope coverage with these updates:
+
+1. The package is better off: current-turn answers and public evidence reports
+   are reliable at this deterministic boundary; all findings are closed.
+2. Direction remains capability-owned reuse, semantic truth and unavailable
+   unconfirmed curation; test evidence now respects the same turn identity.
+3. Provider uncertainty stays local and explicit. No speculative capability
+   abstraction or registry was added.
+4. Disposable SQL coordination belongs to the existing SQL E2E helper;
+   reporting/qualification belongs to the existing cache E2E owner. Production
+   adapter and semantic owners are unchanged.
+5. Interfaces remain narrow: a terminal turn ID selects one output row, and
+   existing result consumers retain content/reason plus explicit identities.
+6. Dependency direction is unchanged; no core dependency on providers or E2E
+   evidence is introduced.
+7. Provider effects stay external. Disposable SQL and asynchronous fixture
+   effects stay at the explicit test shell/batch-await boundary.
+8. Terminal observations, held append work, timers and request counts are
+   test-owned transient state; cleanup releases them and private SQLite stores.
+   No production state or persistence lifetime changes.
+9. The existing bounded 64-row view is polled until current output or timeout;
+   truthful completion requires observing the detached append. No production
+   performance regression is introduced, and no provider savings are inferred.
+10. Result identity now matches its own semantic turn; existing content/result
+    interfaces remain compatible. The synthetic backend exercises ordinary
+    lifecycle behavior without claiming provider reasoning/cache equivalence.
+11. Existing API/auth/endpoint/layout/transport fences are unchanged. Missing or
+    ambiguous output and incomplete usage cannot become success evidence.
+12. Undefined reporter calls and the unqualified newest-assistant shortcut are
+    removed. Retired public controls/headers remain absent.
+13. Missing durable output waits and fails; duplicate output raises ambiguity.
+    Reporting preserves semantic failures and unknown counters rather than
+    replacing them with provider blame or a positive cache result.
+14. Real delayed-append SQL and data-dependent four-tool lifecycle tests,
+    independent row attribution and shared report negative joins prove the
+    changed owners without providers. Unrelated production tests need no rewrite.
+
+Architecture, compatibility, resource bounds, documentation and economic
+actionability checks clear at the selected deterministic level.  No new owner,
+public control, extraction, glossary term, ledger or deferred scope is needed.
+
+** External result boundary
+
+The invalid prior attempt does not establish external acceptance or a valid
+provider product-contract failure.  Fresh reviewed committed Codex repeated
+above-minimum no-tool P1 and inherited/reasoning P2 must still run, preserving
+ordered usage, full attribution, semantic output and the shared classifier.
+Neither partial reads nor a synthetic lifecycle prove provider benefit.
+
+Public OpenAI API credentials remain absent.  All P3 capabilities remain
+none/unconfirmed; curation stays unavailable.  Prior bounded Anthropic
+configured-shape acceptance carries without a universal reuse claim; its
+minimal repeated zero-read outcome remains visible and unconfirmed.  Historical
+Board 4,608-token ceiling causality remains unknown because bodies were absent.
+This result is deterministic closure only, not cache improvement, root cause,
+external capability confirmation or full-feature Done.
+
+log-read: /private/tmp/e-board-cache-audit-76eac/openai-sql-canonical.log:3785--3789;
+/private/tmp/e-board-cache-audit-76eac/openai-sql-current-config.log:1--4;
+/private/tmp/e-board-cache-audit-76eac/openai-sql-dependent-e2e.log:98--104.
