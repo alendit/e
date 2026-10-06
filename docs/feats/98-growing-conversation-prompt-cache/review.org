@@ -2357,3 +2357,207 @@ boundary; no Git write occurred and change attribution remains clear.
 Architecture dispositions carry with R10-F1's native-layout substitution
 addressed.  Fresh exact-revision gates and independent closure review follow;
 provider P1/P2 and public API benefit remain unconfirmed.
+
+* Review 11: Independent both-layout native P1 closure Tick
+
+** Decision and exact scope
+
+=deterministic-fixed-point= for the selected F98-G1/F98-C1--C6 deterministic
+implementation contract at exact clean revision
+=36e118402cbf8558e8fad0e0fa62d03a29f338b9=.  R10-F1 is closed.  This independent
+Tick found no remaining P0--P3 functional or architectural finding and no
+required deterministic unknown.  This result does not establish external
+=capability-confirmed= or Done.  Fresh committed Codex P1/P2 remains pending;
+keep Feature 98 In-review and all production curation unavailable.
+
+The incremental baseline is Review 10's
+=0d69e03d0d43731f4c47e453bf5fcc27015d827e=; original selected source scope is
+=e07f6273..HEAD=.  F98-G1/C1--C6, DP1, supporting-plan admission =a4f4913d= and
+their semantic authorities are unchanged.  The plan delta is status/evidence
+prose only.  The sole code-owner delta is the existing cache E2E native-guidance
+recorder, its both-layout witnesses and the repeated P1 guidance consumer.
+Unchanged Review 10 whole-scope coverage carries after the incremental owner,
+dependency and evidence joins.  Production adapter, core, profile, transport,
+continuation, curation and persistence trees are unchanged.
+
+| Reviewed identity | Value |
+|-------------------+-------|
+| Exact revision | 36e118402cbf8558e8fad0e0fa62d03a29f338b9 |
+| Current plan blob | e8d3ae7a067e7bd9aab797da5fb9c9b20eaae9ff |
+| Unchanged OpenAI profile blob | cfb843fd0a09f04b25d996ff51e7b53898132006 |
+| Current E2E tree | d642fc11d2930611801ffc2936287f6a8d7aea6a |
+
+The reviewer made no provider calls or source/Git/live Emacs/Board/store
+mutations.  Only this private immutable review artifact was authored.
+
+** Finding dispositions and current source proof
+
+| Finding | Current disposition |
+|---------+---------------------|
+| R10-F1: flattened HTTP Codex P1 guidance is unmeasured | Closed. The native recorder now verifies either ordered complete developer-input text or the complete flattened stable prefix in actual top-level instructions. Both actual P1 layer → capability context → normal native request → record → consumer witnesses pass. No body/layout override or narrower capability guard was introduced. |
+| R9-F1: segmented P1 counted only base instructions | Closed and retained. Actual segmented guidance remains 40,499 characters, excluding the 28-character base instructions; the consumer accepts its count/digest. |
+| R9-F2: inverse profile/effective endpoint context asymmetry | Closed and unchanged. Exact base/full Responses comparisons preserve all four semantic capability combinations and the existing compatibility fences. |
+| R8-F1: equivalent effective endpoint/alias cache selection and routing | Closed and unchanged, including its R9-F2 semantic dependency. Effective API/auth/model identity drives compatible selection; actual public constructors/body/header joins remain covered. |
+| R8-F2: incomplete public P2 qualifies growing reuse | Closed and unchanged. Both public consumers require complete usage attribution; missing/extra/duplicate events remain explicit unknown evidence. |
+| Earlier Review 1 publication/effects and reserved tools | Closed and carried; no changed publication/admission/effect owner. |
+| R2-F1 optional retention; R2-F2 provider total accounting; R2-F3 repeated-curation attribution | Closed and carried; compatible defaults, shared total accounting and chronological/material P3 controls are unchanged. |
+| R3-F1 unknown-total aggregation; R3-F2 static-only P2 attribution | Closed and carried; all-known aggregation and two advances beyond the initial whole-request ceiling remain enforced. |
+| Reviews 5/6 durable collection and report emission | Closed and carried; SQL pagination, request/usage joins, enum serialization and missing-counter preservation are unchanged. |
+| Review 7 rolling Anthropic selection/external contradiction | Bounded configured tool/thinking shape closure carries; the separate minimal repeated zero-read outcome remains unconfirmed rather than a universal benefit claim. |
+
+=e-cache-efficiency-e2e-test.el:79--91= now summarizes verified stable text as a
+character count plus SHA-256 of the ordered JSON text vector, retaining no text
+in the record.  The native verifier at =:93--147= first requires all expected
+stable system messages in native developer input order.  Otherwise it accepts
+flattened instructions only when no expected developer text matches and the
+actual instructions begin with the configured/default base followed by the
+complete ordered stable projection.  This prevents partial/reordered developer
+capture from being rescued by a second channel.  Missing/empty expected
+guidance and nonmatching native projections return no summary.
+
+The size excludes base instructions and changing suffixes.  Its digest now
+identifies the verified ordered guidance text across both supported layouts;
+it is not claimed to be a complete body/item hash.  Existing whole input hashes,
+stable-prefix fingerprint, authentic request IDs/ordinals and usage provenance
+remain separately recorded and unchanged.
+
+The actual segmented native witness at =:857--917= and flattened managed-auth
+HTTP alias witness at =:919--1031= use the P1 layer and ordinary native request
+composition with synthetic auth accessors.  The flattened profile has no
+developer-input declaration; caller options add no layout override.  The body
+contains the guidance in instructions and user input only, with the normal
+endpoint and joined body/header identity.  The test additionally rejects
+absent/mismatched actual instructions through the actual record and consumer.
+
+The public guard at =:627--640= is unchanged and remains effective-capability
+based.  The repeated consumer uses =--stable-guidance-record-valid-p= at
+=:149--156,1562=, requiring integer size above 30,000 and a 64-hex-character
+digest instead of raising a numeric comparison error on unknown size.  Its
+three-request chronology, authentic provider ordinals, unique request IDs,
+complete usage join, same-session affinity, no-tools/control checks, numeric
+counters and unchanged guidance digest assertions remain intact at
+=:1516--1588=.  A valid guidance record still establishes request shape/field
+acceptance separately from external cache reuse.
+
+** Independent evidence and exact gates
+
+The full incremental source diff, status-only plan delta and downstream
+recorder/consumer composition were read independently.  Exact HEAD was clean;
+=git diff --check 0d69e03d 36e11840= passed.  No broad gate was rerun.
+
+The supplied exact-revision gate summaries were consumed:
+
+| Gate | Result | Evidence |
+|------+--------+----------|
+| Canonical =eldev -s test= | 2867/2867 expected, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-r10-canonical.log:3785--3789= |
+| Fresh isolated current configuration | 9/9, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-r10-current-config.log:1--4= |
+| Dependent cache E2E | 90 selected; 64 expected passes, 26 expected provider/configuration-gated skips, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-r10-dependent-e2e.log:96--102= |
+
+An independent credential-free =eldev -s eval= adds narrow consequential proof:
+ordered two-message segmented and flattened native guidance produce equal
+summaries and count exactly 16 guidance characters, excluding the changing
+suffix.  Seven native negative controls reject absent guidance, wrong base,
+truncated flattened projection, reordered developer text even with a matching
+flattened channel, partial developer text even with that channel, incomplete
+flattened text, and user-channel-only guidance.  Empty expected guidance and
+empty text are rejected; unknown count and invalid digest fail the consumer
+without an error.  All assertions passed.  The same invocation independently
+ran the two actual native P1 composition tests: 2/2 expected, zero unexpected,
+exit 0.  No provider dispatch occurred.
+
+These witnesses establish actual owner/public composition behavior, rather
+than equating field presence or green suite counts with cache benefit.
+The leaf artifact was read back and parsed successfully as Org data, and exact
+revision/content identities were read back from Git.
+
+** Complete selected contract and scenario coverage
+
+| Cell | Current disposition | Evidence boundary |
+|------+---------------------+-------------------|
+| F98-G1 | Cleared deterministic | Existing package direction and all finding closures; external capability/feature completion remains separate. |
+| F98-C1 growing eligible reuse | Cleared deterministic, carried | Capability-derived effective API policy, actual constructors/aliases and no caller weakening controls; fresh Codex reuse not yet externally confirmed. |
+| F98-C2 compatible unknown/unsupported behavior | Cleared deterministic, carried | Strict endpoint/API/auth/model selection, compatible implicit defaults and truthful unknown reporting; external P1 pending. |
+| F98-C3 authorized projection/replay | Cleared deterministic, carried | Symmetric context equivalence, current-state replacement, native tool/reasoning chronology, continuation/reconnect and full fallback. |
+| F98-C4 removed controls/migration/anchors | Cleared deterministic, carried | No options reintroduced; trusted capability binding and material anchor-layout fences unchanged. |
+| F98-C5 accounting/diagnostics/evidence | Cleared deterministic | Both native P1 layouts now measured truthfully; unaffected total/unknown accounting and complete P2 attribution remain covered. |
+| F98-C6 efficient curation admission | Cleared deterministic, carried | All production capabilities none/unconfirmed; complete affordance absence and forced-effect rejection remain enforced; retained accepted projections remain authoritative. |
+| S1 ordinary/direct requests | Cleared deterministic, carried | Actual configured constructors, effective aliases and compatible defaults unchanged; both supported P1 projection paths covered. |
+| S2 growing subturn/history evidence | Cleared deterministic, carried | Original public three-tool and separate inherited/reasoning four-tool P2, durable prefix/hash/ordinal/usage joins unchanged. |
+| S3 curation/reopen/reconnect | Cleared deterministic, carried | Context, lifetime, continuation/anchor/fallback and curation absence/effect proof unchanged. |
+| S4 API/native/configuration partitions | Cleared deterministic | Native body/header identity, both P1 layouts, missing/mismatch evidence controls and prior provider compatibility proof. |
+| P1 deterministic portfolio method | Cleared | Both actual native layouts and conservative unknown evidence feed the unchanged repeated-request consumer; external fields/boundaries/counters must still qualify. |
+| P2 deterministic portfolio method | Cleared, carried | Complete-attribution-qualified shared growth predicate and both public consumers unchanged; fresh Codex external run pending. |
+| P3 deterministic method | Cleared, carried; production unavailable | Repeated chronological/material projection-preserving qualification remains covered; no capability has been newly confirmed. |
+
+No required deterministic cell remains candidate or unknown.  Untouched
+request-start/usage ID joins, chronological versus per-turn ordinals, full
+attribution, private adoption/finalizer, OpenAI profile/transport, Anthropic and
+core/lifetime owners retain their independently reviewed evidence.  The source
+diff supplies no contrary dependency change.
+
+** Architecture self-check
+
+All fourteen AGENTS.md answers retain whole-scope coverage with this delta:
+
+1. The package is better off at this boundary: native P1 evidence now works for
+   both supported layouts and all current deterministic findings are closed.
+2. Direction remains capability-owned reuse, authoritative semantic projection
+   and unavailable unconfirmed curation.
+3. Provider uncertainty remains local and explicit. Both-layout measurement is
+   an observed native variation, not a speculative registry or abstraction.
+4. The existing E2E evidence owner verifies native guidance; adapter/profile
+   owners still select policy, semantic capability and actual serialization.
+5. Interfaces stay narrow; no caller policy knob, layout override or widened
+   production coupling is introduced.
+6. Dependency direction is unchanged; core does not learn provider cache fields.
+7. Measurement is pure. Provider effects remain in adapters and isolated runners.
+8. Summaries and joins are scenario-local and rebuilt. Production state and
+   persistent lifetimes are unchanged.
+9. Matching scans the small test projection; text hashing is test-only. No new
+   production cost or unbounded resource lifetime is added; external savings
+   and latency remain observational unknowns.
+10. Both native layouts now substitute under the same accepted P1 method.
+    Verified ordered text digests deliberately share meaning across layouts;
+    complete wire/body evidence remains separate.
+11. The capability-based guard and existing endpoint/API/auth/provider/transport/
+    requester/layout compatibility fences are preserved. Unknown evidence does
+    not become accepted shape or cache benefit.
+12. Retired controls and underscore headers stay absent; no legacy mode or new
+    fallback was introduced.
+13. Absent/mismatched projection and malformed record evidence remain explicit
+    invalid/unknown values. The consumer rejects them without misattributing
+    the result to provider behavior.
+14. Actual both-layout native witnesses plus ordering/channel/absence controls
+    prove the owner independently of providers. The correction changes narrow
+    evidence tests; unrelated production tests require no rewrite.
+
+Architecture, compatibility, resource bounds, documentation and economic
+actionability checks clear at the selected deterministic level.  No extraction,
+new owner, public control, glossary term, ledger or deferred follow-up scope is
+required.  There is no valid unresolved external product-contract failure
+established for this changed Codex code; unavailable fresh evidence remains
+unconfirmed capability rather than a fabricated success or failure.
+
+** External acceptance and result boundary
+
+Fresh reviewed committed Codex repeated above-minimum no-tool P1 and
+inherited/reasoning P2 have not run.  They must establish endpoint field/boundary
+acceptance and actual ordered counters independently, while preserving semantic
+success and complete provenance.  The repeated P1 report's =cache-result=
+remains =not-measured=: affinity/shape acceptance alone
+does not establish growing reuse or repeated cache hits.  A diagnostic body
+override or one history advance cannot substitute for committed-code P2's two
+advances beyond its conservative initial whole-request bound.
+
+Public OpenAI API credentials are absent.  All production P3 capabilities
+remain none/unconfirmed; curation is unavailable.  Prior Anthropic accepted
+configured tool/thinking shape carries without a universal hit-rate claim; its
+separate minimal repeated zero-read outcome remains visible and unconfirmed.
+Historical Board 4,608-token ceiling causality remains unknown because request
+bodies were absent.  This Tick establishes deterministic closure only, not
+provider cache improvement, root cause, external capability confirmation or
+full-feature Done.
+
+log-read: /private/tmp/e-board-cache-audit-76eac/openai-r10-canonical.log:3785--3789;
+/private/tmp/e-board-cache-audit-76eac/openai-r10-current-config.log:1--4;
+/private/tmp/e-board-cache-audit-76eac/openai-r10-dependent-e2e.log:96--102.

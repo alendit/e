@@ -35,8 +35,10 @@ and 63 credential-free dependent E2E tests.  Review 10 closes the original
 findings but identifies incomplete P1 recording for a supported flattened HTTP
 alias layout.  The both-layout native recorder correction is now parent-
 accepted with actual segmented/flattened witnesses and absent/mismatch
-controls.  Final exact-revision gates and closure Tick precede committed-code
-P1/P2 external qualification.  The historical Codex observation is not
+controls.  Clean =36e11840= passes 2,867/2,867 canonical, 9/9 configured and
+64 credential-free dependent E2E tests.  Independent Review 11 establishes
+deterministic fixed point with zero findings.  Fresh committed-code Codex
+P1/P2 now follows; public API benefit remains unconfirmed without credentials.  The historical Codex observation is not
 yet explained.
 
 * Goal and authority
