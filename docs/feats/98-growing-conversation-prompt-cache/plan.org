@@ -18,7 +18,8 @@ The separate inherited-observation/encrypted-reasoning P2 proves growing
 history reuse: reads 0 / 8,064 / 20,608 / 31,616 / 42,752 across five requests.
 Both have unchanged native stable guidance and durable history prefixes.
 Qualification is bounded to this endpoint/model/protocol/material shape and
-revision; it does not prove the historical Board ceiling's cause.
+revision.  Independent Review 13 confirms these scoped P1/P2 results with
+zero new findings; they do not prove the historical Board ceiling's cause.
 
 Prior configured Opus 5.5 tool/thinking P2 and the actual read-only Board main
 chat audit demonstrate growing reuse.  The separate Anthropic minimal no-tool

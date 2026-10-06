@@ -2905,3 +2905,162 @@ No universal hit-rate, latency, cost improvement or full-feature Done follows.
 The external record/status delta requires one bounded independent evidence
 review.  Using the changed provider adapter in the running user Emacs requires
 a restart; it was left unchanged.
+
+* Review 13: Independent bounded Codex external acceptance and status Tick
+
+** Decision and exact boundary
+
+=capability-confirmed= for fresh P1/P2 on the configured managed-auth
+=gpt-6-sol= Codex Responses WebSocket route and the two material shapes below.
+The actual records support this bounded result.  No new P0--P3 defect,
+contradictory product-contract result or required unknown remains within this
+selected evidence/documentation delta.  Review 12's
+=deterministic-fixed-point= carries unchanged.  This is not universal cache
+benefit, P3 qualification or full-feature Done; Feature 98 remains In-review.
+
+Reviewed exact clean revision:
+=5d554cf107c7606d8b0cf4c2efd96552b8d12ec8=.  The fresh accepted run binds
+=fd656ab51dd1ae2882c60f950a6561e5af29c704=, whose =lisp/test/e2e= code is
+identical to independently reviewed and gated =a1659e9b= and the current target.
+Both read-only diff identity checks pass.  Current plan blob is
+=b711559559a85e47d770cc74101196a99b2472f5=; E2E tree remains
+=0cb83fa4833e59844ed1ee5c9dca43309c169cf2=.  Normative F98-G1/C1--C6, DP1 and
+admitted supporting design are unchanged.  Only external record/status prose
+and its joins to unchanged source were reviewed; no whole-code review, broad
+gate repeat, provider call or source/Git/live Emacs/Board/store mutation occurred.
+Only this private leaf artifact was authored.
+
+** Authoritative records and verification
+
+The reviewer inspected the actual parsed records and raw log lines 4--9, rather
+than accepting supplied counter summaries.  Their JSON objects are identical.
+The log reports two expected passes, zero unexpected, 59.101522 seconds; the
+supplied process exit is 0.  P2 completed at =2026-10-06T16:40:01Z= after
+47.855858 seconds; P1 completed at =16:40:12Z= after 11.212303 seconds.  Both are
+fresh within the plan's 24-hour window at this review.
+
+| Evidence artifact | SHA-256 |
+|-------------------+---------|
+| codex-production-p1-p2-final.json | 0684a69ac413902a3b24a0181969a4d7ac67e35ea0368ad197414f8149067c33 |
+| codex-production-p1-p2-final.log | 8c9777862164721932282f4f0705f9e8e5215a0f908cbe80047eb255314eb4d6 |
+
+Both artifacts are under =/private/tmp/e-board-cache-audit-76eac/=.  Read-only
+programmatic checks independently verify each request's stable model/endpoint,
+ordinary session/body-key/header hash equality, selected affinity, absent
+legacy/explicit controls, stable guidance digest and static fingerprint, unique
+provider IDs, authentic ordinal/usage provenance and complete prior durable
+input hash-vector preservation.  No unattributed usage/start event appears.
+
+The configured source =e2e/e-e2e-config-openai-codex.el= uses the normal
+managed-auth Codex profile, =store=false=, segmented developer input, encrypted
+reasoning, disabled continuation and WebSocket full replay.  Its context-free
+factory ignores project directory/default layer context; tests add synthetic
+capabilities and use disposable SQL sessions.  The records agree with the
+normal reviewed native capture/report owners.  No diagnostic body/header/
+layout/provider override was used.  The successful complete parsed responses
+are proved; the records do not separately preserve a numeric handshake status
+or account/team identifier, so no claim is made about either.
+
+** P1 disposition: repeated above-minimum no-tool reuse
+
+The three ordinary turns preserve 40,499-character stable guidance and one
+session affinity.  Three distinct semantic markers pass, each through its own
+current-turn SQL output.  Captured request chronology 1/2/3 joins three unique
+provider starts and usage events whose authentic per-turn ordinals are 1/1/1.
+The independent check joins start, usage and request IDs without shifting
+counters.  No tools or inherited observation are present.
+
+| Request | Total input | Read | Creation | Uncached input |
+|---------+-------------+------+----------+----------------|
+| 1 | 10537 | 0 | 0 | 10537 |
+| 2 | 10574 | 10368 | 0 | 206 |
+| 3 | 10612 | 10368 | 0 | 244 |
+
+These raw counters demonstrate repeated cache reuse for the unchanged stable
+no-tool shape, satisfying its positive repeated-read qualification.  The
+fixture correctly retains =affinity-field-result: pass= and
+=cache-result: not-measured= because it does not classify growing tool history.
+The constant reads do not prove reuse of every newly added turn or family-wide
+efficiency.  No such broader claim is needed or made.
+
+** P2 disposition: growing history with observation and encrypted replay
+
+Five sequential requests consume all four ordinary synthetic tool outputs.
+Semantic result and complete usage attribution pass; the reviewed assertions
+require the fixed observation and sum 2,934 and reject the cryptarithm solution
+in final text.  Stable guidance remains 31,892 characters.  The fixed inherited
+observation occurs exactly once per native request; its hash stays fixed while
+its index follows the growing history.  Every prior durable vector is an exact
+prefix of the next.  Encrypted reasoning replay counts are 0/3/4/5/5, with
+1,439 reasoning output tokens produced on the first request.
+
+| Request | Total input | Read | Creation | Uncached input | Reasoning output |
+|---------+-------------+------+----------+----------------+------------------|
+| 1 | 8233 | 0 | 0 | 8233 | 1439 |
+| 2 | 20712 | 8064 | 0 | 12648 | 62 |
+| 3 | 31814 | 20608 | 0 | 11206 | 25 |
+| 4 | 42879 | 31616 | 0 | 11263 | 0 |
+| 5 | 53917 | 42752 | 0 | 11165 | 26 |
+
+The initial whole-request ceiling is 8,233.  Request 2's 8,064 read is below
+that bound and does not count as growing-history proof.  Requests 3--5 each
+advance reads above both the prior read and the ceiling: three qualifying
+advances, exceeding the required two.  This excludes a static-only positive.
+The shared qualified classifier independently reclassifies the actual record
+as =growing-history-reuse= after restoring serialized enum strings to their
+unchanged runtime symbol representation.  Counters, hashes and IDs are not
+changed.  Directly supplying serialized strings to the runtime-only join
+predicate initially rejected their enum types; that probe mismatch supplies
+no product/provider counterexample.  The corrected reclassification passes.
+
+** Contract, prior findings and documentation dispositions
+
+| Selected cell | Current disposition |
+|---------------+---------------------|
+| F98-G1 | Deterministic closure carries; fresh growing reuse confirmed for the named configured P2 shape. Historical Board cause and broader APIs remain unknown. |
+| F98-C1 | Source selection/default behavior carries; P2 demonstrates unchanged eligible history reuse for this route/shape. No universal hit-rate guarantee. |
+| F98-C2 / P1 | Normal affinity fields accepted with complete semantic joins; repeated above-minimum no-tool reads confirmed for this configured shape. Other endpoint/API/protocol shapes are not newly qualified. |
+| F98-C3 / P2 semantics | Native inherited observation, durable prefix and encrypted replay evidence joins unchanged reviewed semantic owners; fresh semantic assertions pass. |
+| F98-C4 | Caller-option removal, capability/anchor identity and compatible aliases carry unchanged; no source or configuration correction in this delta. |
+| F98-C5 | Actual totals/reads/creation, authentic IDs/ordinals, complete attribution and conservative growing classification are consistent with the updated ledger/status. |
+| F98-C6 / P3 | No qualification. All shipped capabilities remain none/unconfirmed, with curation affordances absent and forced effects rejected. |
+
+All prior deterministic finding dispositions and all fourteen architecture
+self-check answers carry unchanged from Review 12.  Its exact gates remain
+applicable by identical code: 2867/2867 canonical, 9/9 isolated configured,
+66 dependent passes plus 26 expected provider/configuration skips.  No gate was
+rerun.  The new evidence introduces no policy owner, coupling, dependency,
+effect, state lifetime, resource bound or compatibility change.  Performance
+claims remain bounded observed counters rather than a causal latency/cost
+improvement.  Current status/behavioral prose and the "Fresh Codex P1/P2"
+ledger accurately distinguish scoped external confirmation from mechanism
+completion, unconfirmed combinations and Feature In-review.  Whitespace
+diff checks pass.  This leaf artifact was read back and parsed successfully as
+Org data; exact revision/content identities were read back from Git.
+
+The earlier =676bc378= attempt remains invalid acceptance evidence: repository
+report/output-attribution failures are preserved in history rather than
+reclassified as cache success or provider failure.  Previously observed
+no-affinity synthetic shapes already achieved growing reuse; this fresh pass
+does not isolate affinity as the cause of a historical change.
+
+** Remaining limits and reuse conditions
+
+Reuse this evidence only within 24 hours and with unchanged accepted material
+owners, endpoint, configured managed-auth authorization realm, model family,
+protocol and these material shapes.  No cross-account/team reuse is qualified.
+A relevant change or valid controlled contradictory run must reopen its cells.
+Configured alias/HTTP compatibility is deterministic proof, not new external
+confirmation for those protocols.  Public OpenAI API credentials remain absent
+and external benefit unconfirmed.  Anthropic minimal repeated no-read benefit
+remains unconfirmed; prior configured tool/thinking and read-only Opus Board
+evidence carries without a universal claim.  P3 is unconfirmed everywhere.
+
+Historical Board 4,608-token ceiling causality remains unknown because bodies
+were not captured.  The user Board/main chat was not rerun or changed.  The
+running user Emacs remains unchanged and requires an operator-managed restart
+to use the changed adapter; this review performs no restart.  No full-feature
+Done, historical root cause, universal benefit or curation qualification is
+claimed.
+
+log-read: /private/tmp/e-board-cache-audit-76eac/codex-production-p1-p2-final.log:4--9.
