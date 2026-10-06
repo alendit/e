@@ -33,8 +33,10 @@ parent-accepted with a native projection witness and symmetric capability
 compositions.  Clean =0d69e03d= passes 2,867/2,867 canonical, 9/9 configured
 and 63 credential-free dependent E2E tests.  Review 10 closes the original
 findings but identifies incomplete P1 recording for a supported flattened HTTP
-alias layout.  That evidence-owner correction and committed-code P1/P2 remain
-pending before external qualification.  The historical Codex observation is not
+alias layout.  The both-layout native recorder correction is now parent-
+accepted with actual segmented/flattened witnesses and absent/mismatch
+controls.  Final exact-revision gates and closure Tick precede committed-code
+P1/P2 external qualification.  The historical Codex observation is not
 yet explained.
 
 * Goal and authority

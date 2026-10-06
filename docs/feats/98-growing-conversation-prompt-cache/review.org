@@ -2334,3 +2334,26 @@ deterministic Tick.
 log-read: /private/tmp/e-board-cache-audit-76eac/openai-r9-canonical.log:3785--3789;
 /private/tmp/e-board-cache-audit-76eac/openai-r9-current-config.log:1--4;
 /private/tmp/e-board-cache-audit-76eac/openai-r9-dependent-e2e.log:95--101.
+
+* Review 10 remediation: supported native instruction channels
+
+Parent-accepted Tock on =7dd1d656=, 2026-10-06.  The existing P1 evidence
+recorder verifies stable guidance in either actual developer input or the
+complete native flattened instructions prefix before emitting a bounded size
+and digest.  Missing or nonmatching guidance remains unavailable.  The
+repeated P1 consumes the same >30,000-character/64-hex-digest guard.
+
+Actual normal segmented and HTTP alias layer-to-native-record witnesses pass
+2/2, including flattened absent/mismatch controls.  The complete selected
+credential-free E2E suite passes 64 tests with 26 expected configuration-gated
+skips and zero unexpected.  Parent inspected the producer, native projection
+verification, public consumer and both-layout assertions.  Only the cache E2E
+file changed; no production request/layout/policy, core, persistence or
+curation owner changed.  No provider/live operations or subprocess remain.
+Evidence: =/private/tmp/e-board-cache-audit-76eac/openai-review10-remediation-evidence.md=.
+
+The implementer reported read-only Git inspection despite the no-Git package
+boundary; no Git write occurred and change attribution remains clear.
+Architecture dispositions carry with R10-F1's native-layout substitution
+addressed.  Fresh exact-revision gates and independent closure review follow;
+provider P1/P2 and public API benefit remain unconfirmed.

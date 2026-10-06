@@ -76,10 +76,25 @@
              content)
         (mapconcat (lambda (part) (plist-get part :text)) content "")))))
 
+(defun e-cache-efficiency-e2e--stable-instruction-summary (texts)
+  "Summarize stable instruction TEXTS without retaining their contents."
+  (when (and texts
+             (cl-every (lambda (text)
+                         (and (stringp text) (not (string-empty-p text))))
+                       texts))
+    (list :character-count (apply #'+ (mapcar #'length texts))
+          :sha256
+          (secure-hash
+           'sha256
+           (encode-coding-string
+            (e-json-serialize (vconcat texts))
+            'utf-8)))))
+
 (defun e-cache-efficiency-e2e--stable-native-instructions (body options)
-  "Summarize stable system guidance from BODY's native input projection.
-Return nil when an expected stable system message cannot be found in native
-developer input.  The summary contains a digest and size, never the text."
+  "Summarize stable guidance verified in BODY's native Responses channel.
+Return nil unless every expected stable system message is present in order in
+developer input, or the complete flattened projection is present in
+`instructions'.  The summary contains a digest and size, never the text."
   (let* ((stable-messages
           (cl-loop for segment in (plist-get options :segments)
                    when (memq (plist-get segment :kind)
@@ -88,40 +103,57 @@ developer input.  The summary contains a digest and size, never the text."
                            (lambda (message)
                              (eq (plist-get message :role) 'system))
                            (plist-get segment :messages))))
+         (texts (mapcar (lambda (message) (plist-get message :content))
+                        stable-messages))
          (native-input (append (plist-get body :input) nil))
          (cursor 0)
-         (native-items nil)
-         (complete t))
-    (dolist (message stable-messages)
-      (let* ((text (plist-get message :content))
-             (index
-              (and (stringp text)
-                   (cl-position-if
+         (complete t)
+         (any-developer-match nil))
+    (dolist (text texts)
+      (let ((index
+             (and (stringp text)
+                  (cl-position-if
+                   (lambda (item)
+                     (equal (e-cache-efficiency-e2e--native-input-message-text
+                             item)
+                            text))
+                   native-input :start cursor))))
+        (if index
+            (setq cursor (1+ index))
+          (setq complete nil))
+        (when (and (stringp text)
+                   (cl-some
                     (lambda (item)
                       (equal (e-cache-efficiency-e2e--native-input-message-text
                               item)
                              text))
-                    native-input :start cursor))))
-        (if index
-            (progn
-              (push (nth index native-input) native-items)
-              (setq cursor (1+ index)))
-          (setq complete nil))))
-    (when complete
-      (setq native-items (nreverse native-items))
-      (let ((texts (mapcar
-                    #'e-cache-efficiency-e2e--native-input-message-text
-                    native-items)))
-        (list :character-count
-              (apply #'+ (mapcar #'length texts))
-              :sha256
-              (secure-hash
-               'sha256
-               (encode-coding-string
-                (e-json-serialize
-                 (e-cache-efficiency-e2e--canonical-json-value
-                  (vconcat native-items)))
-                'utf-8)))))))
+                    native-input))
+          (setq any-developer-match t))))
+    (cond
+     ((and stable-messages complete)
+      (e-cache-efficiency-e2e--stable-instruction-summary texts))
+     ((and stable-messages
+           (not any-developer-match)
+           (cl-every (lambda (text)
+                       (and (stringp text) (not (string-empty-p text))))
+                     texts)
+           (let* ((base (or (plist-get options :instructions)
+                            "You are a helpful assistant."))
+                  (expected-prefix
+                   (concat base "\n\n" (string-join texts "\n\n")))
+                  (native-instructions (plist-get body :instructions)))
+             (and (stringp native-instructions)
+                  (string-prefix-p expected-prefix native-instructions))))
+      (e-cache-efficiency-e2e--stable-instruction-summary texts)))))
+
+(defun e-cache-efficiency-e2e--stable-guidance-record-valid-p (record)
+  "Return non-nil when RECORD meets the repeated P1 guidance guard."
+  (let ((count (plist-get record :stable-instructions-character-count))
+        (digest (plist-get record :stable-instructions-sha256)))
+    (and (integerp count)
+         (> count 30000)
+         (stringp digest)
+         (string-match-p "\\`[[:xdigit:]]\\{64\\}\\'" digest))))
 
 (defun e-cache-efficiency-e2e--inherited-observation-indices (input)
   "Return indices of native INPUT items containing the fixed observation."
@@ -868,13 +900,12 @@ STEPS defaults to the original three-step public-API scenario."
                  (length guidance)))
       (should
        (equal (plist-get record :stable-instructions-sha256)
-              (secure-hash
-               'sha256
-               (encode-coding-string
-                (e-json-serialize
-                 (e-cache-efficiency-e2e--canonical-json-value
-                  (vector (car input))))
-                'utf-8))))
+              (plist-get
+               (e-cache-efficiency-e2e--stable-instruction-summary
+                (list guidance))
+               :sha256)))
+      (should (e-cache-efficiency-e2e--stable-guidance-record-valid-p
+               record))
       (should (equal stable-text guidance))
       (should (equal (plist-get body :instructions)
                      "You are a helpful assistant."))
@@ -884,6 +915,120 @@ STEPS defaults to the original three-step public-API scenario."
       (should (eq (plist-get record :session-affinity-identities-match) t))
       (should (eq (plist-get record :affinity-body-key-present) t))
       (should (eq (plist-get record :affinity-header-present) t)))))
+
+(ert-deftest e-cache-efficiency-e2e-test-codex-p1-records-flattened-alias-guidance ()
+  "The normal managed-auth HTTP alias records stable guidance in instructions."
+  (let* ((layer (e-cache-efficiency-e2e--codex-affinity-p1-layer))
+         (capability-context
+          (e-capabilities-context (e-layer-capabilities layer)))
+         (user-message '(:role user :content "Reply with the fixed marker."))
+         (messages
+          (append (plist-get capability-context :messages)
+                  (list user-message)))
+         (segments
+          (append (plist-get capability-context :segments)
+                  (list (list :kind 'history :messages (list user-message)))))
+         (session-id "review10-flattened-p1-session")
+         (requests-by-session (make-hash-table :test 'equal))
+         (profile
+          (list :name "Managed Codex HTTP alias"
+                :base-url (concat e-openai-codex-default-base-url "/codex")
+                :wire-api 'responses
+                :responses-transport 'http
+                :response-store :json-false
+                :requires-openai-auth t
+                :include-encrypted-reasoning t
+                :observation-delivery 'inherited))
+         (e-openai-model-providers
+          (append e-openai-model-providers
+                  (list (cons 'codex-http-alias profile))))
+         (native (symbol-function 'e-openai--request-context))
+         (options (list :model "gpt-6-sol"
+                        :session-id session-id
+                        :segments segments))
+         (args (list :provider 'codex-http-alias
+                     :auth-file "synthetic-auth-not-read"
+                     :messages messages
+                     :options options))
+         context)
+    (cl-letf (((symbol-function 'e-openai-codex-read-auth)
+               (lambda (&optional _auth-file)
+                 '(:tokens (:access_token "synthetic-access-token"))))
+              ((symbol-function 'e-openai-codex-auth-account-id)
+               (lambda (_auth) "synthetic-account-id")))
+      (setq context
+            (e-cache-efficiency-e2e--capture-request-context
+             native requests-by-session args)))
+    (let* ((record (car (gethash session-id requests-by-session)))
+           (body (plist-get context :body-data))
+           (input (append (plist-get body :input) nil))
+           (guidance
+            (e-capability-instructions
+             (car (e-layer-capabilities layer))))
+           (instructions (plist-get body :instructions)))
+      (should record)
+      (should (eq (plist-get context :responses-transport) 'http))
+      (should-not (plist-member profile :responses-context-layout))
+      (should-not (plist-member options :responses-context-layout))
+      (should (equal (plist-get context :url)
+                     (concat e-openai-codex-default-base-url
+                             "/codex/responses")))
+      (should (equal (plist-get context :session-id) session-id))
+      (should (equal (plist-get body :prompt_cache_key) session-id))
+      (should (equal (cdr (assoc "session-id" (plist-get context :headers)))
+                     session-id))
+      (should (equal (cdr (assoc "Authorization" (plist-get context :headers)))
+                     "Bearer synthetic-access-token"))
+      (should (string-prefix-p
+               (concat "You are a helpful assistant.\n\n" guidance)
+               instructions))
+      (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                     '("user")))
+      (should (= (plist-get record :stable-instructions-character-count)
+                 (length guidance)))
+      (should (equal (plist-get record :stable-instructions-sha256)
+                     (plist-get
+                      (e-cache-efficiency-e2e--stable-instruction-summary
+                       (list guidance))
+                      :sha256)))
+      (should (e-cache-efficiency-e2e--stable-guidance-record-valid-p record))
+      (should (null (plist-get record :tool-names)))
+      (should (eq (plist-get record :session-affinity-identities-match) t))
+      (should (eq (plist-get record :affinity-selected) t))
+      (should-not (plist-get record :legacy-session-header-present))
+      (should-not (plist-get record :explicit-cache-controls-present))
+      (should (eq (plist-get record :affinity-body-key-present) t))
+      (should (eq (plist-get record :affinity-header-present) t))
+      (let* ((base "You are a helpful assistant.")
+             (absent-context
+              (plist-put
+               (copy-sequence context)
+               :body-data
+               (plist-put (copy-sequence body) :instructions base)))
+             (mismatched-context
+              (plist-put
+               (copy-sequence context)
+               :body-data
+               (plist-put (copy-sequence body) :instructions
+                          (concat base "\n\nnot the layer guidance"))))
+             (absent-record
+              (e-cache-efficiency-e2e--affinity-request-record
+               absent-context options))
+             (mismatched-record
+              (e-cache-efficiency-e2e--affinity-request-record
+               mismatched-context options)))
+        (should-not (plist-get absent-record
+                               :stable-instructions-character-count))
+        (should-not (plist-get absent-record :stable-instructions-sha256))
+        (should-not
+         (e-cache-efficiency-e2e--stable-guidance-record-valid-p absent-record))
+        (should-not (plist-get mismatched-record
+                               :stable-instructions-character-count))
+        (should-not (plist-get mismatched-record
+                               :stable-instructions-sha256))
+        (should-not
+         (e-cache-efficiency-e2e--stable-guidance-record-valid-p
+          mismatched-record))))))
 
 (ert-deftest e-cache-efficiency-e2e-test-four-step-tool-retains-public-three-step-default ()
   "The public probe stays three-step while the Codex fixture reaches step four."
@@ -1414,11 +1559,8 @@ STEPS defaults to the original three-step public-API scenario."
                            (not (plist-get request :legacy-session-header-present))
                            (not (plist-get request :explicit-cache-controls-present))
                            (null (plist-get request :tool-names))
-                           (> (plist-get request
-                                         :stable-instructions-character-count)
-                              30000)
-                           (stringp
-                            (plist-get request :stable-instructions-sha256))))
+                           (e-cache-efficiency-e2e--stable-guidance-record-valid-p
+                            request)))
                     evidence))
                   (should
                    (cl-every
