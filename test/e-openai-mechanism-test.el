@@ -52,6 +52,18 @@
   "First-party GPT-6 aliases get the documented boundary and endpoint controls remain."
   (let ((process-environment
          (cons "OPENAI_API_KEY=test-api-token" process-environment))
+        (e-openai-model-providers
+         `((openai-token-alias
+            :name "Enterprise label for first-party API"
+            :base-url ,e-openai-api-default-base-url
+            :wire-api responses
+            :responses-transport websocket
+            :response-store :json-false
+            :responses-context-layout developer-input
+            :observation-delivery inherited
+            :continuation t
+            :requires-openai-auth nil
+            :env-key "OPENAI_API_KEY")))
         (messages '((:role system :content "Stable instructions")
                     (:role user :content "Question")))
         (segments '((:kind static-prefix
@@ -59,14 +71,15 @@
                     (:kind history
                      :messages ((:role user :content "Question"))))))
     (cl-labels
-        ((request-context (model &optional base-url)
+        ((request-context (model &optional base-url provider additional-options)
            (e-openai--request-context
-            :provider 'openai
+            :provider (or provider 'openai)
             :base-url base-url
             :messages messages
-            :options (list :model model
-                           :session-id "cache-policy-test"
-                           :segments segments)))
+            :options (append (list :model model
+                                   :session-id "cache-policy-test"
+                                   :segments segments)
+                             additional-options)))
          (first-content (body)
            (aref (plist-get (aref (plist-get body :input) 0) :content) 0)))
       (dolist (model '("gpt-6-sol" "gpt-6-luna"))
@@ -116,7 +129,121 @@
         (should (eq (plist-get diagnostics :prompt-cache-boundary-policy)
                     'implicit-latest-eligible))
         (should (equal (plist-get diagnostics :prompt-cache-stable-guard-count) 0))
-        (should-not (plist-member stable-content :prompt_cache_breakpoint))))))
+        (should-not (plist-member stable-content :prompt_cache_breakpoint)))
+      (let* ((full-url (concat e-openai-api-default-base-url "/responses"))
+             (base (request-context "gpt-6-sol"))
+             (full (request-context "gpt-6-sol" full-url))
+             (alias (request-context "gpt-6-sol" full-url 'openai-token-alias))
+             (base-body (plist-get base :body-data))
+             (full-body (plist-get full :body-data))
+             (alias-body (plist-get alias :body-data))
+             (base-diagnostics
+              (plist-get (plist-get base :metadata) :diagnostics))
+             (full-diagnostics
+              (plist-get (plist-get full :metadata) :diagnostics))
+             (alias-diagnostics
+              (plist-get (plist-get alias :metadata) :diagnostics)))
+        (should (equal (plist-get base :url) (plist-get full :url)))
+        (should (equal (plist-get full :url) (plist-get alias :url)))
+        (should (equal (plist-get base :prompt-layout-revision)
+                       (plist-get full :prompt-layout-revision)))
+        (should (equal (plist-get full :prompt-layout-revision)
+                       (plist-get alias :prompt-layout-revision)))
+        (dolist (body (list base-body full-body alias-body))
+          (should (equal (plist-get body :prompt_cache_options)
+                         '(:mode "implicit")))
+          (should (equal (first-content body)
+                         '(:type "input_text" :text "Stable instructions"
+                           :prompt_cache_breakpoint (:mode "explicit")))))
+        (dolist (diagnostics
+                 (list base-diagnostics full-diagnostics alias-diagnostics))
+          (should (eq (plist-get diagnostics :prompt-cache-capability-evidence)
+                      'first-party-responses-documented))
+          (should (eq (plist-get diagnostics :prompt-cache-boundary-policy)
+                      'implicit-latest-eligible-plus-stable-guard))
+          (should (= (plist-get diagnostics :prompt-cache-stable-guard-count)
+                     1)))
+        (let* ((profile (e-openai-provider-profile 'openai-token-alias))
+               (full-capabilities
+                (e-openai-profile-context-capabilities
+                 profile '(:model "gpt-6-sol" :responses-transport websocket)
+                 :provider 'openai-token-alias :base-url full-url))
+               (untrusted-capabilities
+                (e-openai-profile-context-capabilities
+                 profile '(:model "gpt-6-sol" :responses-transport websocket)
+                 :provider 'openai-token-alias
+                 :base-url "https://gateway.example.test/v1")))
+          (should (eq (plist-get full-capabilities :continuation) 'linear))
+          (should (eq (plist-get full-capabilities :prefix-cache)
+                      'automatic-explicit))
+          (should (eq (plist-get untrusted-capabilities :continuation) 'none))
+          (should (eq (plist-get untrusted-capabilities :prefix-cache)
+                      'automatic))))
+      (let* ((base (request-context "gpt-5.5"))
+             (full (request-context
+                    "gpt-5.5"
+                    (concat e-openai-api-default-base-url "/responses")))
+             (alias (request-context
+                     "gpt-5.5"
+                     (concat e-openai-api-default-base-url "/responses")
+                     'openai-token-alias))
+             (base-body (plist-get base :body-data))
+             (full-body (plist-get full :body-data))
+             (alias-body (plist-get alias :body-data)))
+        (should (equal (plist-get base-body :prompt_cache_key)
+                       (plist-get full-body :prompt_cache_key)))
+        (should (equal (plist-get full-body :prompt_cache_key)
+                       (plist-get alias-body :prompt_cache_key)))
+        (should-not (plist-member full-body :prompt_cache_options))
+        (should-not (plist-member alias-body :prompt_cache_options)))
+      (let* ((legacy
+              (request-context "gpt-6-sol" "https://gateway.example.test/v1"
+                               'openai-token-alias))
+             (legacy-revision (plist-get legacy :prompt-layout-revision))
+             (supported
+              (request-context
+               "gpt-6-sol" (concat e-openai-api-default-base-url "/responses")
+               'openai-token-alias
+               (list :provider-continuation t
+                     :provider-anchor
+                     (list :provider-id 'openai
+                           :metadata
+                           (list :response-id "prior-unqualified-response"
+                                 :prompt-layout-revision legacy-revision
+                                 :reasoning-identity
+                                 (plist-get legacy :reasoning-identity)))
+                     :provider-anchor-delta-messages
+                     '((:role user :content "Question")))))
+             (body (plist-get supported :body-data))
+             (stable-content (first-content body)))
+        (should (eq legacy-revision
+                    e-openai-gpt56-segmented-context-layout-revision))
+        (should (equal (plist-get supported :prompt-layout-revision)
+                       e-openai-gpt56-automatic-cache-layout-revision))
+        (should-not (plist-member body :previous_response_id))
+        (should (equal (plist-get stable-content :prompt_cache_breakpoint)
+                       '(:mode "explicit"))))
+      (let* ((profile (e-openai-provider-profile 'openai-token-alias))
+             (wrong-api (copy-sequence profile))
+             (managed-auth (copy-sequence profile)))
+        (setq wrong-api (plist-put wrong-api :wire-api 'chat-completion)
+              managed-auth (plist-put managed-auth :requires-openai-auth t))
+        (should (eq (e-openai-profile-cache-capability
+                     wrong-api 'openai-token-alias
+                     e-openai-api-default-base-url "gpt-6-sol")
+                    'automatic))
+        (should (eq (e-openai-profile-cache-capability-evidence
+                     wrong-api 'openai-token-alias
+                     e-openai-api-default-base-url "gpt-6-sol")
+                    'endpoint-default-unverified))
+        (should (eq (e-openai-profile-cache-capability
+                     managed-auth 'openai-token-alias
+                     e-openai-api-default-base-url "gpt-6-sol")
+                    'automatic))
+        (should (eq (e-openai-profile-cache-capability-evidence
+                    managed-auth 'openai-token-alias
+                     e-openai-api-default-base-url "gpt-6-sol")
+                    'endpoint-default-unverified))))))
 
 
 (ert-deftest e-openai-test-websocket-timeout-default-migrates-on-reload ()
@@ -520,6 +647,7 @@
 (ert-deftest e-openai-test-codex-session-affinity-uses-effective-request-identity ()
   "First-party Codex affinity joins the actual body and header identity."
   (let* ((endpoint (concat e-openai-codex-default-base-url "/codex"))
+         (full-endpoint (concat endpoint "/responses"))
          (auth-file (make-temp-file "e-openai-auth" nil ".json"))
          (auth (e-json-serialize
                 (list :tokens
@@ -575,6 +703,8 @@
         (progn
           (with-temp-file auth-file (insert auth))
           (let* ((http (funcall request 'codex-alias-http options))
+                 (full-endpoint-context
+                  (funcall request 'codex-alias-http options full-endpoint))
                  (http-body (plist-get http :body-data))
                  (http-diagnostics
                   (plist-get (plist-get http :metadata) :diagnostics))
@@ -623,6 +753,15 @@
                            "ordinary-session-one"))
             (should (equal (cdr (assoc "session-id" http-headers))
                            (plist-get http-body :prompt_cache_key)))
+            (should (equal (plist-get full-endpoint-context :url)
+                           (plist-get http :url)))
+            (should (equal (plist-get
+                            (plist-get full-endpoint-context :body-data)
+                            :prompt_cache_key)
+                           "ordinary-session-one"))
+            (should (equal (cdr (assoc "session-id"
+                                       (plist-get full-endpoint-context :headers)))
+                           "ordinary-session-one"))
             (should-not (assoc "session_id" http-headers))
             (should-not (plist-member http-body :prompt_cache_options))
             (should-not (plist-member http-body :prompt_cache_retention))

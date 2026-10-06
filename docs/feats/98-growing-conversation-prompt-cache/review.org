@@ -1782,3 +1782,42 @@ claim are unsupported.
 log-read: =/private/tmp/e-board-cache-audit-76eac/openai-canonical.log:3778--3788=;
 =/private/tmp/e-board-cache-audit-76eac/openai-current-config.log:1--5=;
 =/private/tmp/e-board-cache-audit-76eac/openai-investigation-progress.log:91--94=.
+
+* Review 8 remediation: equivalent endpoints and complete attribution
+
+Parent-accepted Tock on =8c06811f=, 2026-10-06.  The production correction
+remains in =e-openai-profile=: exact known Responses base and full endpoint
+spellings select the same capability, evidence and routing identity.  A public
+OpenAI token-auth alias receives policy from its effective endpoint/API/model;
+unknown endpoints and context-layout anchors retain their existing fences.
+Actual public Codex backend/harness and OpenAI alias constructors prove the
+HTTP/WS body/header and boundary joins.  This addresses R8-F1 without adding
+provider options or a new capability owner.
+
+Both P2 consumers now require complete usage attribution before accepting
+growing-cache evidence, including an extra uncaptured usage event.  Raw events
+and semantic outcome remain available when the result is unconfirmed.  This
+addresses R8-F2.  The new minimal P1 sends three ordinary no-tool turns above
+the minimum prefix size.  It maps chronological captures to unique provider
+starts, then joins usage by request ID and the authentic per-turn ordinal;
+chronological positions 1/2/3 do not overwrite provider ordinals 1/1/1.
+Ambiguous or missing starts/usage cannot qualify positive evidence.
+
+Focused implementer evidence: five policy/constructor tests and two HTTP/WS
+transport tests pass; the cache-evidence selection has eight passes, four
+expected provider-gated skips and zero unexpected.  Diff whitespace and Lisp
+parentheses checks pass.  Parent inspected the changed policy owner and the
+constructor, attribution and repeated-P1 integration seams.  Detailed evidence:
+=/private/tmp/e-board-cache-audit-76eac/review8-tock-evidence-20261006-1415.md=.
+
+Required clean-revision gates and independent Review 9 follow this accepted
+source slice.  No provider calls were made during this remediation.  Fresh
+committed-code Codex P1/P2 remains unconfirmed.  Public API credentials remain
+unavailable and all P3 curation capabilities remain none/unconfirmed.
+
+The Review 8 architecture self-check carries with two affected answers: exact
+equivalent endpoints and catalogue aliases now substitute at the policy owner
+(question 10); incomplete attribution now reaches the evidence consumers
+(question 13).  Request-local state and test-only scenario capture remain the
+smallest lifetimes.  No core counter, semantic replay, persistence, public
+policy control, network boundary or live user state changed.

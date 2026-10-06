@@ -455,7 +455,7 @@ When PROVIDER is nil, use `e-openai-default-provider'."
   "responses-segmented-context-v1"
   "Anchor revision for GPT-5.6 segmented input without explicit caching.")
 
-(defun e-openai-profile-cache-capability (profile provider base-url model)
+(defun e-openai-profile-cache-capability (profile _provider base-url model)
   "Return trusted prefix-cache capability for PROFILE at BASE-URL and MODEL.
 The automatic API path stays selected for compatible Responses and Chat
 Completions endpoints.  The stable explicit guard is limited to the documented
@@ -465,10 +465,8 @@ boundaries."
     (cond
      ((not (memq wire-api '(responses chat-completion))) 'none)
      ((and (eq wire-api 'responses)
-           (eq provider 'openai)
-           (not (plist-get profile :requires-openai-auth))
-           (e-openai-profile-context-base-url-equal-p
-            base-url e-openai-api-default-base-url)
+           (e-openai-profile--public-openai-responses-base-url
+            profile base-url)
            (e-openai-profile-model-gpt56-or-later-p model))
       'automatic-explicit)
      (t 'automatic))))
@@ -481,10 +479,9 @@ This reports the API contract selected by the adapter, not a measured hit."
    ((e-openai-profile-codex-session-affinity-supported-p
      profile base-url (e-openai-provider-wire-api profile))
     'first-party-codex-session-affinity)
-   ((and (eq provider 'openai)
-         (not (plist-get profile :requires-openai-auth))
-         (e-openai-profile-context-base-url-equal-p
-          base-url e-openai-api-default-base-url))
+   ((and (eq (e-openai-provider-wire-api profile) 'responses)
+         (e-openai-profile--public-openai-responses-base-url
+          profile base-url))
     (if (eq (e-openai-profile-cache-capability
              profile provider base-url model)
             'automatic-explicit)
@@ -494,19 +491,18 @@ This reports the API contract selected by the adapter, not a measured hit."
    (t 'endpoint-default-unverified)))
 
 (defun e-openai-profile-cache-routing-key
-    (profile provider base-url model options)
+    (profile _provider base-url model options)
   "Return an adapter-derived stable routing key, or nil when not supported.
 The key never includes prompt content or caller cache controls.  On older
 first-party models it keeps one session's growing requests together; GPT-5.6+
 uses OpenAI's automatic routing and does not need an explicit key."
-  (when (and (eq provider 'openai)
-             (not (e-openai-profile-model-gpt56-or-later-p model))
-             (e-openai-profile-context-base-url-equal-p
-              base-url e-openai-api-default-base-url)
-             (eq (e-openai-provider-wire-api profile) 'responses))
+  (when (and (not (e-openai-profile-model-gpt56-or-later-p model))
+             (e-openai-profile--public-openai-responses-base-url
+              profile base-url))
     (let ((identity
-           (list :provider provider
-                 :endpoint (string-remove-suffix "/" base-url)
+           (list :endpoint
+                 (e-openai-profile--known-responses-base-url
+                  base-url e-openai-api-default-base-url)
                  :model model
                  :session (plist-get options :session-id)
                  :stable-segments
@@ -648,6 +644,23 @@ fallback, because selecting replacement changes continuation safety."
        (equal (string-remove-suffix "/" left)
               (string-remove-suffix "/" right))))
 
+(defun e-openai-profile--known-responses-base-url (base-url endpoint-base)
+  "Return canonical ENDPOINT-BASE for its accepted base or full spelling.
+Only the exact configured base and its exact /responses endpoint are
+equivalent here; URL parsing aliases and other paths remain unsupported."
+  (when (and (stringp base-url) (stringp endpoint-base))
+    (let* ((base (string-remove-suffix "/" endpoint-base))
+           (candidate (string-remove-suffix "/" base-url)))
+      (when (member candidate (list base (concat base "/responses")))
+        base))))
+
+(defun e-openai-profile--public-openai-responses-base-url (profile base-url)
+  "Return the known public OpenAI base when PROFILE uses its token-auth API."
+  (and (eq (e-openai-provider-wire-api profile) 'responses)
+       (not (plist-get profile :requires-openai-auth))
+       (e-openai-profile--known-responses-base-url
+        base-url e-openai-api-default-base-url)))
+
 (defun e-openai-profile--usable-session-id-p (session-id)
   "Return non-nil when SESSION-ID can identify one wire request session."
   (and (stringp session-id)
@@ -660,7 +673,7 @@ fallback, because selecting replacement changes continuation safety."
 The proof follows the effective Responses endpoint and managed-auth mode."
   (and (eq wire-api 'responses)
        (plist-get profile :requires-openai-auth)
-       (e-openai-profile-context-base-url-equal-p
+       (e-openai-profile--known-responses-base-url
         base-url (concat e-openai-codex-default-base-url "/codex"))))
 
 (defun e-openai-profile-codex-session-affinity-selection
@@ -698,6 +711,10 @@ injected requester for conformance tests."
                (plist-get options :responses-transport)))
          (endpoint-compatible
           (or (null base-url)
+              (and (eq wire-api 'responses)
+                   (equal (e-openai-profile--known-responses-base-url
+                           base-url profile-base-url)
+                          (string-remove-suffix "/" profile-base-url)))
               (e-openai-profile-context-base-url-equal-p
                base-url profile-base-url)))
          (transport-compatible

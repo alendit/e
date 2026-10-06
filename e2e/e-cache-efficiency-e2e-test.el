@@ -160,6 +160,133 @@ to this request."
                           (vconcat (mapcar #'copy-tree provenance-events))))))
     joined))
 
+(defun e-cache-efficiency-e2e--unattributed-usage-rows
+    (requests usage status)
+  "Return REQUESTS with STATUS and raw USAGE retained as unattributed evidence."
+  (let ((rows
+         (cl-loop for request in requests
+                  for index from 1
+                  collect
+                  (e-cache-efficiency-e2e--joined-usage-row
+                   request nil status 'unavailable nil (= index 1)))))
+    (when rows
+      (setf (car rows)
+            (e-cache-efficiency-e2e--joined-usage-row
+             (car requests) nil status 'unavailable usage t)))
+    rows))
+
+(defun e-cache-efficiency-e2e--join-request-usage-by-id (requests usage)
+  "Join REQUESTS to USAGE by unique request ID and preserved turn ordinal."
+  (let ((events-by-id (make-hash-table :test #'equal))
+        (usage-id-counts (make-hash-table :test #'equal))
+        (request-id-counts (make-hash-table :test #'equal)))
+    (dolist (event usage)
+      (let ((id (plist-get event :provider-request-id)))
+        (puthash id (cons event (gethash id events-by-id)) events-by-id)
+        (puthash id (1+ (gethash id usage-id-counts 0)) usage-id-counts)))
+    (dolist (request requests)
+      (let ((id (plist-get request :provider-request-id)))
+        (puthash id (1+ (gethash id request-id-counts 0)) request-id-counts)))
+    (let* ((rows
+            (cl-loop for request in requests
+                     for request-id = (plist-get request :provider-request-id)
+                     for request-ordinal =
+                     (plist-get request :provider-request-ordinal)
+                     for matching = (gethash request-id events-by-id)
+                     for event = (car matching)
+                     for event-ordinal = (and event
+                                              (plist-get event
+                                                         :provider-request-ordinal))
+                     collect
+                     (cond
+                      ((> (gethash request-id request-id-counts 0) 1)
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request nil 'ambiguous-duplicate-provider-id 'unavailable
+                        matching))
+                      ((null matching)
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request nil 'missing-usage 'unavailable))
+                      ((> (length matching) 1)
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request nil 'ambiguous-duplicate-provider-id 'unavailable
+                        matching))
+                      ((> (gethash request-id usage-id-counts 0) 1)
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request nil 'ambiguous-duplicate-provider-id 'unavailable
+                        matching))
+                      ((not (and (integerp request-ordinal)
+                                 (integerp event-ordinal)))
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request nil 'ambiguous-provenance 'unavailable matching))
+                      ((/= request-ordinal event-ordinal)
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request nil 'ambiguous-ordinal-mismatch 'unavailable
+                        matching))
+                      (t
+                       (e-cache-efficiency-e2e--joined-usage-row
+                        request event 'ordinal event-ordinal)))))
+           (unmatched
+            (cl-remove-if
+             (lambda (event)
+               (member (plist-get event :provider-request-id)
+                       (mapcar (lambda (request)
+                                 (plist-get request :provider-request-id))
+                               requests)))
+             usage)))
+      (when (and rows unmatched)
+        (let* ((first (car rows))
+               (existing
+                (append (plist-get first
+                                   :unattributed-usage-provenance-events)
+                        nil)))
+          (setf (car rows)
+                (plist-put
+                 (copy-sequence first)
+                 :unattributed-usage-provenance-events
+                 (vconcat (mapcar #'copy-tree (append existing unmatched)))))))
+      rows)))
+
+(defun e-cache-efficiency-e2e--join-request-starts (requests starts)
+  "Enrich chronological REQUESTS from exact provider-request STARTS.
+If cardinality, IDs, or per-turn ordinals cannot prove the mapping, retain the
+raw starts and mark every request ambiguous rather than shifting attribution."
+  (let* ((ids (mapcar (lambda (start)
+                        (plist-get start :provider-request-id))
+                      starts))
+         (ordinals (mapcar (lambda (start)
+                             (plist-get start :provider-request-ordinal))
+                           starts))
+         (valid (and (= (length requests) (length starts))
+                     (cl-every (lambda (id) (and (stringp id)
+                                                 (not (string-empty-p id)))) ids)
+                     (cl-every (lambda (ordinal)
+                                 (and (integerp ordinal) (> ordinal 0)))
+                               ordinals)
+                     (= (length ids)
+                        (length (delete-dups (copy-sequence ids)))))))
+    (if valid
+        (cl-loop for request in requests
+                 for start in starts
+                 collect
+                 (append (copy-tree request)
+                         (list :provider-request-id
+                               (plist-get start :provider-request-id)
+                               :provider-request-ordinal
+                               (plist-get start :provider-request-ordinal)
+                               :provider-request-start-attribution-status
+                               'matched)))
+      (let ((rows (mapcar (lambda (request)
+                            (append (copy-tree request)
+                                    '(:provider-request-start-attribution-status
+                                      ambiguous)))
+                          requests)))
+        (when rows
+          (setf (car rows)
+                (append (copy-sequence (car rows))
+                        (list :unattributed-provider-request-start-events
+                              (vconcat (mapcar #'copy-tree starts)))))
+          rows)))))
+
 (defun e-cache-efficiency-e2e--join-request-usage (requests usage)
   "Join chronological REQUESTS to USAGE without shifting missing events.
 The first captured request is sent before any tool result, so its total input
@@ -196,6 +323,24 @@ evidence."
                          (plist-get event :provider-request-ordinal)))
                   usage)))
     (cond
+     ((cl-some (lambda (request)
+                 (plist-member request :provider-request-id))
+               requests)
+      (if (and (cl-every (lambda (request)
+                           (let ((id (plist-get request :provider-request-id)))
+                             (and (stringp id) (not (string-empty-p id))
+                                  (eq (plist-get request
+                                                 :provider-request-start-attribution-status)
+                                      'matched))))
+                         requests)
+               (cl-every (lambda (event)
+                           (and (stringp (plist-get event :provider-request-id))
+                                (integerp (plist-get event
+                                                     :provider-request-ordinal))))
+                         usage))
+          (e-cache-efficiency-e2e--join-request-usage-by-id requests usage)
+        (e-cache-efficiency-e2e--unattributed-usage-rows
+         requests usage 'ambiguous-provenance)))
      ((not usage-has-ordinals)
       (if (= (length requests) (length usage))
           (cl-loop for request in requests
@@ -294,9 +439,24 @@ evidence."
        (cl-every (lambda (request)
                    (and (memq (plist-get request :usage-attribution-status)
                               '(ordinal positional))
+                        (or (not (plist-member
+                                  request
+                                  :provider-request-start-attribution-status))
+                            (eq (plist-get request
+                                           :provider-request-start-attribution-status)
+                                'matched))
+                        (not (plist-member
+                              request
+                              :unattributed-provider-request-start-events))
                         (not (plist-member request
                                           :unattributed-usage-provenance-events))))
                  evidence)))
+
+(defun e-cache-efficiency-e2e--qualified-growing-cache-result (evidence)
+  "Classify growing reuse only when EVIDENCE has complete usage attribution."
+  (if (e-cache-efficiency-e2e--usage-join-complete-p evidence)
+      (e-live-e2e--classify-growing-cache-evidence :evidence evidence)
+    "unconfirmed-incomplete-usage"))
 
 (defun e-cache-efficiency-e2e--report-evidence (record)
   "Emit bounded cache RECORD using the shared E2E value conversion."
@@ -420,6 +580,9 @@ STEPS defaults to the original three-step public-API scenario."
           (plist-get diagnostics :codex-session-affinity-header-present)
           :stable-prefix-fingerprint
           (e-cache-efficiency-e2e--static-fingerprint body options)
+          :stable-instructions-character-count
+          (let ((instructions (plist-get body :instructions)))
+            (and (stringp instructions) (length instructions)))
           :input-sha256 (secure-hash 'sha256
                                      (prin1-to-string
                                       (plist-get body :input)))
@@ -584,6 +747,18 @@ STEPS defaults to the original three-step public-API scenario."
        :context-providers (list observation-provider)
        :tools (list (lambda (registry)
                       (e-cache-efficiency-e2e--tool-register registry 4))))))))
+
+(defun e-cache-efficiency-e2e--codex-affinity-p1-layer ()
+  "Return substantial stable Codex guidance without any tools or context."
+  (e-layer-create
+   :id 'cache-affinity-p1
+   :name "Codex affinity P1 stable guidance"
+   :capabilities
+   (list (e-capability-create
+          :id 'cache-affinity-p1
+          :instructions
+          (mapconcat (lambda (n) (format "stable reference rule %04d" n))
+                     (number-sequence 1 1500) "\n")))))
 
 (ert-deftest e-cache-efficiency-e2e-test-four-step-tool-retains-public-three-step-default ()
   "The public probe stays three-step while the Codex fixture reaches step four."
@@ -772,6 +947,165 @@ STEPS defaults to the original three-step public-API scenario."
                    "response-3"))
     (should-not (e-cache-efficiency-e2e--usage-join-complete-p evidence))))
 
+(ert-deftest e-cache-efficiency-e2e-test-public-qualification-rejects-unmatched-usage ()
+  "An extra ordinal cannot leave public cache qualification positive."
+  (let* ((requests
+          (cl-loop for ordinal from 1 to 4
+                   collect
+                   (list :provider 'openai
+                         :endpoint "https://api.openai.com/v1/responses"
+                         :model "gpt-6-sol"
+                         :stable-prefix-fingerprint "stable-prefix"
+                         :request-ordinal ordinal)))
+         (matched-usage
+          (cl-loop for (input cached) in '((4096 0) (10000 4096)
+                                           (14000 8192) (18000 12288))
+                   for ordinal from 1
+                   collect
+                   (list :provider-request-id (format "response-%d" ordinal)
+                         :provider-request-ordinal ordinal
+                         :input-tokens input :cached-input-tokens cached)))
+         (complete
+          (e-cache-efficiency-e2e--join-request-usage
+           requests matched-usage))
+         (extra-usage
+          (append matched-usage
+                  '((:provider-request-id "response-unmatched"
+                     :provider-request-ordinal 5
+                     :input-tokens 22000 :cached-input-tokens 16000))))
+         (incomplete
+          (e-cache-efficiency-e2e--join-request-usage requests extra-usage))
+         (all-unknown-usage
+          (cl-loop for ordinal from 1 to 4
+                   collect (list :provider-request-id
+                                 (format "unknown-%d" ordinal)
+                                 :provider-request-ordinal ordinal)))
+         (all-unknown
+          (e-cache-efficiency-e2e--join-request-usage
+           requests all-unknown-usage))
+         emitted)
+    (should (equal (e-cache-efficiency-e2e--qualified-growing-cache-result
+                    complete)
+                   "growing-history-reuse"))
+    (should-not (e-cache-efficiency-e2e--usage-join-complete-p incomplete))
+    (should (equal (e-cache-efficiency-e2e--qualified-growing-cache-result
+                    incomplete)
+                   "unconfirmed-incomplete-usage"))
+    (should (equal (mapcar (lambda (request)
+                             (plist-get request :cached-input-tokens))
+                           incomplete)
+                   '(0 4096 8192 12288)))
+    (should (equal (plist-get (car incomplete)
+                              :unattributed-usage-provenance-events)
+                   [(:provider-request-id "response-unmatched"
+                     :provider-request-ordinal 5
+                     :input-tokens 22000 :cached-input-tokens 16000)]))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (setq emitted (apply #'format format-string args)))))
+      (e-cache-efficiency-e2e--report-evidence
+       (list :semantic-result "pass"
+             :cache-result
+             (e-cache-efficiency-e2e--qualified-growing-cache-result incomplete)
+             :requests (vconcat incomplete))))
+    (let* ((record (e-json-parse-string
+                    (substring emitted (length "E98_CACHE_EVIDENCE "))))
+           (reported (plist-get record :requests)))
+      (should (equal (plist-get record :semantic-result) "pass"))
+      (should (equal (plist-get record :cache-result)
+                     "unconfirmed-incomplete-usage"))
+      (should (= (plist-get (aref reported 1) :cached-input-tokens) 4096))
+      (should (= (length (plist-get (aref reported 0)
+                                    :unattributed-usage-provenance-events))
+                 1)))
+    (should (e-cache-efficiency-e2e--usage-join-complete-p all-unknown))
+    (should-not (equal (e-cache-efficiency-e2e--qualified-growing-cache-result
+                        all-unknown)
+                       "growing-history-reuse"))))
+
+(ert-deftest e-cache-efficiency-e2e-test-multi-turn-usage-joins-provider-identity ()
+  "Distinct request IDs disambiguate authentic per-turn ordinal resets."
+  (let* ((requests
+          (cl-loop for ordinal from 1 to 3
+                   collect (list :provider 'codex
+                                 :request-ordinal ordinal
+                                 :endpoint "https://chatgpt.com/backend-api/codex/responses"
+                                 :model "gpt-6-sol"
+                                 :stable-prefix-fingerprint "stable")))
+         (starts
+          (cl-loop for ordinal from 1 to 3
+                   for id in '("turn-one" "turn-two" "turn-three")
+                   collect (list :provider-request-id id
+                                 :provider-request-ordinal 1)))
+         (enriched (e-cache-efficiency-e2e--join-request-starts requests starts))
+         (usage
+          (cl-loop for input in '(9000 9100 9200)
+                   for cached in '(0 8192 8192)
+                   for id in '("turn-one" "turn-two" "turn-three")
+                   collect (list :provider-request-id id
+                                 :provider-request-ordinal 1
+                                 :input-tokens input
+                                 :cached-input-tokens cached)))
+         (evidence (e-cache-efficiency-e2e--join-request-usage enriched usage)))
+    (should (= (length evidence) 3))
+    (should (equal (mapcar (lambda (request)
+                             (plist-get request :request-ordinal))
+                           evidence)
+                   '(1 2 3)))
+    (should (equal (mapcar (lambda (request)
+                             (plist-get request :provider-request-ordinal))
+                           evidence)
+                   '(1 1 1)))
+    (should (equal (mapcar (lambda (request)
+                             (plist-get request :provider-request-id))
+                           evidence)
+                   '("turn-one" "turn-two" "turn-three")))
+    (should (equal (mapcar (lambda (request)
+                             (plist-get request :cached-input-tokens))
+                           evidence)
+                   '(0 8192 8192)))
+    (should (e-cache-efficiency-e2e--usage-join-complete-p evidence))
+    (let* ((missing-start
+            (e-cache-efficiency-e2e--join-request-starts requests
+                                                          (butlast starts)))
+           (missing-evidence
+            (e-cache-efficiency-e2e--join-request-usage missing-start usage))
+           (duplicate-starts
+            (list (car starts) (cadr starts) (car starts)))
+           (duplicate
+            (e-cache-efficiency-e2e--join-request-starts requests
+                                                          duplicate-starts))
+           (mixed-starts
+            (list (car starts) '(:provider-request-ordinal 1) (caddr starts)))
+           (mixed
+            (e-cache-efficiency-e2e--join-request-starts requests mixed-starts))
+           (mismatch-usage
+            (copy-tree usage)))
+      (should-not (e-cache-efficiency-e2e--usage-join-complete-p
+                   missing-evidence))
+      (should (eq (plist-get (car missing-start)
+                             :provider-request-start-attribution-status)
+                  'ambiguous))
+      (should (= (length (plist-get (car missing-start)
+                                    :unattributed-provider-request-start-events))
+                 2))
+      (should-not (e-cache-efficiency-e2e--usage-join-complete-p
+                   (e-cache-efficiency-e2e--join-request-usage duplicate usage)))
+      (should-not (e-cache-efficiency-e2e--usage-join-complete-p
+                   (e-cache-efficiency-e2e--join-request-usage mixed usage)))
+      (setf (plist-get (cadr mismatch-usage) :provider-request-ordinal) 2)
+      (let ((mismatch
+             (e-cache-efficiency-e2e--join-request-usage
+              enriched mismatch-usage)))
+        (should-not (e-cache-efficiency-e2e--usage-join-complete-p mismatch))
+        (should (eq (plist-get (cadr mismatch) :usage-attribution-status)
+                    'ambiguous-ordinal-mismatch))
+        (should (eq (plist-get (cadr mismatch) :input-tokens)
+                    'unavailable))
+        (should (= (length (plist-get (cadr mismatch)
+                                      :unattributed-usage-provenance-events))
+                   1))))))
+
 (ert-deftest e-cache-efficiency-e2e-test-duplicate-and-mixed-usage-provenance-is-unknown ()
   "Duplicate or mixed ordinals are retained as evidence, never positionally joined."
   (let* ((requests '((:provider openai :request-ordinal 1)
@@ -876,6 +1210,122 @@ STEPS defaults to the original three-step public-API scenario."
                  :requests (vconcat evidence))))
         (when condition (signal (car condition) (cdr condition)))))))
 
+(ert-deftest e-cache-efficiency-e2e-test-codex-repeated-session-affinity-p1-no-tool ()
+  "Three ordinary no-tool turns preserve Codex affinity and usage attribution."
+  (e-cache-efficiency-e2e--supported-codex-profile)
+  (let* ((layer (e-cache-efficiency-e2e--codex-affinity-p1-layer))
+         (started-at (float-time))
+         (deadline (+ started-at (e-live-e2e--cache-scenario-timeout)))
+         (native-openai (symbol-function 'e-openai--request-context))
+         (requests-by-session (make-hash-table :test 'equal))
+         (semantic-results nil)
+         (semantic-result "unavailable")
+         (affinity-result "unavailable")
+         (condition nil))
+    (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (unwind-protect
+          (condition-case caught
+              (cl-letf (((symbol-function 'e-openai--request-context)
+                         (lambda (&rest args)
+                           (e-cache-efficiency-e2e--capture-request-context
+                            native-openai requests-by-session args))))
+                (dolist (marker '("E98-CODEX-P1-ONE"
+                                  "E98-CODEX-P1-TWO"
+                                  "E98-CODEX-P1-THREE"))
+                  (let* ((prompt (format "Reply with exactly %s. Do not call tools."
+                                          marker))
+                         (result
+                          (e-live-e2e--prompt-batch-before-deadline
+                           harness session-id prompt deadline))
+                         (answer (e-live-e2e--assistant-content result)))
+                    (should (string-match-p (regexp-quote marker) answer))
+                    (push "pass" semantic-results)))
+                (setq semantic-result "pass"))
+            (error (setq condition caught)))
+        (let* ((captured (gethash session-id requests-by-session))
+               (starts
+                (mapcar (lambda (event) (plist-get event :payload))
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'provider-request-started)))
+               (requests
+                (e-cache-efficiency-e2e--join-request-starts captured starts))
+               (usage
+                (mapcar (lambda (event) (plist-get event :payload))
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'token-usage)))
+               (evidence
+                (e-cache-efficiency-e2e--join-request-usage requests usage))
+               (usage-complete
+                (e-cache-efficiency-e2e--usage-join-complete-p evidence)))
+          (when (null condition)
+            (condition-case caught
+                (progn
+                  (should (= (length captured) 3))
+                  (should (= (length starts) 3))
+                  (should (= (length usage) 3))
+                  (should usage-complete)
+                  (should (equal (mapcar (lambda (request)
+                                           (plist-get request :request-ordinal))
+                                         evidence)
+                                 '(1 2 3)))
+                  (should (equal (mapcar (lambda (request)
+                                           (plist-get request
+                                                      :provider-request-ordinal))
+                                         evidence)
+                                 '(1 1 1)))
+                  (should (= (length
+                              (delete-dups
+                               (mapcar (lambda (request)
+                                         (plist-get request :provider-request-id))
+                                       evidence)))
+                             3))
+                  (should
+                   (cl-every
+                    (lambda (request)
+                      (and (plist-get request :session-affinity-identities-match)
+                           (eq (plist-get request :affinity-selected) t)
+                           (eq (plist-get request :affinity-body-key-present) t)
+                           (eq (plist-get request :affinity-header-present) t)
+                           (not (plist-get request :legacy-session-header-present))
+                           (not (plist-get request :explicit-cache-controls-present))
+                           (null (plist-get request :tool-names))
+                           (> (plist-get request
+                                         :stable-instructions-character-count)
+                              30000)))
+                    evidence))
+                  (should
+                   (cl-every
+                    (lambda (request)
+                      (and (numberp (plist-get request :input-tokens))
+                           (numberp (plist-get request :cached-input-tokens))))
+                    evidence))
+                  (should (equal (mapcar (lambda (request)
+                                           (plist-get request
+                                                      :stable-prefix-fingerprint))
+                                         evidence)
+                                 (make-list 3
+                                            (plist-get (car evidence)
+                                                       :stable-prefix-fingerprint))))
+                  (setq affinity-result "pass"))
+              (error (setq condition caught))))
+          (e-cache-efficiency-e2e--report-evidence
+           (list :scenario "codex-repeated-session-affinity-p1-no-tool"
+                 :repository-revision (e-live-e2e--repository-revision)
+                 :timestamp (format-time-string "%FT%TZ" nil t)
+                 :elapsed-seconds (- (float-time) started-at)
+                 :semantic-result semantic-result
+                 :semantic-subturn-results (vconcat (nreverse semantic-results))
+                 :affinity-field-result affinity-result
+                 :cache-result "not-measured"
+                 :request-count (length captured)
+                 :request-start-count (length starts)
+                 :usage-event-count (length usage)
+                 :usage-join-complete usage-complete
+                 :provider-request-starts (vconcat starts)
+                 :usage-events (vconcat usage)
+                 :requests (vconcat evidence)))
+          (when condition (signal (car condition) (cdr condition))))))))
+
 (ert-deftest e-cache-efficiency-e2e-test-codex-growing-history-affinity ()
   "Codex reuses growing synthetic history with native observation and reasoning."
   (let* ((profile (e-cache-efficiency-e2e--supported-codex-profile))
@@ -968,7 +1418,7 @@ STEPS defaults to the original three-step public-API scenario."
                (evidence
                 (e-cache-efficiency-e2e--join-request-usage requests usage)))
           (setq cache-result
-                (e-live-e2e--classify-growing-cache-evidence :evidence evidence))
+                (e-cache-efficiency-e2e--qualified-growing-cache-result evidence))
           (e-live-e2e--report-evidence
            (list :scenario "codex-growing-tool-history-p2"
                  :repository-revision (e-live-e2e--repository-revision)
@@ -976,6 +1426,9 @@ STEPS defaults to the original three-step public-API scenario."
                  :elapsed-seconds (- (float-time) started-at)
                  :semantic-result semantic-result
                  :cache-result cache-result
+                 :usage-event-count (length usage)
+                 :usage-join-complete
+                 (e-cache-efficiency-e2e--usage-join-complete-p evidence)
                  :requests (vconcat evidence))))
         (when condition (signal (car condition) (cdr condition))))
       (cond
@@ -1098,13 +1551,16 @@ STEPS defaults to the original three-step public-API scenario."
                (evidence
                 (e-cache-efficiency-e2e--join-request-usage requests usage)))
           (setq cache-result
-                (e-live-e2e--classify-growing-cache-evidence :evidence evidence))
+                (e-cache-efficiency-e2e--qualified-growing-cache-result evidence))
           (e-cache-efficiency-e2e--report-evidence
                     (list :scenario "growing-tool-history"
                           :repository-revision (e-live-e2e--repository-revision)
                           :timestamp (format-time-string "%FT%TZ" nil t)
                           :elapsed-seconds (- (float-time) started-at)
                           :semantic-result semantic-result :cache-result cache-result
+                          :usage-event-count (length usage)
+                          :usage-join-complete
+                          (e-cache-efficiency-e2e--usage-join-complete-p evidence)
                           :requests (vconcat evidence)))))
       (when condition (signal (car condition) (cdr condition)))
       (cond ((equal cache-result "growing-history-reuse") t)
