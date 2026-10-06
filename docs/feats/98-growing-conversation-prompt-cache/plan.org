@@ -25,8 +25,11 @@ unknown.  The public OpenAI model-name and independently admitted Codex session-
 corrections are implemented and parent-accepted with focused proof.  Review 8
 identified equivalent-endpoint/alias selection and incomplete P2 qualification
 defects.  Their owner-local corrections and a repeated minimal P1 fixture are
-now parent-accepted; fresh clean-revision gates, independent closure review and
-committed-code P1/P2 remain pending.  The historical Codex observation is not
+now parent-accepted.  Clean =686e4641= passes 2,866/2,866 canonical, 9/9
+configured and 62 credential-free dependent E2E tests.  Review 9 closes both
+original findings but identifies a native P1 measurement defect and the inverse
+context-capability endpoint comparison.  Those corrections and committed-code
+P1/P2 remain pending.  The historical Codex observation is not
 yet explained.
 
 * Goal and authority

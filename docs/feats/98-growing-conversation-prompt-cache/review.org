@@ -1821,3 +1821,268 @@ equivalent endpoints and catalogue aliases now substitute at the policy owner
 (question 13).  Request-local state and test-only scenario capture remain the
 smallest lifetimes.  No core counter, semantic replay, persistence, public
 policy control, network boundary or live user state changed.
+
+* Review 9: Independent endpoint and attribution closure Tick
+
+** Decision and review identity
+
+Two confirmed Medium/P2 findings remain: R9-F1 blocks the repeated minimal P1
+on the normal segmented Codex layout; R9-F2 changes semantic context capability
+for equivalent accepted Responses URL spellings.  No P0/P1 or separate
+architectural defect was established.  =deterministic-fixed-point= is not
+eligible while these findings remain.  All required deterministic review work
+is complete; the affected cells are candidates requiring correction, not
+unperformed review unknowns.
+
+Reviewed exact clean revision
+=686e464130861193ae036d6414048fa8c0e9e9ae=, incrementally against Review 8's
+=036226b6e0b3ed58c6667dde4b5c07e3132825d2=.  Original scope remains
+=e07f62736e68da1f9ce5b02f0329f88aebc10bbd..686e4641=, F98-G1/F98-C1--C6
+and DP1.  The supporting implementation-plan admission at =a4f4913d= remains
+current: the subsequent =plan.org= diff changes status prose only.
+
+| Reviewed object | Identity |
+|-----------------+----------|
+| Current plan.org Git blob | 8ab7c7fdec5766a4caf023d2cb64103c4f3fd6a4 |
+| Current profile owner Git blob | 1962ec367e9da4db4f37458afa7737572878d252 |
+| Current E2E tree | 14603ffcc80aee7d4ab679aab31b0682b9b7fb54 |
+| Admitted plan revision | a4f4913d |
+
+Dispositioned R8-F1/F2 before reviewing their invalidated dependencies.  Carried
+the unaffected Review 8 whole-scope evidence after verifying that the request,
+Responses/WebSocket, core, lifetime, layers, Anthropic and shared live-E2E
+owners are unchanged in this remediation.  This independent review made no
+provider request, repository/Git edit or user runtime/store mutation.
+
+** Prior-finding closure
+
+| Finding | Required boundary | Current proof and disposition |
+|---------+-------------------+-------------------------------|
+| R8-F1 cache policy omitted on equivalent endpoints/aliases | Derive supported cache selection, evidence and routing from effective known Responses API/auth/model; public constructors must join the same identity to body/header. | Original counterexamples are closed. =e-openai-profile.el:457--520,647--679= recognizes exact known base/full-endpoint spellings and removes public provider-label dependence. Codex constructors now emit joined affinity; public base/full/alias requests select one stable guard and documented evidence. Older routing uses canonical endpoint identity and no provider label. The context-capability dependency is separately reopened as R9-F2. |
+| R8-F2 incomplete public P2 qualifies growing reuse | Every public positive P2 must require complete usage attribution while retaining semantic result and raw unknown evidence. | Closed. =e-cache-efficiency-e2e-test.el:436--459= gates classification through the existing complete-join predicate. Both public consumers use it at =1421= and =1554= and report completeness. The original extra-usage counterexample now returns =unconfirmed-incomplete-usage=; the complete counterpart still returns =growing-history-reuse=. |
+
+Credential-free exact-source replays corroborate these dispositions:
+
+#+begin_example
+actual public Codex constructor: body key/header match=t; selected ordinary ID=t
+public OpenAI base, full endpoint and token-auth alias:
+  identical wss://api.openai.com/v1/responses
+  implicit-plus-stable-guard; guard count=1; first-party-responses-documented
+original extra usage: complete=nil; qualified result=unconfirmed-incomplete-usage
+original complete usage: qualified result=growing-history-reuse
+#+end_example
+
+Current constructor/mechanism assertions additionally cover HTTP/WS wire
+serialization, older key equality, supported layout revision equality, rejection
+of the prior unqualified layout anchor, and wrong API/auth/third-party negatives.
+The exact known-spelling helper does not add host, query or arbitrary path
+equivalence.  Reserved curation capability remains none.
+
+** Findings
+
+*** TODO Medium/P2 R9-F1: Repeated minimal P1 measures the wrong native channel and fails on normal Codex
+
+The newly required repeated minimal P1 uses substantial stable guidance without
+tools or context at =e2e/e-cache-efficiency-e2e-test.el:751--761=.  It sends
+three ordinary turns and later requires
+=:stable-instructions-character-count > 30000= at =1291--1294=.
+The record producer at =583--585= counts only top-level body =:instructions=.
+
+The normal Codex profile declares =developer-input= and inherited observation
+delivery at =lisp/adapters/openai/e-openai-profile.el:300--313=.
+=e-openai-responses--instructions= at
+=lisp/adapters/openai/e-openai-responses.el:257--327= returns only its base
+instructions for this segmented layout; stable system guidance is native
+developer-role input.  The guidance is present and large, but the recorder
+looks in a different channel.
+
+A credential-free probe uses the actual new P1 layer, its capability
+instructions, the actual normal Codex request-context and actual affinity
+recorder.  Auth accessors are synthetic and no provider request occurs:
+
+#+begin_example
+new P1 stable guidance: 40499 characters
+actual recorded top-level instructions: 28 characters
+exact guidance present in native developer input: t
+current P1 size assertion (> recorded-count 30000): nil
+#+end_example
+
+Thus successful three-turn semantic responses and valid affinity still reach
+a failing evidence assertion.  Configuration-gated provider skips do not test
+this producer/layout composition.  This prevents the planned external P1 from
+completing and makes an adapter-owned valid layout look like a fixture failure;
+it does not prove any provider cache failure.
+
+Smallest owning correction: measure and assert the substantial stable synthetic
+guidance in its actual native stable projection.  Retain its content-bounded
+digest/size, no-tool requirement and ordinary managed-auth route.  Add a
+deterministic source-layer-to-native-request-to-record witness for the normal
+segmented layout before executing the external scenario.  Do not change the
+body/layout or introduce a policy override merely to satisfy the measurement.
+The parent acknowledged this concrete blocker and has deferred provider runs
+until remediation and independent closure.
+
+*** TODO Medium/P2 R9-F2: Full-profile/base-effective endpoint equivalence changes semantic context capability
+
+R8-F1's changed context dependency now accepts a full effective endpoint when
+the configured profile holds the base spelling.  The inverse accepted pair
+still fails.  =e-openai-profile-context-capabilities= at
+=lisp/adapters/openai/e-openai-profile.el:712--718= calls
+=e-openai-profile--known-responses-base-url= with =profile-base-url= as the
+canonical base, then compares its return to that uncanonicalized profile value.
+The helper at =647--655= recognizes a base and its =/responses= spelling;
+when the profile itself already ends in =/responses=, the shorter effective
+base is not recognized.
+
+An exact-source pure probe uses a custom token-auth Responses profile with
+configured URL =https://api.openai.com/v1/responses=, native WebSocket transport,
+=:continuation t= and =:observation-delivery request-local-replaceable=:
+
+#+begin_example
+effective full override https://api.openai.com/v1/responses:
+  actual URL=wss://api.openai.com/v1/responses
+  continuation=linear; observation delivery=request-local replacement map
+  prefix-cache=automatic-explicit
+effective base override https://api.openai.com/v1:
+  actual URL=wss://api.openai.com/v1/responses
+  continuation=none; observation delivery=inherited
+  prefix-cache=automatic-explicit
+#+end_example
+
+The cache selector is corrected, but the same effective API still changes
+semantic delivery and continuation because of accepted URL spelling.  This is
+a C3/C4 dependency gap within the reopened R8-F1 boundary.  It is a bounded
+preexisting compatibility defect; no unsafe retained-content outcome is
+inferred from this capability counterexample.  The parent adjudicated it as
+actionable under the existing contract and baseline-fix authorization.
+
+Smallest owning correction: compare both accepted profile/effective Responses
+spellings consistently at the existing context-capability boundary.  Preserve
+the existing wire API, declared semantic capability, transport, requester and
+built-in profile fences; do not authorize an unknown endpoint or grant curation.
+Cover both directions and base/full combinations through the real capability
+consumer, including a replacement-delivery profile, while retaining the
+third-party/incompatible transport negatives.  No new semantic contract,
+capability owner or caller cache option is required.
+
+** Complete current coverage
+
+| Cell | Disposition | Evidence and boundary |
+|------+-------------+-----------------------|
+| F98-G1 | Candidate | Cache selection and complete P2 qualification are corrected; R9-F1/F2 still prevent complete package closure. Board causality and fresh Codex benefit remain separate unknowns. |
+| F98-C1/C2 effective cache selection and compatibility | Cleared deterministically | Known base/full spellings and first-party aliases share capability, evidence and canonical older routing; exact public constructor replay passes. API/auth/model and third-party gates remain. No hit-rate claim follows. |
+| F98-C3 authorized projection/replay | Candidate | Normal native tools, encrypted replay, concurrent sessions and reconnect/full fallback carry unchanged proof. R9-F2 changes the context delivery capability for an equivalent effective endpoint. |
+| F98-C4 options, migration and anchors | Candidate dependency | Caller controls remain removed and trusted request binding unchanged. Supported aliases now obtain the material automatic-cache layout revision and reject an incompatible old anchor. R9-F2 remains at the context-capability composition. |
+| F98-C5 diagnostics/accounting/evidence | Candidate | R8-F2 is closed; complete attribution guards both public consumers. Authentic request IDs disambiguate per-turn ordinal resets and raw missing/extra/duplicate events stay unknown. R9-F1 prevents the new P1 recorder from accepting its valid native stable projection. |
+| F98-C6 curation availability/effects | Cleared deterministically, carried | All production combinations remain none/unconfirmed; publication absence, forced-effect rejection, preflight/commit enforcement and accepted prior projection authority are unchanged. |
+| S1/S4 compatibility and diagnostics | Cleared for cache policy; candidate context/P1 dependencies | Endpoint/cache policy, unsupported fields and diagnostics have current source/public assertions. Context equivalence and valid-layout measurement require the two corrections. |
+| S2 growing tool turn | Cleared deterministically | Original three-tool shape remains; four-tool Codex semantic/prefix assertions carry unchanged proof. Complete qualified evidence preserves genuine positives and rejects extra usage. External benefit remains pending. |
+| S3 curation/reopen/reconnect | Candidate at context equivalence only | Curation and transport/replay owners remain unchanged; R9-F2 affects the declared observation/continuation composition. |
+| New P1 request/start/usage joins | Cleared | Captures have scenario chronology 1/2/3; oldest-first session activity supplies unique start IDs and authentic per-turn ordinals 1/1/1. ID+ordinal matching preserves those distinct meanings; missing/duplicate/mixed starts or usage cannot positively qualify. |
+| Shared external finalizer and baseline repairs | Cleared, carried | Adoption assignment, canonical JSON parsing, all-known aggregate totals, SQL collection and real detached receipt preparation retain Review 8 proof without source changes. |
+
+All earlier findings remain dispositioned individually:
+
+| Earlier finding | Current disposition |
+|-----------------+---------------------|
+| Review 1 publication versus effects | Closed, unchanged trusted publication/admission/preflight/commit owners. |
+| Review 1 caller tools republish curation | Closed, unchanged reserved-tool filtering. |
+| Review 1 static reads qualify P3 | Closed, unchanged corrected P3 attribution predicate. |
+| R2-F1 unqualified optional retention | Closed, no retention override restored. |
+| R2-F2 fresh input used as total | Closed, provider-total mapping and normalized/raw counter retention unchanged. |
+| R2-F3 cold baseline/repeated keep qualifies P3 | Closed, chronological control, keep continuity and material rewrite/reuse predicate unchanged. |
+| R3-F1 partial aggregate reported known | Closed, all-known aggregation unchanged. |
+| R3-F2 static warming qualifies public P2 | Closed, whole initial control/two advances unchanged; new complete-attribution guard strengthens this consumer. |
+| Review 5 durable SQL collector | Closed, typed oldest-first asynchronous pagination unchanged and reused for starts/usage. |
+| Review 6 enum/null emission | Closed, existing bounded conversion/serialization unchanged. |
+| Review 7 rolling Anthropic selection | Cleared, unchanged owner and bounded external closure through e07f6273 retained. |
+| R8-F1 original cache selector/routing cases | Closed at their original boundary; R9-F2 separately tracks the context dependency. |
+| R8-F2 incomplete P2 positive | Closed by both public consumers and the original reproducer. |
+
+No required deterministic review cell remains unknown.  The confirmed findings
+are the remaining work; green gates do not override their source/probe proof.
+
+** Verification
+
+Consumed exact-revision supplied gate summaries: canonical 2,866/2,866, zero
+unexpected, exit 0 at
+=/private/tmp/e-board-cache-audit-76eac/openai-r8-canonical.log:3780--3788=;
+fresh isolated configured gate 9/9, zero unexpected, exit 0 at
+=openai-r8-current-config.log:1--4=; dependent E2E selection 88 tests,
+62 passes, 26 expected provider/configuration-gated skips, zero unexpected,
+exit 0 at =openai-r8-dependent-e2e.log:94--100=.  The skipped new P1 does not
+clear its valid-layout measurement, as R9-F1 demonstrates.
+
+Independently verified clean HEAD, status-only admitted-plan delta and
+=git diff --check 036226b6 686e4641= (pass).  Ran three credential-free
+=eldev -s eval= source probes, exit 0: actual new P1 guidance/native projection
+and record; full-profile/base-effective context capability comparison; and
+the original R8 constructor/endpoint/extra-usage counterexamples plus multi-turn
+ID attribution.  The latter reverses usage-event order deliberately and still
+joins input counters =(300 200 100)= to chronology =(1 2 3)=, preserving
+authentic provider ordinals =(1 1 1)= and complete attribution.  No body or
+policy override and no provider call is involved.  No equivalent broad suite
+was rerun without a contradiction in the reported gate result.
+
+** Architecture self-check
+
+The Review 8 architecture coverage carries with these current answers to all
+fourteen AGENTS.md questions:
+
+1. The corrected cache selector and qualified P2 improve the package; the two
+   remaining composition defects require correction before stopping cleanly.
+2. The direction remains capability-owned eligible reuse with independent
+   semantic projection and unavailable unconfirmed curation.
+3. Exact endpoint syntax and external benefit remain adapter/evidence-local;
+   the correction adds no speculative policy registry.
+4. Profile/request policy stays with the adapter, semantic delivery with the
+   existing capability/lifetime seam, and qualification with E2E consumers.
+5. Interfaces remain narrow; one derived Codex identity feeds body/header and
+   no public cache control has returned.
+6. Core still depends on semantic backend capability rather than provider
+   cache fields; no dependency direction changed.
+7. Provider effects remain at adapter and isolated runner boundaries; endpoint
+   matching, attribution and record derivation are pure.
+8. Derived affinity/capability state is request-local; new start/usage capture
+   is scenario-local and rebuilt. No durable cache state was added.
+9. Production endpoint checks are bounded. ID joins and prefix hashing are
+   test-only; the small P1 uses exactly three captures. Provider savings and
+   latency remain unconfirmed external measurements.
+10. Cache-policy substitution is corrected. Context-capability substitution
+    still depends on equivalent profile/effective URL spelling under R9-F2.
+11. Known endpoint aliases retain the compatible stronger policy; unknown
+    endpoints/API/auth remain guarded. R9-F2 must preserve semantic fences.
+12. Retired controls/underscore header remain absent; no legacy mode or new
+    fallback was added.
+13. Incomplete usage now reaches the public decision. Missing capability and
+    counters remain explicit; valid-layout P1 failure must be corrected at its
+    recorder rather than hidden or attributed to the provider.
+14. Owner/constructor/transport assertions and exact gates provide deterministic
+    proof. The two new seams need narrow native-recorder and capability-matrix
+    witnesses, rather than unrelated tests or provider reruns.
+
+No new owner, public knob, glossary term, persistent record, extraction or
+deferred-scope change is required. These corrections belong to existing owners.
+
+** External boundary
+
+Fresh committed-code Codex repeated P1 and inherited-observation/encrypted-
+reasoning P2 have not run and remain =capability-unconfirmed=.  P1 now has a
+three-turn ordinary request portfolio and truthful identity/usage joins, but
+R9-F1 blocks that portfolio on the normal layout.  Its =cache-result=not-measured=
+still separates field acceptance from measured cache benefit; ordered counters
+need independent external adjudication rather than an automatic benefit claim.
+P2 retains its separate complete-join and two-above-ceiling-read requirement.
+
+Public OpenAI credentials remain unavailable. All P3 combinations remain
+none/unconfirmed and curation unavailable; neither P1 nor P2 grants that
+capability. Prior Anthropic acceptance remains bounded to its recorded shape,
+and the separate minimal no-read outcome remains unconfirmed. No new valid
+external product-contract failure or provider success was generated by this
+review. The Board's 4,608-token ceiling still lacks recorded bodies and a proven
+cause. Feature status remains In-review; no deterministic fixed point,
+family-wide cache improvement or Done claim is supported at this revision.
+
+log-read: =/private/tmp/e-board-cache-audit-76eac/openai-r8-canonical.log:3780--3788=;
+=/private/tmp/e-board-cache-audit-76eac/openai-r8-current-config.log:1--4=;
+=/private/tmp/e-board-cache-audit-76eac/openai-r8-dependent-e2e.log:94--100=.
