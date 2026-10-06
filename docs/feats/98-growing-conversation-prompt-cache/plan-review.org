@@ -202,3 +202,235 @@ families retain their existing explicit external status.  P3 remains unconfirmed
 for all shipped combinations and curation remains unavailable.  No provider
 calls, repository changes, Git writes, live state operations, or log reads were
 performed during this review.  log-read: none.
+
+* Codex session-affinity implementation-plan delta admission
+
+** Decision and scope
+
+=implementation-plan-fixed-point= for the bounded supporting-design delta,
+including the parent-confirmed endpoint/alias clarification and separately
+reportable production P1/P2 acceptance below.  No actionable plan finding or
+required implementation-plan unknown remains.  This result clears plan readiness;
+the parent retains implementation admission, exact-revision gates and independent
+implementation review.  No Codex implementation or provider-benefit pass is
+established by this decision.
+
+The unchanged normative authority remains Feature 98 F98-G1/C1--C6 and its single
+establishing DP1.  This review reopens Codex compatibility/affinity selection and
+its endpoint, transport, diagnostics, evidence and identity dependents.  It carries
+the unaffected prior plan cells, Anthropic design, public OpenAI policy target,
+context/lifetime/recovery ownership and unavailable-curation contract.  The
+separate public GPT-6 model-name correction is already admitted and active; this
+review neither edits nor accepts its uncommitted implementation.
+
+** Exact admitted supporting-design text
+
+Replace the current Codex supporting-design paragraph that prohibits all private
+Responses cache fields with the following.  Retain the existing following C6
+paragraph and unchanged contract/package/evidence rows.
+
+#+begin_quote
+For F98-C1/C2/C4, the known first-party ChatGPT Codex Responses API keeps
+compatible implicit caching and derives its =session-id= transport header and
+=prompt_cache_key= body value from the same nonempty ordinary session identity.
+The request policy selects supported affinity once from the effective known
+first-party base URL, Responses API and managed-auth capability, then supplies
+that one identity to the body and header owners.  Provider labels, display names
+and the WebSocket-only built-in profile predicate are not capability proof.
+Configured aliases reaching the same effective API receive the same policy;
+effective third-party overrides do not.  Selection is independent of model
+version and applies to HTTP and WebSocket requests.
+
+The identity remains stable through tool subturns, later turns, reconnect and
+HTTP fallback; distinct ordinary sessions remain distinct.  Request-local
+context, history growth and tool changes cannot rotate it.  Retired caller cache
+controls cannot alter it.  A direct request without a usable session identity
+retains the compatible implicit path and receives neither an invented random
+per-request affinity key nor an identity shared with real sessions.
+
+Known session affinity is distinct from optional explicit cache controls.
+Do not send unqualified =prompt_cache_options=, explicit markers, retention or
+continuation fields to Codex.  Preserve the existing compatible older Responses,
+third-party and Chat Completions policy.  Test request evolution and effective
+defaults, including profiles without counters; missing counters establish neither
+a hit nor a miss.  Any API-specific advancing boundary remains an adapter choice
+supported by endpoint proof, rather than a caller mode.
+#+end_quote
+
+This text records the parent's explicit effective-endpoint/managed-auth and
+configured-alias clarification.  It makes the existing proposal's joined-output
+acceptance precise; it does not add a product contract, cache option or owner.
+
+** Feasibility and consequential seams
+
+The pinned official source is design evidence for ordinary session affinity.
+=client.rs:581--603= selects ordinary session identity for the body key and root
+Responses session identity, with an explicit comment identifying ChatGPT's
+=session-id= affinity header.  The source also has non-root/internal routing
+exceptions; those are not imported as new grouping or parent-session policy.
+The body key is included at =978--1008=, and =common.rs:297,321,351= carries it
+into both HTTP and WebSocket wire forms without a model-version gate.
+=client.rs:1316--1319,1373= supplies session identity for handshake and shared
+transport options.  The reviewed proposal deliberately uses ordinary e session
+identity and adds no override or agent-family routing registry.
+
+At baseline =e07f6273=, local routing policy at
+=lisp/adapters/openai/e-openai-profile.el:493= selects a key only for older public
+OpenAI requests; Codex receives nil.  Managed-auth headers at =804--817= emit
+=session_id= rather than =session-id=.  These are omissions of the selected
+supported affinity design, not proof of the historical Board ceiling's cause.
+
+The existing request-context owner at =lisp/adapters/openai/e-openai.el:230--247=
+already observes effective URL/API/model/options before privately binding the
+routing key.  The Responses serializer at =e-openai-responses.el:690--696=
+already consumes that private key.  Header construction at =e-openai.el:304--318=
+currently receives profile/auth/session identity without the effective URL.
+Therefore changing only =e-openai-profile--codex-headers=, or gating by
+=requires-openai-auth= alone, cannot close the effective override/alias partition.
+The admitted design selects capability/identity at the existing request boundary
+and feeds both outputs.  A narrow private argument or binding can do this inside
+the existing profile/request/header owner; no core, public policy or persistence
+interface is needed.
+
+The loop already installs its authoritative ordinary session identity at
+=lisp/core/e-loop.el:426--434= and reinstalls it after projection at =591=.
+Headers, body-data and full-body-data share the same adapter request context.
+WebSocket connection ownership is already keyed by that session, and handshake
+reuse checks actual URL/headers at =e-openai-websocket.el:336--341=.  A changed
+header causes existing reconnection rather than requiring a cache owner.  HTTP,
+reconnect and fallback must consume the same selected identity.  Opaque input,
+encrypted reasoning, tool chronology and authorized projections stay with their
+existing semantic owners.  Affinity does not enable continuation or curation.
+
+** Evidence disposition and acceptance topology
+
+The Board dossier is observational: two gpt-6-sol sessions plateau at 4,608 read
+tokens, but their request bodies/item hashes were not retained.  It establishes
+neither the first divergent token nor a controlled affinity-policy cause.  Passing
+no-affinity synthetic shapes establish that Codex can reuse growing history on
+those shapes; they do not reconstruct or explain Board requests.
+
+Independently inspected the affinity diagnostic's source driver and raw record.
+It changes the header spelling and inserts a session body key, then verifies
+their equality.  The actual record preserves the same endpoint/model/static
+identity, semantic success, totals 4,110/15,445/26,602/37,652 and reads
+0/0/3,840/26,496.  Only the last read exceeds the 4,110-token initial control.
+The public classifier correctly reports =insufficient-history-reuse= and skips
+positive P2 qualification.  Thus field acceptance supports design selection;
+this overridden diagnostic proves neither improved hit rate nor committed-code
+P2 acceptance.  Its request hashes also show the fixed inherited observation
+moving to the current frontier rather than disappearing; that semantic behavior
+must be preserved, not rewritten as a cache optimization.
+
+Required implementation acceptance partitions are:
+
+- Effective first-party Responses with managed auth, including configured aliases,
+  HTTP and WebSocket, versus a first-party label with a third-party effective URL,
+  Chat Completions, unsupported API/auth and unrelated providers.  The capability
+  selector must follow effective identity, not catalogue spelling or model flavor.
+- One ordinary session across growing requests, later turns, reconnect and HTTP
+  fallback; distinct sessions with the same static prefix.  Assert actual
+  =session-id= and body key equality and stability.  The supported path emits no
+  underscore affinity header and no unqualified explicit/retention/continuation
+  controls.  Test missing, empty and unusable session identity separately.
+- Direct request composition and forged retired cache options.  No caller policy
+  can substitute a key, disable affinity, or enable curation.  Unknown endpoint
+  capability preserves its compatible implicit behavior.
+- Ordinary inherited observations, native encrypted reasoning and chronological
+  tool results retain their semantic projection and input objects.  Diagnostics
+  distinguish source-supported affinity from actual key/header presence and from
+  observed cache reads.
+- Synthetic multi-session capture, when used, indexes input-prefix comparisons
+  and usage joins by session/request.  The current diagnostic's one global prior
+  input variable is suitable for its one session, not concurrent acceptance.
+
+Retain the existing separately reportable P1 minimal endpoint scenario after
+independent review of committed production code.  It must capture the actual
+header/body identity join and selected fields through the real managed-auth API,
+with ordered responses/counters and material shape identity.  Retain a distinct
+ordinary public P2 using synthetic inherited observation and encrypted reasoning,
+without inherited user/project context or affinity/body overrides.  Two successive
+attributable reads beyond the initial unchanged-history bound are required for a
+growing-reuse claim.  Diagnostic field acceptance does not substitute for either
+production acceptance scenario.  Existing revision/endpoint/team/model/protocol/
+material-shape and 24-hour freshness rules continue to govern reuse.
+
+Focused owner/transport/composition checks precede parent acceptance.  Complete
+canonical and fresh private current-config gates run on the clean accepted code;
+independent implementation Tick precedes fresh P1/P2.  This is a material decision
+boundary, not a reason to rerun equivalent whole gates during plan review.
+
+** Required implementation-plan cells
+
+| Cell | Disposition |
+|------+-------------|
+| Single normative authority | Cleared, carried; unchanged F98-G1/C1--C6 rows own behavior. |
+| Behavioral design trace | Cleared anew; supported affinity selection is the smallest local correction; Board causality and benefit remain separate. |
+| Durable contract boundary | Cleared; provider-specific spelling/identity join is supporting design, not a new durable core contract. |
+| Scenario diagnosability | Cleared anew; selector, header/body join, projection and usage attribution have separate observable partitions. |
+| Evidence topology | Cleared anew; pinned source, observational Board data, overridden diagnostic, deterministic composition, minimal P1 and public P2 have distinct roles. |
+| External freshness | Cleared; accepted revision and effective capability/material-shape identity plus existing age rules remain mandatory. |
+| Telemetry decision power | Cleared anew; one history advance cannot qualify P2; actual reads remain independent of field presence and semantic success. |
+| Exact-limit justification | Not applicable to this delta; no new runtime cap/timeout or cache granularity is introduced. Existing accepted evidence thresholds remain unchanged. |
+| Defensive actionability | Cleared; effective-endpoint and missing-identity handling protect C2 compatibility and stable session reuse without a new defensive mechanism. |
+| Change locality | Cleared anew; one request-local selection feeds existing body/header owners; no core or durable cache owner. |
+| Workflow boundary | Cleared; product supporting text records policy/evidence; revision-specific review mechanics stay in this review/handoff. |
+| Decision level and plan disposition | Cleared; implementation-plan admission, not deterministic or capability confirmation. |
+| Contract-to-package coverage | Cleared, carried; all C1--C6 remain established by DP1. |
+| Useful stopping point | Cleared, carried; header-only helper or diagnostic is not accepted package closure. |
+| Cohesion and transaction closure | Cleared anew; affinity selection, body, headers, transport and truthful diagnostics close together within the existing owner. |
+| Dependency order | Cleared; independent GPT-6 correction remains separately admitted; Codex affinity does not depend on a model-version classifier. |
+| Package-size tradeoff | Cleared, carried; this local correction belongs in DP1 rather than a new release package. |
+| Acceptance-cost topology | Cleared anew; focused tests, clean implementation gates, independent Tick and distinct external scenarios occur at informative boundaries. |
+| Checkpoint/package distinction | Cleared; diagnostic, plan admission and internal commits are not accepted implementation/package completion. |
+
+** Architecture and remaining external unknowns
+
+AGENTS.md's fourteen self-check dispositions carry forward with this local delta:
+supported capability is selected where effective request identity exists; core
+session/lifetime truth is unchanged; uncertain provider syntax remains reversible
+and adapter-local; one derived identity lives for a request and reuses existing
+durable session identity.  No registry, cache switch, schema migration or new
+provider dependency in core is added.  Body/header overhead is constant per
+request; any cache-cost or hit-rate improvement remains observational.  Existing
+transport ownership handles reconnect/fallback.  Expected missing capability is
+handled locally and unexpected provider errors remain visible.  Owner and injected
+transport tests prove repository behavior before provider acceptance.
+
+No required implementation-plan unknown remains.  Committed-code affinity P1/P2,
+the actual historical Board cause, and provider hit-rate improvement remain
+external unknowns with explicit claim limits.  P3 remains unconfirmed and curation
+unavailable.  No official-source or diagnostic fact is promoted to a provider
+cache-benefit pass.
+
+** Content and dependency identity
+
+The result binds the exact replacement and acceptance portfolio in this immutable
+record, the parent-confirmed clarification, and these reviewed dependencies.
+Presentation-only insertion/commit does not alter the result; a material policy,
+owner capability or delivery/evidence dependency change requires rebaselining.
+
+| Object | Reviewed identity |
+|--------+-------------------|
+| Settled repository baseline | e07f62736e68da1f9ce5b02f0329f88aebc10bbd |
+| Current plan.org Git blob | a895264272fb1b26ae89c4c5a81ca7c9a4a95d58 |
+| Prior plan-review.org Git blob | 351610c2d5c8dcf7ad8b9a8df070f568fc760b36 |
+| Baseline profile owner Git blob | 67649548736b52b7491ab021d68d75e89a06ef35 |
+| Request owner Git blob | fb031f03467677b18b1217a3c0e6605f654728e7 |
+| Responses owner Git blob | dbb5af48569d577d38e54d6e0d86d61ac8131794 |
+| WebSocket owner Git blob | ac27e9fafe1142efab37ce15aa721dfd8bd42c26 |
+| E2E tree | a85c1fc9eb67cbf841d20dfed71ae85290ee014a |
+| AGENTS.md Git blob | 1772d96d0021d432a8f7f5eab0f8b81d8cc5430b |
+| Supplied proposal SHA-256 | 7a86f1eae3463744c6380e4f24b22630dd8adfaa2ca293a81e019cf89c8d97ed |
+| Pinned official openai/codex revision | dab2cd60568dedac5b226e9fafdf1523474d5cb8 |
+| Supplied client.rs SHA-256 | 6ca16eb5fb185192738d321c22eacf74664e0ae2c107176c1c8a7f23fde33089 |
+| Supplied common.rs SHA-256 | 6d2bdb9fdbd443120b73734d13ba19912ef6883553df92a926a2fa887d61a6b6 |
+
+The profile/mechanism files have the separate public model-classifier edits in
+progress; baseline Codex policy was checked against the recorded Git object,
+and unchanged request/Responses/WebSocket owners were inspected directly.  This
+review does not claim a clean implementation candidate or clear concurrent edits.
+No repository/temp source changes, Git writes, provider requests or live-state
+operations occurred.  The reviewer authored only this permitted Org artifact.
+
+log-read: =/private/tmp/e-board-cache-audit-76eac/codex-sol-affinity-diagnostic.log:1--25=.

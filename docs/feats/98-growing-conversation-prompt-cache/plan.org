@@ -17,6 +17,14 @@ no family-wide or other-adapter benefit is claimed.  All shipped curation
 capabilities remain none/unconfirmed and unavailable.  Broader qualification
 keeps the feature In-review.  The user's running Emacs and Board were unchanged.
 
+The 2026-10-06 read-only audit of Board
+=brd_76eac4169684e09b23f6d5e43610cded= verifies growing reuse in its actual Opus
+main chat, while two Codex GPT-6 Sol participants retain a 4,608-token read
+ceiling.  Their request bodies were not recorded, so the exact cause remains
+unknown.  A public OpenAI model-name correction and independently admitted
+Codex session-affinity correction are being implemented; neither currently
+establishes closure of that historical Codex observation.
+
 * Goal and authority
 
 =F98-G1=: Ordinary chat and tool-heavy turns should reuse unchanged conversation
@@ -107,6 +115,31 @@ Historical source anchors at the audited baseline:
 
 The Gmail/agentic repeated state-curation behavior is a separate issue.  This
 package covers its cache interaction, not curation-loop or worker-deadline repair.
+
+The newer Board audit joins all 136 provider starts, usage records and finishes.
+The Opus main chat's 17 follow-ups read exactly the preceding written prefix.
+The Codex Slack participant records 37 requests with reads 0 / 0 / 4,608 repeated
+35 times; total input reaches 58,606 tokens.  Its previous-day participant reads
+0 / 4,608 repeated five times as total input reaches 13,831.  OpenAI input totals
+already include cached input; fresh input is total minus read, unlike Anthropic's
+separate fresh/read/creation counters.
+
+Controlled synthetic Codex probes preserve native input chronology and show
+growing reuse with encrypted reasoning and fixed inherited observations, including
+a shorter initial prefix.  These do not reconstruct the Board's request bodies.
+Official Codex source at
+[[https://github.com/openai/codex/blob/dab2cd60568dedac5b226e9fafdf1523474d5cb8/codex-rs/core/src/client.rs][dab2cd60568d]]
+derives ordinary-session affinity through the =session-id= header and body
+=prompt_cache_key=.  The baseline adapter instead emits =session_id= and omits
+that Codex body key.  An overridden synthetic diagnostic accepts the supported
+fields, but reads 0 / 0 / 3,840 / 26,496 and supplies only one history advance.
+It proves field acceptance, not improved hit rate or the historical ceiling's
+cause.  Independent plan admission binds the supporting correction below; fresh
+reviewed committed-code P1/P2 remains required.
+
+Separately, the public OpenAI numbered-model classifier requires a dotted version
+at baseline and misses =gpt-6-sol= and =gpt-6-luna=.  Correcting that owner restores
+the already specified GPT-5.6-or-later policy and does not affect Codex selection.
 
 * Contracts
 
@@ -231,13 +264,32 @@ hybrid request is valid.
 
 ** Codex, older Responses models, and Chat Completions
 
-F98-C1/C2 preserve their compatible implicit behavior.  Do not send private
-Responses cache fields to Codex or Chat Completions.  Do not enable Codex
-continuation as a cache fix; its current detached-store capability remains
-unchanged.  Test request evolution and effective defaults for these paths,
-including profiles without usage counters.  Missing counters establish neither
-a hit nor a miss.  For an API requiring explicit controls, advancing boundaries
-are an adapter implementation choice with endpoint proof, not an exposed mode.
+For F98-C1/C2/C4, the known first-party ChatGPT Codex Responses API keeps
+compatible implicit caching and derives its =session-id= transport header and
+=prompt_cache_key= body value from the same nonempty ordinary session identity.
+The request policy selects supported affinity once from the effective known
+first-party base URL, Responses API and managed-auth capability, then supplies
+that one identity to the body and header owners.  Provider labels, display names
+and the WebSocket-only built-in profile predicate are not capability proof.
+Configured aliases reaching the same effective API receive the same policy;
+effective third-party overrides do not.  Selection is independent of model
+version and applies to HTTP and WebSocket requests.
+
+The identity remains stable through tool subturns, later turns, reconnect and
+HTTP fallback; distinct ordinary sessions remain distinct.  Request-local
+context, history growth and tool changes cannot rotate it.  Retired caller cache
+controls cannot alter it.  A direct request without a usable session identity
+retains the compatible implicit path and receives neither an invented random
+per-request affinity key nor an identity shared with real sessions.
+
+Known session affinity is distinct from optional explicit cache controls.
+Do not send unqualified =prompt_cache_options=, explicit markers, retention or
+continuation fields to Codex.  Preserve the existing compatible older Responses,
+third-party and Chat Completions policy.  Test request evolution and effective
+defaults, including profiles without counters; missing counters establish neither
+a hit nor a miss.  Any API-specific advancing boundary remains an adapter choice
+supported by endpoint proof, rather than a caller mode.
+
 For F98-C6, neither Codex nor a compatible third-party Responses endpoint inherits
 curation availability from the wire API name alone.  Establish support through
 P3 or leave the feature unavailable.  The same rule applies to Chat Completions
