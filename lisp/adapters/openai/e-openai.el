@@ -30,8 +30,11 @@
 (require 'e-openai-websocket)
 (require 'e-openai-compaction)
 
-(defun e-openai--request-metadata (wire-api options body)
-  "Return sanitized request metadata for WIRE-API, OPTIONS, and BODY."
+(defun e-openai--request-metadata
+    (wire-api options body &optional codex-session-affinity headers)
+  "Return sanitized request metadata for WIRE-API, OPTIONS, and BODY.
+CODEX-SESSION-AFFINITY and HEADERS report selected policy and actual wire
+field presence without retaining the ordinary session identity."
   (when (eq wire-api 'responses)
     (let* ((anchor (plist-get options :provider-anchor))
            (anchor-metadata (plist-get anchor :metadata))
@@ -92,6 +95,23 @@
                                   '("context-curate" context-curate))))
                    (plist-get body :tools))
                   :responses-transport responses-transport))
+           (_ (when codex-session-affinity
+                (let* ((identity
+                        (plist-get codex-session-affinity :session-id))
+                       (body-key (plist-get body :prompt_cache_key))
+                       (header-identity (cdr (assoc "session-id" headers))))
+                  (setq diagnostics
+                        (append diagnostics
+                                (list :codex-session-affinity-selected
+                                      (and identity t)
+                                      :codex-session-affinity-body-key-present
+                                      (and (plist-member body :prompt_cache_key) t)
+                                      :codex-session-affinity-header-present
+                                      (and (assoc "session-id" headers) t)
+                                      :codex-session-affinity-identities-match
+                                      (and identity
+                                           (equal identity body-key)
+                                           (equal identity header-identity))))))))
            (metadata (list :provider-continuation continuation-state
                            :responses-transport responses-transport
                            :reasoning-identity
@@ -231,17 +251,22 @@ OpenAI request and backend-neutral context."
                          (plist-put effective-options
                                     :response-store
                                     (plist-get profile :response-store))))))
+            (session-id (plist-get effective-options :session-id))
             (effective-base-url
              (or base-url (e-openai-provider-base-url profile)))
             (effective-model (plist-get effective-options :model))
+            (codex-session-affinity
+             (e-openai-profile-codex-session-affinity-selection
+              profile effective-base-url wire-api session-id))
             (cache-capability
              (e-openai-profile-cache-capability
               profile provider effective-base-url effective-model))
             (e-openai-profile--effective-prefix-cache cache-capability)
             (e-openai-profile--effective-cache-routing-key
-             (e-openai-profile-cache-routing-key
-              profile provider effective-base-url effective-model
-              effective-options))
+             (or (plist-get codex-session-affinity :session-id)
+                 (e-openai-profile-cache-routing-key
+                  profile provider effective-base-url effective-model
+                  effective-options)))
             (e-openai-profile--effective-cache-capability-evidence
              (e-openai-profile-cache-capability-evidence
               profile provider effective-base-url effective-model))
@@ -279,8 +304,6 @@ OpenAI request and backend-neutral context."
                 :options
                 (e-openai-responses-options-without-provider-anchor effective-options)
                 :tools (plist-get effective-options :tools))))
-            (metadata (e-openai--request-metadata
-                       wire-api effective-options body-data))
             (body
              (e-openai-adapter-measure
               'openai.request-json
@@ -288,7 +311,6 @@ OpenAI request and backend-neutral context."
                                     :wire-api wire-api))
               (lambda ()
                 (e-json-serialize body-data))))
-            (session-id (plist-get effective-options :session-id))
             (url (pcase wire-api
                    ('responses
                     (let ((resolved-base-url
@@ -311,11 +333,16 @@ OpenAI request and backend-neutral context."
                 (e-openai-profile-headers
                  :profile profile
                  :auth-file auth-file
-                 :session-id session-id))))
+                 :session-id session-id
+                 :session-affinity-id
+                 (plist-get codex-session-affinity :session-id)))))
             (headers (if (and (eq wire-api 'responses)
                               (eq responses-transport 'websocket))
                          (e-openai-profile-responses-websocket-headers headers)
-                       headers)))
+                       headers))
+            (metadata (e-openai--request-metadata
+                       wire-api effective-options body-data
+                       codex-session-affinity headers)))
        (list :provider provider
              :wire-api wire-api
              :responses-transport responses-transport

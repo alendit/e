@@ -2200,36 +2200,37 @@ otherwise ADOPTION-GATES retains the positive-adoption classifier."
               scenario-prompt-identity
               affordance-revision presentation-revision
               adoption-dependency-identity)
-          (append record
-                  (list :adoption-result
-                        (or (plist-get adoption-classification
-                                       :adoption-result)
-                            adoption-result
-                            "unavailable")
-                        :composition-result
-                        (or (plist-get adoption-classification
-                                       :composition-result)
-                            composition-result
-                            "unavailable")
-                        :failure-stage
-                        (or (plist-get adoption-classification :failure-stage)
-                            failure-stage
-                            "none")
-                        :adoption-disposition
-                        (or (plist-get adoption-classification
-                                       :adoption-disposition)
-                            adoption-disposition
-                            "unavailable")
-                        :scenario-prompt-identity
-                        (or scenario-prompt-identity "unavailable")
-                        :affordance-revision
-                        (or affordance-revision "unavailable")
-                        :presentation-revision
-                        (or presentation-revision "unavailable")
-                        :adoption-dependency-identity
-                        (or adoption-dependency-identity
-                            (e-live-e2e--adoption-dependency-identity)
-                            "unavailable")))
+          (setq record
+                (append record
+                        (list :adoption-result
+                              (or (plist-get adoption-classification
+                                             :adoption-result)
+                                  adoption-result
+                                  "unavailable")
+                              :composition-result
+                              (or (plist-get adoption-classification
+                                             :composition-result)
+                                  composition-result
+                                  "unavailable")
+                              :failure-stage
+                              (or (plist-get adoption-classification :failure-stage)
+                                  failure-stage
+                                  "none")
+                              :adoption-disposition
+                              (or (plist-get adoption-classification
+                                             :adoption-disposition)
+                                  adoption-disposition
+                                  "unavailable")
+                              :scenario-prompt-identity
+                              (or scenario-prompt-identity "unavailable")
+                              :affordance-revision
+                              (or affordance-revision "unavailable")
+                              :presentation-revision
+                              (or presentation-revision "unavailable")
+                              :adoption-dependency-identity
+                              (or adoption-dependency-identity
+                                  (e-live-e2e--adoption-dependency-identity)
+                                  "unavailable"))))
         record)
       (when (or curation-cache-result curation-cache-evidence)
         (setq record
@@ -4813,12 +4814,8 @@ native request starter.  The supplied capture lists are newest-first."
                (((symbol-function 'e-openai-http-request-start)
                  (lambda (&rest args)
                    (push (list :body
-                               (json-parse-string
-                                (or (plist-get args :body) "{}")
-                                :object-type 'plist
-                                :array-type 'vector
-                                :null-object nil
-                                :false-object :json-false)
+                               (e-json-parse-string
+                                (or (plist-get args :body) "{}"))
                                :full-body nil
                                :session nil)
                          ,request-bodies)
@@ -6085,15 +6082,44 @@ replay, where those same values are strings."
                '(:tool-call (:id "call-1" :name "probe")
                  :result (:tool-call-id "call-1" :name "probe" :status ok
                          :content "ok")))
-              (let* ((provider
-                      (car (e-capability-context-providers base-context)))
-                     (messages
-                      (e-context-provider-build
-                       provider :harness harness :session-id session-id
-                       :turn-id "turn-1"))
-                     (printed (prin1-to-string messages)))
-                (should messages)
-                (should (string-match-p "call-1" printed))))))))))
+              (should
+               (seq-some
+                (lambda (event)
+                  (equal
+                   (plist-get
+                    (plist-get (plist-get event :payload) :tool-call) :id)
+                   "call-1"))
+                (e-live-e2e--activity-of-type
+                 harness session-id 'tool-finished)))
+            (let ((active-entry (list :id "turn-1" :status 'running)))
+              (e-harness-turn-state-put-active-turn
+               harness session-id active-entry)
+              (unwind-protect
+                  (progn
+                    (e-chat-sql-e2e--await
+                     (e-harness-turn-context-start
+                      harness session-id "turn-1"))
+                    (let* ((detached
+                            (e-harness-executing-session-state
+                             harness session-id))
+                           (receipts (plist-get detached :tool-receipts))
+                           (provider
+                            (car (e-capability-context-providers base-context)))
+                           (messages
+                            (e-context-provider-build
+                             provider :harness harness :session-id session-id
+                             :turn-id "turn-1"))
+                           (printed (prin1-to-string messages)))
+                      (should detached)
+                      (should (= (plist-get detached
+                                            :tool-receipt-total-count)
+                                 1))
+                      (should (equal (plist-get (car receipts) :tool-call-id)
+                                     "call-1"))
+                      (should messages)
+                      (should (string-match-p "call-1" printed))))
+                (e-harness-turn-state-remove-active-turn
+                 harness session-id active-entry))))))))))
 
 (ert-deftest e-live-e2e-test-autonomous-erase-receipt-prerequisite-is-direct ()
   "The erase prerequisite requires one projected direct live receipt."

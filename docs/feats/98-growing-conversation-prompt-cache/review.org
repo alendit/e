@@ -1407,3 +1407,99 @@ private current-config 9/9 gates are reused; no equivalent suite was rerun.
 log-read: =/private/tmp/e-feature98/provider-rolling-acceptance.log:1--14=;
 =/private/tmp/e-feature98/provider-minimal-p1-captured.log:1--9=;
 =/private/tmp/e-feature98/external-review-classification.log:4--5=.
+
+* Remediation: OpenAI generation policy and Codex session affinity
+
+** Accepted realization and evidence boundary
+
+On 2026-10-06 the parent accepts the settled OpenAI correction on plan admission
+=a4f4913d=, before exact clean-revision gates and independent Tick. The source
+comparison remains =e07f6273= through the final candidate; this note is Tock
+acceptance, not an independent fixed-point or provider-benefit decision.
+
+The public first-party OpenAI classifier now recognizes numbered major-only and
+release-flavored GPT-6 model names. =gpt-6-sol= and =gpt-6-luna= therefore receive
+the already specified GPT-5.6-or-later implicit-plus-stable-guard policy. Older
+models and compatible endpoints retain their respective supported defaults.
+
+Known first-party managed-auth Codex Responses requests select ordinary session
+affinity from effective endpoint/API capability, independent of provider label,
+model and HTTP versus WebSocket transport. One request-local selection supplies
+the same identity to the =session-id= header and =prompt_cache_key= body field.
+History, observations and tool definitions cannot rotate it; distinct sessions
+remain distinct. The unsupported underscore header is removed. Missing/unusable
+identity receives no invented key; unsupported effective routes gain no Codex
+controls. Retired caller cache settings cannot weaken the selection. Diagnostics
+report supported policy, actual field presence and identity agreement without
+retaining the identity or claiming a hit. Explicit controls, retention,
+continuation and curation remain unavailable on this route.
+
+The actual newer Board's fixed Codex ceilings remain observational failures with
+unknown cause. Passing unchanged-code synthetic probes and pinned official source
+establish the locality and supported affinity omission. The overridden affinity
+diagnostic establishes syntax acceptance only. Fresh independently reviewed
+committed-code minimal P1 and inherited-observation/encrypted-reasoning P2 remain
+required, and no historical Board-cause or hit-rate improvement is claimed here.
+
+** Focused proof and baseline repairs
+
+Actual request composition covers effective aliases, URL overrides, API/auth
+controls, missing identity and retired options. Injected HTTP requests and
+WebSocket handshakes join actual header/body identities; concurrent sessions and
+reconnect retain separate identity and native encrypted-reasoning/tool chronology.
+The focused OpenAI suite passed 191/191 before subsequent proof-only fixture
+corrections; direct policy checks passed 2/2 and transport/reconnect checks 5/5.
+
+Normal public P1/P2 fixtures capture bounded native item hashes by session,
+compare the durable prefix while preserving the one fixed inherited observation,
+and report provider-aware counters. P2 includes early substantive reasoning and
+four sequential data-dependent tool results. The original three-step scenario
+retains its exact prompt/tool schema and description. Request/usage joins now use
+per-session ordinals, retain raw request IDs and tool causality, and mark missing
+or ambiguous attribution unknown rather than shifting later counters.
+
+The user's baseline-fix instruction also closes seven discovered pure E2E
+failures. The shared evidence builder now retains its appended adoption fields;
+HTTP capture uses the canonical JSON parser; the async erase-support fixture
+models a real detached context read without weakening the async storage boundary.
+Their original assertions remain. Seven targeted failures pass 7/7. The complete
+dependent E2E selection passes 60 tests with 25 expected configuration-gated skips
+and zero unexpected results; no provider calls occur in that gate. Source syntax
+and =git diff --check= pass. Exact canonical/private configuration gates and
+independent implementation review follow the coherent Tock commit.
+
+** Architecture self-check
+
+1. The stopping point repairs supported OpenAI policy and affinity, with honest
+   evidence attribution; historical Board cause and external reuse stay separate.
+2. It moves toward capability-owned reuse on every subturn with semantic context
+   projection retained as independent truth.
+3. Provider affinity is localized and reversible. Pinned source and field
+   acceptance support the selected mechanism; hit rate remains uncertain.
+4. The existing OpenAI profile/request owner selects policy and feeds its body,
+   headers and diagnostics. Core session/lifetime ownership is unchanged.
+5. One narrow request-derived identity joins existing consumers; no public cache
+   control, cross-component manager or registry is introduced.
+6. Core still depends on backend semantics, with no new concrete-provider edge.
+7. Provider/network effects remain in existing adapters and isolated runners;
+   affinity selection is pure.
+8. Selection lives for one request and derives from the existing durable session
+   identity. No new persistence, schema or migration is added. Test capture state
+   is private to its scenario and indexed by ordinary session.
+9. Production selection and presence checks are constant in conversation length.
+   Existing request serialization still processes history; native item hashing
+   is evidence-fixture work only. No cache-cost improvement is assumed.
+10. Ordinary replay and semantic projection are preserved; supported affinity
+    grants neither continuation nor curation.
+11. Effective unknown endpoints retain compatible caching. The obsolete underscore
+    header is removed rather than retained as a compatibility switch.
+12. The dotted-only generation assumption and missing known Codex affinity are
+    removed; retired caller policy controls remain removed.
+13. Expected unsupported identity/capability stays implicit locally. Unexpected
+    provider/validation errors remain visible; no retry or swallowing is added.
+14. Pure profile and injected request/transport checks prove behavior independently
+    of providers; complete gates, independent Tick and fresh P1/P2 remain separate.
+
+No new owner, architectural deferral or glossary term is introduced. Provider
+adapter use requires an operator-managed Emacs restart; the user's running Emacs,
+Board, live store and services were not reloaded, restarted or changed.

@@ -436,12 +436,16 @@ When PROVIDER is nil, use `e-openai-default-provider'."
 
 (defun e-openai-profile-model-gpt56-or-later-p (model)
   "Return non-nil when MODEL names GPT-5.6 or a later numbered GPT model."
-  (and (stringp model)
-       (string-match "\\`gpt-\\([0-9]+\\)\\.\\([0-9]+\\)" model)
-       (let ((major (string-to-number (match-string 1 model)))
-             (minor (string-to-number (match-string 2 model))))
-         (or (> major 5)
-             (and (= major 5) (>= minor 6))))))
+  (when (and (stringp model)
+             (string-match
+              "\\`gpt-\\([0-9]+\\)\\(?:\\.\\([0-9]+\\)\\)?\\(?:[.-][[:alnum:]][[:alnum:]_.-]*\\)?\\'"
+              model))
+    (let ((major (string-to-number (match-string 1 model)))
+          (minor (if (match-string 2 model)
+                     (string-to-number (match-string 2 model))
+                   0)))
+      (or (> major 5)
+          (and (= major 5) (>= minor 6))))))
 
 (defconst e-openai-gpt56-automatic-cache-layout-revision
   "responses-automatic-cache-v2"
@@ -474,6 +478,9 @@ boundaries."
   "Return a non-secret evidence label for PROFILE cache policy.
 This reports the API contract selected by the adapter, not a measured hit."
   (cond
+   ((e-openai-profile-codex-session-affinity-supported-p
+     profile base-url (e-openai-provider-wire-api profile))
+    'first-party-codex-session-affinity)
    ((and (eq provider 'openai)
          (not (plist-get profile :requires-openai-auth))
          (e-openai-profile-context-base-url-equal-p
@@ -641,6 +648,33 @@ fallback, because selecting replacement changes continuation safety."
        (equal (string-remove-suffix "/" left)
               (string-remove-suffix "/" right))))
 
+(defun e-openai-profile--usable-session-id-p (session-id)
+  "Return non-nil when SESSION-ID can identify one wire request session."
+  (and (stringp session-id)
+       (not (string-empty-p (string-trim session-id)))
+       (not (string-match-p "[\000-\037\177]" session-id))))
+
+(defun e-openai-profile-codex-session-affinity-supported-p
+    (profile base-url wire-api)
+  "Return non-nil when PROFILE supports first-party Codex session affinity.
+The proof follows the effective Responses endpoint and managed-auth mode."
+  (and (eq wire-api 'responses)
+       (plist-get profile :requires-openai-auth)
+       (e-openai-profile-context-base-url-equal-p
+        base-url (concat e-openai-codex-default-base-url "/codex"))))
+
+(defun e-openai-profile-codex-session-affinity-selection
+    (profile base-url wire-api session-id)
+  "Return request-local Codex affinity selection for this effective request.
+The returned identity is the existing ordinary SESSION-ID, or nil when it is
+missing or unusable."
+  (when (e-openai-profile-codex-session-affinity-supported-p
+         profile base-url wire-api)
+    (list :evidence 'first-party-codex-session-affinity
+          :session-id
+          (and (e-openai-profile--usable-session-id-p session-id)
+               session-id))))
+
 (cl-defun e-openai-profile-context-capabilities
     (profile options &key provider base-url request-function
              provider-compaction-supported)
@@ -797,8 +831,10 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                   '("Missing ChatGPT account id claim"))))))
 
 
-(defun e-openai-profile--codex-headers (auth &optional session-id)
-  "Return Codex request headers for AUTH and SESSION-ID."
+(defun e-openai-profile--codex-headers
+    (auth &optional session-id session-affinity-id)
+  "Return Codex request headers for AUTH and SESSION-ID.
+SESSION-AFFINITY-ID is sent only when selected by the effective request policy."
   (let* ((token (e-openai-codex-auth-access-token auth))
          (headers `(("Authorization" . ,(concat "Bearer " token))
                     ("chatgpt-account-id" . ,(e-openai-codex-auth-account-id auth))
@@ -806,11 +842,13 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
                     ("OpenAI-Beta" . "responses=experimental")
                     ("Accept" . "text/event-stream")
                     ("Content-Type" . "application/json"))))
-    (if session-id
-        (append headers
-                `(("session_id" . ,session-id)
-                  ("x-client-request-id" . ,session-id)))
-      headers)))
+    (when (e-openai-profile--usable-session-id-p session-id)
+      (setq headers
+            (append headers `(("x-client-request-id" . ,session-id)))))
+    (when (e-openai-profile--usable-session-id-p session-affinity-id)
+      (setq headers
+            (append headers `(("session-id" . ,session-affinity-id)))))
+    headers))
 
 (defun e-openai-profile--token-headers (token)
   "Return standard Responses headers using bearer TOKEN."
@@ -818,14 +856,15 @@ When CODEX-HOME is nil, use the CODEX_HOME environment variable or
     ("Accept" . "text/event-stream")
     ("Content-Type" . "application/json")))
 
-(cl-defun e-openai-profile-headers (&key profile auth-file session-id)
+(cl-defun e-openai-profile-headers
+    (&key profile auth-file session-id session-affinity-id)
   "Return request headers for PROFILE.
 AUTH-FILE and SESSION-ID are used only for Codex-managed OpenAI auth
-profiles."
+profiles.  SESSION-AFFINITY-ID is selected by the effective request policy."
   (if (plist-get profile :requires-openai-auth)
       (e-openai-profile--codex-headers
        (e-openai-codex-read-auth auth-file)
-       session-id)
+       session-id session-affinity-id)
     (e-openai-profile--token-headers
      (e-openai-profile--env-token (plist-get profile :env-key)))))
 

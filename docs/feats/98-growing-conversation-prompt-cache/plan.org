@@ -21,9 +21,10 @@ The 2026-10-06 read-only audit of Board
 =brd_76eac4169684e09b23f6d5e43610cded= verifies growing reuse in its actual Opus
 main chat, while two Codex GPT-6 Sol participants retain a 4,608-token read
 ceiling.  Their request bodies were not recorded, so the exact cause remains
-unknown.  A public OpenAI model-name correction and independently admitted
-Codex session-affinity correction are being implemented; neither currently
-establishes closure of that historical Codex observation.
+unknown.  The public OpenAI model-name and independently admitted Codex session-affinity
+corrections are implemented and parent-accepted with focused proof. Complete
+clean-revision gates, independent implementation review and fresh P1/P2 remain
+pending; the historical Codex observation is not yet explained.
 
 * Goal and authority
 

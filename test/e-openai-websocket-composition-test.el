@@ -148,7 +148,8 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (progn
           (e-backend-stream-batch backend
                             :messages '((:role user :content "hello"))
-                            :options '(:model "gpt-test")
+                            :options '(:model "gpt-test"
+                                       :session-id "transport-session")
                             :on-item (lambda (item) (push item seen)))
           (should (equal (nreverse seen)
                          '((:type assistant-message :content "ok")
@@ -156,7 +157,312 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (should (equal (plist-get captured :url)
                          "https://chatgpt.com/backend-api/codex/responses"))
           (should (assoc "Authorization" (plist-get captured :headers)))
-          (should (assoc "chatgpt-account-id" (plist-get captured :headers))))
+          (should (assoc "chatgpt-account-id" (plist-get captured :headers)))
+          (let* ((headers (plist-get captured :headers))
+                 (body (e-json-parse-string (plist-get captured :body))))
+            (should (equal (cdr (assoc "session-id" headers))
+                           "transport-session"))
+            (should-not (assoc "session_id" headers))
+            (should (equal (plist-get body :prompt_cache_key)
+                           (cdr (assoc "session-id" headers))))
+            (should-not (plist-member body :prompt_cache_options))
+            (should-not (plist-member body :prompt_cache_retention))))
+      (delete-file auth-file))))
+
+(ert-deftest e-openai-test-codex-websocket-transport-joins-affinity-fields ()
+  "The actual Codex WebSocket request joins the body key and session header."
+  (let* ((auth-file (make-temp-file "e-codex-auth" nil ".json"
+                                    (e-json-serialize
+                                     (list :tokens
+                                           (list :access_token (e-openai-test--jwt)
+                                                 :refresh_token "refresh")))))
+         (e-openai-model-providers
+          `((codex-websocket-alias
+             :name "WebSocket Codex alias"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport websocket
+             :response-store :json-false
+             :requires-openai-auth t)))
+         opened-url opened-headers on-message sent done-status error)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'websocket-open)
+                     (lambda (url &rest args)
+                       (setq opened-url url
+                             opened-headers
+                             (plist-get args :custom-header-alist)
+                             on-message (plist-get args :on-message))
+                       'fake-codex-websocket))
+                    ((symbol-function 'websocket-send-text)
+                     (lambda (websocket text)
+                       (setq sent (e-json-parse-string text))
+                       (funcall on-message
+                                websocket
+                                (e-json-serialize
+                                 '(:type "response.completed"
+                                   :response (:id "codex-affinity-response"
+                                              :status "completed"))))))
+                    ((symbol-function 'websocket-close)
+                     (lambda (&rest _args) t)))
+            (let ((backend
+                   (e-openai-backend-create
+                    :provider 'codex-websocket-alias
+                    :auth-file auth-file)))
+              (e-backend-start backend
+                               :messages '((:role user :content "hello"))
+                               :options '(:model "gpt-test"
+                                          :session-id "websocket-session")
+                               :on-item #'ignore
+                               :on-done (lambda (status)
+                                          (setq done-status status))
+                               :on-error (lambda (condition)
+                                           (setq error condition)))
+              (should (e-openai-test--wait-until
+                       (lambda () done-status) 0.2))
+              (should-not error)
+              (should (equal opened-url
+                             "wss://chatgpt.com/backend-api/codex/responses"))
+              (should (equal (cdr (assoc "session-id" opened-headers))
+                             "websocket-session"))
+              (should-not (assoc "session_id" opened-headers))
+              (should (equal (plist-get sent :type) "response.create"))
+              (should (equal (plist-get sent :prompt_cache_key)
+                             (cdr (assoc "session-id" opened-headers))))
+              (should-not (plist-member sent :prompt_cache_options))
+              (should-not (plist-member sent :prompt_cache_retention)))))
+      (delete-file auth-file))))
+
+(ert-deftest e-openai-test-codex-websocket-keeps-concurrent-session-affinity-distinct ()
+  "Concurrent sessions sharing a prompt retain independent wire identities."
+  (let* ((auth-file (make-temp-file "e-codex-auth" nil ".json"
+                                    (e-json-serialize
+                                     (list :tokens
+                                           (list :access_token (e-openai-test--jwt)
+                                                 :refresh_token "refresh")))))
+         (e-openai-model-providers
+          `((codex-websocket-alias
+             :name "WebSocket Codex alias"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport websocket
+             :response-store :json-false
+             :requires-openai-auth t)))
+         (callbacks (make-hash-table :test 'eq))
+         (headers-by-socket (make-hash-table :test 'eq))
+         (bodies-by-socket (make-hash-table :test 'eq))
+         (open-count 0)
+         (done-count 0)
+         first-request second-request failure)
+    (unwind-protect
+        (cl-letf (((symbol-function 'websocket-open)
+                   (lambda (_url &rest args)
+                     (let ((socket (intern (format "fake-codex-%d"
+                                                   (cl-incf open-count)))))
+                       (puthash socket (plist-get args :on-message) callbacks)
+                       (puthash socket (plist-get args :custom-header-alist)
+                                headers-by-socket)
+                       socket)))
+                  ((symbol-function 'websocket-send-text)
+                   (lambda (socket text)
+                     (puthash socket (e-json-parse-string text) bodies-by-socket)
+                     t))
+                  ((symbol-function 'websocket-close)
+                   (lambda (&rest _args) t)))
+          (let ((backend
+                 (e-openai-backend-create
+                  :provider 'codex-websocket-alias :auth-file auth-file)))
+            (setq first-request
+                  (e-backend-start
+                   backend
+                   :messages '((:role system :content "shared static prefix")
+                               (:role user :content "same question"))
+                   :options '(:model "gpt-test" :session-id "concurrent-one")
+                   :on-item #'ignore
+                   :on-done (lambda (_status) (cl-incf done-count))
+                   :on-error (lambda (err) (setq failure err))))
+            (setq second-request
+                  (e-backend-start
+                   backend
+                   :messages '((:role system :content "shared static prefix")
+                               (:role user :content "same question"))
+                   :options '(:model "gpt-test" :session-id "concurrent-two")
+                   :on-item #'ignore
+                   :on-done (lambda (_status) (cl-incf done-count))
+                   :on-error (lambda (err) (setq failure err))))
+            (should (= open-count 2))
+            (let ((first-socket 'fake-codex-1)
+                  (second-socket 'fake-codex-2))
+              (dolist (socket (list first-socket second-socket))
+                (let* ((headers (gethash socket headers-by-socket))
+                       (body (gethash socket bodies-by-socket))
+                       (identity (cdr (assoc "session-id" headers))))
+                  (should identity)
+                  (should-not (assoc "session_id" headers))
+                  (should (equal (plist-get body :prompt_cache_key) identity))
+                  (should-not (plist-member body :prompt_cache_options))
+                  (should-not (plist-member body :prompt_cache_retention))))
+              (let ((first-body (gethash first-socket bodies-by-socket))
+                    (second-body (gethash second-socket bodies-by-socket)))
+                (should (equal (plist-get first-body :input)
+                               (plist-get second-body :input)))
+                (should-not (equal (plist-get first-body :prompt_cache_key)
+                                   (plist-get second-body :prompt_cache_key)))
+                (should (equal (plist-get first-body :prompt_cache_key)
+                               "concurrent-one"))
+                (should (equal (plist-get second-body :prompt_cache_key)
+                               "concurrent-two")))
+              (funcall (gethash first-socket callbacks)
+                       first-socket
+                       (e-json-serialize
+                        '(:type "response.completed"
+                          :response (:id "concurrent-response-one"
+                                     :status "completed"))))
+              (funcall (gethash second-socket callbacks)
+                       second-socket
+                       (e-json-serialize
+                        '(:type "response.completed"
+                          :response (:id "concurrent-response-two"
+                                     :status "completed"))))
+              (should (e-openai-test--wait-until
+                       (lambda () (or failure (= done-count 2))) 0.2))
+              (should-not failure))))
+      (when first-request (e-backend-cancel-request first-request))
+      (when second-request (e-backend-cancel-request second-request))
+      (delete-file auth-file))))
+
+(ert-deftest e-openai-test-codex-websocket-reconnect-replays-affinity-and-projection ()
+  "A reconnect reuses affinity while replaying native reasoning and tools."
+  (let* ((auth-file (make-temp-file "e-codex-auth" nil ".json"
+                                    (e-json-serialize
+                                     (list :tokens
+                                           (list :access_token (e-openai-test--jwt)
+                                                 :refresh_token "refresh")))))
+         (e-openai-model-providers
+          `((codex-websocket-alias
+             :name "WebSocket Codex alias"
+             :base-url ,(concat e-openai-codex-default-base-url "/codex")
+             :wire-api responses
+             :responses-transport websocket
+             :response-store :json-false
+             :observation-delivery inherited
+             :include-encrypted-reasoning t
+             :requires-openai-auth t)))
+         (callbacks (make-hash-table :test 'eq))
+         (close-callbacks (make-hash-table :test 'eq))
+         (headers-by-socket (make-hash-table :test 'eq))
+         (bodies-by-socket (make-hash-table :test 'eq))
+         (open-count 0)
+         (done-count 0)
+         (failure nil)
+         first-request second-request)
+    (unwind-protect
+        (cl-letf (((symbol-function 'websocket-open)
+                   (lambda (_url &rest args)
+                     (let ((socket (intern (format "fake-codex-reconnect-%d"
+                                                   (cl-incf open-count)))))
+                       (puthash socket (plist-get args :on-message) callbacks)
+                       (puthash socket (plist-get args :on-close) close-callbacks)
+                       (puthash socket (plist-get args :custom-header-alist)
+                                headers-by-socket)
+                       socket)))
+                  ((symbol-function 'websocket-send-text)
+                   (lambda (socket text)
+                     (puthash socket (e-json-parse-string text) bodies-by-socket)
+                     (funcall (gethash socket callbacks)
+                              socket
+                              (e-json-serialize
+                               `(:type "response.completed"
+                                 :response (:id ,(format "response-%d"
+                                                        open-count)
+                                            :status "completed"))))
+                     t))
+                  ((symbol-function 'websocket-close)
+                   (lambda (&rest _args) t)))
+          (let ((backend
+                 (e-openai-backend-create
+                  :provider 'codex-websocket-alias :auth-file auth-file)))
+            (setq first-request
+                  (e-backend-start
+                   backend
+                   :messages '((:role user :content "initial question"))
+                   :options '(:model "gpt-6-sol"
+                              :session-id "reconnect-ordinary-session")
+                   :on-item #'ignore
+                   :on-done (lambda (_status) (cl-incf done-count))
+                   :on-error (lambda (err) (setq failure err))))
+            (should (e-openai-test--wait-until
+                     (lambda () (= done-count 1)) 0.2))
+            (funcall (gethash 'fake-codex-reconnect-1 close-callbacks)
+                     'fake-codex-reconnect-1)
+            (setq second-request
+                  (e-backend-start
+                   backend
+                   :messages
+                   '((:role user :content "initial question")
+                     (:role tool-call
+                      :content (:id "lookup-1" :name "lookup"
+                                :arguments (:query "weather")
+                                :provider-replay-items
+                                [(:provider-id openai
+                                  :item (:type "reasoning"
+                                         :id "reasoning-replay-1"
+                                         :encrypted_content "opaque-reasoning"
+                                         :summary []))]))
+                     (:role tool
+                      :content (:tool-call-id "lookup-1"
+                               :content "sunny"))
+                     (:role user :content "what about tomorrow?"))
+                   :options '(:model "gpt-6-sol"
+                              :session-id "reconnect-ordinary-session")
+                   :on-item #'ignore
+                   :on-done (lambda (_status) (cl-incf done-count))
+                   :on-error (lambda (err) (setq failure err))))
+            (should (e-openai-test--wait-until
+                     (lambda () (or failure (= done-count 2))) 0.2))
+            (should-not failure)
+            (should (= open-count 2))
+            (let* ((first-headers
+                    (gethash 'fake-codex-reconnect-1 headers-by-socket))
+                   (second-headers
+                    (gethash 'fake-codex-reconnect-2 headers-by-socket))
+                   (first-body
+                    (gethash 'fake-codex-reconnect-1 bodies-by-socket))
+                   (second-body
+                    (gethash 'fake-codex-reconnect-2 bodies-by-socket))
+                   (input (append (plist-get second-body :input) nil))
+                   (types (mapcar (lambda (item) (plist-get item :type)) input))
+                   (reasoning (seq-find
+                               (lambda (item)
+                                 (equal (plist-get item :type) "reasoning"))
+                               input))
+                   (call-index (cl-position "function_call" types :test #'equal))
+                   (result-index
+                    (cl-position "function_call_output" types :test #'equal)))
+              (should (equal (cdr (assoc "session-id" first-headers))
+                             "reconnect-ordinary-session"))
+              (should (equal (cdr (assoc "session-id" second-headers))
+                             "reconnect-ordinary-session"))
+              (should-not (assoc "session_id" second-headers))
+              (should (equal (plist-get first-body :prompt_cache_key)
+                             (cdr (assoc "session-id" first-headers))))
+              (should (equal (plist-get second-body :prompt_cache_key)
+                             (cdr (assoc "session-id" second-headers))))
+              (should-not (plist-member second-body :previous_response_id))
+              (should (equal types
+                             '("message" "reasoning" "function_call"
+                               "function_call_output" "message")))
+              (should (equal (plist-get reasoning :encrypted_content)
+                             "opaque-reasoning"))
+              (should call-index)
+              (should result-index)
+              (should (< call-index result-index))
+              (should (equal (plist-get (nth call-index input) :call_id)
+                             "lookup-1"))
+              (should (equal (plist-get (nth result-index input) :call_id)
+                             "lookup-1")))))
+      (when first-request (e-backend-cancel-request first-request))
+      (when second-request (e-backend-cancel-request second-request))
       (delete-file auth-file))))
 
 (ert-deftest e-openai-test-websocket-backend-streams-response-events ()

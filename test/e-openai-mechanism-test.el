@@ -27,6 +27,98 @@
              (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
 
+(ert-deftest e-openai-test-gpt-model-generation-boundary-recognizes-release-flavors ()
+  "Model generation parsing keeps the 5.6 boundary across release suffixes."
+  (dolist (case '(("gpt-5" . nil)
+                  ("gpt-5.5" . nil)
+                  ("gpt-5.5-sol" . nil)
+                  ("gpt-5.6" . t)
+                  ("gpt-5.6-sol" . t)
+                  ("gpt-5.6.1" . t)
+                  ("gpt-6" . t)
+                  ("gpt-6-sol" . t)
+                  ("gpt-6-luna" . t)
+                  ("gpt-6.1-sol" . t)
+                  ("gpt-6-sol-beta-1" . t)
+                  ("gpt-5.6x" . nil)
+                  ("gpt-6sol" . nil)
+                  ("gpt-4o" . nil)
+                  ("o3" . nil)))
+    (should (eq (e-openai-profile-model-gpt56-or-later-p (car case))
+                (cdr case)))))
+
+
+(ert-deftest e-openai-test-public-gpt6-release-flavors-select-cache-policy ()
+  "First-party GPT-6 aliases get the documented boundary and endpoint controls remain."
+  (let ((process-environment
+         (cons "OPENAI_API_KEY=test-api-token" process-environment))
+        (messages '((:role system :content "Stable instructions")
+                    (:role user :content "Question")))
+        (segments '((:kind static-prefix
+                     :messages ((:role system :content "Stable instructions")))
+                    (:kind history
+                     :messages ((:role user :content "Question"))))))
+    (cl-labels
+        ((request-context (model &optional base-url)
+           (e-openai--request-context
+            :provider 'openai
+            :base-url base-url
+            :messages messages
+            :options (list :model model
+                           :session-id "cache-policy-test"
+                           :segments segments)))
+         (first-content (body)
+           (aref (plist-get (aref (plist-get body :input) 0) :content) 0)))
+      (dolist (model '("gpt-6-sol" "gpt-6-luna"))
+        (let* ((context (request-context model))
+               (body (plist-get context :body-data))
+               (diagnostics
+                (plist-get (plist-get context :metadata) :diagnostics))
+               (stable-content (first-content body)))
+          (should (equal (plist-get body :model) model))
+          (should (equal (plist-get body :prompt_cache_options)
+                         '(:mode "implicit")))
+          (should-not (plist-member body :prompt_cache_key))
+          (should (equal (plist-get diagnostics :prompt-cache-mode)
+                         "implicit-plus-stable-guard"))
+          (should (eq (plist-get diagnostics :prompt-cache-capability-evidence)
+                      'first-party-responses-documented))
+          (should (eq (plist-get diagnostics :prompt-cache-boundary-policy)
+                      'implicit-latest-eligible-plus-stable-guard))
+          (should (equal (plist-get diagnostics :prompt-cache-stable-guard-count) 1))
+          (should (equal (plist-get diagnostics :prompt-cache-retention)
+                         "30m-default"))
+          (should (equal (plist-get stable-content :prompt_cache_breakpoint)
+                         '(:mode "explicit")))))
+      (let* ((context (request-context "gpt-5.5"))
+             (body (plist-get context :body-data))
+             (diagnostics
+              (plist-get (plist-get context :metadata) :diagnostics))
+             (stable-content (first-content body)))
+        (should-not (plist-member body :prompt_cache_options))
+        (should (string-prefix-p "e:" (plist-get body :prompt_cache_key)))
+        (should (eq (plist-get diagnostics :prompt-cache-capability-evidence)
+                    'first-party-openai-default-documented))
+        (should (eq (plist-get diagnostics :prompt-cache-boundary-policy)
+                    'implicit-latest-eligible))
+        (should (equal (plist-get diagnostics :prompt-cache-stable-guard-count) 0))
+        (should-not (plist-member stable-content :prompt_cache_breakpoint)))
+      (let* ((context
+              (request-context "gpt-6-sol" "https://gateway.example.test/v1"))
+             (body (plist-get context :body-data))
+             (diagnostics
+              (plist-get (plist-get context :metadata) :diagnostics))
+             (stable-content (first-content body)))
+        (should-not (plist-member body :prompt_cache_options))
+        (should-not (plist-member body :prompt_cache_key))
+        (should (eq (plist-get diagnostics :prompt-cache-capability-evidence)
+                    'endpoint-default-unverified))
+        (should (eq (plist-get diagnostics :prompt-cache-boundary-policy)
+                    'implicit-latest-eligible))
+        (should (equal (plist-get diagnostics :prompt-cache-stable-guard-count) 0))
+        (should-not (plist-member stable-content :prompt_cache_breakpoint))))))
+
+
 (ert-deftest e-openai-test-websocket-timeout-default-migrates-on-reload ()
   "Live old WebSocket timeout defaults migrate when uncustomized."
   (let* ((symbol 'e-openai-websocket-idle-timeout-seconds)
@@ -374,6 +466,234 @@
       :messages '((:role user :content "hello"))
       :options '(:model "gpt-test"))
      :type 'e-openai-provider-invalid)))
+
+
+(ert-deftest e-openai-test-gpt6-codex-keeps-implicit-only-cache-policy ()
+  "GPT-6 aliases do not gain public-API cache fields on the Codex profile."
+  (let* ((auth-file (make-temp-file "e-openai-auth" nil ".json"))
+         (auth (e-json-serialize
+                (list :tokens
+                      (list :access_token (e-openai-test--jwt)
+                            :refresh_token "refresh"))))
+         (messages '((:role system :content "stable instructions")
+                     (:role user :content "hello")))
+         (segments '((:kind stable-context
+                      :messages ((:role system :content "stable instructions")))
+                     (:kind history
+                      :messages ((:role user :content "hello"))))))
+    (unwind-protect
+        (progn
+          (with-temp-file auth-file
+            (insert auth))
+          (dolist (model '("gpt-6-sol" "gpt-6-luna"))
+            (let* ((context
+                    (e-openai--request-context
+                     :provider 'codex
+                     :auth-file auth-file
+                     :messages messages
+                     :options (list :model model
+                                    :prompt-cache-key "caller-key"
+                                    :segments segments)))
+                   (body (plist-get context :body-data))
+                   (diagnostics
+                    (plist-get (plist-get context :metadata) :diagnostics))
+                   (stable-content
+                    (aref (plist-get (aref (plist-get body :input) 0) :content) 0)))
+              (should (eq (plist-get body :store) :json-false))
+              (should-not (plist-member body :prompt_cache_options))
+              (should-not (plist-member body :prompt_cache_key))
+              (should-not (plist-member stable-content :prompt_cache_breakpoint))
+              (should (equal (plist-get diagnostics :prompt-cache-mode) "implicit"))
+              (should (eq (plist-get diagnostics :prompt-cache-capability-evidence)
+                          'first-party-codex-session-affinity))
+              (should (eq (plist-get diagnostics :prompt-cache-boundary-policy)
+                          'implicit-latest-eligible))
+              (should-not (plist-get diagnostics
+                                     :codex-session-affinity-selected))
+              (should-not (assoc "session-id" (plist-get context :headers)))
+              (should (equal (plist-get diagnostics :prompt-cache-stable-guard-count)
+                             0)))))
+      (when (file-exists-p auth-file)
+        (delete-file auth-file)))))
+
+
+(ert-deftest e-openai-test-codex-session-affinity-uses-effective-request-identity ()
+  "First-party Codex affinity joins the actual body and header identity."
+  (let* ((endpoint (concat e-openai-codex-default-base-url "/codex"))
+         (auth-file (make-temp-file "e-openai-auth" nil ".json"))
+         (auth (e-json-serialize
+                (list :tokens
+                      (list :access_token (e-openai-test--jwt)
+                            :refresh_token "refresh"))))
+         (process-environment
+          (cons "TEST_CODEX_TOKEN=unit-test-token" process-environment))
+         (e-openai-model-providers
+          `((codex-alias-http
+             :name "A configured alias"
+             :base-url ,endpoint
+             :wire-api responses
+             :responses-transport http
+             :requires-openai-auth t)
+            (codex-alias-websocket
+             :name "Another display name"
+             :base-url ,endpoint
+             :wire-api responses
+             :responses-transport websocket
+             :requires-openai-auth t)
+            (codex-alias-token
+             :name "Token-auth alias"
+             :base-url ,endpoint
+             :env-key "TEST_CODEX_TOKEN"
+             :wire-api responses
+             :requires-openai-auth nil)
+            (codex-alias-chat
+             :name "Chat Completions alias"
+             :base-url ,endpoint
+             :wire-api chat-completion
+             :requires-openai-auth t)))
+         (messages '((:role system :content "shared stable instructions")
+                     (:role user :content "question")))
+         (options '(:model "gpt-5.5"
+                    :session-id "ordinary-session-one"
+                    :prompt-cache-key "forged-key"
+                    :prompt-cache-retention "24h"
+                    :prompt-cache-default nil
+                    :prompt-cache-mode off
+                    :prompt-cache-breakpoint-mode nil))
+         (request
+          (lambda (provider request-options &optional base-url request-messages
+                                         request-tools)
+            (let ((effective-options (copy-sequence request-options)))
+              (when request-tools
+                (setq effective-options
+                      (plist-put effective-options :tools request-tools)))
+              (e-openai--request-context
+               :provider provider :auth-file auth-file :base-url base-url
+               :messages (or request-messages messages)
+               :options effective-options)))))
+    (unwind-protect
+        (progn
+          (with-temp-file auth-file (insert auth))
+          (let* ((http (funcall request 'codex-alias-http options))
+                 (http-body (plist-get http :body-data))
+                 (http-diagnostics
+                  (plist-get (plist-get http :metadata) :diagnostics))
+                 (http-headers (plist-get http :headers))
+                 (later-turn
+                  (funcall
+                   request 'codex-alias-http
+                   (plist-put (copy-sequence options) :model "gpt-6-sol")
+                   nil
+                   '((:role system :content "shared stable instructions")
+                     (:role user :content "question")
+                     (:role tool-call
+                      :content (:id "call-later" :name "lookup"
+                                :arguments (:query "question")))
+                     (:role tool
+                      :content (:tool-call-id "call-later"
+                               :content "substantial tool result"))
+                     (:role user :content "continue after the tool result"))
+                   '((:type "function" :name "lookup"
+                      :parameters (:type "object"
+                                   :properties (:query (:type "string")))))))
+                 (websocket
+                  (funcall request 'codex-alias-websocket options))
+                 (other-session
+                  (funcall
+                   request 'codex-alias-http
+                   (plist-put (copy-sequence options)
+                              :session-id "ordinary-session-two"))))
+            (should (eq (plist-get http :provider) 'codex-alias-http))
+            (should (eq (plist-get http-diagnostics
+                                   :prompt-cache-capability-evidence)
+                        'first-party-codex-session-affinity))
+            (should (eq (plist-get http-diagnostics
+                                   :codex-session-affinity-selected)
+                        t))
+            (should (eq (plist-get http-diagnostics
+                                   :codex-session-affinity-body-key-present)
+                        t))
+            (should (eq (plist-get http-diagnostics
+                                   :codex-session-affinity-header-present)
+                        t))
+            (should (eq (plist-get http-diagnostics
+                                   :codex-session-affinity-identities-match)
+                        t))
+            (should (equal (plist-get http-body :prompt_cache_key)
+                           "ordinary-session-one"))
+            (should (equal (cdr (assoc "session-id" http-headers))
+                           (plist-get http-body :prompt_cache_key)))
+            (should-not (assoc "session_id" http-headers))
+            (should-not (plist-member http-body :prompt_cache_options))
+            (should-not (plist-member http-body :prompt_cache_retention))
+            (should (equal (plist-get (plist-get later-turn :body-data)
+                                     :prompt_cache_key)
+                           "ordinary-session-one"))
+            (should (equal (cdr (assoc "session-id" (plist-get later-turn :headers)))
+                           "ordinary-session-one"))
+            (let* ((body (plist-get later-turn :body-data))
+                   (input (append (plist-get body :input) nil))
+                   (call-index
+                    (cl-position-if
+                     (lambda (item)
+                       (and (equal (plist-get item :type) "function_call")
+                            (equal (plist-get item :call_id) "call-later")))
+                     input))
+                   (result-index
+                    (cl-position-if
+                     (lambda (item)
+                       (and (equal (plist-get item :type)
+                                   "function_call_output")
+                            (equal (plist-get item :call_id) "call-later")))
+                     input)))
+              (should (vectorp (plist-get body :tools)))
+              (should (equal (plist-get (aref (plist-get body :tools) 0) :name)
+                             "lookup"))
+              (should call-index)
+              (should result-index)
+              (should (< call-index result-index)))
+            (should (equal (plist-get (plist-get websocket :body-data)
+                                     :prompt_cache_key)
+                           "ordinary-session-one"))
+            (should (equal (cdr (assoc "session-id" (plist-get websocket :headers)))
+                           "ordinary-session-one"))
+            (should (not (equal (plist-get (plist-get other-session :body-data)
+                                          :prompt_cache_key)
+                                (plist-get http-body :prompt_cache_key))))
+            (should (equal (plist-get http-body :input)
+                           (plist-get (plist-get other-session :body-data)
+                                      :input)))
+            (should (equal (cdr (assoc "session-id"
+                                       (plist-get other-session :headers)))
+                           "ordinary-session-two"))
+            (dolist (unsupported
+                     (list
+                      (funcall request 'codex-alias-http options
+                               "https://gateway.example.test/codex")
+                      (funcall request 'codex-alias-token options)
+                      (funcall request 'codex-alias-chat options)))
+              (should-not (plist-member (plist-get unsupported :body-data)
+                                        :prompt_cache_key))
+              (should-not (assoc "session-id" (plist-get unsupported :headers)))
+              (should-not (assoc "session_id" (plist-get unsupported :headers))))
+            (dolist (identity '(nil "" " \t" "bad\r\nidentity" 17))
+              (let* ((context
+                      (funcall request 'codex-alias-http
+                               (plist-put (copy-sequence options)
+                                          :session-id identity)))
+                     (body (plist-get context :body-data))
+                     (diagnostics
+                      (plist-get (plist-get context :metadata) :diagnostics)))
+                (should-not (plist-member body :prompt_cache_key))
+                (should-not (assoc "session-id" (plist-get context :headers)))
+                (should-not (plist-get diagnostics
+                                       :codex-session-affinity-selected))
+                (should-not (plist-get diagnostics
+                                       :codex-session-affinity-body-key-present))
+                (should-not (plist-get diagnostics
+                                       :codex-session-affinity-header-present))))))
+      (when (file-exists-p auth-file)
+        (delete-file auth-file)))))
 
 
 (ert-deftest e-openai-test-codex-profile-uses-required-unstored-websocket-mode ()
