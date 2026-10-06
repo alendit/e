@@ -2823,3 +2823,85 @@ external capability confirmation or full-feature Done.
 log-read: /private/tmp/e-board-cache-audit-76eac/openai-sql-canonical.log:3785--3789;
 /private/tmp/e-board-cache-audit-76eac/openai-sql-current-config.log:1--4;
 /private/tmp/e-board-cache-audit-76eac/openai-sql-dependent-e2e.log:98--104.
+
+* Fresh Codex P1/P2 external qualification after Review 12
+
+The normal context-free Codex E2E configuration passes both scenarios at clean
+=fd656ab51dd1ae2882c60f950a6561e5af29c704=, 2026-10-06T16:40Z.
+Its code is identical to independently reviewed and gated =a1659e9b=; the
+intervening commit contains only Review 12/status prose.  No body, header,
+layout or provider override was used.  Ordinary =gpt-6-sol= managed-auth
+Responses WebSocket requests use store=false, native encrypted reasoning and
+synthetic capability context only.  The context-free factory does not inherit
+user project context.  Test-owned SQLite and sessions are disposed; user Emacs,
+Board and live store remain unchanged.
+
+Command: =E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el eldev -s test
+-f e2e/e-cache-efficiency-e2e-test.el
+e-cache-efficiency-e2e-test-codex-repeated-session-affinity-p1-no-tool
+e-cache-efficiency-e2e-test-codex-growing-history-affinity=.
+Exit 0; two expected passes, zero unexpected, 59.10 seconds.
+Evidence: =/private/tmp/e-board-cache-audit-76eac/codex-production-p1-p2-final.log:4--9=
+and parsed content-bounded records =codex-production-p1-p2-final.json=.
+
+** P1: ordinary repeated above-minimum requests
+
+Three no-tool turns use unchanged 40,499-character stable guidance and one
+ordinary session identity.  Body key/header/session hashes agree on all three;
+legacy underscore header and optional explicit controls are absent.  Three
+captured requests, unique starts and usage events join completely.  Capture
+chronology is 1/2/3; authentic per-turn provider ordinals remain 1/1/1.
+All three distinct semantic markers pass using their own durable output rows.
+
+| Request | Total input | Cache read | Uncached input |
+|---------+-------------+------------+----------------|
+| 1 | 10,537 | 0 | 10,537 |
+| 2 | 10,574 | 10,368 | 206 |
+| 3 | 10,612 | 10,368 | 244 |
+
+The fixture reports =affinity-field-result=pass= and =cache-result=not-measured=
+because it does not classify growing tool history.  Independently adjudicated
+raw counters above demonstrate repeated above-minimum reuse for this no-tool
+shape.  Its tiny added suffix does not establish reuse of each new turn or
+family-wide efficiency.
+
+** P2: native inherited observation, reasoning and growing tool history
+
+Five sequential requests consume all four real synthetic 1,200-row tool
+outputs.  Semantic result and complete usage attribution pass; the answer
+contains the required observation and sum 2,934 without the cryptarithm
+solution.  Encrypted reasoning is produced early and replayed before the
+second tool result.  All request-local affinity joins match; fixed inherited
+observation occurs once and every prior durable history prefix stays intact.
+Stable guidance remains 31,892 characters.
+
+| Request | Total input | Cache read | Uncached input | Reasoning output |
+|---------+-------------+------------+----------------+------------------|
+| 1 | 8,233 | 0 | 8,233 | 1,439 |
+| 2 | 20,712 | 8,064 | 12,648 | 62 |
+| 3 | 31,814 | 20,608 | 11,206 | 25 |
+| 4 | 42,879 | 31,616 | 11,263 | 0 |
+| 5 | 53,917 | 42,752 | 11,165 | 26 |
+
+OpenAI total input includes cache reads; uncached input is total minus read.
+The first whole request supplies the conservative stable-only ceiling of
+8,233 tokens.  Reads advance above that ceiling three times, satisfying the
+reviewed requirement of at least two advances attributable to growing history.
+The qualified shared classifier reports =growing-history-reuse=; this is not
+a static-prefix-only positive.  Native encrypted replay counts are 0/3/4/5/5.
+
+** Result and limits
+
+P1/P2 is =capability-confirmed= for this configured Codex endpoint/model/protocol/
+material shape under the plan's 24-hour evidence window and unchanged material
+owners.  Both controls and raw ordered counters are available.  Public OpenAI
+API credentials remain absent, so no public-API external benefit is claimed.
+All P3 capabilities remain none/unconfirmed and curation unavailable.
+
+Earlier no-affinity diagnostics also achieved growing reuse; these fixes and
+the successful new shape do not establish why the historical Board Sol
+participants stayed at 4,608 tokens.  Historical bodies were not captured.
+No universal hit-rate, latency, cost improvement or full-feature Done follows.
+The external record/status delta requires one bounded independent evidence
+review.  Using the changed provider adapter in the running user Emacs requires
+a restart; it was left unchanged.

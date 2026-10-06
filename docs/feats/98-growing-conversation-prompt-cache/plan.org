@@ -4,49 +4,30 @@
 
 * Status
 
-In-review.  Adapter-owned cache policy, caller-option removal and capability-gated
-curation admission are implemented.  Review 7 clears the deterministic rolling
-candidate at =197c6c51=: 2,857/2,857 canonical tests, with the applicable private
-current-configuration gate 9/9.  Fresh committed-code P2 at =8cfb82d4= closes the
-static ceiling for the configured Opus 5.5 tool/thinking shape: reads advance
-0 / 27,290 / 31,281 / 35,272 as history grows, with semantic success.
+In-review.  Adapter-owned cache policy, caller-option removal and capability-
+gated curation admission are implemented.  Independent Review 12 establishes
+deterministic fixed point at =a1659e9b=: 2,867/2,867 canonical tests,
+9/9 isolated current-configuration tests and 66 credential-free dependent
+E2E passes, with 26 expected provider/configuration skips.
 
-The separate minimal no-tools/no-thinking repeat accepts fields and creates
-entries but reports zero reads twice.  Its reuse benefit remains unconfirmed;
-no family-wide or other-adapter benefit is claimed.  All shipped curation
-capabilities remain none/unconfirmed and unavailable.  Broader qualification
-keeps the feature In-review.  The user's running Emacs and Board were unchanged.
+Fresh ordinary Codex P1/P2 at clean =fd656ab5= (unchanged reviewed code) pass
+2/2.  The configured =gpt-6-sol= managed-auth Responses WebSocket route
+preserves joined ordinary-session affinity.  The repeated no-tool P1 has
+three complete semantic/usage joins and reads 0 / 10,368 / 10,368 tokens.
+The separate inherited-observation/encrypted-reasoning P2 proves growing
+history reuse: reads 0 / 8,064 / 20,608 / 31,616 / 42,752 across five requests.
+Both have unchanged native stable guidance and durable history prefixes.
+Qualification is bounded to this endpoint/model/protocol/material shape and
+revision; it does not prove the historical Board ceiling's cause.
 
-The 2026-10-06 read-only audit of Board
-=brd_76eac4169684e09b23f6d5e43610cded= verifies growing reuse in its actual Opus
-main chat, while two Codex GPT-6 Sol participants retain a 4,608-token read
-ceiling.  Their request bodies were not recorded, so the exact cause remains
-unknown.  The public OpenAI model-name and independently admitted Codex session-affinity
-corrections are implemented and parent-accepted with focused proof.  Review 8
-identified equivalent-endpoint/alias selection and incomplete P2 qualification
-defects.  Their owner-local corrections and a repeated minimal P1 fixture are
-now parent-accepted.  Clean =686e4641= passes 2,866/2,866 canonical, 9/9
-configured and 62 credential-free dependent E2E tests.  Review 9 closes both
-original findings but identifies a native P1 measurement defect and the inverse
-context-capability endpoint comparison.  Their owner-local corrections are
-parent-accepted with a native projection witness and symmetric capability
-compositions.  Clean =0d69e03d= passes 2,867/2,867 canonical, 9/9 configured
-and 63 credential-free dependent E2E tests.  Review 10 closes the original
-findings but identifies incomplete P1 recording for a supported flattened HTTP
-alias layout.  The both-layout native recorder correction is now parent-
-accepted with actual segmented/flattened witnesses and absent/mismatch
-controls.  Clean =36e11840= passes 2,867/2,867 canonical, 9/9 configured and
-64 credential-free dependent E2E tests.  Independent Review 11 establishes
-deterministic fixed point with zero findings.  Fresh committed-code Codex
-P1/P2 revealed two E2E defects: the P2 reporter was undefined and a repeated
-SQL turn could return the previous durable answer before its own append.
-Both evidence-owner corrections are parent-accepted with a synthetic tool
-lifecycle and delayed-append regression.  Clean =a1659e9b= passes 2,867/2,867
-canonical, 9/9 configured and 66 credential-free dependent E2E tests.
-Independent Review 12 restores deterministic fixed point with zero findings;
-fresh provider attempts follow.  Public API benefit remains unconfirmed without
-credentials.  The historical Codex observation is not
-yet explained.
+Prior configured Opus 5.5 tool/thinking P2 and the actual read-only Board main
+chat audit demonstrate growing reuse.  The separate Anthropic minimal no-tool
+repeat remains unconfirmed.  Public OpenAI API external benefit remains
+unconfirmed because its credentials are absent; its capability-derived policy,
+major-only model names and equivalent endpoint/alias compositions pass
+repository tests.  All production P3 capabilities remain none/unconfirmed and
+curation unavailable.  These broader qualification limits keep Feature 98
+In-review.  The user's running Emacs and Board were unchanged.
 
 * Goal and authority
 
@@ -80,13 +61,13 @@ subsequent unchanged history becomes reusable.  In a session without efficient
 cache-plus-curation support, curation is absent and ordinary chat still works.
 Cache hits must not preserve content excluded by an accepted projection.
 
-Behavioral status: the historical Anthropic failure remains the comparison
-baseline.  Independently reviewed committed code now demonstrates growing reuse
-in the configured public tool probe.  The actual live Board/main chat was not
-rerun.  Minimal-shape repeated-read benefit and other API benefit remain
-unconfirmed.  Remediation mechanism status: rolling selection, truthful
-diagnostics, caller-option removal and efficient-curation admission are complete;
-production curation remains unavailable pending P3.
+Behavioral status: the historical fixed ceilings remain comparison evidence.
+Independently reviewed committed code demonstrates growing reuse in the
+configured Opus and Codex tool probes; the read-only Board audit also verifies
+actual Opus main-chat reuse.  The Board was not rerun and its historical Codex
+cause remains unknown.  Anthropic minimal-shape and public OpenAI API external
+benefit remain unconfirmed.  Remediation mechanisms are complete; production
+curation remains unavailable pending P3.
 
 * Evidence and cause
 
