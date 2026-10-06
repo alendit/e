@@ -1503,3 +1503,282 @@ independent implementation review follow the coherent Tock commit.
 No new owner, architectural deferral or glossary term is introduced. Provider
 adapter use requires an operator-managed Emacs restart; the user's running Emacs,
 Board, live store and services were not reloaded, restarted or changed.
+
+* Review 8: Independent OpenAI generation and Codex affinity Tick
+
+** Decision and identity
+
+Two confirmed Medium/P2 findings remain: R8-F1 in effective first-party
+Responses capability selection, and R8-F2 in public P2 evidence consumption.
+The selected implementation is not at =deterministic-fixed-point=.  No P0/P1
+or separate architectural defect was established.  Required deterministic
+review coverage is complete; the contradicted cells are candidates requiring
+remediation, rather than unperformed review work.
+
+Reviewed exact clean revision
+=036226b6e0b3ed58c6667dde4b5c07e3132825d2=, with implementation comparison
+=e07f62736e68da1f9ce5b02f0329f88aebc10bbd..036226b6=.  Authority is F98-G1,
+F98-C1--C6 and DP1 in the current =plan.org=.  The Codex supporting-design
+admission at =a4f4913d= remains current: its subsequent plan diff changes only
+status prose, not the admitted policy, contracts or acceptance relation.
+
+| Reviewed object | Git object identity |
+|-----------------+---------------------|
+| Current plan.org | bd086b247030bd49b6971c3d159a6de3464bd32e |
+| Admitted a4f4913d plan.org | 64a582e596b02cfcd3abbcb0c34cbb5b5993b75e |
+| OpenAI profile owner | 7f9d681fd50003b1ded8ce963e163230e43b5339 |
+| OpenAI request owner | f2a343d73c56b36d862394055ada9c76f9dd13bc |
+| Current E2E tree | eeb87f22cc16df7a4a017df3702dec094a8a2d88 |
+
+Rebaselined the changed OpenAI/Codex selection, request/body/header/diagnostic
+composition and C3/C4/C5 dependencies.  Carried the unaffected Review 7 and
+subsequent external-review coverage after verifying no production Anthropic,
+core, lifetime or layer changes in this comparison.  This is an independent,
+read-only implementation review.  It does not infer provider benefit from
+field presence, or the cause of the historical Board ceiling.
+
+** Findings
+
+*** TODO Medium/P2 R8-F1: Equivalent first-party Responses endpoints and public aliases silently lose supported cache policy
+
+F98-C1/C2 require selection from effective API capability.  =plan.org:168--170=
+assigns that capability to endpoint/model/auth, and =210= requires the effective
+endpoint/model boundary.  The admitted Codex design at =268--294= also requires
+the same policy for aliases reaching the same known first-party API.
+
+The new Codex affinity predicate at
+=lisp/adapters/openai/e-openai-profile.el:658--664= compares only the base
+=https://chatgpt.com/backend-api/codex=.  Both public Codex constructors at
+=lisp/adapters/openai/e-openai.el:696--722= first call =e-openai-codex-url= when
+a base URL is supplied, producing the complete =.../codex/responses= URL.
+That full endpoint is accepted by ordinary dispatch at
+=lisp/adapters/openai/e-openai-responses.el:706--736=, but fails affinity
+selection.  Explicitly configuring the same supported endpoint therefore
+removes both the body key and header.
+
+A credential-free exact-source probe first compares both dispatch URLs and
+calls the actual selector.  A second probe drives the public
+=e-openai-codex-backend-create= and =e-backend-stream-batch= with synthetic
+managed-auth accessors and an injected requester; it performs no provider call:
+
+#+begin_example
+effective Responses endpoints equal: t
+base /codex selection: ordinary-session
+constructor-expanded /codex/responses selection: nil
+actual public-constructor URL: wss://chatgpt.com/backend-api/codex/responses
+actual serialized prompt_cache_key present: nil
+actual session-id header present: nil
+#+end_example
+
+The affected public OpenAI policy has the same endpoint-spelling defect.
+At =e-openai-profile.el:464--510=, capability, evidence and older-model routing
+use strict base equality.  With =provider=openai= and =model=gpt-6-sol=, these
+two accepted inputs dispatch to the identical endpoint:
+
+#+begin_example
+https://api.openai.com/v1
+  actual URL: wss://api.openai.com/v1/responses
+  mode: implicit-plus-stable-guard; guards: 1
+  evidence: first-party-responses-documented
+https://api.openai.com/v1/responses
+  actual URL: wss://api.openai.com/v1/responses
+  mode: implicit; guards: 0
+  evidence: endpoint-default-unverified
+#+end_example
+
+Those public capability/evidence/routing functions additionally check the
+provider label =openai=.  A configured token-auth Responses alias at the exact
+known first-party base and same model dispatches to the same URL, yet receives
+=implicit=, zero guards and =endpoint-default-unverified=.  The built-in label
+receives the documented stronger policy.  This is an existing capability-driven
+contract violation in a dependency reopened by the generation correction.
+The existing custom-provider negative fixtures use third-party endpoints; they
+do not justify downgrading this known first-party alias.
+
+Smallest owning correction: recognize the effective known Responses endpoint
+consistently in the existing profile owner, and derive public first-party policy
+from endpoint, wire API, auth and model rather than catalogue spelling.  Apply
+that decision consistently to capability, routing and evidence; retain the
+single Codex identity selection feeding both wire outputs.  Preserve managed
+auth for Codex, token-auth applicability for the public API, and unsupported
+API/third-party gates.  Do not introduce broad host/path/query equivalences or
+weaken unrelated context-capability admission.  Add composed witnesses for the
+public Codex constructors, supported base/full-endpoint spellings and public
+first-party aliases, alongside the existing unsupported endpoint/API/auth and
+missing-identity negatives.  Recheck material layout/anchor fencing when these
+previously downgraded requests select their supported policy.  No caller cache
+option, registry or durable cache state is needed.
+
+The parent independently verified and accepted the constructor, endpoint and
+public-alias counterexamples.  They establish omitted supported policy; they
+do not establish a particular cache hit-rate loss or explain the Board's
+4,608-token ceiling.
+
+*** TODO Medium/P2 R8-F2: Public P2 consumers qualify incomplete request/usage capture
+
+F98-C5 and plan P2 at =plan.org:372--390= require attributable growing reuse
+and recording every subturn.  The new ordinal join correctly preserves an
+unmatched usage event at =e2e/e-cache-efficiency-e2e-test.el:270--289=.
+Its complete-join predicate at =291--299= correctly rejects such evidence.
+However, both public P2 consumers at =970--971= and =1100--1101= directly call
+the numeric growing-cache classifier without that predicate.  The classifier
+at =e2e/e-live-e2e-test.el:1338--1400= does not examine unjoined provenance.
+
+The exact-source join-to-classifier probe uses fixed provider, endpoint, model
+and static fingerprint, captured request ordinals 1--4, and unique usage IDs:
+
+#+begin_example
+captured totals: 4096 / 10000 / 14000 / 18000
+matched reads:      0 /  4096 /  8192 / 12288
+additional usage: ordinal 5, total 22000, read 16000
+preserved unjoined usage events: 1
+usage-join-complete-p: nil
+classify-growing-cache-evidence: growing-history-reuse
+#+end_example
+
+The two numeric advances clear the correct initial ceiling, but the public
+qualification still succeeds while a provider request has no captured body
+identity.  Retaining that event in a provenance field does not make the
+consumer's positive decision complete.  The parent independently accepted
+this public acceptance gap.
+
+Smallest owning correction: use the existing complete-attribution predicate
+in both public P2 consumers and their reported qualification.  Incomplete
+capture must leave cache qualification unavailable/unconfirmed while preserving
+raw rows, matched counters and unattributed provenance; semantic success remains
+separate.  Add the unmatched-extra-usage public composition negative and retain
+the genuine complete positive, missing-middle, duplicate ordinal/provider ID,
+mixed legacy/ordinal and all-unknown cases.  No production telemetry, retry or
+provider policy change is required.
+
+** Prior findings and unaffected closure
+
+| Prior finding | Disposition | Current boundary proof |
+|---------------+-------------+------------------------|
+| Review 1 C6 publication versus effects | Closed, carried | Core/lifetime publication, admission, preflight and commit owners are unchanged; request-context still binds OpenAI curation capability to nil. |
+| Review 1 caller tools republish curation | Closed, carried | Reserved-tool filtering remains unchanged in Responses and Chat Completions rendering. |
+| Review 1 static reads qualify P3 | Closed, carried | Subsequent chronological control and material-curation predicate owners are unchanged. |
+| R2-F1 unqualified optional retention | Closed, carried | Public retention override remains absent; new Codex policy adds no retention field. |
+| R2-F2 fresh input used as context total | Closed | Shared provider-total mapping is unchanged; the changed join retains actual normalized usage and numeric unknowns. |
+| R2-F3 cold baseline/repeated keep falsely qualify P3 | Closed, carried | Chronological static control, immediate keep continuity and material rewrite/reuse predicate remain unchanged. |
+| R3-F1 partial aggregate reported as known | Closed | External record still requires every supplied total before summing; the adoption-field assignment repair does not change this rule. |
+| R3-F2 public P2 accepts static warming | Closed at its original boundary | Whole-first-request control and two advances beyond its ceiling remain enforced. R8-F2 is a new completeness defect in the changed join's consumers. |
+| Review 5 durable SQL collector integration | Closed, carried | Typed oldest-first bounded pagination and asynchronous collection owners are unchanged. |
+| Review 6 enum/null evidence emission | Closed | Shared conversion/emission remains; joined missing counters are unavailable, and raw normalized values remain in provenance. Canonical parser replaces incompatible built-in HTTP parsing. |
+| Review 7 rolling Anthropic selection | Cleared, carried | Native owner and composition remain unchanged; its prior configured public P2 failure was closed by the separately recorded committed-code external acceptance. |
+
+The external acceptance through =e07f6273= remains bounded to its recorded
+Anthropic tool/thinking shape.  The separate minimal no-read outcome remains
+unconfirmed; it does not become a family-wide success.
+
+** Current contract and scenario coverage
+
+| Cell | Disposition | Evidence and limit |
+|------+-------------+--------------------|
+| F98-G1 | Candidate | Selection and truthful qualification still require R8-F1/F2. Historical Board bodies are absent and causality remains unknown. |
+| F98-C1/C2 effective compatible policy | Candidate | Release-flavor generation parsing, Codex identity stability and unsupported-field absence have current proof. Endpoint spelling and public alias partitions fail R8-F1. |
+| F98-C3 authorized projection/replay | Cleared | Request-local policy does not mutate messages/options; normal tool/result ordering and encrypted replay remain. Actual HTTP/WS, concurrent-session and reconnect fixtures assert body/header joins and native order. WS safe/full retry retains full-body data and headers; unchanged lifetime/curation ownership carries. |
+| F98-C4 caller controls and anchors | Cleared, with R8-F1 remediation dependency | Request-context removes retired options before selection and binds trusted policy internally. No public cache switch was added. Existing revision/reasoning equality rejects incompatible anchors; generation changes derive the material revision through the existing owner. |
+| F98-C5 diagnostics and accounting | Candidate | Diagnostics distinguish supported affinity from selected/actual field presence without storing identity. Canonical item hashes and per-session capture preserve chronology; missing middle, duplicate ordinals/IDs and mixed provenance cannot shift counters. R8-F2 exposes the unjoined-event consumer gap. |
+| F98-C6 curation capability/effects | Cleared deterministically, carried | All production capabilities remain none/unconfirmed. New affinity does not grant curation, publish a carrier, or change accepted projection authority; forced-effect rejection and unavailable affordances carry their unchanged proof. |
+| S1/S4 compatibility and diagnostics | Candidate | Endpoint/alias selection and incomplete evidence defects are localized; other applicable negative partitions are cleared. |
+| S2 native growing tool composition | Cleared semantically; cache qualification candidate | Existing original three-tool prompt, description, schema and output remain. New four-tool Codex probe asserts fixed inherited observation, encrypted reasoning and unchanged durable prefixes, but its qualification needs R8-F2. |
+| S3 curation/reopen/reconnect | Cleared deterministically | Unchanged curation/lifetime proof and current reconnect/native-replay assertions join without a new authority or persistent state. |
+| External finalizer and baseline fixture repairs | Cleared | Adoption append is assigned back and returned; canonical parser preserves JSON representation; detached receipt fixture now prepares the real executing frame and asserts durable and projected receipt identity before provider build, with scoped cleanup. |
+
+No required deterministic review cell remains unknown.  The two candidate
+groups are confirmed owning defects, not missing review evidence.  Complete
+green gates do not override these reproducible negative cases.
+
+** Verification and evidence classification
+
+At the exact reviewed revision the supplied canonical gate passes 2,864/2,864,
+zero unexpected, exit 0, and the fresh isolated configured gate passes 9/9,
+zero unexpected, exit 0.  Read the summaries at
+=/private/tmp/e-board-cache-audit-76eac/openai-canonical.log:3778--3788= and
+=openai-current-config.log:1--5=.  Consumed the child dependent-evidence summary
+at =openai-investigation-progress.log:91--94=: 85 selected tests, 60 passes,
+25 expected configuration-gated skips and zero unexpected.  This summary
+locates evidence; current source and independent probes establish the review's
+findings and affected boundary decisions.
+
+Independently checked clean HEAD, the source/doc comparison and
+=git diff --check e07f6273 036226b6= (pass).  Ran three credential-free
+=eldev -s eval= probes, all exit 0: selector/dispatch plus incomplete-join
+classification; public constructor/full-public-endpoint request composition;
+and actual public constructor plus token-auth alias composition.  Synthetic
+auth/requester fixtures perform no network calls.  Their outputs are retained
+above.  The canonical suite was not repeated without a contradiction in its
+reported result.  No user runtime or graphical state was inspected or changed.
+
+These are deterministic contract witnesses.  The earlier no-affinity synthetic
+successes and overridden-affinity diagnostic remain external/diagnostic
+evidence of their original scope; one above-ceiling read advance does not
+qualify P2.  Historical Board telemetry remains observational.
+
+** Architecture self-check
+
+The Review 7 whole-package architecture dispositions carry at unchanged owners.
+The current answers to AGENTS.md's fourteen questions are:
+
+1. The generation correction and ordinary session join improve the selected
+   direction; R8-F1/F2 require correction before this package can stop cleanly.
+2. The direction remains adapter/API-owned eligible reuse with independent
+   semantic truth and capability-gated curation.
+3. Endpoint syntax and provider benefit remain uncertain and local; the new
+   helpers are reversible and add no speculative registry.
+4. The profile/request owners own capability and wire policy; lifetime and core
+   retain semantic projection/effect ownership. Both findings belong there or
+   in the existing evidence consumers.
+5. One selection feeds narrow body/header outputs; no public policy control or
+   cross-component cache coordinator was added.
+6. No stable core dependency now points to concrete provider cache fields.
+7. Network effects remain at the adapters and isolated evidence runner; policy,
+   hash comparison and attribution helpers are pure.
+8. Affinity selection lives for one request and uses the ordinary session ID;
+   it adds no cache persistence. Test capture state belongs to one scenario.
+9. Production capability/model/identity selection adds bounded local work and
+   does not scan history. Test-only canonical hashing scans captured input;
+   provider token savings and latency remain unconfirmed external measurements.
+10. Known endpoints must substitute independently of equivalent accepted URL
+    spelling and catalogue label; R8-F1 identifies that current violation.
+11. Unknown/third-party compatibility remains implicit. Supported first-party
+    aliases and constructor paths need the same effective policy.
+12. Retired caller controls and the underscore affinity header remain absent;
+    no compatibility mode was restored.
+13. Missing capability/identity is an explicit compatible selection; unknown
+    counters stay unknown. Incomplete capture must reach the evidence decision,
+    which R8-F2 currently misses. Unexpected provider/test errors still surface.
+14. Generation, direct-policy and actual HTTP/WS/concurrent/reconnect tests
+    isolate the policy and transport joins; canonical and configured gates join
+    them to current runtime behavior. New negative endpoint and incomplete-join
+    witnesses require narrow strengthening rather than unrelated rewrites.
+
+No extraction/deferred-scope change, new owner, glossary term, durable record,
+provider call, or live-session migration was introduced by this delta. The
+smallest corrections remain in the existing semantic owners.
+
+** Required external qualification and completion boundary
+
+Fresh committed-code Codex P1/P2 remains =capability-unconfirmed= and must
+follow remediation and independent clearance of the material owners.  The new
+minimal P1 at =e2e/e-cache-efficiency-e2e-test.el:819--881= sends one ordinary
+no-tool prompt and honestly reports =cache-result=not-measured=.  A successful
+run proves selected-field/identity acceptance; it cannot independently fulfill
+plan P1's above-minimum repeated-request/boundary proof.  The parent accepted
+this remaining portfolio requirement and will supply ordinary synthetic
+repeated minimal requests without affinity/body overrides.  P2 remains a
+separate semantic/attributable growing-history qualification, with the complete
+join gate required by R8-F2.
+
+First-party public OpenAI credentials remain unavailable; no public-API external
+benefit is established.  All P3 production combinations remain none/unconfirmed
+and unavailable.  A curation carrier cannot be enabled from these selection or
+P1/P2 results.  No new valid provider product-contract failure was produced in
+this review, and no historical Board root-cause or improved hit-rate claim is
+made.  Feature status remains In-review; =Done= and a full-feature fixed-point
+claim are unsupported.
+
+log-read: =/private/tmp/e-board-cache-audit-76eac/openai-canonical.log:3778--3788=;
+=/private/tmp/e-board-cache-audit-76eac/openai-current-config.log:1--5=;
+=/private/tmp/e-board-cache-audit-76eac/openai-investigation-progress.log:91--94=.

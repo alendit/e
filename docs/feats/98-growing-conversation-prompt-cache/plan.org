@@ -22,9 +22,10 @@ The 2026-10-06 read-only audit of Board
 main chat, while two Codex GPT-6 Sol participants retain a 4,608-token read
 ceiling.  Their request bodies were not recorded, so the exact cause remains
 unknown.  The public OpenAI model-name and independently admitted Codex session-affinity
-corrections are implemented and parent-accepted with focused proof. Complete
-clean-revision gates, independent implementation review and fresh P1/P2 remain
-pending; the historical Codex observation is not yet explained.
+corrections are implemented and parent-accepted with focused proof. Clean-revision gates pass 2,864/2,864 and 9/9. Independent Review 8 identifies
+effective-endpoint/alias selection and incomplete P2 qualification defects;
+those corrections and fresh P1/P2 remain pending. The historical Codex
+observation is not yet explained.
 
 * Goal and authority
 
