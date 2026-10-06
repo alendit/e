@@ -64,6 +64,65 @@
        'utf-8)))
    (append input nil)))
 
+(defun e-cache-efficiency-e2e--native-input-message-text (item)
+  "Return plain text from native developer INPUT ITEM, or nil if not plain."
+  (when (and (equal (plist-get item :type) "message")
+             (equal (plist-get item :role) "developer"))
+    (let ((content (append (plist-get item :content) nil)))
+      (when (cl-every
+             (lambda (part)
+               (and (equal (plist-get part :type) "input_text")
+                    (stringp (plist-get part :text))))
+             content)
+        (mapconcat (lambda (part) (plist-get part :text)) content "")))))
+
+(defun e-cache-efficiency-e2e--stable-native-instructions (body options)
+  "Summarize stable system guidance from BODY's native input projection.
+Return nil when an expected stable system message cannot be found in native
+developer input.  The summary contains a digest and size, never the text."
+  (let* ((stable-messages
+          (cl-loop for segment in (plist-get options :segments)
+                   when (memq (plist-get segment :kind)
+                              '(static-prefix stable-context))
+                   append (seq-filter
+                           (lambda (message)
+                             (eq (plist-get message :role) 'system))
+                           (plist-get segment :messages))))
+         (native-input (append (plist-get body :input) nil))
+         (cursor 0)
+         (native-items nil)
+         (complete t))
+    (dolist (message stable-messages)
+      (let* ((text (plist-get message :content))
+             (index
+              (and (stringp text)
+                   (cl-position-if
+                    (lambda (item)
+                      (equal (e-cache-efficiency-e2e--native-input-message-text
+                              item)
+                             text))
+                    native-input :start cursor))))
+        (if index
+            (progn
+              (push (nth index native-input) native-items)
+              (setq cursor (1+ index)))
+          (setq complete nil))))
+    (when complete
+      (setq native-items (nreverse native-items))
+      (let ((texts (mapcar
+                    #'e-cache-efficiency-e2e--native-input-message-text
+                    native-items)))
+        (list :character-count
+              (apply #'+ (mapcar #'length texts))
+              :sha256
+              (secure-hash
+               'sha256
+               (encode-coding-string
+                (e-json-serialize
+                 (e-cache-efficiency-e2e--canonical-json-value
+                  (vconcat native-items)))
+                'utf-8)))))))
+
 (defun e-cache-efficiency-e2e--inherited-observation-indices (input)
   "Return indices of native INPUT items containing the fixed observation."
   (cl-loop for item in (append input nil)
@@ -555,7 +614,9 @@ STEPS defaults to the original three-step public-API scenario."
          (body-key (plist-get body :prompt_cache_key))
          (header-id (cdr (assoc "session-id" headers)))
          (diagnostics
-          (plist-get (plist-get context :metadata) :diagnostics)))
+          (plist-get (plist-get context :metadata) :diagnostics))
+         (stable-instructions
+          (e-cache-efficiency-e2e--stable-native-instructions body options)))
     (list :provider (plist-get context :provider)
           :endpoint (plist-get context :url)
           :model (plist-get body :model)
@@ -581,8 +642,9 @@ STEPS defaults to the original three-step public-API scenario."
           :stable-prefix-fingerprint
           (e-cache-efficiency-e2e--static-fingerprint body options)
           :stable-instructions-character-count
-          (let ((instructions (plist-get body :instructions)))
-            (and (stringp instructions) (length instructions)))
+          (plist-get stable-instructions :character-count)
+          :stable-instructions-sha256
+          (plist-get stable-instructions :sha256)
           :input-sha256 (secure-hash 'sha256
                                      (prin1-to-string
                                       (plist-get body :input)))
@@ -759,6 +821,69 @@ STEPS defaults to the original three-step public-API scenario."
           :instructions
           (mapconcat (lambda (n) (format "stable reference rule %04d" n))
                      (number-sequence 1 1500) "\n")))))
+
+(ert-deftest e-cache-efficiency-e2e-test-codex-p1-record-counts-native-layer-guidance ()
+  "The P1 recorder measures layer guidance in native Codex developer input."
+  (let* ((layer (e-cache-efficiency-e2e--codex-affinity-p1-layer))
+         (capability-context
+          (e-capabilities-context (e-layer-capabilities layer)))
+         (user-message '(:role user :content "Reply with the fixed marker."))
+         (messages
+          (append (plist-get capability-context :messages)
+                  (list user-message)))
+         (segments
+          (append (plist-get capability-context :segments)
+                  (list (list :kind 'history :messages (list user-message)))))
+         (session-id "review9-native-p1-session")
+         (requests-by-session (make-hash-table :test 'equal))
+         (native (symbol-function 'e-openai--request-context))
+         (options (list :model "gpt-6-sol"
+                        :session-id session-id
+                        :segments segments))
+         (args (list :provider 'codex
+                     :auth-file "synthetic-auth-not-read"
+                     :messages messages
+                     :options options))
+         context)
+    (cl-letf (((symbol-function 'e-openai-codex-read-auth)
+               (lambda (&optional _auth-file)
+                 '(:tokens (:access_token "synthetic-access-token"))))
+              ((symbol-function 'e-openai-codex-auth-account-id)
+               (lambda (_auth) "synthetic-account-id")))
+      (setq context
+            (e-cache-efficiency-e2e--capture-request-context
+             native requests-by-session args)))
+    (let* ((record (car (gethash session-id requests-by-session)))
+           (body (plist-get context :body-data))
+           (input (append (plist-get body :input) nil))
+           (stable-text
+            (e-cache-efficiency-e2e--native-input-message-text (car input)))
+           (guidance
+            (e-capability-instructions
+             (car (e-layer-capabilities layer)))))
+      (should record)
+      (should (> (plist-get record :stable-instructions-character-count)
+                 30000))
+      (should (= (plist-get record :stable-instructions-character-count)
+                 (length guidance)))
+      (should
+       (equal (plist-get record :stable-instructions-sha256)
+              (secure-hash
+               'sha256
+               (encode-coding-string
+                (e-json-serialize
+                 (e-cache-efficiency-e2e--canonical-json-value
+                  (vector (car input))))
+                'utf-8))))
+      (should (equal stable-text guidance))
+      (should (equal (plist-get body :instructions)
+                     "You are a helpful assistant."))
+      (should (equal (mapcar (lambda (item) (plist-get item :role)) input)
+                     '("developer" "user")))
+      (should (null (plist-get record :tool-names)))
+      (should (eq (plist-get record :session-affinity-identities-match) t))
+      (should (eq (plist-get record :affinity-body-key-present) t))
+      (should (eq (plist-get record :affinity-header-present) t)))))
 
 (ert-deftest e-cache-efficiency-e2e-test-four-step-tool-retains-public-three-step-default ()
   "The public probe stays three-step while the Codex fixture reaches step four."
@@ -1291,7 +1416,9 @@ STEPS defaults to the original three-step public-API scenario."
                            (null (plist-get request :tool-names))
                            (> (plist-get request
                                          :stable-instructions-character-count)
-                              30000)))
+                              30000)
+                           (stringp
+                            (plist-get request :stable-instructions-sha256))))
                     evidence))
                   (should
                    (cl-every
@@ -1306,6 +1433,14 @@ STEPS defaults to the original three-step public-API scenario."
                                  (make-list 3
                                             (plist-get (car evidence)
                                                        :stable-prefix-fingerprint))))
+                  (should (equal (mapcar (lambda (request)
+                                           (plist-get request
+                                                      :stable-instructions-sha256))
+                                         evidence)
+                                 (make-list 3
+                                            (plist-get
+                                             (car evidence)
+                                             :stable-instructions-sha256))))
                   (setq affinity-result "pass"))
               (error (setq condition caught))))
           (e-cache-efficiency-e2e--report-evidence

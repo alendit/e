@@ -47,6 +47,73 @@
     (should (eq (e-openai-profile-model-gpt56-or-later-p (car case))
                 (cdr case)))))
 
+(ert-deftest e-openai-test-context-capabilities-match-responses-endpoint-spellings-symmetrically ()
+  "Known Responses base and endpoint spellings preserve declared semantics."
+  (let* ((base e-openai-api-default-base-url)
+         (full (concat base "/responses"))
+         (provider 'openai-token-alias)
+         (options '(:model "gpt-6-sol" :responses-transport websocket)))
+    (cl-labels
+        ((profile-at (url)
+           (list :name "Replacement delivery alias"
+                 :base-url url
+                 :wire-api 'responses
+                 :responses-transport 'websocket
+                 :responses-context-layout 'developer-input
+                 :observation-delivery 'request-local-replaceable
+                 :continuation t
+                 :requires-openai-auth nil))
+         (capabilities-at (configured effective &optional request-function)
+           (e-openai-profile-context-capabilities
+            (profile-at configured) options
+            :provider provider
+            :base-url effective
+            :request-function request-function))
+         (assert-replacement (capabilities)
+           (should (eq (plist-get capabilities :continuation) 'linear))
+           (should (eq (plist-get capabilities :prefix-cache)
+                       'automatic-explicit))
+           (should (eq (plist-get capabilities :provider-compaction) 'none))
+           (should (eq (plist-get capabilities :reserved-effect-carrier)
+                       'none))
+           (e-openai-test--assert-observation-delivery capabilities t)))
+      (dolist (configured (list base full))
+        (dolist (effective (list base full))
+          (assert-replacement
+           (capabilities-at configured effective))))
+      (let ((unknown (capabilities-at full
+                                      "https://api.openai.com/v1/responses/v2"))
+            (wrong-transport
+             (e-openai-profile-context-capabilities
+              (profile-at full)
+              '(:model "gpt-6-sol" :responses-transport http)
+              :provider provider :base-url base))
+            (wrong-api-profile (profile-at full))
+            (wrong-api nil))
+        (setq wrong-api-profile
+              (plist-put wrong-api-profile :wire-api 'chat-completion))
+        (setq wrong-api
+              (e-openai-profile-context-capabilities
+               wrong-api-profile '(:model "gpt-6-sol")
+               :provider provider :base-url base))
+        (should (eq (plist-get unknown :continuation) 'none))
+        (e-openai-test--assert-observation-delivery unknown nil)
+        (should (eq (plist-get wrong-transport :continuation) 'none))
+        (e-openai-test--assert-observation-delivery wrong-transport nil)
+        (should (eq (plist-get wrong-api :continuation) 'none))
+        (e-openai-test--assert-observation-delivery wrong-api nil))
+      (let* ((builtin (e-openai-profile--builtin-openai-profile))
+             (replacement-builtin
+              (plist-put (copy-sequence builtin)
+                         :observation-delivery 'request-local-replaceable))
+             (injected
+              (e-openai-profile-context-capabilities
+               replacement-builtin options
+               :provider 'openai :base-url base
+               :request-function #'ignore)))
+        (should (eq (plist-get injected :continuation) 'none))
+        (e-openai-test--assert-observation-delivery injected nil)))))
+
 
 (ert-deftest e-openai-test-public-gpt6-release-flavors-select-cache-policy ()
   "First-party GPT-6 aliases get the documented boundary and endpoint controls remain."

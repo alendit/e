@@ -2086,3 +2086,32 @@ family-wide cache improvement or Done claim is supported at this revision.
 log-read: =/private/tmp/e-board-cache-audit-76eac/openai-r8-canonical.log:3780--3788=;
 =/private/tmp/e-board-cache-audit-76eac/openai-r8-current-config.log:1--4=;
 =/private/tmp/e-board-cache-audit-76eac/openai-r8-dependent-e2e.log:94--100=.
+
+* Review 9 remediation: native P1 projection and context equivalence
+
+Parent-accepted Tock on =33545431=, 2026-10-06.  R9-F1's recorder now
+measures and hashes stable guidance in its actual native developer input.
+The credential-free layer-to-capability-to-native-request-to-record witness
+proves the 40,499-character P1 guidance is present, its canonical digest and
+size agree, top-level instructions remain 28 characters, tools are absent and
+body/header affinity matches.  The repeated external P1 also requires the
+native stable digest to agree across its three ordinary turns.
+
+R9-F2's existing context-capability owner now compares exact base/full
+Responses spellings symmetrically.  All four profile/effective combinations
+preserve replacement delivery and continuation; unknown nested paths, wrong
+API/transport and built-in injected-requester controls remain guarded.
+Curation remains none.  The inverse spelling witness failed before correction.
+
+Focused validation passes 50 mechanism tests, 26 request-composition tests,
+ten pure cache-evidence tests and the standalone native P1 witness.  Diff
+whitespace and all three changed Lisp files' parentheses checks pass.
+Parent inspected the changed semantic owner and native producer/witness/
+consumer joins.  Detailed evidence:
+=/private/tmp/e-board-cache-audit-76eac/openai-review9-remediation-evidence.txt=.
+
+Review 9 architecture dispositions carry with the affected endpoint
+substitution and valid-layout measurement questions addressed.  No owner,
+core counter, durable state, public option, semantic projection, provider call
+or user runtime mutation was added.  Required exact-revision gates and
+independent Review 10 follow; fresh committed-code P1/P2 remains pending.

@@ -654,6 +654,18 @@ equivalent here; URL parsing aliases and other paths remain unsupported."
       (when (member candidate (list base (concat base "/responses")))
         base))))
 
+(defun e-openai-profile--responses-url-spellings-equal-p (left right)
+  "Return non-nil when LEFT and RIGHT are exact Responses base spellings.
+Either URL may be configured as the base or its exact /responses endpoint."
+  (when (and (stringp left) (stringp right))
+    (let* ((effective-url (string-remove-suffix "/" left))
+           (profile-url (string-remove-suffix "/" right))
+           (configured-base (string-remove-suffix "/responses" profile-url)))
+      (and (member effective-url
+                   (list configured-base
+                         (concat configured-base "/responses")))
+           t))))
+
 (defun e-openai-profile--public-openai-responses-base-url (profile base-url)
   "Return the known public OpenAI base when PROFILE uses its token-auth API."
   (and (eq (e-openai-provider-wire-api profile) 'responses)
@@ -712,9 +724,8 @@ injected requester for conformance tests."
          (endpoint-compatible
           (or (null base-url)
               (and (eq wire-api 'responses)
-                   (equal (e-openai-profile--known-responses-base-url
-                           base-url profile-base-url)
-                          (string-remove-suffix "/" profile-base-url)))
+                   (e-openai-profile--responses-url-spellings-equal-p
+                    base-url profile-base-url))
               (e-openai-profile-context-base-url-equal-p
                base-url profile-base-url)))
          (transport-compatible

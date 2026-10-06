@@ -28,8 +28,10 @@ defects.  Their owner-local corrections and a repeated minimal P1 fixture are
 now parent-accepted.  Clean =686e4641= passes 2,866/2,866 canonical, 9/9
 configured and 62 credential-free dependent E2E tests.  Review 9 closes both
 original findings but identifies a native P1 measurement defect and the inverse
-context-capability endpoint comparison.  Those corrections and committed-code
-P1/P2 remain pending.  The historical Codex observation is not
+context-capability endpoint comparison.  Their owner-local corrections are
+parent-accepted with a native projection witness and symmetric capability
+compositions.  Exact-revision gates, independent Review 10 and committed-code
+P1/P2 follow before external qualification.  The historical Codex observation is not
 yet explained.
 
 * Goal and authority
