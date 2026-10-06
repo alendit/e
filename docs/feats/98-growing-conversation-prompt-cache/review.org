@@ -2115,3 +2115,222 @@ substitution and valid-layout measurement questions addressed.  No owner,
 core counter, durable state, public option, semantic projection, provider call
 or user runtime mutation was added.  Required exact-revision gates and
 independent Review 10 follow; fresh committed-code P1/P2 remains pending.
+
+* Review 10: Independent native P1 and context-equivalence closure Tick
+
+** Decision and scope
+
+One confirmed Medium/P2 finding remains, R10-F1: the repeated minimal P1
+recorder rejects a supported flattened HTTP Codex projection.  The original
+segmented-layout R9-F1 counterexample and R9-F2 context-capability asymmetry are
+closed.  No other P0--P3 functional or architectural defect was found in the
+current required deterministic review cells.  The required review is complete,
+but this revision is not eligible for a deterministic implementation fixed
+point while R10-F1 remains open.  Fresh external Codex P1/P2 remains a separate
+required qualification; no provider cache improvement or full-feature Done is
+claimed.  Keep Feature 98 In-review.
+
+This independent, read-only Tick reviewed exact clean revision
+=0d69e03d0d43731f4c47e453bf5fcc27015d827e=, incrementally against Review 9's
+=686e464130861193ae036d6414048fa8c0e9e9ae=.  The original
+=e07f6273..HEAD= F98-G1/C1--C6 scope remains selected.  Supporting Codex plan
+admission =a4f4913d= and the normative contract are unchanged; this round's plan
+diff changes status/evidence prose only.  Review 9's unaffected whole-scope
+source, architecture, scenario and evidence coverage carries after the changed
+owner/dependency join checks.  No providers, live Emacs, Board, store, source or
+Git mutations were performed.  Only this private review artifact was authored.
+
+| Reviewed identity | Value |
+|-------------------+-------|
+| Exact revision | 0d69e03d0d43731f4c47e453bf5fcc27015d827e |
+| Current plan blob | 835da509c6d5bd3e05c817d9d2563c17c9d17fbb |
+| OpenAI profile blob | cfb843fd0a09f04b25d996ff51e7b53898132006 |
+| E2E tree | 7169b9d69f30ee90b62cc60f4275a38c5edf19eb |
+
+Changed semantic owners are the existing OpenAI profile context-capability
+comparison and the existing E2E native-guidance evidence recorder/consumer.
+The incremental production diff adds the symmetric exact Responses spelling
+comparison; it adds no cache policy owner, public option, core dependency,
+curation capability, persistence state or semantic replay rewrite.  The other
+code changes are focused mechanism/E2E assertions.
+
+** Prior finding dispositions
+
+| Finding | Current disposition and proof |
+|---------+-------------------------------|
+| R9-F1: segmented P1 measured only top-level instructions | Original counterexample closed. The actual P1 layer flows through =e-capabilities-context= and the normal native Codex request into the new developer-input matcher. An independent credential-free composition records 40,499 guidance characters and a native guidance digest while top-level instructions remain 28 characters; body/header affinity joins, and caller messages/options remain unchanged. =e-cache-efficiency-e2e-test.el:67--123,824--890= supplies the new owner and native test. The supported flattened partition is separately open as R10-F1. |
+| R9-F2: full-profile/base-effective context asymmetry | Closed. =e-openai-profile.el:657--667,724--729= compares exact base/full Responses spellings symmetrically. Independent four-way configured-base/full × effective-base/full compositions preserve linear continuation, replacement observation delivery, automatic-explicit cache capability and unavailable curation. New mechanism matrix assertions retain the unknown path, wrong API, transport override and injected built-in requester negatives. |
+| R8-F1: equivalent effective cache selection/routing | Original selector/constructor/routing cases remain closed. The new context equivalence correction closes its previously reopened semantic dependency; API/auth/provider/transport/requester/layout fences remain in the existing owners. |
+| R8-F2: incomplete public P2 qualifies reuse | Closed and carried. Both public consumers still use the complete-attribution-qualified classifier, retain incomplete raw evidence and separate semantic success from cache qualification. This round does not change those joins or the finalizer. |
+| Earlier Review 1 publication/effect and reserved-tool findings | Closed and carried; no core, curation publication/admission/effect or tool owner changes. |
+| R2-F1 optional retention, R2-F2 total accounting, R2-F3 P3 chronological/material attribution | Closed and carried; provider-derived compatible defaults, shared total accounting and repeated-curation controls remain unchanged. |
+| R3-F1 missing aggregate totals, R3-F2 static-only P2 attribution | Closed and carried; all-known aggregation and two advances beyond the initial whole-request ceiling remain unchanged. |
+| Review 5 durable SQL collection and Review 6 report emission | Closed and carried; paginated durable capture, usage joins, enum serialization and missing-counter preservation remain unchanged. |
+| Review 7 Anthropic rolling selection and bounded external closure | Carried unchanged. The previously accepted tool/thinking-enabled gateway P2 closes that configured shape only; the separate minimal repeated zero-read result remains unconfirmed. |
+
+** Findings
+
+*** TODO Medium/P2 R10-F1: P1 rejects supported flattened native Codex guidance
+
+F98-C5 requires truthful effective request evidence, and plan P1 requires the
+smallest valid repeated request above the provider's minimum on each configured
+cache-capable endpoint/model family.  The admitted alias partition selects
+affinity from the effective known Responses API and managed-auth capability,
+without requiring the built-in provider label or developer-input layout.
+
+The public P1 guard at =e-cache-efficiency-e2e-test.el:595--608= accepts a
+managed-auth known Codex Responses alias without an HTTP/layout restriction.
+The native Responses renderer supports flattened instructions through
+=e-openai-responses.el:257= and its existing flattened branches.  Nevertheless,
+the new =--stable-native-instructions= owner at =e-cache-efficiency-e2e-test.el:79=
+only searches =body.input= developer messages.  Its text helper at =:67= excludes
+all other channels.  The affinity recorder at =:619,644--647= propagates the
+resulting nil count/digest, and the repeated P1 consumer at =:1418--1421= requires
+count greater than 30,000 and a string digest.  A successfully dispatched valid
+flattened request therefore cannot satisfy that portfolio.
+
+An independent actual composition uses the unchanged P1 layer and
+=e-capabilities-context=, a custom HTTP Responses profile at the exact known
+ChatGPT Codex base, managed authentication, =store=false=, inherited observation
+delivery and encrypted replay.  It sets no developer-input declaration and no
+body/layout override.  Synthetic auth accessors prevent credential reads; no
+provider request is sent.  Normal =e-openai--request-context= followed by the
+actual affinity recorder returns:
+
+#+begin_example
+affinity-supported: non-nil known Codex base
+actual-top-level-instructions-size: 40529
+guidance-present-in-top-level-instructions: t
+store-false: t
+record-stable-guidance-size: nil
+record-stable-guidance-sha: nil
+affinity-joined: t
+native-input-roles: ("user")
+#+end_example
+
+The native body contains all 40,499 guidance characters, plus its normal base
+instructions/separator.  The measured nil values are a recorder failure, not
+missing stable guidance or a provider cache miss.  The new focused test covers
+the built-in segmented projection only.  Parent adjudication confirms this
+existing flattened native alias partition is in scope; this is a bounded
+continuation of R9-F1's evidence owner, not a new product contract.
+
+The smallest correction belongs in the existing native-guidance summary:
+measure the actual supported flattened stable projection as well as segmented
+developer input, with a truthful bounded count/digest.  Verify expected stable
+guidance against the actual native channel; retain conservative absence and
+nonmatching-projection behavior.  Do not change the request body/layout, narrow
+the capability guard to conceal the case, infer measurement from source text
+alone, or add policy options.  Add actual P1 layer → normal native recorder →
+consumer witnesses for both layouts, including absent/nonmatching guidance.
+Existing unchanged-digest, no-tool, authentic request-ID/ordinal and complete
+usage assertions must remain meaningful.
+
+** Contract and evidence coverage
+
+| Required cell | Disposition | Current evidence/boundary |
+|---------------+-------------+---------------------------|
+| F98-G1 package | Candidate | Source direction and prior cache/semantic proof carry; R10-F1 blocks the selected P1 method and fresh Codex external qualification remains pending. |
+| F98-C1 eligible growing reuse | Cleared deterministic | Effective endpoint/API/auth/model selection and actual constructors/aliases carry; no caller weakening control or stable-only policy was added. External growing benefit remains unconfirmed for the new Codex code. |
+| F98-C2 compatible unsupported/unknown behavior | Cleared deterministic | Known base/full spellings are bounded, unknown endpoint/API/auth controls remain fenced, compatible implicit behavior and truthful diagnostics carry. |
+| F98-C3 authorized projection/replay | Cleared deterministic | Four-way context identity composition is corrected; current-state replacement, admitted continuation, full replay/reconnect and encrypted native replay carry. |
+| F98-C4 controls/migrations/anchors | Cleared deterministic | Symmetric context comparison preserves existing identity fences. Material layout/cache identity anchor checks, removed public options and untrusted capability rejection carry unchanged. |
+| F98-C5 diagnostics/accounting/evidence | Candidate R10-F1 | Original segmented capture is corrected; supported flattened capture remains false-negative. Complete attribution, total accounting, missing counters, duplicate/extra event rejection and public P2 consumers remain cleared. |
+| F98-C6 efficient curation gating | Cleared deterministic | All production capabilities remain none/unconfirmed; complete tool/instruction/frame absence and forced-effect rejection carry. Accepted retained projections remain authoritative. |
+| S1 ordinary/direct configured requests | Cleared deterministic | Actual constructors, effective aliases and compatible default behavior carry; no caller policy knob returned. |
+| S2 subturn/history evidence | Cleared deterministic | Original public three-tool shape, separate inherited/reasoning four-tool P2, durable prefix hashes and complete ID/ordinal usage joins are unchanged. |
+| S3 curation/reopen/reconnect | Cleared deterministic | Corrected symmetric context capability plus unchanged replay, continuation/fallback, anchor and unavailable-curation enforcement. |
+| S4 native/provider/configuration partitions | Cleared except P1 recorder | Native body/header serialization and request-local identity carry. Supported flattened P1 capture is R10-F1. |
+| P1 method | Candidate R10-F1 | Native segmented guide size/digest is proved; flattened guide measurement must close before the complete selected portfolio can qualify. Fresh provider counters remain external. |
+| P2 method | Cleared deterministic; external pending | Shared qualified growth predicate and complete public consumers carry; fresh reviewed committed Codex P2 has not run. |
+| P3 method | Cleared deterministic; unavailable | Repeated projection-preserving predicate carries; all shipped combinations remain unconfirmed and expose no curation. |
+
+All current required deterministic review cells have a disposition; there are
+no unresolved deterministic review unknowns.  Passing suite counts do not
+supersede the public native composition counterexample.
+
+** Verification
+
+The supplied exact-revision gate summaries were consumed, without equivalent
+broad reruns:
+
+| Gate | Result | Evidence |
+|------+--------+----------|
+| Canonical =eldev -s test= | 2867/2867 expected, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-r9-canonical.log:3785--3789= |
+| Fresh isolated current configuration | 9/9, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-r9-current-config.log:1--4= |
+| Dependent cache E2E | 89 selected; 63 expected passes, 26 expected provider/configuration-gated skips, zero unexpected, supplied exit 0 | =/private/tmp/e-board-cache-audit-76eac/openai-r9-dependent-e2e.log:95--101= |
+
+Independent focused =eldev -s eval= compositions add proof beyond those gates:
+the actual segmented P1 layer/native capture passes with 40,499 characters;
+the four-way context-capability matrix preserves semantic delivery; and the
+supported flattened native alias produces the R10-F1 count/digest failure.
+Two exploratory eval invocations failed before proof completion (an oversized
+regular expression, then an extra closing parenthesis); the corrected literal
+string-search composition exited 0 and produced the complete witness above.
+These runner errors are not provider or product evidence.  Source diff and
+=git diff --check= passed; the reviewed worktree was clean.  No provider-shaped
+request was sent by these local compositions.
+
+The leaf artifact was read back and parsed successfully as Org data; its
+revision, plan/profile blob and E2E tree identities were read back from Git.
+
+** Architecture self-check
+
+All fourteen AGENTS.md questions retain whole-scope coverage with these current
+answers:
+
+1. The source corrections improve the package, but the remaining supported P1
+   measurement defect requires closure before stopping at a fixed point.
+2. Direction remains capability-owned reuse, authoritative semantic projection
+   and unavailable unconfirmed curation.
+3. Exact endpoint compatibility and external cache uncertainty stay local and
+   reversible; no registry or speculative abstraction was introduced.
+4. Semantic identity belongs to the existing profile capability owner;
+   truthful native measurement belongs to the existing E2E evidence owner.
+5. Interfaces remain narrow. One ordinary session identity feeds body/header;
+   no caller cache or curation control was added.
+6. Dependency direction is unchanged: core consumes semantic capabilities,
+   while concrete provider policy remains in adapters.
+7. Endpoint comparison and native evidence derivation are pure; provider effects
+   remain in adapters and isolated runners.
+8. Derived capability/affinity is request-local, evidence hashes are
+   scenario-local and rebuilt; no durable production state was added.
+9. Exact URL comparisons are bounded. Native matching/hashing is test-only;
+   current provider latency, cost and hit-rate improvements remain unknown.
+10. Symmetric context substitution now preserves the supported base/full
+    contract. The P1 evidence implementation still narrows the accepted layout
+    partition and must substitute correctly for flattened native requests.
+11. Known endpoint aliases preserve capability-driven selection while existing
+    unknown/API/auth/provider/transport/requester/layout fences remain intact.
+12. Retired controls and legacy underscore headers remain absent. No legacy
+    mode or compatibility fallback was added.
+13. Unknown counters and incomplete attribution remain explicit. R10-F1 must
+    surface and be corrected at the recorder, without attributing it to the
+    provider or hiding it behind a narrower guard.
+14. Native credential-free owner compositions and the four-way matrix prove
+    deterministic behavior independently. The remaining correction needs
+    narrow both-layout projection tests; unrelated tests need no rewrite.
+
+No new owner, extraction, glossary term, ledger, public control or deferred
+scope is justified by this review.  There is no separate architectural finding.
+
+** External acceptance boundary
+
+Fresh committed Codex repeated minimal P1 and inherited/reasoning P2 have not
+run.  Minimal field/affinity acceptance and actual read/write counters must be
+recorded separately from growing-history qualification.  A valid repeated
+above-minimum body is required; a single accepted request or overridden
+diagnostic is insufficient.  The native recorder issue must close before the
+selected P1 portfolio can provide reliable qualification across its supported
+profiles.  Public OpenAI API credentials remain absent.  All production P3
+capabilities remain none/unconfirmed, so curation stays unavailable.
+
+Previous bounded Anthropic configured-shape acceptance carries without a
+universal reuse claim.  Historical Board 4,608-token ceiling causality remains
+unknown because request bodies were not captured.  No new provider success,
+root cause, hit-rate improvement or full-feature completion follows from this
+deterministic Tick.
+
+log-read: /private/tmp/e-board-cache-audit-76eac/openai-r9-canonical.log:3785--3789;
+/private/tmp/e-board-cache-audit-76eac/openai-r9-current-config.log:1--4;
+/private/tmp/e-board-cache-audit-76eac/openai-r9-dependent-e2e.log:95--101.
