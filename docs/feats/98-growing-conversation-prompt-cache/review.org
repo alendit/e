@@ -4482,3 +4482,199 @@ Reviewer inspected only the bounded source/evidence/gate relationships and
 authored this private artifact. No Git, provider, user Emacs, Board, store
 operation or runtime execution occurred.
 Log-read: =/private/tmp/e-p3-parent-20261007/e2e-explicit-control.log:109–112=.
+
+#+title: Feature 98 Review 22
+#+startup: overview
+
+* Review 22: Final controlled Codex P3 evidence boundary
+
+** Identity and decision
+
+Independently inspected the actual content-free record
+=/private/tmp/e-p3-parent-20261007/codex-evidence4.json=, identifying revision
+=385ad9c20bb5c382da69a9320654397c2b616e6e=, the documentation-only
+successor of admitted source =090055c7=. F98-G1/C1–C6/DP1 and plan identity
+=af6b8d142e93ee9941e632664df4ede1b53d4a70= remain carried unchanged.
+
+This is a complete, genuine controlled diagnostic and a conservative P3
+nonqualification. It is not a positive efficiency result. Its decreasing reads
+occur across changed native boundaries; the record does not independently
+prove provider loss for a fully preserved preceding native request. The enum
+=static-prefix-only= is the predicate's refusal reason, not a literal claim
+that the provider cached only static text. All production curation capabilities
+remain unavailable. No additional unchanged run is needed to establish that
+the current acceptance portfolio has not qualified this route.
+
+** Verified completion and actual positive subfacts
+
+Timestamp =2026-10-07T17:41:13Z=, elapsed 119.706 seconds; =gpt-6-sol=,
+managed ChatGPT auth, Responses WebSocket, configured ChatGPT Codex route.
+All 32 actual native requests have unique IDs and unique turn/ordinal pairs,
+complete successful start/finish/usage joins, and one fixed route/static
+identity. Semantic result is pass with exactly four accepted packages in
+keep/keep/summary/erase order. All four classifier curation events are accepted
+and unique-complete; both summary and erase material boundaries are present.
+No extra package or usage event is silently ignored.
+
+The baseline/control totals are 13877/19937/23838/25999/29900, with reads
+0/13696/19840/19840/25856. This is a valid growing durable control, with
+two advances beyond the whole initial request ceiling. Both first fresh keep
+requests preserve the declared ordered protected prefixes (five and eleven
+native semantic items respectively). Those keep prefix checks pass, unlike
+the valid Opus negative from Review 20.
+
+Every adjacent same-turn reuse append in the actual record preserves all
+preceding full-wire native item hashes and advances the cached read:
+
+| Requests | Preserved old native items | Cached-read advance |
+|----------+----------------------------+---------------------|
+| 9 → 10 | 12/12 | 4736 |
+| 11 → 12 | 14/14 | 4736 |
+| 16 → 17 | 19/19 | 4992 |
+| 18 → 19 | 21/21 | 4992 |
+| 23 → 24 | 26/26 | 5248 |
+| 29 → 30 | 32/32 | 5248 |
+| 31 → 32 | 34/34 | 5120 |
+
+The final request reads 63232 of 67323 input tokens. These counters establish
+real history reuse within this run, while falling short of the complete
+repeated-curation retention predicate. They must not be described as literal
+static-only caching or as a qualified P3 pass.
+
+** Negative result and unresolved measurement limitation
+
+The first rejection is request 10 → 11: cached input falls 30720→30464,
+exceeding the 128-token tolerance, while total grows 34752→35401. However,
+this is a new top-level turn and only the first 11 of the prior 16 full native
+items remain at the same positions. Subsequent reuse declines likewise
+cross changed native boundaries: 17→18 preserves 17/23 items and loses
+384 read tokens; 24→25 preserves 23/30 and loses 640; 30→31 preserves
+29/35 and loses 640. Other curation-boundary declines also change their
+native prefixes. None is the same-turn complete-prefix contradiction
+observed in the earlier Codex record.
+
+The one-probe/durable-growth correction removes the large multi-probe
+expiration confound, but does not establish that the previous absolute read
+floor represents only the common retained durable prefix. Transient or other
+top-turn context remains outside that common prefix. Hashes demonstrate the
+boundary changes; they do not establish the token extent or origin of the
+changed tail, or allocate the read decrease to that tail. Expected ephemeral
+expiration is consistent with these observations, but its exact causal
+attribution is unproved.
+
+Consequently the complete diagnostic legitimately fails the selected strict
+qualification criterion, and capability must remain unconfirmed/unavailable.
+It cannot by itself establish an adapter/provider defect that loses unchanged
+durable history, or justify an arbitrary tolerance increase. A future stronger
+qualification method would need measured comparable-prefix/token attribution
+or a normal scenario proving that the measured previous reusable floor lies
+inside the prefix actually preserved at every boundary. It must retain every
+request, two actual advances, both material projections and all semantic/
+identity checks. This is an explicit evidence limitation, not permission to
+discard declines or relabel the current record as a pass.
+
+** Preserved evidence, coverage and claim scope
+
+Carry Review 21 source admission, deterministic gates and all fourteen
+architecture answers for unchanged source. C5 completion/identity/semantic/
+material joins are cleared for this actual run. C6 complete efficient repeated
+curation remains unqualified; comparable-prefix attribution of its negative
+read transitions remains unresolved. No production selector is admitted.
+
+Preserve the earlier Codex same-turn 30-item full-native-prefix contradiction
+(26880→26240 cached input) and Review 20's legitimate Opus repeated keep
+prefix relocation/cache recreation. This later bounded history reuse neither
+erases those observations nor establishes universal behavior. Public OpenAI
+API credentials remain absent. No normal-wrapper-free P3 acceptance, historical
+Board cause, universal hit-rate improvement, user-runtime update or full-feature
+Done is established.
+
+Reviewer read only the actual JSON record and authored this private artifact.
+No source, Git, provider, user Emacs, Board, store or runtime operation and no
+gate rerun occurred. Log-read: none.
+
+#+title: Feature 98 Review 23
+#+startup: overview
+
+* Review 23: Final documentation and evidence-copy closure
+
+** Decision and authority
+
+The documentation/evidence-copy delta is cleared, with the bounded freshness
+finding below corrected and independently read back. Source remains at
+=385ad9c2= with admission through =090055c7=; no source owner, normative
+F98-G1/C1–C6/DP1 contract or supporting qualification method changed.
+Historical admitted plan identity =af6b8d14= is not presented as the hash of
+the current status-edited plan. This closes the delivery documentation scope,
+not external P3 qualification or full-feature Done.
+
+Read-back Git blob identities, calculated from filesystem contents without
+Git operations: plan =ad68b5e0348cff2d1a0b41ba535dbe78b84c3974=;
+P3 validation =4b3b13b4f6eb010e9a2522858910838817202742=;
+feature index =2202b2dc09595e09c5f0d17b4efcab0132311df4=.
+
+** Evidence and prose verification
+
+The complete controlled Codex record at
+=evidence/p3-codex-gpt6sol-20261007-controlled.json= is byte-identical to
+the independently reviewed =codex-evidence4.json=. SHA-256:
+=ccf067a6ee11180521c8e52f0432ce172a64db27bcdd7b12c504efadac4dccef=.
+Recursive inspection finds no body/native-body/messages/content/headers/
+arguments/credentials/API-key/authorization fields. All actual joins, counters,
+native hashes and classifier events remain. Review 22's private artifact is
+preserved verbatim in the repository review ledger.
+
+The new =p3-validation.org= and index/plan status correctly report the two
+completed semantic-pass portfolios: Opus 33 requests and Codex 32, four
+packages each, complete material boundaries, and no production qualification.
+Opus's 40707→20443 and 56307→20443 read losses with 28260/43866 creation
+remain a valid bounded repeated-keep failure for its current native layout.
+The summary's one-position insertion description is supported by actual
+protected-item mapping: old items 1/2/3 move to positions 2/3/4 while item 0
+remains. It does not infer a generic provider defect or historical Board cause.
+
+Codex's advancing same-turn reuse and final 63232/67323 read are correctly
+reported alongside conservative nonqualification. The prose does not interpret
+=static-prefix-only= as literal static-only behavior or infer loss of unchanged
+durable history from changed-boundary declines. Comparable-prefix/token
+attribution remains an explicit qualification limitation. The earlier genuine
+same-turn complete-native-prefix 640-token decline remains a separate bounded
+negative with unknown cause; the later reuse does not erase it.
+
+Gate wording correctly distinguishes 2869/2869 canonical and 9/9 configured
+carried dependency coverage from the affected 1/1 structural rerun and
+74 credential-free E2E passes/27 expected provider-config skips. It does not
+promote skipped external tests, process exit, test wrapper availability or
+accepted curation packages into efficiency acceptance.
+
+** Documentation finding and closure
+
+R23-F1: the plan's old =Fresh ordinary Codex P1/P2= sentence could imply that
+the 2026-10-06 observations remain fresh beyond their bounded 24-hour window.
+Parent replaced it with =The 2026-10-06 ordinary Codex P1/P2 at clean
+fd656ab5 ... passed=. Reviewer independently read back this exact dated
+historical phrasing at plan line 24. The endpoint/model/protocol/revision
+bounds and historical counters remain. Finding closed; historical results are
+preserved without a current freshness claim.
+
+No other actionable documentation/evidence-copy finding or required unknown
+remains in this delta. Operational statements about unchanged user runtime,
+manual restart and local-only synchronization are parent-owned delivery facts;
+this read-only review did not repeat user-runtime or remote operations.
+
+** Carried coverage and final boundary
+
+Carry prior source admission, deterministic cells, all prior finding
+dispositions and all fourteen architecture answers. Changed C5 documentation
+and durable evidence identities are cleared. C6 external qualification status
+continues exactly as Reviews 20/22: Opus valid bounded negative; Codex complete
+conservative nonqualification with a comparable-prefix attribution limitation.
+All production curation declarations remain unavailable, public OpenAI API
+credentials are absent, and Feature 98 remains In-review.
+
+No normal-wrapper-free P3 acceptance, enabled production selector, universal
+cache improvement, historical Board cause, user-runtime update or full-feature
+Done is claimed. No further unchanged provider run is required for this
+documentation closure. Reviewer authored only this private artifact; no source,
+Git, provider, runtime, Board/store operation or gate rerun occurred.
+Log-read: none.

@@ -5,12 +5,23 @@
 * Status
 
 In-review.  Adapter-owned cache policy, caller-option removal and capability-
-gated curation admission are implemented.  Independent Review 12 establishes
-deterministic fixed point at =a1659e9b=: 2,867/2,867 canonical tests,
-9/9 isolated current-configuration tests and 66 credential-free dependent
-E2E passes, with 26 expected provider/configuration skips.
+gated curation admission are implemented. The independently reviewed P3
+producer passes 74 credential-free E2E tests, with 27 expected provider skips.
+Canonical 2,869/2,869 and isolated current-configuration 9/9 coverage carries
+through unchanged dependencies; the affected structural test passes 1/1.
 
-Fresh ordinary Codex P1/P2 at clean =fd656ab5= (unchanged reviewed code) pass
+The separate real cache-plus-curation tests completed on 2026-10-07:
+[[file:p3-validation.org][P3 validation results]]. Configured Opus 5.5 passed semantics across 33
+native requests but failed efficiency: kept facts relocate the native prefix
+and recreate growing history. Managed Codex passed semantics across 32 requests
+and demonstrated growing cache reads, but its strict retention result remains
+unqualified because the token extent of changed boundary tails is unproved.
+An earlier same-turn full-native-prefix 640-token cache decline also remains
+recorded. All production curation capabilities remain unavailable. Public
+OpenAI API evidence remains unavailable without its credential. These results
+keep Feature 98 In-review; no user runtime or Board was changed.
+
+The 2026-10-06 ordinary Codex P1/P2 at clean =fd656ab5= (unchanged reviewed code) passed
 2/2.  The configured =gpt-6-sol= managed-auth Responses WebSocket route
 preserves joined ordinary-session affinity.  The repeated no-tool P1 has
 three complete semantic/usage joins and reads 0 / 10,368 / 10,368 tokens.

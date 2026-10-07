@@ -1,0 +1,93 @@
+#+title: Cache-plus-curation validation, 2026-10-07
+#+startup: overview
+
+* Result
+
+The real provider tests ran. Both routes correctly kept two source facts,
+replaced a third with a summary, and erased a fourth. Neither route has
+qualified efficient caching alongside repeated curation, so production
+curation remains unavailable. Feature 98 remains In-review.
+
+| Route | Native requests | Semantic result | Efficiency disposition |
+|-------+-----------------+-----------------+------------------------|
+| Configured gateway Opus 5.5, Messages HTTP |33|Pass|Valid negative: exact keeps relocate the native prefix and recreate conversation cache.|
+| Managed Codex GPT-6 Sol, Responses WebSocket |32|Pass|Unqualified: the strict read-retention check fails across changed native boundaries; durable-prefix loss is not established by this run.|
+
+Each request has a unique provider identity and successful joined start,
+finish and usage records. Each route accepted exactly four packages, with
+complete material-source evidence for both summary and erase. These are
+private candidate tests: a scoped test wrapper exposes the existing curation
+carrier without enabling it in normal production code.
+
+* Opus: repeated keep changes the cache prefix
+
+The append-only control grows beyond the initial 20,551-token request and
+warms 40,707 tokens. After the first keep, the native renderer moves the kept
+fact into a system block ahead of existing Messages history. Old history
+moves one position; only the first protected native item stays in place.
+The second keep repeats this insertion. Full-wire and semantic hashes agree.
+
+| Keep boundary | Previously read cache | Fresh total input | Fresh cache read | Fresh cache creation | Fresh uncached input |
+|---------------+-----------------------+-------------------+------------------+----------------------+----------------------|
+| First |40707|48707|20443|28260|4|
+| Second |56307|64313|20443|43866|4|
+
+Four uncached input tokens do not mean that the whole conversation was reused:
+Anthropic reports cache creation separately. Both native projections obeyed
+the requested semantics, but repeated keep recreated 28k and 44k tokens.
+This fails the qualification criterion for the current layout and tested route.
+
+Source revision: ae39a1f1d2f3956d88eb064a527216231633fcb9.
+Timestamp: 2026-10-07T17:27:45Z. Complete record:
+[[file:evidence/p3-opus55-20261007.json][Opus native hashes, counters and curation joins]].
+Independent disposition: Review 20 in [[file:review.org][review.org]].
+
+* Codex: history reuse works; qualification remains unresolved
+
+The growing control reads 0 / 13,696 / 19,840 / 19,840 / 25,856 tokens. Both first fresh
+keep requests preserve their declared old native prefixes. All seven measured
+same-turn reuse appends preserve every preceding native item and advance
+cache reads by 4,736–5,248 tokens. The final request reads 63,232 of 67,323 input
+tokens, so this run demonstrates real history reuse.
+
+Its first rejected transition reads 30,720 then 30,464 tokens. That transition
+also starts a new top-level turn and preserves 11 of 16 preceding native items.
+Other decreases likewise cross changed boundaries. The absolute previous-read
+floor includes a tail outside the common retained prefix; the counters and
+hashes cannot allocate the decrease to that tail. This is conservative
+nonqualification, not proof that unchanged durable history lost its cache.
+The reported static-prefix-only enum is not a literal description of these
+counters. Stronger qualification needs comparable-prefix/token attribution.
+
+An earlier same-turn observation remains a separate valid contradiction:
+all 30 preceding native items were preserved while cached input fell
+26,880→26,240 tokens. Its cause is unknown. A later successful append does not
+erase it, and neither observation establishes universal provider behavior.
+
+Final source revision: 385ad9c20bb5c382da69a9320654397c2b616e6e.
+Timestamp: 2026-10-07T17:41:13Z. Complete records:
+[[file:evidence/p3-codex-gpt6sol-20261007-controlled.json][final controlled scenario]] and
+[[file:evidence/p3-codex-gpt6sol-20261007-continuity.json][earlier unchanged-prefix counterexample]].
+Independent dispositions: Reviews 18 and 22 in [[file:review.org][review.org]].
+
+* Verification and scope
+
+Runner defects were fixed before interpreting the final records: configured
+Anthropic total-input accounting, accepted versus ordinary consumed-frame
+counts, real nested provider-call identity, complete material joins, durable
+controls/reuse groups, and plateau versus genuine-advance counting. Every
+request and unexpected package remains visible. Earlier insufficient attempts
+remain recorded as diagnostics rather than qualification results.
+
+Repository verification: 2,869/2,869 canonical tests, 9/9 isolated current-config
+checks, 74 credential-free E2E passes and 27 expected provider/configuration
+skips. The affected structural test passed 1/1 after the shared fixture changed;
+unchanged canonical/configured dependency coverage carried. Independent source
+admission and external evidence reviews are preserved in the feature ledger.
+
+No public OpenAI API test ran because OPENAI_API_KEY is absent. Managed Codex
+and the Anthropic gateway do not substitute for that endpoint. No production
+selector was enabled; no wrapper-free production acceptance was claimed.
+The user's Emacs, Board and live store were unchanged. Adapter code changes
+require a manual restart to use in the running Emacs. Commits are local:
+the repository's automatic sync could not reach its configured remote.

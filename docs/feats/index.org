@@ -324,6 +324,10 @@ stable-prefix hit for growing-history reuse.  Committed code now passes the
 configured Opus 5.5 tool-history probe with advancing cache reads.  Minimal
 no-tools/no-thinking repeated-read benefit remains unconfirmed, and curation
 remains unavailable; these limits keep the feature In-review.
+The separate [[file:98-growing-conversation-prompt-cache/p3-validation.org][2026-10-07 P3 tests]] passed keep/summary/erase semantics on
+Opus and Codex. Opus failed cache efficiency through native prefix relocation;
+Codex showed history reuse but remains unqualified at changed-boundary token
+attribution. Neither result enables production curation.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|
