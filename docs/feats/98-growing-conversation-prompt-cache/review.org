@@ -3863,3 +3863,145 @@ Credential-free E2E after these runner corrections selected100 tests:
 73 pass,27 expected provider/configuration skips,zero unexpected.
 Canonical2869 and configured9 carry through unchanged material dependencies.
 No normal selector,provider production availability or runtime mutation.
+
+#+title: Feature 98 Review 17
+#+startup: overview
+
+* Review 17: Independent diagnostic-owner correction and source admission
+
+** Decision and identity
+
+=deterministic-fixed-point= is re-established for the selected repository-owned
+P3 producer/source at parent-supplied clean revision =3771e4b8=.
+The two first-run repository/control defects are corrected; no P0--P3 source
+finding or required deterministic unknown remains in the incremental scope,
+with unaffected Review 16 coverage carried.
+
+This admits a fresh isolated candidate diagnostic.  It does not qualify
+external efficiency, admit a normal positive selector, restore production
+curation or establish Done.  F98-G1/C1--C6/DP1 remain unchanged.
+Filesystem content hashing independently confirms current plan blob
+=af6b8d142e93ee9941e632664df4ede1b53d4a70=.
+No Git command was used in this review.
+
+** Actual first-run records and disposition
+
+Reviewer independently parsed both private content-free evidence JSONs.
+Both identify source revision
+=e27e51c80310309cacf0245da8c476d90d98f3f5= and the private ERT route wrapper.
+Each contains 29 distinct native requests, 29 starts, 29 finishes and 29 usages,
+with successful unique start/finish/ordinal attribution.  Each reports native
+semantic pass for four accepted projections =keep, keep, summary, erase=,
+25 total consumed-frame events, and production qualification unavailable.
+The exact classifier streams contain all 29 usage events plus four curations.
+These facts support the observed candidate semantic composition; they do not
+establish efficient curation.
+
+| Record/control | Total input in chronological order | Cache reads |
+|----------------+------------------------------------+-------------|
+| Gateway Opus baseline and controls | 20501 / 20566 / 27063 / 20635 / 27132 | 0 / 20497 / 20562 / 20562 / 20631 |
+| Codex baseline and controls | 13847 / 13896 / 17797 / 13947 / 17848 | 0 / 13696 / 13696 / 13696 / 13824 |
+
+Gateway fresh input is only =4 / 4 / 2 / 4 / 2= in those rows.
+The captured raw requests identify =:adapter anthropic= and a configured
+provider name, not literal provider =anthropic=.  The previous total-input
+helper used only the provider name at that join stage, interpreting fresh
+tokens as the whole request and rejecting cached reads larger than that
+incorrect total.  Its =incomplete-request-provenance= result is an accounting
+defect, not proof of incomplete provider events or bad cache efficiency.
+
+Both controls also drop total input at the next top-level turn:
+Opus =27063 -> 20635= and Codex =17797 -> 13947=.
+The probe source is transient lifetime context, so the previous tool result
+does not remain in that next turn's projection.  These observations are not
+a valid monotonically growing append-only control.  The strict predicate
+correctly refuses qualification, including Codex's
+=missing-append-only-control=.  Neither run can disprove P3 with that control.
+
+Disposition: both runs remain non-reusable diagnostics with repository/control
+insufficiency.  They are neither accepted cache-plus-curation evidence nor
+valid external product-contract failures.  Preserve all observed counters
+and semantic results; do not relabel them fabricated passes, provider failures
+or production qualification.
+
+** Owning corrections and proof
+
+1. The shared total-input helper at =e-live-e2e-test.el:1321--1340= now recognizes
+   the captured native Anthropic adapter family in addition to normalized
+   provider identity.  It uses known =context-input-tokens=, otherwise requires
+   all fresh/read/creation components before summing.  OpenAI totals keep their
+   existing meaning; unavailable counters are not invented.
+   The new configured-provider join test at
+   =e-cache-efficiency-e2e-test.el:816--826= exercises the actual
+   =4 fresh + 20497 read + 65 creation = 20566 context= case and the
+   missing-context fallback.  The correction reaches the real raw request
+   provenance query before classifier events have a normalized provider ID.
+
+2. =--p3-durable-control-prompt= at =2073--2083= adds 400 synthetic context rows
+   to each append-control user prompt.  The real public prompt call at
+   =3317--3324= receives that text as ordinary durable user history.
+   The static baseline and curation prompts remain unchanged, and every native
+   request remains captured/classified.  This supplies a durable growing source
+   even when ephemeral tool results correctly expire between turns.
+   No provider body override, new carrier selector, semantic weakening,
+   omitted request or relaxed growing-reuse predicate is introduced.
+
+The 400-row body is a concrete diagnostic size, not a proof that either model's
+next observed control will pass.  The new run must still show increasing
+actual total input, the unchanged native prefix, and the required cache-read
+advances above the conservative baseline.  A new decrease, unavailable
+counter or inadequate advance remains nonqualifying; adjust/localize the
+scenario before interpreting such a control as an external P3 verdict.
+
+** Complete current coverage and gates
+
+All Review 16 source/architecture dispositions carry except the two reopened
+C5/control cells, now cleared by the accounting and durable-source corrections.
+AR1--4 and R14-F1/F2/F3/R15-F1 remain closed.
+C1/C2 trusted adapter policy, C3 actual native semantic projections and replay,
+C4 lifetime/custody/persistence, C5 all-request provenance/reconstruction, and
+C6 conservative repeated-keep plus summary/erase predicate are cleared at the
+repository-controlled level.  Normal carriers remain none.  There is no
+remaining required source unknown or activated source follow-up.
+
+Exact-revision credential-free E2E evidence:
+=100 selected, 73 pass, 27 expected provider/config skips, 0 unexpected=,
+from =e2e-live-diagnostics-fix.log:106--112=.
+
+Canonical =2869/2869= and configured =9/9= coverage otherwise carries through
+unchanged production/test dependencies.  One canonical source-reading
+dependency needed explicit invalidation: the SQL-only structural fixture
+reads =e2e/e-live-e2e-test.el=.  Reviewer reran exactly
+=e-chat-sql-only-structure-test-focused-fixtures-are-sql-shaped= against the
+settled source; it passed =1/1= with zero unexpected and exit 0.
+No broad equivalent gate was repeated.
+The changed producer and shared helper are covered by the complete new
+100-test E2E gate; configured native test/runner dependencies remain unchanged.
+
+All fourteen prior architecture answers carry.  Changed questions remain
+cleared: Q4 keeps accounting/scenario ownership in existing evidence helpers;
+Q8 adds only synthetic disposable session history; Q9 accepts bounded
+diagnostic input necessary for a real growing control; Q10 retains genuine
+lifetime projection semantics; Q13 preserves raw negative/invalid observations;
+Q14 uses actual normalizer/join and the affected structural/E2E proof.
+No registry, public knob, core policy owner or production qualification state
+is introduced.
+
+** External boundary and reviewer actions
+
+Fresh candidate P3 controls/efficiency remain unrun at this corrected identity.
+A candidate pass still requires the separately admitted unpublished normal
+selector, exact source gates/independent review and complete wrapper-free P3
+before identical selection enters shipped source.
+Public API credentials remain absent and production curation unavailable.
+No current/universal cache benefit, historical Board cause or Done claim is
+made.
+
+Reviewer performed source/fixture inspection, raw JSON validation, filesystem
+plan-content hashing and one justified affected structural test.
+No provider call, Git command, repository edit or user Emacs/Board/store
+operation occurred.  Only this private leaf artifact was authored.
+The prior raw live logs were unnecessary; actual JSON records supplied the
+needed nonsecret counters, identities, native hashes and classifications.
+
+log-read: /private/tmp/e-p3-parent-20261007/e2e-live-diagnostics-fix.log:106--112.
