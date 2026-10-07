@@ -1324,7 +1324,8 @@ Anthropic reports fresh input separately from total context.  Other current
 cache providers report their total in `:input-tokens'."
   (let ((provider (or (plist-get event :provider-id)
                       (plist-get event :provider))))
-    (if (equal (format "%s" provider) "anthropic")
+    (if (or (eq (plist-get event :adapter) 'anthropic)
+            (equal (format "%s" provider) "anthropic"))
         (or (let ((context (plist-get event :context-input-tokens)))
               (when (numberp context) context))
             (let ((fresh (plist-get event :input-tokens))

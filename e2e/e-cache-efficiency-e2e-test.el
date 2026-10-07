@@ -813,6 +813,18 @@ Return its cache classification."
       (should (eq (plist-get record :durable-input-first-divergence-type)
                   'initial)))))
 
+(ert-deftest e-cache-efficiency-e2e-test-configured-anthropic-input-total ()
+  "A configured provider name cannot turn fresh tokens into total context."
+  (let* ((request '(:adapter anthropic :provider eng-ai-gateway-opus-5-5))
+         (usage '(:input-tokens 4 :cached-input-tokens 20497
+                  :cache-creation-input-tokens 65 :context-input-tokens 20566))
+         (joined (car (e-cache-efficiency-e2e--join-request-usage
+                       (list request) (list usage)))))
+    (should (= (plist-get joined :provider-total-input-tokens) 20566))
+    (should (= (e-live-e2e--cache-total-input-tokens joined) 20566))
+    (cl-remf joined :context-input-tokens)
+    (should (= (e-live-e2e--cache-total-input-tokens joined) 20566))))
+
 (defun e-cache-efficiency-e2e--tool-register (registry &optional steps)
   "Register a sequential probe with substantial reproducible output.
 STEPS defaults to the original three-step public-API scenario."
@@ -2058,6 +2070,17 @@ STEPS defaults to the original three-step public-API scenario."
    ((string-match-p "P3-REUSE-ERASE\\|P3-FRESH-ERASE" prompt) 'reuse-erase)
    (t 'interim-or-extra)))
 
+(defun e-cache-efficiency-e2e--p3-durable-control-prompt (prompt)
+  "Append synthetic durable history to a P3 append-control PROMPT."
+  (if (string-prefix-p "P3-APPEND-CONTROL" prompt)
+      (concat prompt "\nSynthetic durable append-only history:\n"
+              (mapconcat
+               (lambda (index)
+                 (format "p3-durable-control-row-%04d synthetic append-only history evidence"
+                         index))
+               (number-sequence 1 400) "\n"))
+    prompt))
+
 (defun e-cache-efficiency-e2e--p3-package-projection (package)
   "Return the accepted semantic projection type for P3 PACKAGE."
   (let* ((promotion (plist-get package :promotion))
@@ -3291,7 +3314,9 @@ STEPS defaults to the original three-step public-API scenario."
                           "P3-REUSE-SUMMARY. Call cache_probe with step 1 and then step 2; do not curate these probe results. Reply P3-REUSE-SUMMARY-OK."
                           "P3-CURATE-ERASE. Read source-key source-four with read_p3_source. Erase only the returned source label, with empty keep and summaries. Reply P3-ERASE-OK."
                           "P3-REUSE-ERASE. Call cache_probe with step 1 and then step 2; do not curate these probe results. Reply P3-REUSE-ERASE-OK."))
-                 (let* ((result
+                 (let* ((prompt (e-cache-efficiency-e2e--p3-durable-control-prompt
+                                 prompt))
+                        (result
                          (e-live-e2e--prompt-batch-before-deadline
                           harness session-id prompt deadline))
                         (answer (e-live-e2e--assistant-content result))
