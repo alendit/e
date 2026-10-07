@@ -1694,11 +1694,11 @@ rebuild before warming."
                            (e-live-e2e--cache-total-input-tokens previous))
                   (throw 'p3-result "history-not-growing"))
                 (unless (and (>= cached (+ static-ceiling granularity))
-                             (or pair-counted
-                                 (>= cached
-                                     (+ (plist-get previous
-                                                   :cached-input-tokens)
-                                        granularity))))
+                             (if pair-counted
+                                 (>= cached (- (plist-get previous :cached-input-tokens)
+                                               granularity))
+                               (>= cached (+ (plist-get previous :cached-input-tokens)
+                                             granularity))))
                   (throw 'p3-result "static-prefix-only"))
                 (push event reads)
                 (when (and (= (length reads) 2) (not pair-counted))
@@ -1714,7 +1714,8 @@ rebuild before warming."
                     ('summary
                      (setq summary-pairs (1+ summary-pairs)))
                     ('erase
-                     (setq erase-pairs (1+ erase-pairs))))))))
+                     (setq erase-pairs (1+ erase-pairs))))))
+                (setq last-reusable-read cached)))
            ((eq type 'curation)
             (let ((projection (plist-get event :projection-change))
                   (before
@@ -2176,6 +2177,35 @@ MATERIAL-PHASES defaults to both summary and erase, in that order."
                     :carrier-available nil :provider-id 'openai
                     :evidence evidence)
                    "carrier-unavailable"))
+    (let* ((extra-warm (copy-tree evidence))
+           (tail (copy-tree (car (last extra-warm)))))
+      (setf (plist-get tail :provider-request-id) "extra-warm"
+            (plist-get tail :provider-request-ordinal) 999
+            (plist-get tail :input-tokens) 63000
+            (plist-get tail :cached-input-tokens) 16384)
+      (setq extra-warm (append extra-warm (list tail)))
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :carrier-available t :provider-id 'openai :evidence extra-warm)
+                     "pass"))
+      (setf (plist-get tail :cached-input-tokens) 4224)
+      (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                      :carrier-available t :provider-id 'openai :evidence extra-warm)
+                     "static-prefix-only")))
+    (let* ((higher-floor (copy-tree evidence))
+           (curation-index (seq-position higher-floor
+                                         (seq-find
+                                          (lambda (e) (equal (plist-get e :curation-id) "keep2"))
+                                          higher-floor)))
+           (tail (copy-tree (nth (- curation-index 2) higher-floor))))
+      (setf (plist-get tail :provider-request-id) "higher-warm-floor"
+            (plist-get tail :provider-request-ordinal) 999
+            (plist-get tail :input-tokens) 28000
+            (plist-get tail :cached-input-tokens) 24576)
+      (setq higher-floor (append (seq-take higher-floor (1- curation-index))
+                                 (list tail) (nthcdr (1- curation-index) higher-floor)))
+      (should-not (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                          :carrier-available t :provider-id 'openai :evidence higher-floor)
+                         "pass")))
     (let* ((cold-interim (copy-tree evidence))
            (request (seq-find (lambda (event)
                                (eq (plist-get event :phase) 'curation-interim))

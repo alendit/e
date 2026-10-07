@@ -420,7 +420,7 @@ isolated candidate wrapper can be scoped without caller authority."
                           'environment-api-key
                         'unknown))))
     (list :provider provider
-          :endpoint (or base-url (e-openai-provider-base-url profile))
+          :endpoint (or base-url (plist-get profile :base-url))
           :model (e-openai-provider-model profile
                                           (plist-get options :model))
           :auth-mode auth-mode

@@ -3323,3 +3323,231 @@ registry or production selector changed. The prior fourteen architectural
 self-check dispositions carry: adapters own identity/wire selection; E2E owns
 disposable proof state and provider effects. User Emacs/Boards/store remain
 unchanged. Adapter source use requires a restart, which was not performed.
+
+#+title: Feature 98 Review 14
+#+startup: overview
+
+* Review 14: Independent partial P3 source Tick
+
+** Decision and exact identity
+
+Three confirmed actionable findings prevent =source-fixed-point= and prevent
+admission of this runner as a trustworthy external P3 qualification producer.
+The original P3-AR1--AR4 corrections are established at their owning seams;
+their changed dependents reveal the three findings below.  No normative
+contract change or production-positive selector is admitted.
+
+Exact reviewed clean revision:
+=ed3f5eac5a434b4c2ecf4338896a5940b3414c31=.
+Implementation comparison is =c8607e84..ed3f5eac=, with unchanged adapter
+pre-implementation source baseline =cda222a7= and admitted plan identity
+=af6b8d142e93ee9941e632664df4ede1b53d4a70=.
+F98-G1/C1--C6, DP1 and normative P3 remain the authority.
+Prior whole-scope production/cache/core proof carries except where the new
+capability identity helper or P3 evidence producer invalidates a dependency.
+
+** Findings, in correction order
+
+*** TODO R14-F1 High/P1: extra post-curation requests can lose reusable history and still pass
+
+Owner: =e2e/e-live-e2e-test.el:1695--1710=, with the corresponding P3 evidence
+producer/consumer tests.
+
+After two post-curation read advances, =pair-counted= becomes true.
+The next request's cached-read predicate uses =(or pair-counted ...)=,
+bypassing both further advancement and continuity with the previous request.
+It requires only the original static ceiling plus granularity.
+=last-reusable-read= also stops updating after that pair, so a later curation
+can use an older, smaller floor despite newer observed reusable history.
+
+Independent pure actual-classifier proof at this exact revision:
+the existing identity/provenance-complete fixture returns =pass=.
+Append one copied final erase-reuse event with a fresh request ID/ordinal,
+same route/turn/history, total input =63000= and read =4224=.
+The stronger variant also appends a native semantic item and changes the
+native/history hashes, preserving the prior shared prefix; it likewise passes.
+The preceding event has total =62000= and read =12288=; there is no new
+curation/material boundary.  The classifier still returns =pass=.
+Thus roughly 8k previously reusable tokens can disappear from an ordinary
+append-only request without invalidating qualification.  This violates the
+conservative all-request P3 history-reuse contract, rather than representing
+a permitted miss at a genuine summary/erase boundary.
+
+Smallest correction: after the qualifying pair, every additional reuse
+request must retain the previous reusable read within provider granularity
+or meet the ordinary growing-reuse advance condition.  Retain/update the
+actual last reusable observation for the next curation.  Do not suppress the
+extra request, grant a larger tolerance, or reset history solely because the
+minimum pair has already been counted.
+
+Required proof: the exact complete-identity tail-loss witness must reject;
+a legitimate extra warm request remains usable evidence.  Include an
+extra request before the next keep to prove the next keep's floor derives
+from the most recent observed reusable history.  Missing, failed and cold
+extras must remain conservative.
+
+*** TODO R14-F2 Medium/P2: incomplete profile identity throws instead of remaining unavailable
+
+Owner: =lisp/adapters/openai/e-openai-profile.el:401--433=, especially =:endpoint=
+at line 424 and its new unconditional use at =788--793=.
+
+=e-openai-profile--context-capability-identity= invokes the validating
+=e-openai-provider-base-url= accessor when =base-url= is absent.
+That accessor at =379--385= signals when a profile lacks =:base-url=.
+The preexisting trusted capability query accepts incomplete conformance
+profiles and can conservatively return unavailable fields/carrier none.
+The new helper now runs even when its computed identity is ignored.
+
+Independent direct pure query using a Responses profile with auth mode
+but no endpoint yields:
+=(e-openai-provider-invalid "Provider profile is missing :base-url")=.
+The completed credential-free gate consequently loses external evidence
+records in five finalizer/auth-scenario tests; the raw finalizer catches
+the error rather than emitting the expected negative record.
+This is a real compatibility/evidence-routing regression.
+
+Smallest correction: the pure identity helper should preserve a missing
+endpoint as nil, using the provided effective URL or raw profile field.
+Keep required URL validation at actual backend/native dispatch boundaries.
+A missing identity must not match a supported scoped carrier grant.
+Do not fabricate a URL, weaken endpoint/auth/requester gates, or modify
+fixtures to hide missing configuration.
+
+Required proof: incomplete profile capability queries remain conservative;
+the five negative/finalizer record tests pass unchanged; actual native
+dispatch still rejects invalid endpoints; missing identity cannot obtain
+the candidate carrier.
+
+*** TODO R14-F3 Medium/P2: a caught scenario failure can be labeled semantic pass
+
+Owner: =e2e/e-cache-efficiency-e2e-test.el:3270--3283,3331--3391= and emitted
+semantic/failure fields at =3408--3415=.
+
+The runner catches the overall run condition, then initializes
+=semantic-error= from that condition.  Its later package/native/join
+checks can nevertheless unconditionally set =semantic-result "pass"=
+at =3384=.  The efficiency predicate tests only that string at =3387=,
+ignoring the already caught condition.  The record can therefore contain
+semantic pass and a positive candidate efficiency alongside a non-nil
+semantic-failure, before the ERT finally signals the original error.
+
+A concrete trigger is an incorrect final OK marker after all required
+curation packages and native requests have completed successfully.
+The prompt/answer assertion throws, the outer run records that condition,
+but all later package/native/provenance checks can succeed.  This is
+not a provider-cache failure and must not be promoted into a passing
+semantic qualification artifact.
+
+Smallest correction: any caught scenario condition prevents positive
+semantic and efficiency classification while preserving all collected
+counters, native hashes and the typed failure.  Successful projection
+checks may be retained as a separate diagnostic observation; they cannot
+overwrite the overall scenario's failure.
+
+Required proof: a late wrong marker or other post-capture scenario error
+emits a complete negative/unconfirmed semantic record and cannot emit
+positive candidate efficiency.  The clean scenario retains its normal
+classification.  No body override or core-semantic change is needed.
+
+** Prior finding dispositions
+
+| Original finding | Exact current disposition |
+|------------------+---------------------------|
+| P3-AR1 contaminated/neutral semantic assertions | Closed at its owner. Live prompts use opaque source keys; actual native history includes Messages system/messages and Responses instructions/input. The public SQLite witness captures both real constructors, checks summary/erase first fresh boundaries and expected raw same-turn replay, and rejects stale native summary/missing native keep while neutral content remains correct. |
+| P3-AR2 unrelated growing-prefix hashes | Closed at its owner. Protected ordered positions derive from the preceding warm request/shared native prefix; semantic digests exclude cache-control metadata while full wire hashes remain. Changed/deleted/reordered positions fail. No equality is fabricated across independent growing groups. R14-F1 concerns the subsequent counter continuity, not this digest correction. |
+| P3-AR3 omitted chronology/copied identity/incomplete artifact | Closed at the original seams. Every request enters the stream with its own full route identity, authentic ordinal, status and usage provenance; intervening/replay phases remain visible. Unique response/frame/provider/consumer joins bind real packages and fresh boundaries. The report emits the exact content-free classifier stream plus joined requests. New dependent gaps are R14-F1 and R14-F3. |
+| P3-AR4 wrapper availability mislabeled qualification | Closed. The private wrapper supplies carrier availability; candidate efficiency and production qualification are distinct. All normal production carriers remain none; an isolated diagnostic pass cannot qualify shipped source. |
+
+Pure erase's consumed event may legitimately have nil promotion curation IDs.
+Current joins use the actual accepted erasure component's response/frame/consumer
+fields and unique preflight-to-consumption binding; they do not invent a
+promotion ID or relax the core gate.  This disposition is source-grounded.
+
+** Complete selected cell coverage
+
+| Cell | Current disposition |
+|------+---------------------|
+| F98-G1 / single admitted authority | Cleared/carried; the same user behavioral goal and plan/P3 predicate govern. |
+| C1/C2 automatic native cache selection, caller-policy removal | Cleared/carried for actual requests. Existing adapter owners retain policy; normal carrier remains none. The new incomplete-profile capability-query dependency is candidate R14-F2. |
+| Trusted backend/native effective route identity and wire derivation | Cleared for validated native routes: resolved model/effective endpoint/auth/API/transport/requester propagate through the existing owners. Incomplete query compatibility is candidate R14-F2. |
+| C3 chronology, semantic projection, retained native replay | Cleared at the inspected source/test seams. Real SQLite admission/commit and reserved Responses function-call decoding are exercised; native constructors for both shapes record every request, with expected same-turn replay versus subsequent fresh projection kept distinct. |
+| C4 lifetime/custody/persistence/public controls | Cleared/carried. No core, durable schema, registry, lifetime policy or public cache/qualification knob changes. Captures and bindings remain disposable test state. |
+| C5 identity/ordinal/counter attribution and reconstructability | Cleared at AR3's original seams; candidate R14-F2 affects negative external records and R14-F3 affects truthful scenario outcome. Native/request hashes and exact classifier evidence remain content bounded. |
+| C6 repeated keep plus summary and erase efficiency | Candidate R14-F1; all-request counter continuity is still required. Availability/candidate efficiency/production qualification separation is cleared. |
+| Failed/incomplete/extra observations | Candidate R14-F1/F3 for the proved cases. Existing missing/duplicate/identity/replay/incomplete-join negatives are retained. |
+| Supporting unpublished candidate/publication boundary | Cleared/carried; no normal production-positive selector was published. |
+| Required deterministic gates | Current configuration cleared 9/9; credential-free E2E gate failed with the five R14-F2-dependent record failures. Canonical gate was still running at the last supplied checkpoint and is not claimed passed. |
+| External candidate and wrapper-free P3 | Unknown/unrun. Source closure cannot substitute for external acceptance. |
+| Unchanged ordinary Anthropic/Codex P1/P2 and historical Board claims | Carried within their accepted identity/freshness scope; no new benefit, historical root cause, public API or P3 claim follows. |
+
+No other required selected source-review unknown was identified.  The pending
+canonical result and genuinely unrun external stages remain explicitly
+separate from the three proven source defects.
+
+** Architecture self-checks
+
+| Question | Current answer/delta |
+|----------+----------------------|
+| 1. Useful stopping point | Trusted plumbing/native evidence is useful, but this runner cannot yet qualify P3. Ordinary chat remains available with curation none. |
+| 2. Final direction | Automatic compatible cache policy and efficient, independently qualified curation. |
+| 3. Stable versus uncertain decisions | Existing core semantics are stable; route qualification stays isolated and reversible. |
+| 4. Owner/cohesion | Adapters own capability/wire identity; E2E producer/classifier own evidence and these bounded corrections. |
+| 5. Coupling/interface | No new owner or public control. R14-F2 restores the pure helper's conservative missing-identity behavior. |
+| 6. Dependency direction | Core continues querying backend capability; no provider dependency enters core. |
+| 7. Outward side effects | Provider calls remain adapters; diagnostic execution remains the private test shell. |
+| 8. State/lifetime | Request captures/preflight bindings are test-process/session local and disposable. |
+| 9. Performance | Complete bounded capture is required for truthful evidence; dropping observations is not an acceptable optimization. |
+| 10. Semantic substitution | Real native projection seams now substitute correctly; R14-F1/F3 still violate conservative classification/outcome behavior. |
+| 11. Compatibility | R14-F2 preserves incomplete-profile queries while native dispatch keeps validation. Unknown route/auth/requester fences remain. |
+| 12. Legacy removal | Misleading confirmed labels and selected-only streams were removed; remove the new post-pair bypass. |
+| 13. Errors | R14-F2 must retain negative records; R14-F3 must keep caught failures authoritative. |
+| 14. Independent focused proof | Native public SQLite and pure classifier/identity tests own the new proof. No unrelated core rewrite or weaker assertion is needed. |
+
+** Verification and gate boundary
+
+Reviewer verified clean exact HEAD, changed source, native/public test
+composition, full chronological producer/classifier joins, public finalizer
+dependencies, caller/production gates and the previous immutable AR artifact.
+Independent credential-free pure evaluations exited 0:
+the added cache-regression tail still returns pass, and the incomplete profile
+query raises the stated provider configuration error.  No broad suite was
+repeated.
+
+Parent-reported focused remediation evidence is 5 pass and one expected live
+skip; it is not external qualification.  Completed private current-config
+log line 5 says 9 tests and zero unexpected.  The credential-free E2E gate's
+supplied outcome is 97 selected, 65 pass, 27 expected skips, 5 failures;
+reviewer consumed the exact failing records at lines 108--264.  The canonical
+gate was running, so no final canonical count is asserted in this immutable
+record.
+
+No source/repository edit, Git write, provider call, user Emacs/Board/store
+mutation or production selector publication occurred during this review.
+Only this private leaf review artifact was authored.  The three findings
+remain blocking for source fixed-point/diagnostic admission.  Public OpenAI
+credentials remain unavailable; candidate P3, normal wrapper-free P3 and
+production restoration remain pending.  Feature status remains In-review.
+
+log-read: /private/tmp/e-p3-parent-20261007/e2e-deterministic.log:108--264;
+ /private/tmp/e-p3-parent-20261007/current-config.log:1--5.
+
+** R14 remediation checkpoint
+
+The ed3f5eac canonical run completed 2869 tests with one failure,
+=e-openai-test-profile-context-capabilities-are-conservative=, sharing R14-F2's
+missing endpoint cause. Current-config passed 9/9; credential-free E2E had the
+five finalizer failures recorded in Review 14.
+
+R14-F1 now enforces continuity on every later reuse and updates the actual
+last reusable observation. Extra warm, sharp tail loss and a higher observed
+floor before the next keep have focused witnesses. R14-F2 preserves nil in the
+pure identity query; actual native dispatch still validates the URL and a
+missing route cannot match the candidate grant. R14-F3 keeps a caught condition
+authoritative over both semantic success and candidate efficiency, while
+retaining the evidence and typed failure.
+
+The unchanged five external finalizer/auth tests now pass. Credential-free
+E2E validation selected 98 tests: 71 passed, 27 provider/configuration skips,
+zero unexpected. Focused P3 includes an added missing-route/native-dispatch
+negative. Exact-revision complete gates and independent Review 15 remain
+pending. No live provider request or production qualification has occurred.

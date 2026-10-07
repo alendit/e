@@ -1643,6 +1643,26 @@ STEPS defaults to the original three-step public-API scenario."
     (should-not (e-cache-efficiency-e2e--usage-join-complete-p duplicate-id))
     (should-not (e-cache-efficiency-e2e--usage-join-complete-p mixed))))
 
+(ert-deftest e-cache-efficiency-e2e-test-p3-missing-route-is-unavailable ()
+  "Missing endpoint identity stays conservative until real native dispatch."
+  (let* ((profile '(:wire-api responses :responses-transport http
+                   :env-key "E98_TEST_TOKEN" :default-model "gpt-6-sol"))
+         (options '(:model "gpt-6-sol"))
+         (identity (e-openai-profile--context-capability-identity
+                    profile options :provider 'p3-incomplete)))
+    (should-not (plist-get identity :endpoint))
+    (e-cache-efficiency-e2e--with-p3-candidate-capability
+     (plist-put (copy-tree identity) :endpoint "https://qualified.test/v1")
+     (lambda ()
+       (should (eq (plist-get (e-openai-profile-context-capabilities
+                              profile options :provider 'p3-incomplete)
+                             :reserved-effect-carrier) 'none))))
+    (let ((e-openai-model-providers (list (cons 'p3-incomplete profile))))
+      (should-error (e-openai--request-context
+                     :provider 'p3-incomplete :model "gpt-6-sol"
+                     :messages '((:role user :content "synthetic")) :options options)
+                    :type 'e-openai-provider-invalid))))
+
 (ert-deftest e-cache-efficiency-e2e-test-p3-candidate-is-route-scoped-at-native-owners ()
   "An ERT-only P3 candidate reaches native serializers for its exact route."
   (let* ((provider 'codex)
@@ -3207,6 +3227,23 @@ STEPS defaults to the original three-step public-API scenario."
       (e-harness-activity-unsubscribe harness subscription)
       (e-chat-sql-e2e-reset))))))
 
+(defun e-cache-efficiency-e2e--p3-measured-result
+    (semantic-result condition carrier-available provider evidence)
+  "Keep any caught CONDITION authoritative over candidate EVIDENCE."
+  (if (and (null condition) (equal semantic-result "pass"))
+      (e-live-e2e--classify-p3-curation-cache-evidence
+       :carrier-available carrier-available :provider-id provider :evidence evidence)
+    "unconfirmed-semantic-evidence"))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-late-failure-prevents-positive ()
+  "Complete warm evidence cannot override an incorrect final answer."
+  (let ((evidence (e-live-e2e-test--p3-cache-evidence)))
+    (should (equal (e-cache-efficiency-e2e--p3-measured-result
+                    "pass" nil t 'openai evidence) "pass"))
+    (should (equal (e-cache-efficiency-e2e--p3-measured-result
+                    "pass" '(ert-test-failed "wrong OK marker") t 'openai evidence)
+                   "unconfirmed-semantic-evidence"))))
+
 (ert-deftest e-cache-efficiency-e2e-test-p3-live-native-candidate ()
   "Run P3 through the selected native provider and ordinary public chat path."
   (e-live-e2e--require-enabled)
@@ -3381,14 +3418,12 @@ STEPS defaults to the original three-step public-API scenario."
                 (should (= (length captured) (length finishes)))
                 (should (= (length captured) (length usage-events)))
                 (should (e-cache-efficiency-e2e--usage-join-complete-p joined))
-                (setq semantic-result "pass"))
-            (error (setq semantic-error caught)))
+                (setq semantic-result (if semantic-error "failure" "pass")))
+            (error (setq semantic-error caught semantic-result "failure")))
           (setq candidate-efficiency-result
-                (if (equal semantic-result "pass")
-                    (e-live-e2e--classify-p3-curation-cache-evidence
-                     :carrier-available carrier-available
-                     :provider-id provider-id :evidence classifier-evidence)
-                  "unconfirmed-semantic-evidence"))
+                (e-cache-efficiency-e2e--p3-measured-result
+                 semantic-result semantic-error carrier-available
+                 provider-id classifier-evidence))
           (e-cache-efficiency-e2e--report-evidence
            (list :scenario "p3-live-native-candidate"
                  :repository-revision (e-live-e2e--repository-revision)
