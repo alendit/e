@@ -3102,7 +3102,19 @@ STEPS defaults to the original three-step public-API scenario."
                    (e-cache-efficiency-e2e--p3-bound-consumed-events
                     (e-live-e2e--activity-of-type
                      harness session-id 'context-frame-consumed))))
+              (should (> (length consumed) 4))
               (dolist (native-requests (list joined anthropic-joined))
+                (should
+                 (= (length
+                     (delete-dups
+                      (mapcar
+                       (lambda (package)
+                         (plist-get
+                          (e-cache-efficiency-e2e--p3-fresh-request-after-curation
+                           native-requests package curation-events consumed)
+                          :consumed-event))
+                       curations)))
+                    4))
                 (dolist (package curations)
                   (should (eq (plist-get
                                (e-cache-efficiency-e2e--p3-fresh-request-after-curation
@@ -3371,9 +3383,14 @@ STEPS defaults to the original three-step public-API scenario."
                 (should (= (length packages) 4))
                 (should (equal projections '(keep keep summary erase)))
                 (should (= (length response-events) 4))
-                (should (= (length consumed-events) 4))
                 (should (= (length fresh-boundaries) 4))
                 (should (cl-every #'identity fresh-boundaries))
+                (should (= (length
+                            (delete-dups
+                             (mapcar (lambda (boundary)
+                                       (plist-get boundary :consumed-event))
+                                     fresh-boundaries)))
+                           4))
                 (should (cl-some
                          (lambda (item)
                            (and (eq (plist-get item :kind) 'exact)

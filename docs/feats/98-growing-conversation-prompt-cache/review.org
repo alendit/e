@@ -3551,3 +3551,157 @@ E2E validation selected 98 tests: 71 passed, 27 provider/configuration skips,
 zero unexpected. Focused P3 includes an added missing-route/native-dispatch
 negative. Exact-revision complete gates and independent Review 15 remain
 pending. No live provider request or production qualification has occurred.
+
+#+title: Feature 98 Review 15
+#+startup: overview
+
+* Review 15: Independent R14 closure and consumption-boundary Tick
+
+** Decision and identity
+
+R14-F1/F2/F3 are closed at exact clean revision
+=311c0cb129bd9aeb15c9761c411e6e690f0595ce=.
+One newly proved runner-only finding, R15-F1, prevents
+=deterministic-fixed-point= and diagnostic admission despite passing gates.
+No provider cache-plus-curation result, production availability or Done
+claim is made.
+
+Incremental comparison: =ed3f5eac..311c0cb1=.
+Original selected implementation scope remains =c8607e84..HEAD=;
+F98-G1/C1--C6/DP1 and admitted supporting plan identity
+=af6b8d142e93ee9941e632664df4ede1b53d4a70= are unchanged.
+Carry Review 14's complete source/architecture coverage and AR1--4 closures,
+except the newly challenged consumed-event cardinality seam.
+
+** R14 finding closure
+
+| Finding | Independent source disposition |
+|---------+--------------------------------|
+| R14-F1 extra reuse loses cache after the qualifying pair | Closed. The classifier at =e-live-e2e-test.el:1694--1718= now requires extra requests to retain the preceding reusable read within granularity, while keeping both qualifying advances. Every rebuilt/reuse observation updates =last-reusable-read=. Focused witnesses retain extra warm reuse, reject the exact sharp tail loss and reject a new keep below a higher observed preceding floor. |
+| R14-F2 incomplete profile endpoint throws | Closed. The pure identity helper at =e-openai-profile.el:424= uses the explicit effective URL or raw profile field, preserving missing identity as nil. A new public test at =e-cache-efficiency-e2e-test.el:1646--1665= proves conservative query behavior, denial of the supported scoped grant, and unchanged validation at actual native dispatch. The five external finalizer/auth tests retain their assertions and pass in the complete credential-free gate. |
+| R14-F3 caught scenario failure overwritten by pass | Closed. Actual runner projection checks preserve caught error as semantic failure. =--p3-measured-result= at =3227--3243= requires both nil condition and semantic pass before invoking the predicate. The complete warm-evidence/late-wrong-marker witness cannot produce positive efficiency. Reporting still retains collected counters and the typed failure. |
+
+No contract relaxation, caller policy knob, core semantic change, positive
+normal selector, registry or persistent qualification state accompanies these
+closures.  Normal production carriers remain none.
+
+** TODO R15-F1 Medium/P2: total consumed-frame count is mistaken for accepted curation count
+
+Owner: =e2e/e-cache-efficiency-e2e-test.el:3374=, with the actual public SQLite
+lifecycle test at =2817--3225=.
+
+The live producer collects every durable =context-frame-consumed= event,
+then asserts =(length consumed-events)=4=.  The binding helper retains
+ordinary events.  Core =e-harness-context-lifetime-complete-response= at
+=e-harness-context-runtime.el:1084--1123= emits this event for each completed
+live frame; it does not restrict emission to accepted curation packages.
+
+Independent bounded public/native witness on this exact revision:
+the existing credential-free SQLite lifecycle test passes 1/1 and captures
+both native constructors.  Observing its unchanged durable collector yields:
+
+| Observation | Count |
+|-------------+-------|
+| All consumed-frame events | 17 |
+| Events with accepted curation activity projection | 4 |
+| Events with promotion curation IDs | 3 |
+
+The erase package legitimately has no promotion curation IDs.
+Consequently the raw total-count assertion rejects a valid lifecycle before
+efficiency can be measured.  This is a repository runner defect, not a valid
+provider/cache product-contract failure.  Passing canonical/E2E gates cannot
+make the live producer admissible while this assertion remains.
+
+Smallest owning correction: preserve all consumed events and validate/count
+the four distinct consumed events already bound uniquely to accepted package,
+response, frame and consumer identities.  Use those real boundaries, including
+pure erase; do not filter on non-nil promotion IDs or discard ordinary
+consumption observations.  Keep the all-request chronological evidence and
+the ordinary events available for attribution.
+
+Required proof: the public SQLite/native lifecycle records all 17 events and
+exactly four distinct accepted curation-bound consumptions, including erase.
+A missing or duplicate package/response/frame/consumer binding must remain
+conservative.  The live runner must use that same validated-count helper or
+relation rather than an untested raw-total assertion.
+
+** Selected deterministic coverage
+
+| Cell | Current disposition |
+|------+---------------------|
+| F98-G1, single authority and admitted plan relation | Cleared/carried. |
+| C1/C2 automatic native policy, caller-control removal | Cleared/carried. R14-F2's changed incomplete-query dependency is now cleared. |
+| Trusted effective backend/native endpoint/model/auth/API/transport/requester | Cleared/carried for validated native routes, with conservative incomplete identity preserved. |
+| C3 real public admission/commit and native replay/projection | Cleared/carried, including opaque prompts and both constructors. R15-F1 affects counting these actual completions, not their core semantics. |
+| C4 lifetime/custody/persistence/public control | Cleared/carried. No changed core or durable storage owner. |
+| C5 own identity/ordinals, complete joins, content-free reconstruction | Cleared/carried except confirmed candidate R15-F1 at consumed-event cardinality. |
+| C6 repeated keep and both summary/erase efficiency predicate | R14-F1 cleared. Actual candidate classification still requires native semantics and conservative complete evidence; R15-F1 blocks trustworthy execution. |
+| Failed/extra/incomplete observation outcome | R14-F3 cleared; raw observations remain preserved. R15-F1 must distinguish total observations from accepted-package observations. |
+| Private candidate versus production qualification | Cleared/carried; all shipped carriers none and no normal selector published. |
+| Exact deterministic gates | Cleared: canonical 2869/2869; current-config 9/9; credential-free E2E 99 selected, 72 pass, 27 expected skips, zero unexpected. |
+| External candidate P3 and wrapper-free P3 | Unknown/unrun; no provider calls yet. |
+| Existing ordinary P1/P2 records | Carried only as bounded historical evidence under their identity/freshness limits; no new/current cache benefit or historical Board cause inferred. |
+
+All required incremental source review work is complete.  R15-F1 is the
+remaining concrete source finding; external unrun capability is a separate
+unknown, not a replacement for that finding.
+
+** Architecture self-checks
+
+The fourteen Review 14 answers carry with these current dispositions:
+
+| Question | Current answer |
+|----------+----------------|
+| 1. Useful stopping point | Trusted plumbing/evidence improves the project; the remaining cardinality bug prevents live diagnostic admission. |
+| 2. Final direction | Automatic compatible caching plus independently qualified efficient curation. |
+| 3. Uncertain decisions | Endpoint qualification stays isolated and reversible; no speculative owner/registry. |
+| 4. Ownership | Existing adapters own capability/wire identity; the runner owns accepted-event counting and classification. |
+| 5. Coupling | R14-F2 restores pure query compatibility; narrow boundary evidence remains the producer/consumer interface. |
+| 6. Dependency direction | Core still queries backend capability, without provider dependencies entering core. |
+| 7. Side effects | External work remains in adapters/test shell; none occurred in review. |
+| 8. State/lifetime | Captures/preflight bindings are disposable test/session state. |
+| 9. Performance | Keeping all bounded evidence is necessary; a correct accepted subset can be derived without dropping ordinary events. |
+| 10. Semantic substitution | R14 continuity/outcome defects are closed; R15-F1 still narrows a valid real lifecycle incorrectly. |
+| 11. Compatibility | Missing identity stays unavailable; actual dispatch validates. Unknown route/auth/requester fences remain. |
+| 12. Legacy removal | The post-pair bypass and misleading confirmed label are gone; replace the raw-total curation assertion. |
+| 13. Errors | Caught scenario failures remain authoritative and negative records are emitted; valid ordinary consumption must not become a semantic error. |
+| 14. Focused proof | Real public/native SQLite count witness owns this final seam; no unrelated production/core test changes are needed. |
+
+** Verification and boundary
+
+Reviewer inspected the complete changed source delta and relevant actual
+runner call sites, helpers, focused witnesses and core emission owner.
+The new concrete cardinality concern justified one bounded credential-free
+public SQLite/native test, which passed 1/1 and produced the counts above.
+An initial evaluation form had a syntax error; the corrected isolated command
+ran successfully.  No broad suite or provider run was repeated.
+
+Exact gate summaries consumed:
+- =canonical-final.log:3788--3792=: 2869/2869, zero unexpected.
+- =current-config-final.log:1--4=: 9 tests, zero unexpected.
+- =e2e-final.log:103--112=: 99 selected, 72 pass, 27 skips, zero unexpected.
+
+No repository/source edit, Git write, provider call or user
+Emacs/Board/store mutation occurred.  Only this private leaf artifact was
+authored.  The disposable SQL test is not user runtime evidence.
+No =deterministic-fixed-point=, =capability-confirmed= or Done follows while
+R15-F1 remains open.  Production curation remains unavailable, public API
+credentials absent, and both candidate/normal P3 evidence stages pending.
+
+log-read: /private/tmp/e-p3-parent-20261007/canonical-final.log:3788--3792;
+ /private/tmp/e-p3-parent-20261007/current-config-final.log:1--4;
+ /private/tmp/e-p3-parent-20261007/e2e-final.log:103--112.
+
+
+** R15 remediation checkpoint
+
+The live runner retains every consumed-frame event and requires four distinct
+accepted package/response/frame/consumer-bound consumptions, including pure
+erase. The same distinct relation is exercised by both native constructors
+in the public SQLite lifecycle fixture, which also proves ordinary consumed
+frames remain in the full stream. Canonical and current-config gates on
+311c0cb1 carry because this correction changes only the E2E runner.
+
+Credential-free E2E after the correction selected99:72 pass,27 expected
+provider/configuration skips,zero unexpected. Review16 source closure is
+pending; no provider request or production qualification yet.
