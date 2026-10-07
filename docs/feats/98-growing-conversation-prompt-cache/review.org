@@ -3705,3 +3705,134 @@ frames remain in the full stream. Canonical and current-config gates on
 Credential-free E2E after the correction selected99:72 pass,27 expected
 provider/configuration skips,zero unexpected. Review16 source closure is
 pending; no provider request or production qualification yet.
+
+#+title: Feature 98 Review 16
+#+startup: overview
+
+* Review 16: Independent consumed-curation source closure
+
+** Decision and exact identity
+
+=deterministic-fixed-point= for the selected repository-controlled P3
+producer/source scope at clean
+=ecf50a908a3a6d3fb3de1c5da31d8da2b304b109=.
+R15-F1 is closed; no P0--P3 source finding or required deterministic unknown
+remains in the incremental scope plus carried complete Review 15 coverage.
+This admits the isolated candidate diagnostic runner.  It does not establish
+external cache-plus-curation capability, admit a normal positive selector,
+restore production curation, or make Feature 98 Done.
+
+Incremental comparison: =311c0cb1..ecf50a90=.
+Original selected implementation scope remains =c8607e84..HEAD=.
+F98-G1/C1--C6/DP1 are unchanged; the actual current plan blob is the admitted
+=af6b8d142e93ee9941e632664df4ede1b53d4a70=.
+The complete delta changes only the E2E runner/test and immutable review ledger.
+A later review-artifact-only insertion does not invalidate the source decision.
+
+** R15-F1 closure and proof
+
+The live runner retains the complete consumed-event collection.
+At =e-cache-efficiency-e2e-test.el:3383--3398= it first requires four complete
+fresh boundaries and verifies they are non-nil, then requires four distinct
+=:consumed-event= values obtained from those already validated boundaries.
+It no longer requires the total ordinary-plus-curation event count to be four.
+
+The unchanged boundary helper requires unique response and consumed-event
+matches, unique consumer request, matching turn/frame/frame-consumer
+identities, accepted component fields, same-turn replay and the expected first
+fresh turn.  Missing/duplicate/ambiguous bindings cannot produce a complete
+boundary.  Distinct-event checking additionally rejects reuse of one consumed
+event for multiple packages.
+
+The public SQLite/native lifecycle test at =3102--3134= exercises exactly the
+same distinct accepted-consumption relation for both native captures.
+It explicitly requires more than four total consumed events and four distinct
+package-bound consumed events, then verifies every boundary is unique-complete.
+This protects the independently observed valid case: 17 total consumptions,
+four accepted curations, and only three promotion-ID consumptions.
+Pure erase remains included through its actual response/frame/consumer join;
+no non-nil promotion ID filter is introduced.
+
+This correction changes the evidence owner's interpretation of observations,
+not core lifetime emission, accepted semantics, provider wire data or carrier
+policy.  All raw events and every request remain available to the classifier.
+R15-F1 is closed without narrowing the valid lifecycle.
+
+** Current finding and cell dispositions
+
+| Cell/finding | Current disposition |
+|--------------+---------------------|
+| P3-AR1--AR4 | Closed/carried from Review 14/15; no owning source change. |
+| R14-F1 extra reuse continuity and most recent floor | Closed/carried; classifier unchanged. |
+| R14-F2 conservative missing endpoint and native validation | Closed/carried; profile/native owners unchanged. |
+| R14-F3 authoritative caught semantic failure | Closed/carried; outcome helper and reporting unchanged. |
+| R15-F1 total versus accepted consumption cardinality | Closed at both live producer and actual public/native witness. |
+| F98-G1/C1/C2 automatic native policy and trusted identity | Cleared/carried. No caller cache control or positive normal selector. |
+| C3 native projection, actual public curation/replay/chronology | Cleared/carried, with corrected complete boundary counting. |
+| C4 lifetime/custody/persistence | Cleared/carried; core and persistence trees unchanged. |
+| C5 all-request identity/ordinal/counter provenance and content-free reconstruction | Cleared, including accepted consumption attribution. |
+| C6 repository predicate, repeated keep plus summary/erase, truthful unavailable state | Cleared deterministically; actual external capability remains unconfirmed. |
+| Missing/duplicate/failed/extra observations | Cleared/carried. Unique complete boundary and distinct accepted-event checks remain conservative. |
+| Private wrapper versus normal publication | Cleared/carried; production carriers remain none. |
+| Required deterministic gates | Cleared under the dependency identity described below. |
+| External candidate P3 / wrapper-free P3 / production restoration | Unknown/unrun, separately classified; no provider call has occurred. |
+| Public API capability and historical Board cause | No new claim; public API credentials remain absent and historical cause remains unknown. |
+
+** Gate identity and verification
+
+The new exact-revision credential-free E2E gate at =ecf50a90= reports
+99 selected tests: 72 pass, 27 expected provider/configuration skips,
+zero unexpected.  Reviewer consumed
+=/private/tmp/e-p3-parent-20261007/e2e-consumed-fix.log:104--110=.
+
+Canonical 2869/2869 and configured 9/9 results at exact =311c0cb1= carry:
+the full =311c0cb1..ecf50a90= diff contains only
+=e2e/e-cache-efficiency-e2e-test.el= and the review ledger.
+=lisp/=, =test/=, the shared =e-live-e2e-test.el=, configured test file and
+configured runner are unchanged.  The configured runner explicitly selects
+=e-current-config-e2e-test.el= and the unchanged Anthropic S7 fixture;
+it does not select the cache-efficiency E2E file.
+The unchanged Eldev configuration adds that file to the test set only when
+=E_E2E= is set outside CI; ordinary canonical test dependencies do not load it.
+Consequently neither gate's material source/test dependency identity changed.
+The changed E2E dependency was revalidated by its complete exact-revision
+99-test gate, rather than inferred from older evidence.
+
+Reviewer independently verified clean exact HEAD, the complete two-file delta,
+actual plan blob, changed producer/assertions, unchanged unique boundary owner
+and gate dependency partition.  No equivalent broad suite was repeated.
+Previous exact gate summaries remain preserved in Review 15; no current
+provider success is inferred from expected live skips.
+
+** Architecture disposition
+
+All fourteen Review 15 self-check answers carry.
+The changed dispositions are: Q1 now has a useful, source-admissible isolated
+diagnostic stopping point; Q10 accepts the real ordinary-plus-curation
+lifecycle without narrowed cardinality; Q13 preserves ordinary events rather
+than misclassifying them as failure; Q14 now proves the same accepted-event
+relation through the actual public/native SQLite witness.
+Q2--Q9 and Q11--Q12 retain their recorded answers: existing adapters/evidence
+owners, narrow interfaces, correct dependency direction, disposable local
+state, unchanged core semantics/compatibility and no new abstraction,
+configuration surface or publication side effect.
+No architectural follow-up or deferred source correction remains.
+
+** External boundary
+
+All production curation capabilities remain none/unconfirmed and unavailable.
+The next isolated diagnostic may measure candidate efficiency; its result
+must remain distinct from normal production qualification.  A candidate
+positive still requires the admitted unpublished normal-source selector,
+exact gates/independent review and complete wrapper-free P3 evidence before
+identical selection can enter shipped source.
+
+External P3 is unrun, public API credentials absent, and bounded older P1/P2
+records retain only their original identity/freshness scope.  No historical
+Board root cause, universal hit-rate benefit, current external capability,
+production restoration or Done claim follows.
+
+This reviewer made no repository/source edit, Git write, provider call or
+user Emacs/Board/store operation.  Only this private leaf artifact was authored.
+
+log-read: /private/tmp/e-p3-parent-20261007/e2e-consumed-fix.log:104--110.
