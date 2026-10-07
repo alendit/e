@@ -3346,8 +3346,8 @@ STEPS defaults to the original three-step public-API scenario."
              (lambda ()
                (dolist (prompt
                         '("P3-STABLE-BASELINE. Reply exactly P3-BASELINE-OK."
-                          "P3-APPEND-CONTROL-ONE. Call cache_probe once with step 1, then reply P3-CONTROL-ONE-OK."
-                          "P3-APPEND-CONTROL-TWO. Call cache_probe once with step 1, then reply P3-CONTROL-TWO-OK."
+                          "P3-APPEND-CONTROL-ONE. Call cache_probe once with step 1; do not curate the probe result. Reply P3-CONTROL-ONE-OK."
+                          "P3-APPEND-CONTROL-TWO. Call cache_probe once with step 1; do not curate the probe result. Reply P3-CONTROL-TWO-OK."
                           "P3-CURATE-KEEP-ONE. Read source-key source-one with read_p3_source. Keep the exact observed fact for its returned label, with empty summaries and erase. Reply P3-KEEP-ONE-OK."
                           "P3-REUSE-KEEP-ONE-A. Call cache_probe once with step 1; do not curate the probe result. Reply P3-REUSE-KEEP-ONE-A-OK."
                           "P3-REUSE-KEEP-ONE-B. Call cache_probe once with step 2; do not curate the probe result. Reply P3-REUSE-KEEP-ONE-B-OK."

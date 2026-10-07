@@ -4272,3 +4272,145 @@ runtime update is claimed.
 Reviewer authored only this private artifact. Log-read:
 =/private/tmp/e-p3-parent-20261007/e2e-final-producer-fix.log:109–112=;
 =/private/tmp/e-p3-parent-20261007/canonical-structural-final.log:150–154=.
+
+#+title: Feature 98 Review 20
+#+startup: overview
+
+* Review 20: Independent controlled native P3 evidence disposition
+
+** Identity and decision
+
+Independently inspected actual =opus-evidence3.json= and =codex-evidence3.json=
+under =/private/tmp/e-p3-parent-20261007/=. Both identify revision
+=ae39a1f1d2f3956d88eb064a527216231633fcb9=, the documentation-only
+successor of admitted source =99fe727c=. Plan identity
+=af6b8d142e93ee9941e632664df4ede1b53d4a70= and F98-G1/C1–C6/DP1
+remain unchanged. Subsequent working-source instruction edits are outside this
+evidence review and require their own bounded source admission.
+
+Opus is a valid bounded negative for the current native cache-plus-curation
+candidate: exact keeps relocate facts into the native system prefix and lose
+the previously reusable conversation cache. Codex is conservatively
+unqualified because autonomous control curations invalidate its nominal
+uncurated append control. Neither result restores production capability.
+There is no complete external fixed point or full-feature Done.
+
+** Opus: controlled semantic pass and actual prefix/cache failure
+
+Record timestamp =2026-10-07T17:27:45Z=, elapsed 298.271 seconds;
+=eng-ai-gateway-opus-5-5=, =claude-opus-5-5=, Messages HTTP, configured
+gateway =/v1/messages= route. All 33 native requests have unique provider IDs
+and unique turn/ordinal identities, successful complete start/finish/usage
+joins, and one fixed effective route/static fingerprint. Semantic result is
+pass with exactly four accepted keep/keep/summary/erase packages. All four
+classifier curation events are accepted and unique-complete; both actual
+summary and erase material boundary records are present.
+
+The append control is valid: total input
+20551/30629/37126/40711/47208 and reads
+0/20547/30625/30625/40707. Durable user payload supplies real growth; the
+two above-ceiling advances establish reuse of growing context. This is not
+the earlier transient-only control.
+
+Keep-one protects four previously warm ordered semantic native items. Fresh
+request 9 preserves only the first one. Comparing request 5 to request 9,
+both full-wire and cache-metadata-stripped semantic hashes have the same
+one-item prefix. Keep-two protects eleven items from the previous reuse
+group; fresh request 16 preserves only the first two. The previous warm
+request 12 and fresh request 16 likewise share only two ordered full-wire
+and semantic items. These failures persist after the one-probe/durable-growth
+scenario correction and explain =protected-prefix-changed=.
+
+Bounded sentinel locations identify the relocation, without prompt contents:
+source-one is at item 9, role user, in consumer/replay requests 7–8; it appears
+at item 1, type text, in fresh request 9. Source-two is at item 16, role user,
+in requests 14–15; it appears at item 2, type text, in fresh request 16.
+Native ordering places Anthropic system blocks before Messages history.
+Source =e-context-lifetime-curation-messages= emits portable system messages
+for exact/summary items (=e-context-lifetime.el:2007–2020=), while the
+existing Anthropic =--system-blocks= projects neutral system messages into
+top-level system blocks (=e-anthropic.el:1311–1340=). The observed location
+and hash changes agree with this semantic projection/rendering composition.
+It is not merely moving cache-control metadata or an assumed gateway quirk.
+
+The actual cache consequence is substantial and repeated:
+
+| Boundary | Warm read | Fresh total | Fresh read | Fresh creation | Fresh uncached input |
+|----------+-----------+-------------+------------+----------------+----------------------|
+| Keep-one, control 5 → fresh 9 | 40707 | 48707 | 20443 | 28260 | 4 |
+| Keep-two, warm 12 → fresh 16 | 56307 | 64313 | 20443 | 43866 | 4 |
+
+Fresh total grows rather than dropping. Cache creation accounts for the
+rebuilt history; four uncached input tokens do not mean the request reused
+the whole growing conversation. Reading approximately the static prefix
+while repeatedly recreating 28k/44k tokens fails the repeated keep criterion.
+This is valid bounded candidate efficiency failure for this endpoint/model,
+native layout, current projection and revision. It does not establish
+universal provider behavior, historical Board cause, or a defect in the
+production fail-safe gate: production capability correctly remains unavailable.
+No identical Opus rerun or speculative provider adjustment is needed to
+confirm this already joined, semantic-pass negative.
+
+** Codex: invalid controlled scenario and bounded producer correction
+
+Record timestamp =2026-10-07T17:25:06Z=, elapsed 141.523 seconds;
+=gpt-6-sol=, managed ChatGPT auth, Responses WebSocket. All 33 native requests
+have unique complete successful joins and fixed route/static identity.
+However, six accepted packages comprise autonomous summary and erase during
+the append controls, then the intended keep/keep/summary/erase portfolio.
+The semantic result is failure and the measured result remains
+=unconfirmed-semantic-evidence=. The two extra controls have incomplete
+intended-scenario classifier joins; none may be silently discarded.
+
+At the reviewed source, the two append-control prompt strings ask for one
+probe and a marker but do not forbid curating the probe result. The reuse
+prompts explicitly prohibit it. Since candidate guidance exposes the actual
+curation tool, that omission permits actions which invalidate the intended
+uncurated growing control. Adding the same explicit prohibition to those two
+control strings is a bounded plan-preserving instruction correction, not
+fishing for a positive cache result. Preserve strict four-package rejection,
+normal tool/core semantics, full captures and all observed negative evidence.
+If the model still curates under the explicit controlled instructions, the
+attempt remains invalid/nonqualifying; do not remove its extra packages to
+manufacture acceptance.
+
+This record alone cannot establish the complete intended Codex P3 outcome.
+It is not a valid pass, and ERT process exit cannot change its semantic status.
+The previous Codex record's same-turn 30-item full-native-prefix preservation
+with cached input 26880→26240 remains an independently valid bounded negative
+observation; no new control instruction or subsequent success erases it.
+
+** Carried coverage and remaining status
+
+Carry Review 19 deterministic source coverage, gate dependencies, prior finding
+dispositions and all fourteen architecture answers for unchanged production
+owners. This review rebaselines C5 external validity and C6 qualification only.
+Opus's semantic/native material provenance cells are cleared, while its required
+efficient repeated-keep cell has a concrete negative. Codex controlled-scenario
+validity remains unresolved pending the bounded source correction and a fresh
+normal diagnostic. Normal-wrapper-free qualification/publication remains a
+separate requirement if a full candidate ever qualifies.
+
+All shipped curation declarations remain unavailable. Public OpenAI API
+credentials remain absent. No production selector, public knob, provider wire
+override, registry, core gate change or user-runtime update is authorized by
+these diagnostics. Preserve complete content-free records and the negative
+counterexamples. Do not claim universal cache improvement, a historical Board
+root cause, normal-production P3 acceptance or full-feature Done.
+
+Reviewer performed read-only source/JSON inspection and authored only this
+private artifact. No Git, provider, user Emacs, Board or store operation and
+no broad gate rerun occurred. Log-read: none; actual JSON evidence was used.
+
+** Codex controlled-instruction checkpoint
+
+Both append-control prompts now explicitly prohibit curating probe results,
+matching the existing reuse prompts. All extra packages remain rejected.
+The complete E2E gate is101 selected:74 pass,27 expected provider skips,
+zero unexpected. Canonical/configured source dependency coverage carries.
+
+Full content-free records are preserved in evidence/p3-opus55-20261007.json
+and evidence/p3-codex-gpt6sol-20261007-continuity.json. Their source revisions
+and timestamps remain unchanged. The first is a semantic-pass P3 efficiency
+negative; the second preserves the independently proved640-token read loss,
+not a whole-portfolio qualification result. Final controlled Codex run pending.
