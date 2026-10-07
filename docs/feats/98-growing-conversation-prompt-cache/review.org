@@ -3064,3 +3064,262 @@ Done, historical root cause, universal benefit or curation qualification is
 claimed.
 
 log-read: /private/tmp/e-board-cache-audit-76eac/codex-production-p1-p2-final.log:4--9.
+
+#+title: Feature 98 partial P3 acceptance review
+#+startup: overview
+
+* Decision and reviewed identity
+
+Four confirmed actionable findings block the candidate runner's external
+qualification use.  This is a targeted pre-acceptance review of settled partial
+implementation, not a fixed-point Tick or a production-capability decision.
+The admitted supporting plan remains implementation-plan-fixed-point at
+=af6b8d142e93ee9941e632664df4ede1b53d4a70=; none of the findings requires
+changing F98-G1/C1--C6, normative P3, or its keep/summary/erase requirements.
+
+Reviewed source HEAD/base: =c8607e8417b60233a0d856cb553e3b33f8ee5cfb= plus the
+settled nine-file working change.  Current identity-bearing working blobs:
+
+| Owner | Blob |
+|-------+------|
+| e2e/e-cache-efficiency-e2e-test.el | 7c6622674645971246cc869f3bf0bed42bb5908c |
+| e2e/e-live-e2e-test.el | d4d8b3012986fc685e2a238611b74e98f0188c62 |
+| Anthropic adapter | fd3eb533e4ccc0a4993111084ab87ccc0e6a8d0e |
+| OpenAI profile owner | bd5c88f368a31884b9ae49753448958a36bee472 |
+| OpenAI adapter | 665e2ecaa69406bba85c4bc62817dcce1acc2072 |
+| Dedicated Messages candidate config | 5f1c65c355a759f661ea295cb0601f0b3ee1dfe6 |
+
+* Ordered findings and smallest owning corrections
+
+** TODO P3-AR1 High/P1: contaminated assertions do not prove native projection
+
+The live prompts at =e-cache-efficiency-e2e-test.el:2619--2630= repeat the exact
+kept facts, raw summary source, raw erased source, and replacement summary in
+ordinary user history.  The tool emits the same sentinel facts at
+=1755--1777=.  At =1779--1782=, the presence helper searches the printed
+provider-neutral =:messages= field, despite its docstring calling this native
+history.  The live assertions at =2747--2763= use that helper.
+
+Consequently the raw summary/erase absence checks fail even when the intended
+tool source is correctly removed: their original user instructions still
+contain =P3-SUMMARY-RAW-THREE= and =P3-ERASE-RAW-FOUR=.  Conversely a retained
+user instruction can satisfy a keep/summary presence check even if the actual
+native request loses the curated fact.  Checking neutral messages also leaves
+a serialization/replay defect in captured =:native-body= undetected.
+
+Keep opaque source keys in user instructions and refer to the returned source
+label without repeating the fact or raw sentinel.  Put the unique raw facts
+only in synthetic tool results.  Assert against the captured actual native
+Messages/Responses history after the genuine fresh-projection boundary.
+Distinguish expected same-turn replay from the later projected history; do
+not erase or weaken mandatory replay to make this test pass.  Verify that a
+kept fact survives, the summary replaces its unique raw source, and the erased
+unique source disappears.  Do not rely only on a final OK marker.
+
+Minimum proof: run the actual constructors through a credential-free public
+SQLite curation composition for both native shapes, with uncontaminated
+prompts.  A deliberately stale native raw source must fail even if neutral
+messages are correct; a deliberately missing native kept/summary fact must
+also fail.  Same-turn raw replay and later projected absence must be separately
+identified by actual request IDs.
+
+** TODO P3-AR2 High/P1: whole-group prefix hashes cannot prove keep preservation
+
+At =2120--2139=, the prefix helper hashes the longest common native-item prefix
+within the supplied group.  At =2154--2155= the control group's hash becomes
+the initial history fingerprint.  At =2196--2197= a fresh later turn gets a
+new independently measured common-prefix hash, then =2205--2208= supplies the
+previous group's hash as the curation's before value.  The classifier at
+=e-live-e2e-test.el:1547--1567= correctly requires equal before/after
+fingerprints for a projection-preserving keep.
+
+Even an ideal keep with unchanged old history normally appends new turns
+between these groups.  For example control item sequences =[A B]= and
+=[A B C]= hash prefix =[A B]=, while fresh sequences =[A B C D]=,
+=[A B C D E]= and =[A B C D E F]= hash =[A B C D]=.  Existing =[A B]= is
+unchanged, but the producer submits different hashes and gets
+=projection-unconfirmed=.  Giving every request the same newly computed
+group hash does not establish continuity with the previously warm history.
+
+Measure an explicit preexisting, previously warmed ordered native prefix
+and its boundary/count before the transition.  Compare those same positions
+and content after the keep, allowing appended new facts outside that protected
+region.  For summary/erase, bind the affected source/projection boundary to
+the accepted package and record the new reusable history actually observed.
+Retain complete wire hashes separately from a defined semantic projection
+digest; moving cache-control metadata must not silently redefine the protected
+history.  If the actual native prefix changes or loses reuse, preserve that
+negative rather than manufacture equality.
+
+Minimum proof: an unchanged protected prefix with ordinary append growth
+passes attribution; changing, deleting or reordering a protected item fails.
+The witness must include the real before/after native requests and boundary
+indices, rather than injected equal strings.  Repeated keep/state cycles and
+both material transitions must still satisfy the unchanged conservative
+cache-read predicate.
+
+** TODO P3-AR3 High/P1: selected evidence drops requests and fabricates identity
+
+The evidence assembler at =2141--2225= emits one baseline, the append-control
+requests, and the first later top-level turn for each package.  Every request
+in the curation turns is omitted, including source reads, the curation request,
+and mandatory same-turn replay.  Extra/interim scenarios also disappear.
+Each emitted usage gets the single baseline =identity= rather than its own
+captured identity; =2227--2233= copies only counters.  Thus an endpoint/model/
+static-prefix mismatch on a later request cannot reach the classifier, and a
+failed/missing-counter/static-only request in an omitted turn cannot affect
+its result.
+
+The live caller at =2698--2714= invokes the classifier before its later
+complete-join semantic assertion.  The existing join predicate at =528--556=
+can reject missing/extra/ambiguous attribution, but it does not control this
+classification call.  A finish can be matched yet failed: the finish join
+records its status at =2060--2063=, while the complete-join predicate checks
+matching, not successful finish status.  Preserve semantic success and unknown
+counters separately; neither turns incomplete evidence into a positive.
+
+The content-free emitted report at =2768--2812= retains joined request rows,
+but only package counts, projection names and fresh-request IDs.  It omits
+accepted curation IDs, response-entry/consumption joins, exact classifier
+events, and measured before/after boundaries.  An independent consumer cannot
+reconstruct the asserted curation-to-request relation from this artifact.
+This also means that retaining raw rows in the report does not remedy dropping
+them from the classifier.
+
+Use one chronological provenance-preserving evidence stream containing every
+actual request and observed curation event.  Bind accepted package identity,
+response/consumer request, consumed frame, turn, and first fresh request using
+durable identities.  Distinguish same-turn replay, first fresh projection and
+subsequent reuse phases without suppressing intervening requests.  Copy each
+request's own identity, authentic provider ordinal, joined counters and finish
+status.  Make complete attribution/success/native semantic proof a prerequisite
+for a positive diagnostic result.  Unexpected, missing, failed or ambiguous
+observations must remain conservative.
+
+Emit the exact content-bounded evidence inputs and curation/boundary join
+records used by that decision, in addition to all raw counters/hashes.  Preserve
+unknowns as unknowns and retain a distinct semantic result.  No prompt, tool
+content, auth token or header value is needed.
+
+Minimum proof: extra same-turn request, failed finish, missing usage, duplicate
+curation/response/consumer identity, mismatched endpoint/model/static digest,
+and an unjoined extra usage all block a positive.  A realistic synthetic
+native/public SQLite transcript with both summary and erase must reconstruct
+the same result from its serialized evidence.  Include an omitted-request
+cold/static counterexample so selected warm requests cannot hide inefficiency.
+
+** TODO P3-AR4 Medium/P2: wrapper availability is reported as confirmed capability
+
+At =2701--2706=, =capability-confirmed= means only that the private wrapper
+granted at least once and every captured request offers the curation tool.
+That value gates the classifier at =2711--2714= and is emitted as
+=:capability-confirmed t= at =2784=.  The record separately says
+=:candidate-authority "ert-exact-route-wrapper"= and
+=:production-qualification "unavailable"=, but the confirmed label still
+assigns qualification authority to mere availability.  Plan step 3 explicitly
+requires distinct candidate authority, effective carrier availability and
+production qualification, and says a wrapper grant is not efficiency evidence.
+
+Represent this boolean as carrier availability or candidate carrier admission.
+Make the diagnostic predicate's prerequisite explicitly availability, with a
+separate result for measured candidate efficiency and a separate production
+qualification status.  A positive candidate measurement can support the next
+unpublished normal-code acceptance candidate; it cannot make current production
+qualified.  Keep all ordinary production declarations none.
+
+Minimum proof: a granted carrier with zero/missing/static-only reads reports
+available plus unconfirmed/negative efficiency, never confirmed capability.
+A candidate pass remains diagnostic and cannot restore production availability;
+the wrapper-free, exact-revision P3 stage and independent evidence closure are
+still required.
+
+* Targeted coverage and current source dispositions
+
+| Cell | Current disposition |
+|------+---------------------|
+| Existing F98 authority and both material projection requirements | Cleared/carried. No contract change admitted; classifier now requires at least two keep cycles plus both summary and erase. |
+| Trusted adapter identity plumbing | Cleared for this targeted source review. Both existing owners derive endpoint, resolved model, auth/API/transport/requester; Anthropic backend/default/base/requester propagation and OpenAI native derivation replace independent hardcoded wire selection. |
+| Caller controls and normal publication | Cleared. Normal owners still return carrier none. Private wrapper equality grants only in the ERT process; copied caller carrier fields alone do not grant. No core policy, persistent registry or public opt-out is added. |
+| Direct native candidate composition | Cleared for tool availability only. Credential-free constructor tests check native tool publication and route/model negatives. This proves fields/publication, not native curation reuse or cache benefit. |
+| Real public curation lifecycle | Partially cleared. Synthetic SQLite test uses real admission/package/consumption paths and correctly distinguishes same-turn raw replay from fresh neutral projection. Actual native projection proof remains blocked by AR1. |
+| Fresh top-level boundary helper | Cleared at this limited boundary. It locates consumption by response ID, skips all requests of that curation turn and selects a later turn. AR3 requires stronger unique accepted identity joins and complete chronology around it. |
+| Repeated-keep preservation attribution | Candidate/confirmed finding AR2. |
+| Complete phase/counter/identity classification and external reconstructability | Candidate/confirmed finding AR3. |
+| Candidate availability versus qualification | Candidate/confirmed finding AR4. |
+| Native projection semantics | Candidate/confirmed finding AR1. |
+| External P3 / normal-code P3 / production capability | Unknown/unrun; ordinary production carrier remains none. |
+| Unchanged ordinary caching/core lifetime semantics | Carried; no selected source delta changes those owners. No new ordinary benefit or historical Board causality claim follows. |
+
+* Architecture disposition
+
+The existing adapter capability owners are the correct location for identity
+and native wire selection.  The P3 runner/evidence helpers own all four
+corrections; none requires another policy owner, core semantic change, registry
+or public configuration control.  Request-local identity, captures and counters
+have disposable test-process/session lifetime.  The source does not introduce
+a production positive selector.
+
+The fourteen repository self-checks retain prior whole-scope dispositions,
+with this incremental delta: (1) this stopping point improves trusted plumbing
+but cannot yet supply valid P3 qualification; (2) direction remains automatic
+compatible caching plus qualified curation; (3) route qualification is uncertain
+and isolated; (4) existing adapters and E2E evidence remain owners; (5) interfaces
+stay narrow, with AR2/AR3 correcting producer-consumer coupling; (6) dependency
+direction stays core-to-capability, not core-to-provider; (7) provider effects
+remain outward; (8) added state is disposable request/test evidence; (9) bounded
+diagnostic capture cost is appropriate, but avoiding necessary observations is
+not an optimization; (10) AR1--AR4 restore actual semantic/provenance substitution;
+(11) ordinary production unavailability and requester fences remain compatible;
+(12) remove misleading confirmed terminology/selected evidence shortcuts;
+(13) AR3 must retain failed/incomplete observations rather than bypass them;
+(14) native/public credential-free compositions must prove the corrected runner
+before provider diagnostics, with focused tests changing at their owning seams.
+
+* Verification and external boundary
+
+Read-only source/diff/working-blob inspection supplied the proofs above.
+No canonical suite, provider call, live Emacs/store/Board operation, repository
+edit or Git write was performed; only this private artifact was authored.
+Prior ordinary gates do not establish the new partial P3 producer.
+Provider cache efficiency, endpoint acceptance for curation, and complete
+wrapper-free P3 remain unresolved external questions.  No production positive,
+fixed-point Tick, full-feature Done or cache-efficiency claim is justified.
+
+log-read: none.
+
+* P3 runner remediation: parent acceptance checkpoint 2026-10-07
+
+The four P3-AR findings are remediated in the existing E2E evidence owners.
+Candidate authority remains private ERT scope; normal adapter carriers remain
+none. Native semantics inspect system/instructions and input/messages, with
+opaque source instructions. The public disposable SQLite witness decodes a
+native Responses curation envelope, commits all four real packages, and checks
+both native serializers, including stale/missing projection negatives.
+
+Every native request is retained in chronological classification, with its own
+route identity, authentic ordinal, successful finish and complete usage join.
+The runner captures the preflight response/provider/frame consumer relation;
+package fields come from accepted promotion/erasure components. Pure erasure
+has no promotion ID in the consumed event and is joined by its actual response,
+frame and consumer identities. Source keys resolve from provider-assigned tool
+calls. Semantic item digests exclude cache metadata; protected boundaries are
+measured from actually shared preceding warm requests and compared at the same
+positions, allowing later appended history. Cold interim requests cannot be
+hidden by later warm requests. Candidate carrier availability, measured
+candidate efficiency and production qualification remain distinct.
+
+Focused validation: 5 P3 tests passed, 1 live test skipped without E_E2E.
+This includes both native shapes through public SQLite, 21 complete request
+joins, four accepted packages and content-bounded evidence roundtrip; fixed
+prefix append/change/delete/reorder witnesses; failed/duplicate/extra finish,
+mixed route and hidden cold interim negatives. Broad exact-revision gates and
+independent source closure are pending. No provider has been called yet.
+
+The previous implementation attempts were partial, not acceptance. Parent
+finished the form boundaries, response joins, actual native body coverage and
+conservative interim classification after writer/subprocess settlement. No
+core lifetime semantics, public cache control, schema, durable qualification
+registry or production selector changed. The prior fourteen architectural
+self-check dispositions carry: adapters own identity/wire selection; E2E owns
+disposable proof state and provider effects. User Emacs/Boards/store remain
+unchanged. Adapter source use requires a restart, which was not performed.

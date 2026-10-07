@@ -1202,13 +1202,45 @@ last written boundary reachable after a growing suffix crosses the lookback."
       (list :type "ephemeral" :ttl ttl)
     (list :type "ephemeral")))
 
-(defun e-anthropic-context-capabilities (provider _options)
+(cl-defun e-anthropic--context-capability-identity
+    (provider options &key base-url model request-function requester)
+  "Return the effective non-secret Messages context identity.
+The backend and direct native request owners use the same resolved route data,
+so an isolated candidate wrapper can be scoped without caller authority."
+  (let* ((profile (e-anthropic-provider-profile provider))
+         (effective-base-url
+          (or base-url (e-anthropic--provider-base-url profile)))
+         (effective-model
+          (e-anthropic--provider-model
+           profile (or model (plist-get options :model))))
+         (auth-mode
+          (list (plist-get profile :auth)
+                (plist-get profile :auth-header)
+                (if (plist-get profile :env-key)
+                    'environment-token
+                  'unknown))))
+    (list :provider provider
+          :endpoint (e-anthropic-messages-url effective-base-url)
+          :model effective-model
+          :auth-mode auth-mode
+          :api 'messages
+          :transport (if request-function 'injected 'http)
+          :requester (or requester
+                         (if request-function
+                             'injected
+                           'messages-http-start)))))
+
+(cl-defun e-anthropic-context-capabilities
+    (provider options &key base-url model request-function requester)
   "Return provider API capabilities for Anthropic Messages PROVIDER.
 Cache controls belong to this native Messages adapter.  Curation stays
 unavailable until this endpoint/model has passed the separate P3 evidence."
-  (ignore provider)
-  '(:prefix-cache automatic-explicit
-    :reserved-effect-carrier none))
+  (let ((request-identity
+         (e-anthropic--context-capability-identity
+          provider options :base-url base-url :model model
+          :request-function request-function :requester requester)))
+    (ignore request-identity)
+    '(:prefix-cache automatic-explicit :reserved-effect-carrier none)))
 
 (defun e-anthropic--stable-cache-segment-p (segment)
   "Return non-nil when SEGMENT belongs to the cacheable stable prefix."
@@ -2611,10 +2643,10 @@ SSE events and is not emitted a second time."
         (funcall on-item item)))))
 
 (cl-defun e-anthropic--request-context
-    (&key provider base-url model messages options)
+    (&key provider base-url model request-function requester messages options)
   "Return adapter-local request context for PROVIDER request data.
-BASE-URL, MODEL, MESSAGES, and OPTIONS contribute to the encoded Messages
-request and backend-neutral context."
+BASE-URL, MODEL, REQUEST-FUNCTION, REQUESTER, MESSAGES, and OPTIONS contribute
+to the encoded Messages request and backend-neutral context."
   (let* ((profile (e-anthropic-provider-profile provider))
          (effective-options (copy-sequence options))
          (resolved-model (e-anthropic--provider-model
@@ -2632,7 +2664,12 @@ request and backend-neutral context."
                    (e-anthropic--headers profile)
                    beta-headers))
          (capabilities
-          (e-anthropic-context-capabilities provider effective-options))
+          (e-anthropic-context-capabilities
+           provider effective-options
+           :base-url base-url
+           :model resolved-model
+           :request-function request-function
+           :requester requester))
          (e-anthropic--context-curation-wire-active
           (and (plist-get effective-options :context-lifetime-enabled)
                (eq (plist-get capabilities :reserved-effect-carrier)
@@ -2680,7 +2717,16 @@ MODEL is the backend-local default when turn options omit `:model'."
      :normalize-error-details #'e-anthropic--normalize-error-details
      :context-capabilities
      (lambda (options)
-       (e-anthropic-context-capabilities provider options))
+       (let* ((profile (e-anthropic-provider-profile provider))
+              (resolved-model
+               (e-anthropic--provider-model
+                profile (or (plist-get options :model) model))))
+         (e-anthropic-context-capabilities
+          provider options
+          :base-url (or base-url (e-anthropic--provider-base-url profile))
+          :model resolved-model
+          :request-function request-function
+          :requester (if request-function 'injected 'messages-http-start))))
      :stream
      (cl-function
       (lambda (&key messages options on-item)
@@ -2689,6 +2735,10 @@ MODEL is the backend-local default when turn options omit `:model'."
                          :provider provider
                          :base-url base-url
                          :model model
+                         :request-function request-function
+                         :requester (if request-function
+                                        'injected
+                                      'messages-http-sync)
                          :messages messages
                          :options options))
                (requester (or request-function #'e-anthropic--http-request))
@@ -2717,6 +2767,10 @@ MODEL is the backend-local default when turn options omit `:model'."
                          :provider provider
                          :base-url base-url
                          :model model
+                         :request-function request-function
+                         :requester (if request-function
+                                        'injected
+                                      'messages-http-start)
                          :messages messages
                          :options options))
                (progress-decoder (e-anthropic--sse-decoder-create)))

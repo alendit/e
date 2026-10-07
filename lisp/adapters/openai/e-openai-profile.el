@@ -398,6 +398,36 @@ When PROVIDER is nil, use `e-openai-default-provider'."
     (other (signal 'e-openai-provider-invalid
                    (list (format "Unsupported :wire-api %S" other))))))
 
+(cl-defun e-openai-profile--context-capability-identity
+    (profile options &key provider base-url request-function)
+  "Return the effective non-secret context identity for PROFILE.
+The backend and native request boundaries derive the same identity so an
+isolated candidate wrapper can be scoped without caller authority."
+  (let* ((wire-api (e-openai-provider-wire-api profile))
+         (transport (if (eq wire-api 'responses)
+                        (or (plist-get options :responses-transport)
+                            (e-openai-profile-responses-transport profile))
+                      'http))
+         (requester (cond
+                     (request-function 'injected)
+                     ((and (eq wire-api 'responses)
+                           (eq transport 'websocket))
+                      'responses-websocket)
+                     (t 'http)))
+         (auth-mode (if (plist-get profile :requires-openai-auth)
+                        'managed-chatgpt-auth
+                      (if (plist-get profile :env-key)
+                          'environment-api-key
+                        'unknown))))
+    (list :provider provider
+          :endpoint (or base-url (e-openai-provider-base-url profile))
+          :model (e-openai-provider-model profile
+                                          (plist-get options :model))
+          :auth-mode auth-mode
+          :api wire-api
+          :transport transport
+          :requester requester)))
+
 (defun e-openai-profile-reasoning-summary (profile)
   "Return the validated Responses summary mode declared by PROFILE."
   (e-openai-profile--validate-reasoning-summary
@@ -758,10 +788,15 @@ injected requester for conformance tests."
               (copy-tree e-openai-profile--request-local-observation-delivery-map)
             'inherited))
          (model (e-openai-provider-model profile (plist-get options :model)))
+         (request-identity
+          (e-openai-profile--context-capability-identity
+           profile options :provider provider :base-url base-url
+           :request-function request-function))
          (cache-base-url (or base-url profile-base-url))
          (prefix-cache
           (e-openai-profile-cache-capability
            profile provider cache-base-url model)))
+    (ignore request-identity)
     (list :continuation
           (if identity-compatible
               (or (e-openai-profile--continuation-mode profile) 'none)

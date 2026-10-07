@@ -783,6 +783,105 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                  :parameters (:type "object"))))
       :tools))))
 
+(ert-deftest e-anthropic-test-context-identity-joins-backend-and-native-boundaries ()
+  "Messages derives one route identity at both boundaries and grants no carrier."
+  (let* ((provider 'p3-anthropic-identity)
+         (base-url "https://anthropic.test/v1")
+         (process-environment (copy-sequence process-environment))
+         (e-anthropic-model-providers
+          `((p3-anthropic-identity
+             :name "P3 identity fixture"
+             :base-url ,base-url
+             :auth bearer
+             :auth-header authorization
+             :env-key "E98_ANTHROPIC_IDENTITY_TOKEN"
+             :default-model "claude-opus-5-5"
+             :model-prefix "")))
+         (original-identity
+          (symbol-function 'e-anthropic--context-capability-identity))
+         identities
+         (backend (e-anthropic-backend-create :provider provider
+                                              :base-url base-url
+                                              :model "claude-opus-5-5")))
+    (setenv "E98_ANTHROPIC_IDENTITY_TOKEN" "synthetic-token")
+    (cl-letf (((symbol-function 'e-anthropic--context-capability-identity)
+               (lambda (&rest arguments)
+                 (let ((identity (apply original-identity arguments)))
+                   (push identity identities)
+                   identity))))
+      (should (eq (plist-get
+                   (e-backend-context-capabilities
+                    backend '(:model "claude-opus-5-5"))
+                   :reserved-effect-carrier)
+                  'none))
+      (let ((context
+             (e-anthropic--request-context
+              :provider provider :base-url base-url :model "claude-opus-5-5"
+              :requester 'messages-http-start
+              :messages '((:role user :content "probe"))
+              :options '(:model "claude-opus-5-5"
+                         :context-lifetime-enabled t
+                         :reserved-effect-carrier context-curate-wire
+                         :context-capabilities
+                         (:reserved-effect-carrier context-curate-wire)))))
+        (should (equal (plist-get context :url)
+                       "https://anthropic.test/v1/messages"))
+        (should-not
+         (seq-some
+          (lambda (tool) (equal (plist-get tool :name) "context-curate"))
+          (append
+           (plist-get (e-json-parse-string (plist-get context :body)) :tools)
+           nil))))
+      (should (= (length identities) 2))
+      (should (equal (car identities) (cadr identities)))
+      (should (equal (plist-get (car identities) :endpoint)
+                     "https://anthropic.test/v1/messages"))
+      (should (equal (plist-get (car identities) :model) "claude-opus-5-5"))
+      (should (eq (plist-get (car identities) :api) 'messages))
+      (should (eq (plist-get (car identities) :requester)
+                  'messages-http-start)))
+    (let* ((expected (e-anthropic--context-capability-identity
+                      provider '(:model "claude-opus-5-5")
+                      :base-url base-url :model "claude-opus-5-5"
+                      :requester 'messages-http-start))
+           (endpoint-change
+            (e-anthropic--context-capability-identity
+             provider '(:model "claude-opus-5-5")
+             :base-url "https://other.example/v1"
+             :model "claude-opus-5-5" :requester 'messages-http-start))
+           (model-change
+            (e-anthropic--context-capability-identity
+             provider '(:model "claude-sonnet-5-5")
+             :base-url base-url :requester 'messages-http-start))
+           (transport-change
+            (e-anthropic--context-capability-identity
+             provider '(:model "claude-opus-5-5")
+             :base-url base-url :request-function #'ignore
+             :requester 'injected))
+           (requester-change
+            (e-anthropic--context-capability-identity
+             provider '(:model "claude-opus-5-5")
+             :base-url base-url :requester 'messages-http-sync))
+           (wrong-auth-profile
+            (let ((e-anthropic-model-providers
+                   `((p3-anthropic-identity
+                      :name "P3 no-auth fixture"
+                      :base-url ,base-url :default-model "claude-opus-5-5"
+                      :model-prefix ""))))
+              (e-anthropic--context-capability-identity
+               provider '(:model "claude-opus-5-5")
+               :base-url base-url :requester 'messages-http-start))))
+      (dolist (variant (list endpoint-change model-change transport-change
+                             requester-change wrong-auth-profile))
+        (should-not (equal variant expected)))
+      (should (eq (plist-get
+                   (e-anthropic-context-capabilities
+                    provider '(:model "claude-opus-5-5" :api responses)
+                    :base-url base-url :model "claude-opus-5-5"
+                    :requester 'messages-http-start)
+                   :reserved-effect-carrier)
+                  'none)))))
+
 (ert-deftest e-anthropic-test-request-body-retains-native-tool-schema ()
   "Messages carries the native operation schema without reinterpretation."
   (let* ((body

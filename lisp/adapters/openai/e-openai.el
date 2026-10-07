@@ -178,10 +178,10 @@ field presence without retaining the ordinary session identity."
       metadata)))
 
 (cl-defun e-openai--request-context
-    (&key provider auth-file base-url model messages options)
+    (&key provider auth-file base-url model request-function messages options)
   "Return adapter-local request context for PROVIDER request data.
-AUTH-FILE, BASE-URL, MODEL, MESSAGES, and OPTIONS contribute to the encoded
-OpenAI request and backend-neutral context."
+AUTH-FILE, BASE-URL, MODEL, REQUEST-FUNCTION, MESSAGES, and OPTIONS contribute
+to the encoded OpenAI request and backend-neutral context."
   (e-openai-adapter-measure
    'openai.request-context
    (list :metadata (list :provider provider
@@ -255,6 +255,17 @@ OpenAI request and backend-neutral context."
             (effective-base-url
              (or base-url (e-openai-provider-base-url profile)))
             (effective-model (plist-get effective-options :model))
+            (context-capabilities
+             (e-openai-profile-context-capabilities
+              profile effective-options
+              :provider provider
+              :base-url effective-base-url
+              :request-function request-function))
+            (e-openai-profile--effective-context-curation-capability
+             (and (eq (plist-get context-capabilities
+                                 :reserved-effect-carrier)
+                      'context-curate-wire)
+                  'context-curate-wire))
             (codex-session-affinity
              (e-openai-profile-codex-session-affinity-selection
               profile effective-base-url wire-api session-id))
@@ -270,9 +281,6 @@ OpenAI request and backend-neutral context."
             (e-openai-profile--effective-cache-capability-evidence
              (e-openai-profile-cache-capability-evidence
               profile provider effective-base-url effective-model))
-            ;; No OpenAI or Codex adapter/API combination is confirmed for
-            ;; efficient cache-plus-curation behavior yet.
-            (e-openai-profile--effective-context-curation-capability nil)
             (reasoning-identity
              (when (eq wire-api 'responses)
                (e-openai-responses-reasoning-identity effective-options)))
@@ -529,6 +537,7 @@ default when turn options do not include `:model'.  The provider profile's
                            :auth-file auth-file
                            :base-url base-url
                            :model model
+                           :request-function request-function
                            :messages messages
                            :options options))
                  (websocket-p (and (not request-function)
@@ -582,6 +591,7 @@ default when turn options do not include `:model'.  The provider profile's
                            :auth-file auth-file
                            :base-url base-url
                            :model model
+                           :request-function request-function
                            :messages messages
                            :options options)))
             (cond

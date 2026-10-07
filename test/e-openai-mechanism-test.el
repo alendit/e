@@ -114,6 +114,80 @@
         (should (eq (plist-get injected :continuation) 'none))
         (e-openai-test--assert-observation-delivery injected nil)))))
 
+(ert-deftest e-openai-test-context-identity-joins-backend-and-native-boundaries ()
+  "Codex's trusted owner derives the same complete identity at both boundaries."
+  (let* ((provider 'codex)
+         (profile (e-openai-provider-profile provider))
+         (base-url (e-openai-provider-base-url profile))
+         (expected
+          (e-openai-profile--context-capability-identity
+           profile '(:model "gpt-6-sol" :responses-transport websocket)
+           :provider provider :base-url base-url))
+         (backend (e-openai-backend-create :provider provider
+                                           :model "gpt-6-sol"))
+         (original-identity
+          (symbol-function 'e-openai-profile--context-capability-identity))
+         identities)
+    (cl-letf (((symbol-function 'e-openai-profile--context-capability-identity)
+               (lambda (&rest arguments)
+                 (let ((identity (apply original-identity arguments)))
+                   (push identity identities)
+                   identity)))
+              ((symbol-function 'e-openai-codex-read-auth)
+               (lambda (&optional _auth-file)
+                 '(:tokens (:access_token "synthetic-access-token"))))
+              ((symbol-function 'e-openai-codex-auth-account-id)
+               (lambda (_auth) "synthetic-account-id")))
+      (should (eq (plist-get
+                   (e-backend-context-capabilities backend nil)
+                   :reserved-effect-carrier)
+                  'none))
+      (let ((context
+             (e-openai--request-context
+              :provider provider :messages '((:role user :content "probe"))
+              :options '(:model "gpt-6-sol" :session-id "p3-session"
+                         :reserved-effect-carrier context-curate-wire
+                         :context-capabilities
+                         (:reserved-effect-carrier context-curate-wire)))))
+        (should (equal (plist-get (plist-get context :body-data) :model)
+                       "gpt-6-sol"))
+        (should-not
+         (seq-some (lambda (tool)
+                     (equal (plist-get tool :name) "context-curate"))
+                   (append (plist-get (plist-get context :body-data) :tools)
+                           nil))))
+      (should (= (length identities) 2))
+      (should (equal (car identities) expected))
+      (should (equal (cadr identities) expected)))
+    (should (eq (plist-get
+                 (e-openai-profile-context-capabilities
+                  profile '(:model "gpt-6-sol" :responses-transport websocket)
+                  :provider provider :base-url base-url)
+                 :reserved-effect-carrier)
+                'none))
+    (dolist (variant
+             (list
+              (e-openai-profile--context-capability-identity
+               profile '(:model "gpt-6-sol" :responses-transport websocket)
+               :provider provider :base-url "https://unknown.example/v1")
+              (e-openai-profile--context-capability-identity
+               profile '(:model "gpt-6-luna" :responses-transport websocket)
+               :provider provider :base-url base-url)
+              (e-openai-profile--context-capability-identity
+               (plist-put (copy-sequence profile) :wire-api 'chat-completion)
+               '(:model "gpt-6-sol") :provider provider :base-url base-url)
+              (e-openai-profile--context-capability-identity
+               profile '(:model "gpt-6-sol" :responses-transport websocket)
+               :provider provider :base-url base-url :request-function #'ignore)
+              (e-openai-profile--context-capability-identity
+               profile '(:model "gpt-6-sol" :responses-transport http)
+               :provider provider :base-url base-url)
+              (e-openai-profile--context-capability-identity
+               (plist-put (copy-sequence profile) :requires-openai-auth nil)
+               '(:model "gpt-6-sol" :responses-transport websocket)
+               :provider provider :base-url base-url)))
+      (should-not (equal variant expected)))))
+
 
 (ert-deftest e-openai-test-public-gpt6-release-flavors-select-cache-policy ()
   "First-party GPT-6 aliases get the documented boundary and endpoint controls remain."

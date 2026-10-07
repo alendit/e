@@ -379,3 +379,34 @@ pass; missing counters, cold/expired caches, and changing prefixes remain
 unconfirmed.  No credential or prompt content is recorded.  P3 is separate:
 curation remains unavailable until repeated curation and material rebuilt-history
 reuse have accepted evidence for the effective adapter/API/model.
+
+The P3 producer is a separate live scenario.  It requires the exact checked-in
+route and uses only a context-free harness plus synthetic source and cache
+tools.  The test-only exact-route wrapper makes the reserved curation carrier
+available in that ERT process; its evidence does not qualify production
+curation.  The emitted record includes request/body hashes, bounded provider
+usage, native start/finish joins, accepted package counts, and fresh-projection
+request IDs.  It omits prompts, responses, tool results, credentials, and
+headers.  Run each route separately and keep the log private:
+
+#+begin_src sh
+(umask 077
+  E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-anthropic-p3.el \
+    eldev exec '(progn (load "e2e/e-cache-efficiency-e2e-test.el" nil nil t) (ert-run-tests-batch-and-exit "e-cache-efficiency-e2e-test-p3-live-native-candidate"))' \
+    > /private/tmp/e98-p3-opus55.log 2>&1)
+#+end_src
+
+#+begin_src sh
+(umask 077
+  E_E2E=1 E_E2E_CONFIG=e2e/e-e2e-config-openai-codex.el \
+    eldev exec '(progn (load "e2e/e-cache-efficiency-e2e-test.el" nil nil t) (ert-run-tests-batch-and-exit "e-cache-efficiency-e2e-test-p3-live-native-candidate"))' \
+    > /private/tmp/e98-p3-codex-gpt6-sol.log 2>&1)
+#+end_src
+
+The Messages route reads =ENG_AI_MODEL_GW_KEY= from the batch environment;
+the Codex route reads its managed authentication file.  No public OpenAI API
+credential is used.  Set =E_E2E_P3_TIMEOUT_SECONDS= to increase the default
+15-minute scenario deadline.  A semantic pass with cold, missing, or mismatched
+usage remains cache-unconfirmed; the classifier reports success only when the
+native request identities and usage joins prove two keep/reuse cycles plus
+summary and erase rebuilds.
