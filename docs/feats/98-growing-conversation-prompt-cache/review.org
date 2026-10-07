@@ -4005,3 +4005,151 @@ The prior raw live logs were unnecessary; actual JSON records supplied the
 needed nonsecret counters, identities, native hashes and classifications.
 
 log-read: /private/tmp/e-p3-parent-20261007/e2e-live-diagnostics-fix.log:106--112.
+
+* Review 18: corrected isolated P3 external diagnostics
+
+** Identity and decision
+
+Reviewed the actual content-free records =codex-evidence2.json= and
+=opus-evidence2.json= in =/private/tmp/e-p3-parent-20261007/=. Both identify
+revision =65ee5f9df6c851c439616a993d46d20d7f5a15e0=, the documentation-only
+successor of independently reviewed source =3771e4b8=. The admitted plan blob
+remains =af6b8d142e93ee9941e632664df4ede1b53d4a70=; F98-G1/C1–C6 and DP1
+are unchanged. This review covers external validity and the consequential
+producer boundaries, not acceptance of subsequent working-source edits.
+
+Neither diagnostic qualifies P3 or authorizes an available production selector.
+The initial Codex =interim-history-cache-lost= result does not prove loss of an
+unchanged durable prefix. A separate same-turn Codex observation does prove
+bounded cache-continuity loss with the complete previous native prefix retained.
+Opus has semantic failure and cannot provide positive cache-plus-curation
+qualification. Required producer corrections and controlled external evidence
+remain open; no full source/external fixed point or feature Done is established.
+
+** Actual evidence and claim boundaries
+
+Codex: timestamp =2026-10-07T17:02:15Z=, elapsed 130.224 seconds, managed
+ChatGPT auth, =gpt-6-sol=, Responses WebSocket, actual endpoint
+=wss://chatgpt.com/backend-api/codex/responses=. All 29 requests have complete
+successful start/finish/usage joins with unique request IDs and authentic
+within-turn ordinals; route and static fingerprint remain fixed. Semantic result
+is pass, and four core packages cover keep/keep/summary/erase. The growing
+control is valid: totals 13847/19901/23802/25957/29858 and reads
+0/13696/19712/19712/25856. This proves growth beyond the initial ceiling.
+
+The keep-one fresh/reuse requests 9–11 read 25856/26112/30080. Request 12
+then reads 25984, but its total falls from 34090 to 26356. Only the first 11
+of request 11's 18 native items survive at the same positions. Both full-wire
+and semantic item hashes show this boundary change. The declared keep-two
+protected 12-item prefix is not preserved in requests 12–17, including fresh
+request 15. Expiring probe output is consistent with this change; the exact
+token allocation of the 4096-read decrease is not proved by retained hashes.
+It is not a valid unchanged-whole-prefix counterexample.
+
+Separately, requests 28–29 belong to the same =reuse-erase= turn and preserve
+all 30 preceding full-wire native item hashes, also all semantic hashes, while
+appending three items. Input grows 31000→34901 and cached input falls
+26880→26240, a 640-token decrease exceeding the 128-token granularity.
+The preceding request 27→28 advances 26240→26880. There is no intervening
+curation or top-turn expiration in 28→29. This is a valid bounded negative
+cache-continuity observation on this endpoint/model/request shape. It fails the
+required material reuse portfolio even under the proposed plateau allowance.
+It does not establish the cause, general provider behavior, or that curation
+itself caused the loss. Keep this contradictory observation visible rather
+than attributing every negative counter to ephemeral expiration.
+
+Opus: timestamp =2026-10-07T17:06:36Z=, elapsed 387.807 seconds, configured
+=eng-ai-gateway-opus-5-5= route, =claude-opus-5-5=, Messages HTTP. All 29
+requests have successful joined usage. Growing control totals
+20501/30579/37076/40661/47158 and reads
+20497/20497/30575/30575/40657 are valid. Fresh keep-one reads 20393 after
+the 40657 control floor, but the repeated-cycle projection-preservation
+premise must be repaired before attributing this to lost unchanged history.
+The record reports =semantic-result: failure= and
+=candidate-efficiency-result: unconfirmed-semantic-evidence=. The reported
+forbidden erase source occurrence prevents qualification. Its origin is not
+proved by the content-free record; assistant quotation is a hypothesis until
+bounded native occurrence/role evidence establishes it.
+
+** Producer corrections and supporting-method admission
+
+Material boundary provenance is incomplete in the Codex record: both summary
+and erase classifier events have null acceptance/boundary evidence and an
+incomplete join, despite actual accepted core packages. The reviewed producer
+looked for provider tool-call name/ID/arguments on the outer archived message.
+=e-loop.el:1640–1653= stores those inside =:content=, and
+=e-harness-context-runtime.el:1148–1165= derives observation IDs from the
+inner provider call ID. Fixed synthetic IDs permitted the fixture-name fallback
+to conceal this mismatch. Correct the nested lookup and remove fixture-name
+authority; prove complete material joins with opaque provider-like call IDs.
+Parent's working correction is not accepted by this external review.
+
+The repeated keep scenario must preserve the previously measured reusable
+prefix across its turn boundaries. Large ephemeral probe outputs violate that
+premise. One probe per top turn with sufficiently large durable synthetic user
+appends is a plan-preserving replacement, subject to deterministic/public proof
+of the actual retained prefix and complete chronological request attribution.
+Group all contiguous same-scenario reuse turns, retain every usage and native
+capture, and do not lower a previous reusable floor merely to accommodate a
+genuine unchanged-prefix loss. Every fresh boundary and source package must
+remain uniquely joined. Durable growth does not itself prove prefix retention.
+
+Allowing a plateau within granularity before qualification is compatible with
+the normative requirement of two actual advances, provided that (1) every
+observation retains its previous reusable cache within granularity, (2) plateau
+observations never count as advances, (3) two distinct advances of at least
+128 tokens are required, and (4) all existing growth, static-ceiling, identity,
+semantic, projection and attribution checks remain. Do not reinstate the
+previous pair-counted bypass. Prove plateau/advance/advance passes and plateau
+without two advances, late decline, missing request and changed-prefix cases
+remain negative. Codex 28→29 remains negative under this amendment.
+
+A no-source-quotation instruction can isolate the intended Opus scenario;
+semantic source absence remains strict. Add bounded sentinel location evidence
+(native channel/item index/hash and origin, without source content) so another
+failure distinguishes retained source from quoted assistant content. No model
+obedience or source absence may be assumed from instructions alone.
+
+** Coverage, architecture and remaining status
+
+Carried unchanged Review 17 deterministic evidence, prior finding dispositions
+and all 14 architecture answers for production ownership, lifetime, native
+rendering, routing, adapter-local capability authority and enforcement. No
+production change is admitted here. C1–C4 runtime cells remain carried;
+C5 external producer/material provenance and C6 P3 qualification reopen on
+the concrete boundaries above. Candidate carrier availability is distinct from
+qualified capability. All production curation declarations remain unavailable;
+the exact candidate wrapper is not a production qualification result.
+
+The previously passing canonical/configured/credential-free gates establish
+their deterministic scopes, not external efficiency. Earlier invalid diagnostic
+attempts remain invalid. Public OpenAI API credentials remain absent. No
+historical Board cause, universal hit-rate benefit, first-party OpenAI P3,
+normal-production P3 acceptance, or user-runtime update is established.
+
+No provider, Git, user Emacs, Board, or store operation was performed by this
+review. Log-read: =/private/tmp/e-p3-parent-20261007/codex-live2.log:5=;
+the independently inspected JSON records are the evidence authority above.
+
+** Review18 remediation checkpoint
+
+The producer now resolves source names and provider call IDs from the actual
+archived tool-call content; fixture-name fallback is removed. The public
+SQLite fixture uses opaque call IDs unrelated to source keys and independent
+durable message IDs. It requires complete summary/erase material joins and
+rejects a foreign inner call ID through both native constructors. Its native
+synthetic counters now explicitly include context and creation components.
+
+One probe runs per reuse top-level turn, with durable synthetic user appends.
+The fresh group includes all contiguous same-scenario reuse turns. Every
+request remains in the chronological stream. A retained plateau cannot count
+as an advance; two genuine >=128 advances remain mandatory, and every
+observation must retain the immediately preceding read within granularity.
+The classifier tracks actual preceding observations separately from advances;
+late loss and insufficient advances remain negative.
+
+Strict native source absence remains unchanged. A no-source-quotation
+instruction isolates the scenario, while bounded synthetic sentinel item
+locations permit diagnosis if a source still occurs. No model obedience
+is assumed. Corrected actual tests and independent source admission remain
+pending. Production selectors remain none.

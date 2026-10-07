@@ -410,3 +410,12 @@ credential is used.  Set =E_E2E_P3_TIMEOUT_SECONDS= to increase the default
 usage remains cache-unconfirmed; the classifier reports success only when the
 native request identities and usage joins prove two keep/reuse cycles plus
 summary and erase rebuilds.
+
+Controls and reuse turns add durable synthetic user history. Each reuse turn
+calls one probe; consecutive turns for the same accepted curation form one
+measured reuse group. This avoids treating expired, unretained probe outputs
+as an unchanged old prefix. Every observed request must retain the previous
+reusable read within granularity, and each cycle must show two actual cache
+advances; a retained plateau counts no advance. Material source joins use the
+archived inner provider call ID, independently of durable message IDs. Bounded
+synthetic sentinel locations expose native item channels without their contents.

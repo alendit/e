@@ -2008,6 +2008,9 @@ STEPS defaults to the original three-step public-API scenario."
                 ;; assertions.  The report serializer removes both fields.
                 :messages (copy-tree messages t)
                 :native-body (copy-tree body t))))
+    (setq record
+          (plist-put record :synthetic-source-locations
+                     (e-cache-efficiency-e2e--p3-native-source-locations record)))
     (puthash session-id (append records (list record)) requests-by-session)
     context))
 
@@ -2028,8 +2031,11 @@ STEPS defaults to the original three-step public-API scenario."
     (e-capability-create
      :id 'cache-efficiency-p3-candidate
      :instructions
-     (mapconcat (lambda (index) (format "P3 stable policy rule %04d" index))
-                (number-sequence 1 1500) "\n")
+     (concat "Never quote synthetic source facts in assistant text. "
+             "Use source facts only in context-curate arguments. "
+             "Every final answer must contain only the requested OK marker.\n"
+             (mapconcat (lambda (index) (format "P3 stable policy rule %04d" index))
+                        (number-sequence 1 1500) "\n"))
      :tools
      (list #'e-cache-efficiency-e2e--p3-register-source-tool
            (lambda (registry)
@@ -2070,15 +2076,18 @@ STEPS defaults to the original three-step public-API scenario."
    ((string-match-p "P3-REUSE-ERASE\\|P3-FRESH-ERASE" prompt) 'reuse-erase)
    (t 'interim-or-extra)))
 
-(defun e-cache-efficiency-e2e--p3-durable-control-prompt (prompt)
-  "Append synthetic durable history to a P3 append-control PROMPT."
-  (if (string-prefix-p "P3-APPEND-CONTROL" prompt)
+(defun e-cache-efficiency-e2e--p3-durable-prompt (prompt)
+  "Append synthetic durable history to a P3 control or reuse PROMPT."
+  (if (or (string-prefix-p "P3-APPEND-CONTROL" prompt)
+          (string-prefix-p "P3-REUSE" prompt))
       (concat prompt "\nSynthetic durable append-only history:\n"
               (mapconcat
                (lambda (index)
                  (format "p3-durable-control-row-%04d synthetic append-only history evidence"
                          index))
-               (number-sequence 1 400) "\n"))
+               (number-sequence 1 (if (string-prefix-p "P3-REUSE" prompt)
+                                      300
+                                    400)) "\n"))
     prompt))
 
 (defun e-cache-efficiency-e2e--p3-package-projection (package)
@@ -2114,14 +2123,6 @@ STEPS defaults to the original three-step public-API scenario."
      (mapcar (lambda (source) (plist-get source :source-observation-id))
              erasure-sources))))
 
-(defun e-cache-efficiency-e2e--p3-source-key (package)
-  "Return the synthetic source key associated with accepted PACKAGE."
-  (let ((observation (car (e-cache-efficiency-e2e--p3-source-observation-ids
-                           package))))
-    (when (and (stringp observation)
-               (string-match "p3-tool-call-\\(source-[a-z-]+\\)" observation))
-      (match-string 1 observation))))
-
 (defun e-cache-efficiency-e2e--p3-source-fact (source-key)
   "Return the synthetic fact for SOURCE-KEY."
   (cdr (assoc source-key
@@ -2147,6 +2148,25 @@ STEPS defaults to the original three-step public-API scenario."
              and do (push (nth index hashes) digests))
     (list :indexes (vconcat (nreverse indexes))
           :semantic-item-sha256 (vconcat (nreverse digests)))))
+
+(defun e-cache-efficiency-e2e--p3-native-source-locations (request)
+  "Record synthetic sentinel locations without native content."
+  (let ((items (e-cache-efficiency-e2e--p3-native-history-items
+                (plist-get request :adapter) (plist-get request :native-body))))
+    (vconcat
+     (cl-loop for source-key in '("source-one" "source-two" "source-three" "source-four")
+              for fact = (e-cache-efficiency-e2e--p3-source-fact source-key)
+              collect
+              (list :source-key source-key
+                    :matching-items
+                    (vconcat
+                     (cl-loop for item in items
+                              for index from 0
+                              when (string-match-p (regexp-quote fact)
+                                                   (prin1-to-string item))
+                              collect (list :index index
+                                            :role (plist-get item :role)
+                                            :type (plist-get item :type)))))))))
 
 (defun e-cache-efficiency-e2e--p3-protected-prefix (request &optional prefix-items)
   "Bind a previously reused PREFIX-ITEMS boundary to warm REQUEST."
@@ -2204,14 +2224,15 @@ STEPS defaults to the original three-step public-API scenario."
           (let* ((observations (e-cache-efficiency-e2e--p3-source-observation-ids package))
                  (call (seq-find
                         (lambda (message)
-                          (and (eq (plist-get message :role) 'tool-call)
-                               (equal (plist-get message :name) "read_p3_source")
-                               (member (format "observation:tool-bundle:%s"
-                                               (plist-get message :id))
-                                       observations)))
+                          (let ((call (plist-get message :content)))
+                            (and (eq (plist-get message :role) 'tool-call)
+                                 (equal (plist-get call :name) "read_p3_source")
+                                 (member (format "observation:tool-bundle:%s"
+                                                 (plist-get call :id))
+                                         observations))))
                         (plist-get consumer :messages))))
-            (or (plist-get (plist-get call :arguments) :source-key)
-                (e-cache-efficiency-e2e--p3-source-key package))))
+            (plist-get (plist-get (plist-get call :content) :arguments)
+                       :source-key)))
          (source-fact (and source-key
                            (e-cache-efficiency-e2e--p3-source-fact source-key)))
          (before (and source-fact
@@ -2348,11 +2369,10 @@ STEPS defaults to the original three-step public-API scenario."
             ('curation-erase 'reuse-erase)))
          (fresh-group
           (and fresh
-               (seq-filter
+               (seq-take-while
                 (lambda (request)
-                  (equal (plist-get request :provider-request-turn-id)
-                         (plist-get fresh :provider-request-turn-id)))
-                requests)))
+                  (eq (plist-get request :user-scenario) expected-scenario))
+                (nthcdr (seq-position requests fresh) requests))))
          (same-turn-after-consumer
           (and consumer
                (let ((consumer-index (seq-position requests consumer)))
@@ -2906,7 +2926,8 @@ STEPS defaults to the original three-step public-API scenario."
                      (source-key (nth 1 action))
                      (operation (nth 2 action))
                      (tool-call-id (and source-key
-                                        (format "p3-tool-call-%s" source-key)))
+                                        (concat "call_"
+                                                (secure-hash 'sha256 source-key))))
                      (curation-call-id
                       (and source-key
                            (format "p3-curation-%s" source-key)))
@@ -2961,7 +2982,10 @@ STEPS defaults to the original three-step public-API scenario."
                        (list :type 'token-usage
                              :usage (list :input-tokens
                                           (+ 4096 (* request-count 1024))
-                                          :cached-input-tokens 0)))
+                                          :context-input-tokens
+                                          (+ 4096 (* request-count 1024))
+                                          :cached-input-tokens 0
+                                          :cache-creation-input-tokens 0)))
               (cond
                ((and action (not source-called-p))
                 (funcall on-item
@@ -3139,10 +3163,20 @@ STEPS defaults to the original three-step public-API scenario."
                        curations)))
                     4))
                 (dolist (package curations)
-                  (should (eq (plist-get
-                               (e-cache-efficiency-e2e--p3-fresh-request-after-curation
-                                native-requests package curation-events consumed)
-                               :join-status) 'unique-complete)))
+                  (let* ((boundary
+                          (e-cache-efficiency-e2e--p3-fresh-request-after-curation
+                           native-requests package curation-events consumed))
+                         (projection (e-cache-efficiency-e2e--p3-package-projection
+                                      package)))
+                    (should (eq (plist-get boundary :join-status) 'unique-complete))
+                    (when (memq projection '(summary erase))
+                      (let ((wrong (copy-tree (plist-get boundary :consumer-request) t)))
+                        (dolist (message (plist-get wrong :messages))
+                          (when (eq (plist-get message :role) 'tool-call)
+                            (plist-put (plist-get message :content) :id "call_other")))
+                        (should-not
+                         (e-cache-efficiency-e2e--p3-projection-boundary
+                          package wrong (plist-get boundary :request) projection))))))
                 (let* ((events (e-cache-efficiency-e2e--p3-classifier-evidence
                                 native-requests curations curation-events consumed
                                 (plist-get (car native-requests) :adapter)))
@@ -3153,6 +3187,14 @@ STEPS defaults to the original three-step public-API scenario."
                   (should (= (length (seq-filter
                                       (lambda (event) (eq (plist-get event :type) 'curation))
                                       events)) 4))
+                  (dolist (event (seq-filter
+                                 (lambda (event)
+                                   (and (eq (plist-get event :type) 'curation)
+                                        (memq (plist-get event :projection-change)
+                                              '(summary erase))))
+                                 events))
+                    (should (plist-get event :accepted))
+                    (should (plist-get event :projection-boundary-evidence)))
                   (should (equal events roundtrip))
                   (should-not (string-match-p "P3-KEEP-FACT\\|P3-SUMMARY-RAW"
                                               (prin1-to-string events)))
@@ -3307,14 +3349,18 @@ STEPS defaults to the original three-step public-API scenario."
                           "P3-APPEND-CONTROL-ONE. Call cache_probe once with step 1, then reply P3-CONTROL-ONE-OK."
                           "P3-APPEND-CONTROL-TWO. Call cache_probe once with step 1, then reply P3-CONTROL-TWO-OK."
                           "P3-CURATE-KEEP-ONE. Read source-key source-one with read_p3_source. Keep the exact observed fact for its returned label, with empty summaries and erase. Reply P3-KEEP-ONE-OK."
-                          "P3-REUSE-KEEP-ONE. Call cache_probe with step 1 and then step 2; do not curate these probe results. Reply P3-REUSE-KEEP-ONE-OK."
+                          "P3-REUSE-KEEP-ONE-A. Call cache_probe once with step 1; do not curate the probe result. Reply P3-REUSE-KEEP-ONE-A-OK."
+                          "P3-REUSE-KEEP-ONE-B. Call cache_probe once with step 2; do not curate the probe result. Reply P3-REUSE-KEEP-ONE-B-OK."
                           "P3-CURATE-KEEP-TWO. Read source-key source-two with read_p3_source. Keep the exact observed fact for its returned label, with empty summaries and erase. Reply P3-KEEP-TWO-OK."
-                          "P3-REUSE-KEEP-TWO. Call cache_probe with step 1 and then step 2; do not curate these probe results. Reply P3-REUSE-KEEP-TWO-OK."
+                          "P3-REUSE-KEEP-TWO-A. Call cache_probe once with step 1; do not curate the probe result. Reply P3-REUSE-KEEP-TWO-A-OK."
+                          "P3-REUSE-KEEP-TWO-B. Call cache_probe once with step 2; do not curate the probe result. Reply P3-REUSE-KEEP-TWO-B-OK."
                           "P3-CURATE-SUMMARY. Read source-key source-three with read_p3_source. Replace its observed source with one summary for the returned label; remove the RAW- marker from the source text and use the remaining text exactly. Reply P3-SUMMARY-OK."
-                          "P3-REUSE-SUMMARY. Call cache_probe with step 1 and then step 2; do not curate these probe results. Reply P3-REUSE-SUMMARY-OK."
+                          "P3-REUSE-SUMMARY-A. Call cache_probe once with step 1; do not curate the probe result. Reply P3-REUSE-SUMMARY-A-OK."
+                          "P3-REUSE-SUMMARY-B. Call cache_probe once with step 2; do not curate the probe result. Reply P3-REUSE-SUMMARY-B-OK."
                           "P3-CURATE-ERASE. Read source-key source-four with read_p3_source. Erase only the returned source label, with empty keep and summaries. Reply P3-ERASE-OK."
-                          "P3-REUSE-ERASE. Call cache_probe with step 1 and then step 2; do not curate these probe results. Reply P3-REUSE-ERASE-OK."))
-                 (let* ((prompt (e-cache-efficiency-e2e--p3-durable-control-prompt
+                          "P3-REUSE-ERASE-A. Call cache_probe once with step 1; do not curate the probe result. Reply P3-REUSE-ERASE-A-OK."
+                          "P3-REUSE-ERASE-B. Call cache_probe once with step 2; do not curate the probe result. Reply P3-REUSE-ERASE-B-OK."))
+                 (let* ((prompt (e-cache-efficiency-e2e--p3-durable-prompt
                                  prompt))
                         (result
                          (e-live-e2e--prompt-batch-before-deadline

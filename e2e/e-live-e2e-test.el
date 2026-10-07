@@ -1522,7 +1522,7 @@ rebuild before warming."
                    remaining prefix-identity
                    current-history-fingerprint last-reusable-read
                    seen-response-ids seen-consumer-ids seen-frame-ids
-                   pair-counted pending-replay-count
+                   pair-counted pending-replay-count previous-reuse
                    (keep-pairs 0) (summary-pairs 0) (erase-pairs 0))
       (unless carrier-available
         (throw 'p3-result "carrier-unavailable"))
@@ -1631,7 +1631,7 @@ rebuild before warming."
            ((eq type 'usage)
             (let* ((total (e-live-e2e--cache-total-input-tokens event))
                    (cached (plist-get event :cached-input-tokens))
-                   (previous (or (car reads) rebuilt)))
+                   (previous (or previous-reuse rebuilt)))
               (unless (e-live-e2e--p3-request-evidence-valid-p event)
                 (throw 'p3-result "incomplete-request-provenance"))
               (unless pending
@@ -1695,13 +1695,13 @@ rebuild before warming."
                            (e-live-e2e--cache-total-input-tokens previous))
                   (throw 'p3-result "history-not-growing"))
                 (unless (and (>= cached (+ static-ceiling granularity))
-                             (if pair-counted
-                                 (>= cached (- (plist-get previous :cached-input-tokens)
-                                               granularity))
-                               (>= cached (+ (plist-get previous :cached-input-tokens)
-                                             granularity))))
+                             (>= cached (- (plist-get previous :cached-input-tokens)
+                                           granularity)))
                   (throw 'p3-result "static-prefix-only"))
-                (push event reads)
+                (when (>= cached (+ (plist-get previous :cached-input-tokens)
+                                   granularity))
+                  (push event reads))
+                (setq previous-reuse event)
                 (when (and (= (length reads) 2) (not pair-counted))
                   (setq last-reusable-read
                         (plist-get (car reads) :cached-input-tokens)
@@ -1725,6 +1725,7 @@ rebuild before warming."
               (when (and pending (not pair-counted))
                 (throw 'p3-result "insufficient-post-curation-reuse"))
               (setq pending nil rebuilt nil reads nil pair-counted nil
+                    previous-reuse nil
                     pending-replay-count 0)
               (unless (and baseline
                            (eq (plist-get event :accepted) t)
@@ -2064,6 +2065,28 @@ MATERIAL-PHASES defaults to both summary and erase, in that order."
                 warm-turn fresh-turn
                 history next-history))))
     (nreverse evidence)))
+
+(ert-deftest e-live-e2e-test-p3-cache-plateau-requires-two-real-advances ()
+  "A retained plateau counts no advance and cannot hide a cache loss."
+  (let* ((evidence (e-live-e2e-test--p3-cache-evidence))
+         (plateau (copy-tree (nth 7 evidence))))
+    (setf (plist-get plateau :provider-request-id) "retained-plateau"
+          (plist-get plateau :provider-request-ordinal) 999
+          (plist-get plateau :input-tokens) 24000
+          (plist-get plateau :usage-provenance)
+          '(:input-tokens 24000 :cached-input-tokens 16384))
+    (setq evidence (append (seq-take evidence 8) (list plateau) (nthcdr 8 evidence)))
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :carrier-available t :provider-id 'openai :evidence evidence)
+                   "pass"))
+    (setf (plist-get (nth 9 evidence) :cached-input-tokens) 16384)
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :carrier-available t :provider-id 'openai :evidence evidence)
+                   "insufficient-post-curation-reuse"))
+    (setf (plist-get plateau :cached-input-tokens) 16000)
+    (should (equal (e-live-e2e--classify-p3-curation-cache-evidence
+                    :carrier-available t :provider-id 'openai :evidence evidence)
+                   "static-prefix-only"))))
 
 (ert-deftest e-live-e2e-test-p3-classifier-requires-ordered-attributed-reuse ()
   "P3 needs baseline attribution, two keeps, summary, and erase rebuilds."
