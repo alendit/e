@@ -4414,3 +4414,71 @@ and evidence/p3-codex-gpt6sol-20261007-continuity.json. Their source revisions
 and timestamps remain unchanged. The first is a semantic-pass P3 efficiency
 negative; the second preserves the independently proved640-token read loss,
 not a whole-portfolio qualification result. Final controlled Codex run pending.
+
+#+title: Feature 98 Review 21
+#+startup: overview
+
+* Review 21: Explicit uncurated-control instruction admission
+
+** Decision and identity
+
+The bounded two-string correction at parent-supplied clean revision
+=090055c7= is admitted. No actionable source finding or required deterministic
+unknown remains in this delta. Carry the Review 19 diagnostic-producer
+=deterministic-fixed-point=, source/contract cells, prior finding dispositions
+and all fourteen architecture answers. The unchanged plan blob is independently
+verified as =af6b8d142e93ee9941e632664df4ede1b53d4a70=.
+This permits a fresh isolated controlled Codex diagnostic; it does not qualify
+P3 or publish an available capability.
+
+** Affected proof and retained boundaries
+
+Both append-control prompt strings at =e-cache-efficiency-e2e-test.el:3349–3350=
+now explicitly say =do not curate the probe result=, matching the reuse
+scenario's existing constraint. Durable user append payloads, normal provider
+request execution, full chronological capture and strict package-count
+assertions remain. An autonomous extra package still makes the attempt fail;
+no event is ignored or filtered to create a nominal control.
+
+The runtime, compiler, capability selector, helper, classifier, configuration
+and semantic projection are unchanged. In particular the prior Codex
+unchanged-prefix 640-token cache loss remains negative, and the valid Opus
+repeated keep prefix relocation/cache recreation remains negative. The
+instruction correction neither overrides those observations nor changes
+the P3 retention/two-advance/material/identity requirements.
+
+The repository copies are independently verified byte-for-byte and JSON-equal
+to the inspected private authorities:
+
+| Durable file | Actual source record | SHA-256 |
+|--------------+----------------------+---------|
+| evidence/p3-opus55-20261007.json | opus-evidence3.json | 524ae2598d909140da17df0ee93b55cbc688f34ccb3fb69b876c4547f25427bc |
+| evidence/p3-codex-gpt6sol-20261007-continuity.json | codex-evidence2.json | a7b40e5ef3888c694b8691dcbbd7fe8d93bdba8a6087f6a39a68e5dcac37a9e5 |
+
+Recursive field inspection finds no body/native-body/messages/content/headers/
+arguments/credentials/API-key/authorization fields. Complete counters,
+identities, native hashes and classifier evidence remain preserved. This is
+content-free evidence copying, not a new provider acceptance result.
+
+** Gates, coverage and remaining external status
+
+Current credential-free E2E: 101 selected, 74 pass, 27 expected provider/config
+skips, zero unexpected. Prior affected canonical structural 1/1 and remaining
+canonical 2869/2869/configured 9/9 dependency coverage carry: the two live
+prompt literals are the sole producer-source delta; runtime and canonical/
+configured dependencies are unchanged. No equivalent broad suite was repeated.
+
+C5 controlled-scenario instruction and evidence-copy identity cells are cleared;
+all unchanged Review 19 deterministic cells and architecture answers carry.
+Review 20 external distinctions remain authoritative: Opus has a valid
+bounded P3 candidate failure, the previous Codex control was invalid, and
+the earlier Codex native-prefix continuity contradiction remains visible.
+Fresh Codex controlled viability is pending. All normal production curation
+capabilities remain unavailable; public OpenAI API credentials remain absent.
+No positive selector, normal-wrapper-free P3 acceptance, historical Board
+cause, universal benefit, user-runtime update or full-feature Done is claimed.
+
+Reviewer inspected only the bounded source/evidence/gate relationships and
+authored this private artifact. No Git, provider, user Emacs, Board, store
+operation or runtime execution occurred.
+Log-read: =/private/tmp/e-p3-parent-20261007/e2e-explicit-control.log:109–112=.
