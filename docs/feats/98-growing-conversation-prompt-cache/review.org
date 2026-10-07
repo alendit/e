@@ -4153,3 +4153,122 @@ instruction isolates the scenario, while bounded synthetic sentinel item
 locations permit diagnosis if a source still occurs. No model obedience
 is assumed. Corrected actual tests and independent source admission remain
 pending. Production selectors remain none.
+
+#+title: Feature 98 Review 19
+#+startup: overview
+
+* Review 19: Independent P3 diagnostic producer closure
+
+** Decision and identity
+
+No actionable P0–P3 source finding or required deterministic unknown remains
+in the bounded Review 18 producer correction at parent-supplied clean revision
+=99fe727c=. The selected repository-owned diagnostic producer reaches
+=deterministic-fixed-point= with the carried coverage and current gates below.
+This admits a fresh isolated diagnostic, not a positive production selector or
+whole-feature functional/external fixed point.
+
+Filesystem content hashing independently confirms plan blob
+=af6b8d142e93ee9941e632664df4ede1b53d4a70=. F98-G1/C1–C6/DP1 remain
+unchanged. No Git command, provider call or user-runtime operation was used.
+The revised scenario's actual durable-prefix preservation and native cache
+efficiency still require fresh complete external evidence.
+
+** Review 18 dispositions
+
+The missing summary/erase boundary producer defect is closed. The existing
+=--p3-projection-boundary= reads archived tool-call =:name=, provider =:id=
+and =:arguments= from the outer message's =:content=. It matches the inner
+provider call ID to the package observation ID, preserving its distinction
+from the outer durable message ID. Fixture-name inference is removed.
+The actual SQLite/core fixture uses opaque =call_<hash>= provider IDs and
+requires accepted summary and erase boundary evidence for both captured native
+adapters. Replacing an inner call ID with =call_other= rejects the boundary.
+Synthetic Anthropic usage includes its explicit context/creation accounting;
+the real configured-provider total-accounting correction remains unchanged.
+
+The repeated-cycle scenario correction is admitted at source level. Each reuse
+phase has two normal top-level prompts, each containing 300 durable synthetic
+user rows and requesting one uncurated probe. =--p3-fresh-request-after-curation=
+groups every contiguous request having that expected reuse scenario, spanning
+both turns. The first later request still defines the unique fresh boundary.
+The producer emits all requests in original order, each with its own complete
+route, native hashes, provider ID/turn/ordinal, statuses and counters. It keeps
+same-turn curation replay/follow-up observations rather than selecting only a
+positive subset. Shared ordered native prefix measurement and strict keep
+preservation remain active. The enlarged durable payload is not assumed to
+prove that a future provider request preserves the required prefix.
+
+The plateau amendment matches the admitted supporting-method boundary.
+Each post-curation observation uses the immediately previous actual observation
+=(previous-reuse)= for input growth and cache retention. A read plateau within
+128 tokens counts no advance. Only an increase of at least 128 pushes an
+advance into =reads=; two distinct advances are required before the phase
+qualifies. Every later observation still checks retention, updates the actual
+previous observation and reusable floor, and remains subject to full route,
+attribution, static-ceiling, projection and semantic checks. No pair-counted
+continuity bypass returns. The new fixture proves plateau plus two advances
+passes, only one advance is insufficient, and a sharp pre-pair loss fails.
+Existing late-loss, higher-floor, protected-prefix and missing-evidence negatives
+remain in the passing complete dependent gate.
+
+No-source-quotation guidance isolates the intended synthetic task while leaving
+strict native source-absence checks intact. Each actual native capture now
+records content-free sentinel occurrence indexes and item role/type, retained
+in the report alongside native item hashes. This gives bounded evidence for
+locating a future semantic failure; guidance alone does not prove model
+obedience or source absence.
+
+Review 18's actual negative evidence is preserved. Codex 11→12 changed its
+native prefix and could not prove unchanged durable cache loss. Separately,
+Codex 28→29 preserved all 30 prior full-wire and semantic native hashes yet
+lost 640 cached tokens. The revised predicate still rejects that same negative
+sequence. Its cause and general applicability remain unknown. The old Opus
+semantic failure and both records' lack of whole P3 qualification remain
+visible; no prior diagnostic is promoted to acceptance by these source fixes.
+
+** Coverage and evidence topology
+
+C1–C4 production routing/native/core ownership and prior deterministic findings
+carry from Review 17 and intervening whole-source coverage. C5 changed producer
+identity, material boundary, all-request chronology, grouping and counter
+composition cells are cleared by source proof and the current dependent gate.
+C6 diagnostic predicate/scenario cells are cleared at deterministic level;
+provider viability, actual prefix preservation and normal-wrapper-free P3
+qualification remain required external evidence. Both summary and erase,
+two keeps, complete effect/publication joins and unavailable production
+capability remain required. Neither availability nor accepted core packages
+alone qualify cache efficiency.
+
+Exact revision credential-free E2E: 101 selected, 74 pass, 27 expected
+provider/config skips, zero unexpected. The affected canonical SQL-only
+structural test passes 1/1. Canonical 2869/2869 and isolated configured 9/9
+otherwise carry: production owners and their canonical/configured dependencies
+are unchanged; the changed source-reading dependency was explicitly rerun.
+No equivalent broad gate was repeated.
+
+** Architecture and external boundary
+
+All 14 prior architecture answers carry. Changed answers remain cleared:
+Q4 keeps source lookup/grouping/measurement in existing evidence owners;
+Q8 adds disposable synthetic durable history only; Q9 bounds additional
+capture data to hashes and occurrence coordinates; Q10 preserves actual
+lifetime projection and normal public/native execution; Q13 retains negative
+observations and distinguishes diagnostic carrier availability from production
+qualification; Q14 uses actual SQLite/native material joins, negative identity
+proof and the affected deterministic gates. The remaining questions carry
+unchanged ownership, interfaces, cardinality, lifetime, state and scope proof.
+No new owner, registry, public cache option, core-gate weakening, provider wire
+override, production selector or persistent user-state change is introduced.
+
+Fresh diagnostic execution may establish whether the revised scenario is
+controlled and viable. A diagnostic pass still requires the separately admitted
+unpublished normal selector and complete wrapper-free P3/independent closure
+before identical selection can enter shipped source. Public API credentials
+remain absent; all normal production curation capabilities remain unavailable.
+No full feature Done, historical Board cause, universal improvement or user
+runtime update is claimed.
+
+Reviewer authored only this private artifact. Log-read:
+=/private/tmp/e-p3-parent-20261007/e2e-final-producer-fix.log:109–112=;
+=/private/tmp/e-p3-parent-20261007/canonical-structural-final.log:150–154=.
