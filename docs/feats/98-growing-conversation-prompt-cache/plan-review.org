@@ -434,3 +434,312 @@ No repository/temp source changes, Git writes, provider requests or live-state
 operations occurred.  The reviewer authored only this permitted Org artifact.
 
 log-read: =/private/tmp/e-board-cache-audit-76eac/codex-sol-affinity-diagnostic.log:1--25=.
+
+* P3 supporting implementation-plan delta review
+
+** Decision and identity
+
+Implementation-plan admission is withheld for the current delta: two Medium/P2
+feasibility/publication findings and one Low/P3 workflow-boundary finding need
+the local replacements below.  Stable F98-G1/C1--C6/P3 authority and unaffected
+prior admitted plan cells carry.  No product contract change is required.
+The proposed corrected text has a complete delivery relation at this level,
+but only a subsequent review of the actual edited identity can establish
+=implementation-plan-fixed-point=.
+
+Reviewed source baseline: =cda222a7da398d470d98d637acd290e57acf333b=.
+The only pending repository diff is parent-authored =plan.org=, adding
+"P3 qualification completion: isolated candidate and production evidence".
+Reviewed working plan blob: =83e75257a74213b6295e941b555ecc1cdcbe98c0=.
+
+| Source dependency | Current blob |
+|-------------------+--------------|
+| Anthropic adapter | 1594d9f2d47f012e545367eabe70950b7fb100b2 |
+| OpenAI adapter | f2a343d73c56b36d862394055ada9c76f9dd13bc |
+| OpenAI profile capability owner | cfb843fd0a09f04b25d996ff51e7b53898132006 |
+| Live E2E evidence owner | a9a14e667de30fa5992e4d00303bd314f83065ef |
+| Backend capability boundary | bc44978204d3b2cd18909c2e83a40086e259b77a |
+| Runtime curation admission/commit owner | 2af1349e3fa16d59ef080e7eca6e7475ca6b92d3 |
+
+Read-only implementation-plan review only: no provider, canonical/configuration
+test, source/Git write or live Emacs/Board/store operation was performed.  The source
+map was used to locate owners; its conclusions were checked against current
+source.  Only this private leaf artifact was authored.
+
+** Findings and owning corrections
+
+*** Medium/P2 P3-PF1: Anthropic selection lacks the effective identity needed by the plan
+
+The proposed step 5 promises selection only for the tested effective
+combination, including endpoint/model/auth/API/transport/requester negatives.
+The current Anthropic owner =e-anthropic-context-capabilities= at
+=e-anthropic.el:1205--1211= receives only provider/options and ignores both.
+At =:2635= the request owner calls it before assigning the resolved model into
+effective options, and does not pass the effective base URL or requester.
+The backend declaration at =:2681--2683= likewise omits its default model,
+base-URL override and injected requester.  That owner cannot distinguish a
+tested profile label from the same label dispatched to another endpoint or
+requester.  This is currently harmless because every declaration is none; it
+becomes a concrete admission gap for the proposed positive selection.
+
+Step 2 names effective identity plumbing only for OpenAI.  Extend the existing
+Anthropic capability/request owners as well, joining effective resolved model,
+endpoint, auth/API/transport/requester at both backend and native request
+boundaries.  Provider labels and caller-supplied capability outputs must not
+stand in for that identity.  Keep this local; no public knob or registry.
+The parent independently accepted this finding.
+
+*** Medium/P2 P3-PF2: The normal-production rerun would publish authority before qualification
+
+The current step 5 selects an available normal capability and then requires
+wrapper-free P3 before restoring curation.  Those states cannot coincide in
+one normal runtime.  Core obtains adapter capabilities before dispatch
+(=e-backend.el:190--220=); runtime preflight at
+=e-harness-context-runtime.el:1000--1034= accepts effects only for
+=context-curate-wire=.  A wrapper-free public curation run therefore requires
+the new selector to grant the carrier, which immediately enables its public
+admission/serialization path.
+
+The plan must explicitly keep that production-source selection in an
+unpublished isolated acceptance candidate while root/main and the user's
+runtime remain unavailable.  Only after its normal wrapper-free P3 and
+independent evidence closure pass may identical admitted selection be
+integrated/published.  A failed candidate cannot ship availability.
+
+Candidate carrier authority also must not masquerade as already-confirmed
+production P3.  The current pure classifier's =capability-confirmed= input at
+=e-live-e2e-test.el:1442--1458= and record composition at =:2105--2107= need
+careful candidate/availability/qualification separation in the new evidence
+producer.  The private wrapper permits the experiment; it supplies no cache
+efficiency proof.  The parent accepted unpublished isolated candidate scope,
+no auto-sync/push/load/restart, and publication only after complete closure.
+
+*** Low/P3 P3-PF3: Feature prose duplicates workflow mechanics
+
+The paragraph beginning "The primary owns admission" prescribes persistent
+writer/reviewer selection and immutable history inside the feature plan.
+The workflow authority explicitly says: "A feature artifact may require
+independent review and link to this workflow, but must not copy those mechanics."
+Authority: [[file:/Users/dvorona/.codex/plugins/cache/personal/my-skills/0.1.0+codex.20261001154900/skills/review-fixpoint/references/contract-and-evidence-boundary.md][review-fixpoint contract and evidence boundary]],
+"Keep workflow mechanics out of feature artifacts".  Delete that paragraph;
+DP1 already assigns product semantic owners.  Writer/reviewer orchestration,
+local commits and review history remain in the authorized handoff/workflow.
+The parent accepted this deletion.
+
+** Complete changed plan-cell coverage
+
+| Required cell | Current disposition |
+|---------------+---------------------|
+| Single normative authority | Cleared; F98-C6 and existing P3 remain sole outcome authority. The delta supplies a method, not new semantics. |
+| Behavioral design trace | Cleared; direct goal is real efficient curation qualification, with a valid negative leaving curation unavailable. Synthetic mechanism progress cannot substitute. |
+| Durable contract boundary | Cleared; representations/wrappers are supporting method and existing-owner decisions. |
+| Scenario diagnosability | Cleared; candidate diagnostics and normal acceptance remain separately reportable; keep, summary and erase have native semantic/localization checks. |
+| Evidence topology | Candidate P3-PF2; private candidate authority and published capability need the explicit separation above. Deterministic compositions precede external evidence. |
+| External freshness | Cleared; unchanged endpoint/team/model/protocol/material/revision and 24-hour evidence rules carry. Public API credential absence remains unavailable, not substituted. |
+| Telemetry decision power | Cleared; P3's named predicate determines success, while latency/cost remain observational. |
+| Exact-limit justification | Cleared; two keep cycles carry the existing repeated-curation classifier; summary and erase both implement the existing normative requirement. Fixed provider call counts are explicitly rejected. |
+| Defensive actionability | Cleared; isolation protects against concrete live-context contamination and unqualified authority; existing gates remain active. No runtime timer/heuristic/registry is introduced. |
+| Change locality | Candidate P3-PF1; add Anthropic effective-identity plumbing to its existing owner alongside OpenAI. Core semantic ownership stays unchanged. |
+| Workflow boundary | Candidate P3-PF3; delete the copied orchestration paragraph. |
+| Decision level and plan disposition | Cleared; this is implementation-plan review and the current result is withheld pending local edits. |
+| Contract-to-package coverage | Cleared/carried; DP1 still uniquely establishes C1--C6. The new method completes its missing external C6 evidence relation. |
+| Useful stopping point | Candidate at publication only; after correction, failed/unavailable diagnostics leave useful ordinary chat and complete curation absence. |
+| Cohesion/transaction closure | Candidate P3-PF1/PF2; the same trusted capability must join publication/admission/wire/effects, with selection unshipped until normal evidence closes. Real lifetime commits retain authority. |
+| Dependency order | Candidate P3-PF2; candidate proof precedes unpublished selection and normal P3, then publication of identical source. No later capability is presumed. |
+| Package-size tradeoff | Cleared/carried; splitting these owners into independent feature packages would leave inconsistent authority/evidence. Existing DP1 remains the release package. |
+| Acceptance-cost topology | Cleared; focused owner/public compositions and gates occur at material source/authority changes; candidate and normal external runs answer different questions. No blind repeats are proposed. |
+| Checkpoint/package distinction | Cleared; candidate diagnostics and selection acceptance are internal DP1 evidence boundaries, not new delivery packages. |
+
+F98-C1--C5 unchanged plan dispositions carry except the directly affected
+trusted selection/publication and evidence joins above.  C6/P3's current method
+is candidate, not admitted.  There are no additional required plan unknowns.
+
+Current source confirms the summary-only evidence gap: the P3 classifier counts
+any material pair and passes at =material-pairs >= 1= (=e-live-e2e-test.el:1606=),
+while the accepted P3 prose requires both summary and erase.  It has no real P3
+producer; existing adoption/erase scenarios skip on unavailable capability.
+The proposal correctly strengthens that method rather than accepting its pure
+fixtures.  Existing request-start/usage joins can be reused; complete phase/
+curation/native projection evidence must come from real accepted events.
+
+** Exact consolidated replacement
+
+Replace the entire new section with the following supporting text.  This
+replacement deletes P3-PF3's paragraph and corrects P3-PF1/PF2 without changing
+normative rows or creating a new delivery package.
+
+#+begin_src org
+** P3 qualification completion: isolated candidate and production evidence
+
+The operator requested execution on 2026-10-07.  F98-C6 and the P3 predicate
+above remain the authority; this completes DP1's missing external method.
+Current source has only synthetic P3 evidence, accepts a summary-only material
+sequence, and disables every production carrier.  Candidate diagnostics and
+normal production-source acceptance have separate evidence status.
+
+1. Complete the existing P3 classifier and actual evidence producer.  Require
+   the stable-only baseline and P2 append-only control, two projection-preserving
+   keep/state-only cycles, and both summary and erase cycles, with all normative
+   pre/post observations.  Exercise real public chat/tool and context-lifetime
+   admission/commit paths in disposable SQLite.  Native projection checks must
+   prove kept facts survive, summary facts replace their original source, and
+   erased source content is absent from subsequent requests.  Static reads or
+   warming only after curation stops cannot qualify.
+2. Use a private ERT-only wrapper of the existing trusted adapter capability
+   owner to expose the candidate carrier only in the isolated test process.
+   Keep normal production declarations none.  Replace OpenAI's separate
+   hardcoded nil wire selection with derivation from its existing trusted owner.
+   Join effective endpoint, resolved model, auth/API/transport and requester
+   identity at both backend and direct native-request capability boundaries for
+   OpenAI and Anthropic.  Anthropic must propagate its backend defaults/base-URL
+   override/requester and resolve the request model before capability selection.
+   Provider labels or copied caller capability fields cannot supply that proof.
+   No caller option, public test switch, new registry or persistent qualification
+   state may grant a carrier.  Existing core publication/effect checks stay active.
+3. Capture every native request, provider start, usage and finish by unique
+   identity and authentic ordinal.  Use content-bounded digests and counters,
+   not logged prompt bodies or credentials.  Derive phase/request count from
+   accepted events, including accepted curation identities and projections,
+   rather than assume a fixed model call count.  Keep candidate authority,
+   effective carrier availability and production qualification distinct in
+   records/classification; a wrapper grant is not cache efficiency evidence.
+   Incomplete, failed or extra observations remain conservative.  Prove the
+   runner, authority negatives and actual native/core compositions without
+   credentials, then apply the existing exact-revision gates/review requirements.
+4. Run candidate diagnostics separately for configured gateway Opus 5.5
+   Messages and managed Codex GPT-6 Sol Responses WebSocket.  Both use direct
+   context-free factories, synthetic-only layers/tool outputs and disposable
+   sessions.  Never synchronize user project/default layers.  Public OpenAI API
+   evidence remains unavailable without its credential; neither route substitutes
+   for that endpoint.  Preserve every raw counter and semantic result, including
+   a valid negative, and diagnose repository defects before repeating a scenario.
+5. A candidate pass supports a separately admitted, unpublished isolated
+   production-source acceptance candidate selecting a carrier only for the
+   tested effective combination.  Root/main production declarations remain none.
+   Preserve unknown endpoint/model/auth/API/transport/requester negatives and
+   accepted semantic projections.  Bind exact-revision gates and independent
+   source review to that candidate, then repeat P3 through its normal code without
+   the wrapper.  Do not auto-sync, push, load or restart the user's runtime.
+   Only after complete wrapper-free P3 and independent evidence closure pass may
+   identical admitted selection enter main/shipped source and restore curation.
+   A failed candidate must not ship availability; keep its diagnostic/negative
+   evidence and leave that combination unavailable.  Add no opt-out and weaken
+   no curation semantics.
+
+No session expiry timer or runtime hit heuristic is introduced.  Qualification
+freshness follows the existing evidence window.  Request/scenario-derived
+state stays local and disposable.  User Emacs, Board and live store remain
+unchanged; using any resulting adapter change requires a restart.
+#+end_src
+
+** Architecture and remaining external status
+
+Unchanged whole-scope architecture questions carry.  The changed design keeps
+one adapter capability authority, narrowly propagates real identity, and keeps
+all experimental state/test effects disposable.  No core ownership/dependency,
+schema, persistent qualification record, registry or user control is added.
+Its justified extra work observes real curation commits and rebuilt history;
+provider efficiency remains an external outcome, not an assumed implementation
+property.  Expected unavailable/negative evidence is visible; unexpected
+repository failures are localized before another external attempt.
+
+Current P3 remains capability-unconfirmed/unavailable on both planned routes;
+no provider run has occurred in this review and no production capability is
+admitted.  The parent will apply the accepted replacements and return the
+edited delta to the same reviewer for identity-bound plan closure.
+
+This private artifact was read back and parsed successfully as Org data; source
+and pending-plan identities were read back without repository writes.
+
+log-read: none.
+
+* P3 supporting implementation-plan delta closure
+
+** Decision and authority identity
+
+=implementation-plan-fixed-point= for the reviewed P3 supporting delivery-plan
+delta at actual working =plan.org= blob
+=af6b8d142e93ee9941e632664df4ede1b53d4a70=, with unchanged source baseline
+=cda222a7da398d470d98d637acd290e57acf333b=.  P3-PF1/PF2/PF3 are closed.
+No remaining actionable specification finding or required implementation-plan
+unknown is identified.  This admits the plan relation, not implementation,
+deterministic behavior or external cache-plus-curation capability.
+
+F98-G1/C1--C6, normative P3 and DP1 remain unchanged.  Unaffected prior admitted
+plan coverage and the initial delta review's complete coverage carry.  The
+actual edited section equals the independently reviewed consolidated
+replacement verbatim; the whole plan diff adds only that corrected section.
+The first immutable review is preserved in =plan-review.org=.  Its subsequent
+artifact-only insertion does not change the admitted plan identity.
+
+| Unchanged identity-bearing source dependency | Blob |
+|---------------------------------------------+------|
+| Anthropic adapter | 1594d9f2d47f012e545367eabe70950b7fb100b2 |
+| OpenAI adapter | f2a343d73c56b36d862394055ada9c76f9dd13bc |
+| OpenAI profile capability owner | cfb843fd0a09f04b25d996ff51e7b53898132006 |
+| Live E2E evidence owner | a9a14e667de30fa5992e4d00303bd314f83065ef |
+| Backend capability boundary | bc44978204d3b2cd18909c2e83a40086e259b77a |
+| Runtime curation admission/commit owner | 2af1349e3fa16d59ef080e7eca6e7475ca6b92d3 |
+
+** Finding closure and dependent cells
+
+| Finding | Current closure |
+|---------+-----------------|
+| P3-PF1: Anthropic lacks effective identity plumbing | Closed at plan level. Step 2 explicitly joins effective endpoint/resolved model/auth/API/transport/requester for both adapters at backend and direct native-request capability boundaries. It includes Anthropic backend defaults/base override/requester and model resolution before selection. Provider labels or copied caller capability fields cannot grant authority. Ownership remains with existing adapters. |
+| P3-PF2: normal rerun would publish before qualification | Closed at plan level. Step 5 confines the selector to an unpublished isolated production-source acceptance candidate; root/main declarations remain none. Wrapper-free P3 and independent evidence closure precede integration of identical selection. Failed candidates cannot ship availability; no auto-sync/push/load/restart is authorized. Step 3 separately records candidate authority, effective carrier availability and production qualification, preventing the wrapper from supplying circular efficiency proof. |
+| P3-PF3: workflow mechanics copied into feature plan | Closed. The primary/persistent writer/reviewer/history paragraph is deleted. DP1 semantic owners and feature-specific evidence requirements remain; orchestration stays with the workflow/handoff authority. |
+
+The three closures also clear their affected evidence-topology, locality,
+useful-stopping-point, transaction/authority and dependency-order cells.  They
+do not require changing F98-C6's availability rule or weakening the P3
+efficiency/semantic predicate.
+
+** Complete current specification-cell disposition
+
+Every applicable required cell is cleared at implementation-plan level:
+
+| Cell | Disposition |
+|------+-------------|
+| Single normative authority | Cleared/carried: F98-C6/P3 remains the outcome authority. |
+| Behavioral design trace | Cleared/carried: real efficient curation qualification, with unavailable negative outcomes retained. |
+| Durable contract boundary | Cleared/carried: candidate wrappers and private evidence are supporting mechanisms. |
+| Scenario diagnosability | Cleared: separately classified candidate and normal acceptance; keep, summary and erase native/semantic checks. |
+| Evidence topology | Cleared: deterministic realistic compositions, private diagnostics and unpublished wrapper-free acceptance have distinct decision power. |
+| External freshness | Cleared/carried: existing identity/revision/24-hour rules and failure classifications. |
+| Telemetry decision power | Cleared/carried: named P3 predicate decides qualification; cost/latency remain observational. |
+| Exact-limit justification | Cleared/carried: existing repeated-keep requirement plus both material classes; no fixed model call count. |
+| Defensive actionability | Cleared/carried: real contamination/authority risks addressed by private isolation and existing active core gates. |
+| Change locality | Cleared: both adapters propagate effective identity through their existing trusted owners. |
+| Workflow boundary | Cleared: copied orchestration paragraph removed. |
+| Decision level and plan disposition | Cleared: identity-bound implementation-plan result only. |
+| Contract-to-package coverage | Cleared/carried: DP1 remains the unique establishing package for C1--C6. |
+| Useful stopping point | Cleared: unsuccessful qualification leaves correct ordinary chat and complete curation absence. |
+| Cohesion/transaction closure | Cleared: capability, public admission/wire/effects and real lifetime commits close within existing owners. |
+| Dependency order | Cleared: diagnostic proof, unpublished selector/source review, normal P3, then identical admitted publication. |
+| Package-size tradeoff | Cleared/carried: no extra package for a helper or experimental checkpoint. |
+| Acceptance-cost topology | Cleared: focused proof/gates at material owner changes; diagnostic and normal runs answer different questions. |
+| Checkpoint/package distinction | Cleared/carried: all new stages are internal DP1 method/acceptance boundaries. |
+
+Unchanged whole-scope architecture self-check coverage carries; the changed
+ownership, state lifetime, coupling, compatibility, performance, error handling
+and test decisions are now explicit and consistent.  No new public control,
+core policy owner, registry, schema or persistent qualification state is
+planned.  No additional required plan unknown remains.
+
+** Verification and external boundary
+
+Read-only checks verified exact HEAD, actual plan blob, unchanged dependency
+blobs, the whole pending plan diff and byte-for-byte section equality with the
+reviewed replacement.  =git diff --check= passes.  No code test, provider call,
+repository edit, Git write or user Emacs/Board/store operation occurred.  Only
+this private leaf closure artifact was authored.  It was read back and parsed
+successfully as Org data.
+
+P3 remains capability-unconfirmed/unavailable for both configured routes until
+implementation and the complete diagnostic/normal acceptance sequence produce
+valid evidence.  Gateway Opus and Codex do not qualify the credential-absent
+public OpenAI API.  Production declarations remain none; no running user
+session or capability was changed, and no Done result follows from this plan
+admission.
+
+log-read: none.

@@ -483,3 +483,65 @@ At handoff, report F98-G1 behavioral status separately from implementation
 completion, identify unresolved external cells, and state whether using the
 adapter changes requires an Emacs restart.  Do not reload or restart the user's
 running Emacs or mutate the audited Board/store during verification.
+
+** P3 qualification completion: isolated candidate and production evidence
+
+The operator requested execution on 2026-10-07.  F98-C6 and the P3 predicate
+above remain the authority; this completes DP1's missing external method.
+Current source has only synthetic P3 evidence, accepts a summary-only material
+sequence, and disables every production carrier.  Candidate diagnostics and
+normal production-source acceptance have separate evidence status.
+
+1. Complete the existing P3 classifier and actual evidence producer.  Require
+   the stable-only baseline and P2 append-only control, two projection-preserving
+   keep/state-only cycles, and both summary and erase cycles, with all normative
+   pre/post observations.  Exercise real public chat/tool and context-lifetime
+   admission/commit paths in disposable SQLite.  Native projection checks must
+   prove kept facts survive, summary facts replace their original source, and
+   erased source content is absent from subsequent requests.  Static reads or
+   warming only after curation stops cannot qualify.
+2. Use a private ERT-only wrapper of the existing trusted adapter capability
+   owner to expose the candidate carrier only in the isolated test process.
+   Keep normal production declarations none.  Replace OpenAI's separate
+   hardcoded nil wire selection with derivation from its existing trusted owner.
+   Join effective endpoint, resolved model, auth/API/transport and requester
+   identity at both backend and direct native-request capability boundaries for
+   OpenAI and Anthropic.  Anthropic must propagate its backend defaults/base-URL
+   override/requester and resolve the request model before capability selection.
+   Provider labels or copied caller capability fields cannot supply that proof.
+   No caller option, public test switch, new registry or persistent qualification
+   state may grant a carrier.  Existing core publication/effect checks stay active.
+3. Capture every native request, provider start, usage and finish by unique
+   identity and authentic ordinal.  Use content-bounded digests and counters,
+   not logged prompt bodies or credentials.  Derive phase/request count from
+   accepted events, including accepted curation identities and projections,
+   rather than assume a fixed model call count.  Keep candidate authority,
+   effective carrier availability and production qualification distinct in
+   records/classification; a wrapper grant is not cache efficiency evidence.
+   Incomplete, failed or extra observations remain conservative.  Prove the
+   runner, authority negatives and actual native/core compositions without
+   credentials, then apply the existing exact-revision gates/review requirements.
+4. Run candidate diagnostics separately for configured gateway Opus 5.5
+   Messages and managed Codex GPT-6 Sol Responses WebSocket.  Both use direct
+   context-free factories, synthetic-only layers/tool outputs and disposable
+   sessions.  Never synchronize user project/default layers.  Public OpenAI API
+   evidence remains unavailable without its credential; neither route substitutes
+   for that endpoint.  Preserve every raw counter and semantic result, including
+   a valid negative, and diagnose repository defects before repeating a scenario.
+5. A candidate pass supports a separately admitted, unpublished isolated
+   production-source acceptance candidate selecting a carrier only for the
+   tested effective combination.  Root/main production declarations remain none.
+   Preserve unknown endpoint/model/auth/API/transport/requester negatives and
+   accepted semantic projections.  Bind exact-revision gates and independent
+   source review to that candidate, then repeat P3 through its normal code without
+   the wrapper.  Do not auto-sync, push, load or restart the user's runtime.
+   Only after complete wrapper-free P3 and independent evidence closure pass may
+   identical admitted selection enter main/shipped source and restore curation.
+   A failed candidate must not ship availability; keep its diagnostic/negative
+   evidence and leave that combination unavailable.  Add no opt-out and weaken
+   no curation semantics.
+
+No session expiry timer or runtime hit heuristic is introduced.  Qualification
+freshness follows the existing evidence window.  Request/scenario-derived
+state stays local and disposable.  User Emacs, Board and live store remain
+unchanged; using any resulting adapter change requires a restart.
