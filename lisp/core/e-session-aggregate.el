@@ -1280,22 +1280,22 @@ fork's session name (otherwise it inherits the source name)."
          (source-checkpoint
           (and source-generation
                (e-context-lifetime-generation-checkpoint source-generation)))
-         (promotion-messages
-          (plist-get portable-projection :promotion-messages))
+         (ordered-context-tail
+          (plist-get portable-projection :ordered-context-tail))
          ;; A deliberate non-empty portable generation is the only fork seed
          ;; that may replace the ordinary message copy.  A generation with
          ;; active promotions but no checkpoint still needs a portable seed so
          ;; v2/v3 durable items are not lost when the branch is selected.
          (portable-checkpoint
           (when (and source-generation
-                     (or source-checkpoint promotion-messages))
+                     (or source-checkpoint
+                         (plist-get portable-projection
+                                    :promotion-message-entries)))
             (e-context-lifetime-portable-checkpoint
              (append
               (copy-tree source-checkpoint)
               (mapcar #'e-context-lifetime-portable-message
-                      (plist-get portable-projection :durable-tail))
-              (mapcar #'e-context-lifetime-portable-message
-                      promotion-messages))
+                      ordered-context-tail))
              t)))
          (messages (seq-filter (lambda (entry)
                                  (eq (plist-get entry :type) 'message))
@@ -1535,102 +1535,166 @@ the catalog owner."
   "Return canonical inputs for the semantic later-request projection.
 
 The session transcript/current branch is the sole durable body source.  The
-result contains no runtime frame or observation body; callers may add a fresh
-consumer-bound frame at request construction time."
-  (let* ((path (if head-id
-                   (e-session-aggregate-current-path store session-id head-id)
-                 (e-session-aggregate--checkpoint-path-suffix store session-id)))
+  result contains no runtime frame or observation body; callers may add a fresh
+  consumer-bound frame at request construction time."
+  (let* ((selected-path
+          (e-session-aggregate-current-path store session-id head-id))
          (generation (e-session-aggregate-context-lifetime-current-generation
                       store session-id head-id))
-         (generation-path
-          ;; The first opt-in generation is an identity boundary with no
-          ;; checkpoint; keep the ordinary transcript until a deliberate
-          ;; portable compaction supplies a real checkpoint.  A non-empty
-          ;; checkpoint is the replacement boundary that covers its prefix.
-          (if (and generation
-                   (e-context-lifetime-generation-checkpoint generation))
-              (e-session-aggregate--path-after-boundary
-               path
+         (covered-boundary-id
+          (and generation
+               (e-context-lifetime-generation-checkpoint generation)
                (e-context-lifetime-generation-covered-session-boundary
-                generation))
-            path))
-         (durable-tail-entry-pairs
-          (let (pairs)
-            (dolist (entry generation-path (nreverse pairs))
-              (when-let* ((message
-                           (e-session-aggregate--context-lifetime-durable-message
-                            entry)))
-                (let ((entry-id (plist-get entry :id)))
-                  (unless (and (stringp entry-id)
-                               (not (string-empty-p entry-id)))
-                    (signal 'e-session-error
-                            (list "Context lifetime message has no entry ID"
-                                  session-id)))
-                  (push (cons (copy-sequence entry-id) message) pairs))))))
-         (messages (mapcar #'cdr durable-tail-entry-pairs))
-         (durable-tail-entry-ids
-          (mapcar #'car durable-tail-entry-pairs))
-         (generation-id (and generation
-                             (e-context-lifetime-generation-id generation)))
-         ;; Promotions before a deliberate portable boundary are absorbed into
-         ;; its checkpoint.  Historical records remain in the audit journal but
-         ;; only facts owned by the active generation are eligible here.
-         (promotions nil)
-         (curations nil)
-         (promotion-message-entry-groups nil)
-         (promotion-frontier nil))
+                generation)))
+         ;; A portable checkpoint owns the semantic tail when present.  The
+         ;; legacy suffix remains the fallback for sessions without one.
+         (path (if (or head-id covered-boundary-id)
+                   selected-path
+                 (e-session-aggregate--checkpoint-path-suffix
+                  store session-id)))
+         (path-indexes (make-hash-table :test 'equal))
+         (response-anchor-indexes (make-hash-table :test 'equal))
+         (covered-boundary-index nil)
+         durable-entries retained-candidates candidate-records
+         promotions curations)
+    (cl-loop for entry in selected-path for path-index from 0 do
+             (when-let* ((entry-id (plist-get entry :id)))
+               (puthash entry-id path-index path-indexes))
+             (cond
+              ((and (eq (plist-get entry :type) 'activity-event)
+                    (or (eq (plist-get entry :event-type)
+                            'context-frame-consumed)
+                        (and (eq (plist-get entry :event-type)
+                                 'context-curation-response)
+                             (equal (plist-get entry :id)
+                                    (plist-get (plist-get entry :payload)
+                                               :response-entry-id)))))
+               (when-let* ((response-id
+                            (plist-get (plist-get entry :payload)
+                                       :response-entry-id)))
+                 (unless (gethash response-id response-anchor-indexes)
+                   (puthash response-id path-index response-anchor-indexes))))
+              ((and (eq (plist-get entry :type) 'message)
+                    (eq (plist-get entry :role) 'assistant)
+                    (plist-get entry :id))
+               (unless (gethash (plist-get entry :id)
+                                response-anchor-indexes)
+                 (puthash (plist-get entry :id) path-index
+                          response-anchor-indexes)))))
+    (setq covered-boundary-index
+          (and covered-boundary-id
+               (gethash covered-boundary-id path-indexes)))
+    (when (and covered-boundary-id (null covered-boundary-index))
+      (signal 'e-session-error
+              (list "Context checkpoint boundary is not on the selected path"
+                    session-id covered-boundary-id)))
+    ;; Anchor identities and positions come from the full selected path before
+    ;; the chosen semantic boundary filters durable entries.
     (dolist (entry path)
-      (dolist (component (e-session-aggregate--context-entry-components entry))
-        (when (and (eq (car component) 'context-promotion)
-                   generation-id)
-          (condition-case error
-              (let ((record (cdr component)))
-                (when (equal (plist-get record :generation-id)
-                             generation-id)
-                  (if (equal (plist-get record :record-version)
-                             e-context-lifetime-curation-record-version)
-                      (let ((curation
-                             (e-context-lifetime-curation-from-record record)))
-                        (push curation curations)
-                        (push
-                         (mapcar
-                          (lambda (message)
-                            (list :kind 'v3 :message
-                                  (copy-tree message)))
-                          (e-context-lifetime-curation-messages curation))
-                         promotion-message-entry-groups))
-                    (let ((promotion
-                           (e-context-lifetime-promotion-from-record record)))
-                      (push promotion promotions)
-                      (push
-                       (mapcar
-                        (lambda (message)
-                          (list :kind 'v2 :message
-                                (copy-tree message)))
-                        (e-context-lifetime-promotion-fact-messages
-                         (list promotion)))
-                       promotion-message-entry-groups)))
-                  (push (plist-get record :id) promotion-frontier)))
-            (e-context-lifetime-invalid-record
-             (signal 'e-session-error
-                     (list "Invalid current context promotion"
-                           session-id error)))))))
-    (let* ((promotion-message-entries
-            (if promotion-message-entry-groups
-                (apply #'append (nreverse promotion-message-entry-groups))
-              nil))
-           (promotion-messages
-            (mapcar (lambda (entry) (plist-get entry :message))
-                    promotion-message-entries)))
+      (let* ((path-index (gethash (plist-get entry :id) path-indexes))
+             (message (and (or (null covered-boundary-index)
+                               (> path-index covered-boundary-index))
+                           (e-session-aggregate--context-lifetime-durable-message
+                            entry))))
+        (when message
+          (let ((entry-id (plist-get entry :id)))
+            (unless (and (integerp path-index)
+                         (stringp entry-id) (not (string-empty-p entry-id)))
+              (signal 'e-session-error
+                      (list "Context lifetime message has no path identity"
+                            session-id entry-id)))
+            (push (list :path-index path-index :entry-id entry-id
+                        :message message)
+                  durable-entries)))))
+    (setq durable-entries (nreverse durable-entries))
+    (dolist (entry selected-path)
+      (let ((record-index (gethash (plist-get entry :id) path-indexes)))
+        (dolist (component (e-session-aggregate--context-entry-components entry))
+          (when (eq (car component) 'context-promotion)
+            (condition-case error
+                (let* ((record (cdr component))
+                       (anchor-id (plist-get record :response-entry-id))
+                       (direct-anchor-index
+                        (and anchor-id (gethash anchor-id path-indexes)))
+                       (response-completion-index
+                        (and anchor-id
+                             (gethash anchor-id response-anchor-indexes)))
+                       (anchor-index
+                        (or direct-anchor-index response-completion-index))
+                       (anchor-position-kind
+                        (and response-completion-index
+                             (= response-completion-index anchor-index)
+                             (> anchor-index record-index)
+                             'response-completion))
+                       (version (plist-get record :record-version))
+                       (messages
+                        (if (equal version
+                                   e-context-lifetime-curation-record-version)
+                            (e-context-lifetime-curation-messages
+                             (e-context-lifetime-curation-from-record record))
+                          (e-context-lifetime-promotion-fact-messages
+                           (list (e-context-lifetime-promotion-from-record
+                                  record)))))
+                       (record-id (plist-get record :id)))
+                  (when (or (null covered-boundary-index)
+                            (null anchor-index)
+                            (> anchor-index covered-boundary-index))
+                    (push (list :id record-id :version version
+                                :record (copy-tree record t))
+                          candidate-records)
+                    (cl-loop for message in messages for item-index from 0 do
+                             (push (list :kind (if (equal version
+                                                        e-context-lifetime-curation-record-version)
+                                                   'v3 'v2)
+                                         :record-id record-id
+                                         :record-path-index record-index
+                                         :anchor-path-index anchor-index
+                                         :anchor-position-kind
+                                         anchor-position-kind
+                                         :item-index item-index
+                                         :message (copy-tree message t))
+                                   retained-candidates))))
+              (e-context-lifetime-invalid-record
+               (signal 'e-session-error
+                       (list "Invalid context promotion" session-id error))))))))
+    (setq retained-candidates (nreverse retained-candidates)
+          candidate-records (nreverse candidate-records))
+    (let* ((weave (e-context-lifetime-weave-retained-context
+                   durable-entries retained-candidates covered-boundary-index))
+           (promotion-message-entries
+            (plist-get weave :retained-entries))
+           (active-record-ids
+            (delete-dups
+             (mapcar (lambda (entry) (plist-get entry :record-id))
+                     promotion-message-entries))))
+      (dolist (candidate candidate-records)
+        (when (member (plist-get candidate :id) active-record-ids)
+          (if (equal (plist-get candidate :version)
+                     e-context-lifetime-curation-record-version)
+              (push (e-context-lifetime-curation-from-record
+                     (plist-get candidate :record)) curations)
+            (push (e-context-lifetime-promotion-from-record
+                   (plist-get candidate :record)) promotions))))
       (list :generation generation
-            :durable-tail messages
-            :durable-tail-entry-ids durable-tail-entry-ids
+            :durable-tail (mapcar (lambda (entry)
+                                    (plist-get entry :message))
+                                  durable-entries)
+            :durable-tail-entry-ids (mapcar (lambda (entry)
+                                              (plist-get entry :entry-id))
+                                            durable-entries)
+            :ordered-context-tail (plist-get weave :messages)
+            :ordered-context-tail-entry-ids (plist-get weave :entry-ids)
             :promotions (nreverse promotions)
             :curations (nreverse curations)
-            :promotion-messages promotion-messages
+            :promotion-messages
+            (mapcar (lambda (entry) (plist-get entry :message))
+                    promotion-message-entries)
             :promotion-message-entries
-            (copy-tree promotion-message-entries)
-            :promotion-frontier (nreverse promotion-frontier)))))
+            (copy-tree promotion-message-entries t)
+            :promotion-frontier
+            (cl-loop for candidate in candidate-records
+                     when (member (plist-get candidate :id) active-record-ids)
+                     collect (plist-get candidate :id))))))
 
 (defun e-session-aggregate-process-reports (store session-id)
   "Return process reports for SESSION-ID in STORE in insertion order."

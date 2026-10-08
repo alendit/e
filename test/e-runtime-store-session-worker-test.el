@@ -12,9 +12,12 @@
 (require 'e-runtime-store-worker)
 (require 'e-runtime-store-session-worker)
 (require 'e-session-aggregate)
+(require 'e-session)
 (require 'e-session-query)
 (require 'e-session-query-command)
 (require 'e-session-storage-sqlite)
+(require 'e-compaction)
+(require 'e-harness-context-runtime)
 
 (defun e-runtime-store-session-worker-test--state
     (session-id &optional updated-at journal-position)
@@ -907,6 +910,388 @@
                             (mapcar (lambda (message)
                                       (plist-get message :content))
                                     (plist-get path :messages))))))))
+
+(ert-deftest e-runtime-store-session-worker-context-response-anchor-position ()
+  "Detached SQL projection resolves only the selected typed response anchor."
+  (e-runtime-store-session-worker-test--with-runtime (runtime _directory)
+    (let ((state (e-runtime-store-session-worker-test--state "anchor"))
+          (parent "root"))
+      (plist-put state :current-head-id parent)
+      (e-runtime-store-call
+       runtime 'write
+       (list :op 'session-append :session-id "anchor"
+             :record '(:type "session" :session-id "anchor" :id "root"
+                       :timestamp "2026-09-06T00:00:00Z")
+             :query-delta state))
+      (cl-labels
+          ((append-record (position id parent type &rest fields)
+             (setq state (copy-tree state))
+             (plist-put state :journal-position position)
+             (plist-put state :current-head-id id)
+             (plist-put state :updated-at
+                        (format "2026-09-06T00:00:0%dZ" position))
+             (e-runtime-store-call
+              runtime 'write
+              (list :op 'session-append :session-id "anchor"
+                    :record
+                    (append (list :type type :session-id "anchor" :id id
+                                  :parent-id parent
+                                  :timestamp (plist-get state :updated-at))
+                            fields)
+                    :query-delta state))))
+        (append-record 2 "answer" "root" "message"
+                       :message '(:id "answer" :role assistant
+                                  :content "durable answer"))
+        (append-record
+         3 "curation" "answer" "context-curation-package"
+         :promotion
+         '(:record-version 3 :type context-promotion :id "keep"
+           :frame-id "frame" :generation-id "generation"
+           :consumer-request-id "consumer"
+           :response-entry-id "response-with-no-row-id"
+           :items
+           ((:kind exact :value "selected reference"
+             :source-observation-ids ("observation")
+             :source-refs ("source")
+             :source-fingerprints ("fingerprint"))))
+         :erasure nil)
+        (append-record
+         4 "completion" "curation" "activity-event"
+         :turn-id "turn" :event-type 'context-frame-consumed
+         :payload '(:response-entry-id "response-with-no-row-id"))
+        ;; A later physical row on another branch carries the same response
+        ;; label but must not supply the selected path's anchor position.
+        (append-record
+         5 "other-completion" "answer" "activity-event"
+         :turn-id "other-turn" :event-type 'context-frame-consumed
+         :payload '(:response-entry-id "response-with-no-row-id"))
+        (plist-put state :current-head-id "completion")
+        (plist-put state :journal-position 6)
+        (e-runtime-store-call
+         runtime 'write
+         (list :op 'session-append :session-id "anchor"
+               :record '(:type "session-info" :session-id "anchor"
+                         :id "head-select" :parent-id "completion"
+                         :timestamp "2026-09-06T00:00:06Z"
+                         :field metadata :value (:selected t))
+               :query-delta state)))
+      (let* ((path (e-runtime-store-call
+                    runtime 'read
+                    '(:op session-context-path :session-id "anchor")))
+             (context-record (car (plist-get path :context-records)))
+             (projection
+              (e-harness-context-runtime--detached-lifetime-projection path))
+             (ordered (plist-get projection :ordered-context-tail)))
+        (should (= (plist-get context-record :anchor-path-index) 3))
+        (should (eq (plist-get context-record :anchor-position-kind)
+                    'response-completion))
+        (should
+         (equal (mapcar (lambda (message)
+                          (list (plist-get message :role)
+                                (plist-get message :content)))
+                        ordered)
+                '((assistant "durable answer")
+                  (context "selected reference"))))))))
+
+(ert-deftest e-runtime-store-session-worker-partial-portable-compaction-keeps-uncovered-tail ()
+  "SQLite projection keeps anchors and durable rows after a partial portable cut."
+  (let* ((directory (make-temp-file "e-context-partial-portable-" t))
+         (store (e-session-sqlite-store-create directory :load-all t))
+         (session-id "partial-portable-context")
+         checkpoint)
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (root-id (plist-get session :root-event-id)))
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id "old-generation"
+              :checkpoint '((:role system :content "C0"))
+              :covered-session-boundary root-id)))
+          (cl-labels
+              ((append-keep (id anchor value)
+                 (e-session-append-context-curation-package
+                  store session-id
+                  (list
+                   :promotion
+                   (list :record-version 3 :type 'context-promotion
+                         :id id :frame-id (concat "frame-" id)
+                         :generation-id "old-generation"
+                         :consumer-request-id (concat "consumer-" id)
+                         :response-entry-id anchor
+                         :items
+                         (list
+                          (list :kind 'exact :value value
+                                :source-observation-ids
+                                (list (concat "observation-" id))
+                                :source-refs (list (concat "source-" id))
+                                :source-fingerprints
+                                (list (concat "fingerprint-" id)))))
+                   :erasure nil)))
+               (contents (messages)
+                 (mapcar (lambda (message)
+                           (list :role (plist-get message :role)
+                                 :content (plist-get message :content)))
+                         messages))
+               (projection (target-store target-session)
+                 (e-session-local-context-lifetime-projection
+                  target-store target-session))
+               (detached-projection (target-store target-session)
+                 (e-harness-context-runtime--detached-lifetime-projection
+                  (e-runtime-store-call
+                   (e-session-storage-runtime-store target-store) 'read
+                   (list :op 'session-context-path
+                         :session-id target-session)))))
+            (e-session-append-message
+             store session-id '(:id "before-answer" :role assistant
+                                :content "before answer"))
+            (append-keep "keep-before" "before-answer" '(:slot "before"))
+            (e-session-append-message
+             store session-id '(:id "covered" :role assistant
+                                :content "covered answer"))
+            (append-keep "keep-at" "covered" '(:slot "at"))
+            (e-session-append-message
+             store session-id '(:id "excluded" :role user
+                                :content "excluded durable intent"))
+            (e-session-append-message
+             store session-id '(:id "later-answer" :role assistant
+                                :content "later durable answer"))
+            (append-keep "keep-after" "later-answer" '(:slot "after"))
+            (e-session-append-message
+             store session-id '(:id "first-kept" :role user
+                                :content "first kept"))
+            (let* ((preparation
+                    (e-compaction-prepare
+                     store session-id :keep-recent-tokens 1 :portable t
+                     :exclude-entry-ids '("excluded")))
+                   (input (plist-get preparation :portable-input))
+                   (portable-boundary
+                    (plist-get input :covered-session-boundary))
+                   (legacy-boundary
+                    (plist-get preparation :first-kept-entry-id))
+                   (checkpoint-value
+                    (e-compaction-portable-checkpoint-from-summary
+                     preparation "C1"))
+                   (application
+                    (e-compaction-preflight-portable-boundary
+                     store session-id preparation checkpoint-value)))
+              (should (equal portable-boundary "covered"))
+              (should (equal legacy-boundary "first-kept"))
+              (should (equal (mapcar (lambda (record) (plist-get record :id))
+                                     (plist-get input :curations))
+                             '("keep-before" "keep-at")))
+              (setq checkpoint checkpoint-value)
+              (should (equal (contents checkpoint-value)
+                             '((:role system :content "C1")
+                               (:role context :content (:slot "before"))
+                               (:role context :content (:slot "at")))))
+              (e-session-append-compaction
+               store session-id "C1"
+               :first-kept-entry-id legacy-boundary)
+              (e-compaction-apply-portable-boundary
+               store session-id application))
+            (let* ((normal (projection store session-id))
+                   (detached (detached-projection store session-id))
+                   (expected
+                    '((:role user :content "excluded durable intent")
+                      (:role assistant :content "later durable answer")
+                      (:role context :content (:slot "after"))
+                      (:role user :content "first kept")))
+                   (path (e-session-aggregate-current-path store session-id))
+                   (portable-index
+                    (cl-position-if
+                     (lambda (entry)
+                       (equal (plist-get entry :id) "covered"))
+                     path))
+                   (legacy-index
+                    (cl-position-if
+                     (lambda (entry)
+                       (equal (plist-get entry :id) "first-kept"))
+                     path))
+                   (after-entry
+                    (seq-find
+                     (lambda (entry)
+                       (equal (plist-get entry :record-id) "keep-after"))
+                     (plist-get normal :promotion-message-entries))))
+              (should (equal (contents (plist-get normal :ordered-context-tail))
+                             expected))
+              (should (equal (contents (plist-get detached :ordered-context-tail))
+                             expected))
+              (should (equal (plist-get normal :ordered-context-tail)
+                             (plist-get detached :ordered-context-tail)))
+              (should (equal (mapcar (lambda (record) (plist-get record :id))
+                                     (plist-get normal :curations))
+                             '("keep-after")))
+              (should after-entry)
+              (should (integerp
+                       (plist-get after-entry :record-path-index)))
+              (should (integerp
+                       (plist-get after-entry :anchor-path-index)))
+              (should (< (plist-get after-entry :record-path-index)
+                         legacy-index))
+              (should (> (plist-get after-entry :anchor-path-index)
+                         portable-index))
+              (let ((path-result
+                     (e-runtime-store-call
+                      (e-session-storage-runtime-store store) 'read
+                      (list :op 'session-context-path :session-id session-id))))
+                (should (<= (plist-get path-result :byte-count)
+                            (plist-get path-result :byte-limit)))
+                (should (<= (length (plist-get path-result :context-records))
+                            (plist-get path-result :record-limit))))
+              (e-session-sqlite-store-close store)
+              (setq store (e-session-sqlite-store-create
+                           directory :load-all t))
+              (let* ((reopened-normal (projection store session-id))
+                     (reopened-detached (detached-projection store session-id))
+                     (source-head
+                      (plist-get (e-session-local-state store session-id)
+                                 :current-head-id))
+                     (fork (e-session-fork store session-id :at source-head))
+                     (fork-projection (projection store (plist-get fork :id)))
+                     (fork-generation (plist-get fork-projection :generation)))
+                (should (equal (plist-get reopened-normal :ordered-context-tail)
+                               (plist-get normal :ordered-context-tail)))
+                (should (equal (plist-get reopened-detached :ordered-context-tail)
+                               (plist-get normal :ordered-context-tail)))
+                (should (equal (e-context-lifetime-generation-checkpoint
+                                fork-generation)
+                               (append checkpoint expected)))
+                (should (equal (contents (e-session-local-messages
+                                          store (plist-get fork :id)))
+                               (contents (append checkpoint expected))))))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
+
+(ert-deftest e-runtime-store-session-worker-legacy-compaction-keeps-context-frontier ()
+  "Detached legacy cuts retain the selected identity generation and its fact."
+  (let* ((directory (make-temp-file "e-context-legacy-cut-" t))
+         (store (e-session-sqlite-store-create directory :load-all t))
+         (session-id "legacy-cut-context"))
+    (unwind-protect
+        (progn
+          (let* ((session (e-session-create store :id session-id))
+                 (root-id (plist-get session :root-event-id)))
+            (e-session-append-context-generation
+             store session-id
+             (e-context-lifetime-generation-create
+              :id "identity-generation" :checkpoint nil
+              :covered-session-boundary root-id)))
+          (e-session-append-message
+           store session-id '(:id "legacy-answer" :role assistant
+                              :content "answer before legacy cut"))
+          (e-session-append-context-curation-package
+           store session-id
+           (list :promotion
+                 (list :record-version 3 :type 'context-promotion
+                       :id "legacy-keep" :frame-id "legacy-frame"
+                       :generation-id "identity-generation"
+                       :consumer-request-id "legacy-consumer"
+                       :response-entry-id "legacy-answer"
+                       :items (list (list :kind 'exact
+                                          :value '(:reference "retained fact")
+                                          :source-observation-ids '("obs-1")
+                                          :source-refs '("source-1")
+                                          :source-fingerprints '("fp-1"))))
+                 :erasure nil))
+          (e-session-append-message
+           store session-id '(:id "legacy-kept" :role user
+                              :content "durable message after cut"))
+          (e-session-append-compaction
+           store session-id "legacy summary"
+           :first-kept-entry-id "legacy-kept")
+          (let* ((normal
+                  (e-session-local-context-lifetime-projection store session-id))
+                 (detached
+                  (e-harness-context-runtime--detached-lifetime-projection
+                   (e-runtime-store-call
+                    (e-session-storage-runtime-store store) 'read
+                    (list :op 'session-context-path :session-id session-id))))
+                 (normal-generation (plist-get normal :generation))
+                 (detached-generation (plist-get detached :generation)))
+            (should normal-generation)
+            (should detached-generation)
+            (should (equal (e-context-lifetime-generation-id normal-generation)
+                           "identity-generation"))
+            (should (equal (e-context-lifetime-generation-id detached-generation)
+                           "identity-generation"))
+            (should-not (e-context-lifetime-generation-checkpoint
+                         normal-generation))
+            (should-not (e-context-lifetime-generation-checkpoint
+                         detached-generation))
+            (should (equal (plist-get normal :promotion-frontier)
+                           '("legacy-keep")))
+            (should (equal (plist-get detached :promotion-frontier)
+                           '("legacy-keep")))
+            (should (equal (plist-get detached :ordered-context-tail)
+                           (plist-get normal :ordered-context-tail)))
+            (should (equal (plist-get normal :ordered-context-tail)
+                           '((:role context
+                              :content (:reference "retained fact"))
+                             (:role user
+                              :content "durable message after cut"))))
+            (let* ((path (e-session-aggregate-current-path store session-id))
+                   (anchor-index
+                    (cl-position-if
+                     (lambda (entry)
+                       (equal (plist-get entry :id) "legacy-answer"))
+                     path))
+                   (first-kept-index
+                    (cl-position-if
+                     (lambda (entry)
+                       (equal (plist-get entry :id) "legacy-kept"))
+                     path)))
+              (should (integerp anchor-index))
+              (should (integerp first-kept-index))
+              (should (< anchor-index first-kept-index)))
+            (let ((path-result
+                   (e-runtime-store-call
+                    (e-session-storage-runtime-store store) 'read
+                    (list :op 'session-context-path :session-id session-id))))
+              (should (<= (plist-get path-result :byte-count)
+                          (plist-get path-result :byte-limit)))
+              (should (<= (length (plist-get path-result :context-records))
+                          (plist-get path-result :record-limit))))
+            (e-session-sqlite-store-close store)
+            (setq store (e-session-sqlite-store-create directory :load-all t))
+            (let* ((reopened-normal
+                    (e-session-local-context-lifetime-projection store session-id))
+                   (reopened-detached
+                    (e-harness-context-runtime--detached-lifetime-projection
+                     (e-runtime-store-call
+                      (e-session-storage-runtime-store store) 'read
+                      (list :op 'session-context-path :session-id session-id)))))
+              (should (equal (plist-get reopened-normal :promotion-frontier)
+                             '("legacy-keep")))
+              (should (equal (plist-get reopened-detached :promotion-frontier)
+                             '("legacy-keep")))
+              (should (equal (e-context-lifetime-generation-id
+                              (plist-get reopened-normal :generation))
+                             "identity-generation"))
+              (should (equal (e-context-lifetime-generation-id
+                              (plist-get reopened-detached :generation))
+                             "identity-generation"))
+              (should (equal (plist-get reopened-normal :ordered-context-tail)
+                             (plist-get normal :ordered-context-tail)))
+              (should (equal (plist-get reopened-detached :ordered-context-tail)
+                             (plist-get normal :ordered-context-tail)))
+              (let* ((fork (e-session-fork store session-id
+                                           :at "legacy-answer"))
+                     (fork-id (plist-get fork :id))
+                     (fork-normal
+                      (e-session-local-context-lifetime-projection store fork-id))
+                     (fork-detached
+                      (e-harness-context-runtime--detached-lifetime-projection
+                       (e-runtime-store-call
+                        (e-session-storage-runtime-store store) 'read
+                        (list :op 'session-context-path :session-id fork-id)))))
+                (should-not (plist-get fork-normal :promotion-frontier))
+                (should-not (plist-get fork-detached :promotion-frontier))))))
+      (ignore-errors (e-session-sqlite-store-close store))
+      (when (file-directory-p directory)
+        (delete-directory directory t)))))
 
 (ert-deftest e-runtime-store-session-worker-context-path-bounds-tool-receipts ()
   "Provider context returns a projected receipt tail, not receipt history."

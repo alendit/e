@@ -400,7 +400,8 @@ stand in for the pure curation preparation path."
             :generation-id "generation-v3"
             :consumer-request-id "consumer-v2"
             :response-entry-id "response-v2"
-            :facts ((:id "fact-v2" :value "legacy value"))
+            :facts ((:id "fact-v2"
+                     :value (:enabled :json-false :topic "legacy value")))
             :source-observation-ids ("observation-v2")
             :source-refs ("source-v2")
             :source-fingerprints ("fingerprint-v2")))
@@ -441,8 +442,12 @@ stand in for the pure curation preparation path."
                   :covered-session-boundary
                   (plist-get (e-session-local-state store session-id)
                              :root-event-id))))
+          (e-session-append-context-curation-response
+           store session-id "turn-v2" "response-v2")
           (e-session-test--append-literal-v2-record
            store session-id v2-record)
+          (e-session-append-context-curation-response
+           store session-id "turn-v3" "response-v3")
           (e-session-append-context-curation-package
            store session-id (list :promotion v3-record :erasure nil))
           (e-session-flush-write-queue store)
@@ -478,26 +483,26 @@ stand in for the pure curation preparation path."
                      (mapcar (lambda (message)
                                (list (plist-get message :role)
                                      (plist-get message :content)))
-                             promotion-messages)
+                     promotion-messages)
                      (list
-                      '(system "Promoted fact fact-v2: legacy value")
-                      (list 'system web-result)
-                      '(system "summarized replacement"))))
+                      '(context (:enabled :json-false :topic "legacy value"))
+                      (list 'context web-result)
+                      '(context "summarized replacement"))))
             (should (equal
                      (e-context-lifetime-generation-checkpoint fork-generation)
                      (list
                       '(:role system :content "C0")
-                      '(:role system
-                        :content "Promoted fact fact-v2: legacy value")
-                      (list :role 'system :content web-result)
-                      '(:role system :content "summarized replacement"))))
+                      '(:role context
+                        :content (:enabled :json-false :topic "legacy value"))
+                      (list :role 'context :content web-result)
+                      '(:role context :content "summarized replacement"))))
             (should (equal
                      (e-context-lifetime-generation-checkpoint
-                      selected-generation)
+                     selected-generation)
                      '((:role system :content "C0")
-                       (:role system
-                        :content "Promoted fact fact-v2: legacy value"))))))
-      (delete-directory directory t))))
+                       (:role context
+                        :content (:enabled :json-false :topic "legacy value"))))))
+      (delete-directory directory t)))))
 
 (ert-deftest e-session-test-context-curation-package-is-one-replayable-unit ()
   "A mixed curation package persists, reopens, and stays clean on a fork."
@@ -2386,6 +2391,47 @@ stand in for the pure curation preparation path."
       (e-session-append-message store fork-id '(:role user :content "three"))
       (should (= (length (e-session-local-messages store "src")) 2))
       (should (= (length (e-session-local-messages store fork-id)) 3)))))
+
+(ert-deftest e-session-test-fork-empty-generation-preserves-replay-messages ()
+  "An empty identity generation keeps ordinary phase and tool replay intact."
+  (let* ((store (e-session-store-create))
+         (session-id "empty-generation-fork")
+         (session (e-session-create store :id session-id)))
+    (e-session-append-context-generation
+     store session-id
+     (e-context-lifetime-generation-create
+      :id "generation-empty-fork"
+      :checkpoint nil
+      :covered-session-boundary (plist-get session :root-event-id)))
+    (dolist (message
+             '((:role user :content "question")
+               (:role assistant :phase commentary :content "progress")
+               (:role tool-call
+                :content (:id "call-1" :name "lookup" :arguments (:q "x"))
+                :metadata (:provider-replay-items
+                           ((:type "reasoning" :signature "signature-1"))))
+               (:role tool
+                :content (:tool-call-id "call-1" :content "result"))
+               (:role assistant :phase final_answer :content "answer")))
+      (e-session-append-message store session-id message))
+    (let* ((source-messages (e-session-local-messages store session-id))
+           (source-head (plist-get (e-session-local-state store session-id)
+                                   :current-head-id))
+           (fork (e-session-fork store session-id :at source-head))
+           (fork-messages (e-session-local-messages store (plist-get fork :id)))
+           (message-shape
+            (lambda (messages)
+              (mapcar (lambda (message)
+                        (list :role (plist-get message :role)
+                              :phase (plist-get message :phase)
+                              :content (plist-get message :content)
+                              :metadata (plist-get message :metadata)))
+                      messages))))
+      (should (null (e-context-lifetime-generation-checkpoint
+                     (e-session-local-context-lifetime-current-generation
+                      store session-id))))
+      (should (equal (funcall message-shape fork-messages)
+                     (funcall message-shape source-messages))))))
 
 (ert-deftest e-session-test-fork-mints-fresh-identity-and-linear-chain ()
   "Fork messages get fresh ids and a clean linear parent chain."

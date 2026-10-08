@@ -13,7 +13,9 @@
 (require 'e-anthropic)
 (require 'e-json)
 (require 'e-openai-decoder)
+(require 'e-openai-chat-completions)
 (require 'e-openai-responses)
+(require 'e-session)
 (require 'e-sqlite-test-store-support
          (expand-file-name
           "e-sqlite-test-store-support.el"
@@ -238,6 +240,8 @@
                (projection (e-session-local-context-lifetime-projection
                             store "session-1"))
                (curations (plist-get projection :curations))
+               (promotion-entry
+                (car (plist-get projection :promotion-message-entries)))
                (context (e-harness-turn-context
                          harness "session-1" "next-consumer"))
                (messages (plist-get context :messages))
@@ -248,11 +252,18 @@
                 (mapcar (lambda (message) (plist-get message :role))
                         messages)))
           (should (= (length curations) 1))
+          (should (eq (plist-get promotion-entry :anchor-position-kind)
+                      'response-completion))
+          (should (> (plist-get promotion-entry :anchor-path-index)
+                     (plist-get promotion-entry :record-path-index)))
           (should (vectorp message-entry-ids))
           (should (= (length message-entry-ids) (length messages)))
           (should
            (equal (delq nil (append (copy-sequence message-entry-ids) nil))
-                  (plist-get projection :durable-tail-entry-ids)))
+                  (delq nil
+                        (copy-sequence
+                         (plist-get projection
+                                    :ordered-context-tail-entry-ids)))))
           (should-not (plist-member (plist-get context :options)
                                     :message-entry-ids))
           (let ((item (car (plist-get (car curations) :items))))
@@ -261,7 +272,7 @@
                            "selected durable fact")))
           (should
            (equal (plist-get projection :promotion-messages)
-                  '((:role system :content "selected durable fact"))))
+                  '((:role context :content "selected durable fact"))))
           (should (string-match-p "selected durable fact" printed))
           (should-not (string-match-p "BULKY-TOOL-RESULT" printed))
           (should-not (member 'tool-call next-roles))
@@ -597,6 +608,156 @@
         (should (= (length (e-session-local-context-curations
                             store "marker-retirement"))
                    1))))))
+
+(ert-deftest e-harness-test-two-retained-values-remain-native-prefix-after-append ()
+  "Two anchored keeps stay after their answers in every native route."
+  (let* ((store (e-session-store-create))
+         (session-id "native-retained-prefix")
+         (session (e-session-create store :id session-id))
+         (root-id (plist-get session :root-event-id)))
+    (e-session-append-context-generation
+     store session-id
+     (e-context-lifetime-generation-create
+      :id "native-retained-generation"
+      :checkpoint '((:role system :content "Real instructions"))
+      :covered-session-boundary root-id))
+    (cl-labels
+        ((append-keep (id answer value)
+           (e-session-append-context-curation-package
+            store session-id
+            (list :promotion
+                  (list :record-version 3 :type 'context-promotion :id id
+                        :frame-id (concat "frame-" id)
+                        :generation-id "native-retained-generation"
+                        :consumer-request-id (concat "consumer-" id)
+                        :response-entry-id answer
+                        :items
+                        (list (list :kind 'exact :value value
+                                    :source-observation-ids
+                                    (list (concat "observation-" id))
+                                    :source-refs (list (concat "source-" id))
+                                    :source-fingerprints
+                                    (list (concat "fingerprint-" id)))))
+                  :erasure nil)))
+         (append-legacy-keep (id answer value)
+           (let* ((record
+                   (list :record-version 2 :type 'context-promotion :id id
+                         :frame-id (concat "frame-" id)
+                         :generation-id "native-retained-generation"
+                         :consumer-request-id (concat "consumer-" id)
+                         :response-entry-id answer
+                         :facts (list (list :id "internal-fact-id" :value value))
+                         :source-observation-ids
+                         (list (concat "observation-" id))
+                         :source-refs (list (concat "source-" id))
+                         :source-fingerprints
+                         (list (concat "fingerprint-" id))))
+                  (session-state (e-session-local-state store session-id))
+                  (entry
+                   (list :type "context-promotion"
+                         :session-id session-id
+                         :id (concat "legacy-entry:" id)
+                         :parent-id (plist-get session-state :current-head-id)
+                         :timestamp "2026-10-08T00:00:00Z"
+                         :context-record
+                         (plist-get
+                          (e-session-codec-record-for-json
+                           (list :context-record record))
+                          :context-record))))
+             (e-session-storage-commit-mutation store session-id entry)
+             (e-session-aggregate-apply-record
+              store (e-session-codec-replay-record entry))))
+         (messages (target-session)
+           (append '((:role system :content "Real instructions"))
+                   (plist-get
+                    (e-session-local-context-lifetime-projection
+                     store target-session)
+                    :ordered-context-tail)))
+         (body (route semantic-messages)
+           (pcase route
+             ('anthropic
+              (e-anthropic-request-body
+               :messages semantic-messages
+               :options '(:model "claude-test" :max-tokens 1024)))
+             ('chat-completions
+              (e-openai-chat-completion-request-body
+               :messages semantic-messages
+               :options '(:model "gpt-test")))
+             (_
+              (e-openai-codex-request-body
+               :messages semantic-messages
+               :options (list :model "gpt-5.6"
+                              :responses-context-layout 'developer-input
+                              :responses-transport
+                              (if (eq route 'responses-http)
+                                  'http 'websocket))))))
+         (native-items (route native-body)
+           (append (plist-get native-body
+                              (if (memq route '(anthropic chat-completions))
+                                  :messages :input))
+                   nil))
+         (without-cache-metadata (value)
+           (cond
+            ((stringp value) value)
+            ((vectorp value)
+             (vconcat (mapcar #'without-cache-metadata (append value nil))))
+            ((and (consp value) (keywordp (car value)))
+             (let ((copy (copy-tree value t)))
+               (cl-remf copy :cache_control)
+               (cl-remf copy :prompt_cache_breakpoint)
+               (cl-loop for (key item) on copy by #'cddr
+                        append (list key (without-cache-metadata item)))))
+            ((consp value) (mapcar #'without-cache-metadata value))
+            (t value))))
+      (e-session-append-message
+       store session-id '(:id "question-one" :role user :content "Question one"))
+      (e-session-append-message
+       store session-id '(:id "answer-one" :role assistant :content "Answer one"))
+      (append-legacy-keep "keep-one" "answer-one"
+                          '(:fact "kept-one" :enabled :json-false :n 1))
+      (e-session-append-message
+       store session-id '(:id "question-two" :role user :content "Question two"))
+      (e-session-append-message
+       store session-id '(:id "answer-two" :role assistant :content "Answer two"))
+      (append-keep "keep-two" "answer-two" '(:fact "kept-two" :n 2))
+      (let* ((before (messages session-id))
+             (before-tail (cdr before)))
+        (should
+         (equal before-tail
+                '((:role user :content "Question one")
+                  (:role assistant :content "Answer one")
+                  (:role context
+                   :content (:enabled :json-false :fact "kept-one" :n 1))
+                  (:role user :content "Question two")
+                  (:role assistant :content "Answer two")
+                  (:role context :content (:fact "kept-two" :n 2)))))
+        (e-session-append-message
+         store session-id '(:id "question-three" :role user
+                            :content "Question three"))
+        (let ((after (messages session-id)))
+          (dolist (route '(anthropic responses-http responses-websocket
+                           chat-completions))
+            (let* ((before-body (body route before))
+                   (after-body (body route after))
+                   (before-native
+                    (without-cache-metadata
+                     (native-items route before-body)))
+                   (after-native
+                    (without-cache-metadata
+                     (native-items route after-body)))
+                   (printed (prin1-to-string before-body)))
+              (should (string-match-p "Real instructions" printed))
+              (should (string-match-p
+                       (regexp-quote e-context-lifetime-retained-reference-prefix)
+                       printed))
+              (should (string-match-p "kept-one" printed))
+              (should (string-match-p "kept-two" printed))
+              (should-not (string-match-p
+                           "internal-fact-id\\|frame-keep\\|observation-keep\\|source-keep\\|fingerprint-keep"
+                           printed))
+              (should (= (length after-native) (1+ (length before-native))))
+              (should (equal before-native
+                             (cl-subseq after-native 0 (length before-native)))))))))))
 
 (ert-deftest e-harness-test-context-lifetime-tool-marker-follows-all-prior-sources ()
   "A descendant tool source follows every prior presented source."
@@ -940,7 +1101,7 @@
               (should-not (string-match-p control-id printed))
               (should
                (equal (plist-get projection :promotion-messages)
-                      '((:role system :content "selected from tool result"))))
+                      '((:role context :content "selected from tool result"))))
               (should (string-match-p "selected from tool result" printed))
               (should-not (string-match-p raw-result-marker printed))
               (should-not (string-match-p "call-tool-result" printed))
@@ -1820,9 +1981,13 @@
                 (should (equal response-id
                                (plist-get source-record-after-fork
                                           :response-entry-id)))
-                (should (member '(:role system :content "SOURCE-FOR-RESPONSE-ID")
+                (should (member '(:role context :content "SOURCE-FOR-RESPONSE-ID")
                                 (e-context-lifetime-generation-checkpoint
                                  fork-generation)))
+                (should-not
+                 (member '(:role system :content "SOURCE-FOR-RESPONSE-ID")
+                         (e-context-lifetime-generation-checkpoint
+                          fork-generation)))
                 (should-not
                  (string-match-p "\\[ephemeral context source 1, ~"
                                  (prin1-to-string

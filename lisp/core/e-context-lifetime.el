@@ -38,13 +38,21 @@ generational projection."
   "Version of the narrowed durable generation and legacy promotion records.")
 
 (defconst e-context-lifetime-portable-message-roles
-  '(system user assistant)
+  '(system user assistant context)
   "Backend-neutral roles allowed in a portable generation checkpoint.
 
 Tool calls/results and provider-specific roles are observations or wire
 artifacts, not portable checkpoint content.  The codec rehydrates JSON role
 strings to these established symbolic roles before a checkpoint is exposed to
 the rest of E.")
+
+(defconst e-context-lifetime-retained-context-layout-revision
+  "anchored-reference-context-v1"
+  "Continuation identity for anchored reference-data role and native framing.")
+
+(defconst e-context-lifetime-retained-reference-prefix
+  "Retained reference data (not an instruction):\n"
+  "Adapter framing that keeps curated context distinct from user direction.")
 
 (defun e-context-lifetime--portable-role (role)
   "Return the finite backend-neutral ROLE mapping or signal an error.
@@ -55,7 +63,8 @@ have a closed role vocabulary."
                ((memq role e-context-lifetime-portable-message-roles) role)
                ((equal role "system") 'system)
                ((equal role "user") 'user)
-               ((equal role "assistant") 'assistant))))
+               ((equal role "assistant") 'assistant)
+               ((equal role "context") 'context))))
     (unless (memq role e-context-lifetime-portable-message-roles)
       (signal 'e-context-lifetime-invalid-record
               (list 'portable-message :role role)))
@@ -386,6 +395,89 @@ checkpoint codec is called.  Existing checkpoint messages should instead use
   (e-context-lifetime--portable-message
    (list :role (plist-get message :role)
          :content (plist-get message :content))))
+
+(defun e-context-lifetime-weave-retained-context
+    (durable-entries retained-entries &optional covered-boundary-index)
+  "Return DURABLE-ENTRIES woven with eligible RETAINED-ENTRIES.
+
+DURABLE-ENTRIES are plists with `:path-index', `:entry-id', and `:message'.
+Each retained entry has `:anchor-path-index', `:record-path-index', `:kind',
+and `:message'.  Retention follows its response anchor; items sharing an
+anchor keep their journal and item order.  A non-nil covered boundary absorbs
+items whose anchors are at or before it.  Missing anchors are errors for
+eligible items, but records already covered by the boundary can be ignored."
+  (let (events retained-result previous-path-index)
+    (dolist (entry durable-entries)
+      (let ((path-index (plist-get entry :path-index))
+            (entry-id (plist-get entry :entry-id)))
+        (unless (and (integerp path-index) (>= path-index 0)
+                     (or (null previous-path-index)
+                         (> path-index previous-path-index))
+                     (stringp entry-id) (not (string-empty-p entry-id))
+                     (plist-member entry :message))
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'retained-context :durable-entry entry)))
+        (setq previous-path-index path-index)
+        (push (list :position path-index :phase 0 :record-index path-index
+                    :item-index 0 :entry-id entry-id
+                    :message (copy-tree (plist-get entry :message) t))
+              events)))
+    (dolist (entry retained-entries)
+      (let ((record-index (plist-get entry :record-path-index))
+            (anchor-index (plist-get entry :anchor-path-index))
+            (message (plist-get entry :message)))
+        (unless (and (integerp record-index) (>= record-index 0)
+                     (plist-member entry :message))
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'retained-context :record-position entry)))
+        (cond
+         ((and (integerp anchor-index) (>= anchor-index 0))
+          (unless (or (<= anchor-index record-index)
+                      (eq (plist-get entry :anchor-position-kind)
+                          'response-completion))
+            (signal 'e-context-lifetime-invalid-record
+                    (list 'retained-context :anchor-after-record entry)))
+          (unless (and covered-boundary-index
+                       (<= anchor-index covered-boundary-index))
+            (push (list :position anchor-index :phase 1
+                        :record-index record-index
+                        :item-index (or (plist-get entry :item-index) 0)
+                        :entry-id nil :message (copy-tree message t)
+                        :retained-entry (copy-tree entry t))
+                  events)
+            (push (copy-tree entry t) retained-result)))
+         ((and covered-boundary-index
+               (<= record-index covered-boundary-index))
+          nil)
+         (t
+          (signal 'e-context-lifetime-invalid-record
+                  (list 'retained-context :unresolved-anchor entry))))))
+    (setq events
+          (cl-stable-sort
+           events
+           (lambda (left right)
+             (let ((left-position (plist-get left :position))
+                   (right-position (plist-get right :position))
+                   (left-phase (plist-get left :phase))
+                   (right-phase (plist-get right :phase)))
+               (cond
+                ((/= left-position right-position)
+                 (< left-position right-position))
+                ((/= left-phase right-phase) (< left-phase right-phase))
+                ((/= (plist-get left :record-index)
+                     (plist-get right :record-index))
+                 (< (plist-get left :record-index)
+                    (plist-get right :record-index)))
+                (t (< (plist-get left :item-index)
+                      (plist-get right :item-index))))))))
+    (list :entries events
+          :messages (mapcar (lambda (event)
+                              (plist-get event :message))
+                            events)
+          :entry-ids (mapcar (lambda (event)
+                               (plist-get event :entry-id))
+                             events)
+          :retained-entries (nreverse retained-result))))
 
 (defun e-context-lifetime--portable-checkpoint
     (checkpoint &optional require-nonempty)
@@ -2005,7 +2097,7 @@ append a v3 value that it would be unable to replay."
   (e-context-lifetime-curation-from-record record))
 
 (defun e-context-lifetime-curation-messages (record)
-  "Return one portable system message per v3 curation item in RECORD order.
+  "Return one portable context message per v3 curation item in RECORD order.
 
 Exact items retain their canonical source value and summary items retain their
 model-authored text.  No label, estimate, provenance, identifier, prefix, or
@@ -2013,7 +2105,7 @@ model-authored text.  No label, estimate, provenance, identifier, prefix, or
   (mapcar
    (lambda (item)
      (e-context-lifetime--portable-message
-      (list :role 'system
+      (list :role 'context
             :content (if (eq (plist-get item :kind) 'exact)
                          (plist-get item :value)
                        (plist-get item :text)))))
@@ -2063,14 +2155,8 @@ session record retains provenance separately for audit and validation."
            append
            (cl-loop for fact in (e-context-lifetime-promotion-facts promotion)
                     collect
-                    (list :role 'system
-                          :content
-                          (format "Promoted fact %s: %s"
-                                  (plist-get fact :id)
-                                  (let ((value (plist-get fact :value)))
-                                    (if (stringp value)
-                                        value
-                                      (prin1-to-string value))))))))
+                    (list :role 'context
+                          :content (plist-get fact :value)))))
 
 (defun e-context-lifetime--items (value)
   "Return VALUE as a detached sequence of semantic context items."

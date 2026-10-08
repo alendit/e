@@ -443,23 +443,43 @@ removes tool bodies, provider replay metadata, anchors, continuation ids,
 cache counters, runtime frames, and diagnostics."
   (let* ((projection (e-session-local-context-lifetime-projection store session-id))
          (generation (plist-get projection :generation))
+         (path (e-session-local-current-path store session-id))
+         (covered-boundary-index
+          (cl-position-if
+           (lambda (entry)
+             (equal (plist-get entry :id) covered-session-boundary))
+           path))
+         ;; A new checkpoint absorbs only retained items whose anchors fall
+         ;; inside the exact journal prefix represented by this preparation.
+         (eligible-message-entries
+          (seq-filter
+           (lambda (entry)
+             (let ((anchor-index
+                    (plist-get entry :anchor-path-index)))
+               (and (integerp anchor-index)
+                    (<= anchor-index covered-boundary-index))))
+           (plist-get projection :promotion-message-entries)))
+         (eligible-record-ids
+          (delete-dups
+           (mapcar (lambda (entry) (plist-get entry :record-id))
+                   eligible-message-entries)))
          ;; Keep literal v2 records available to the compatibility summary
-         ;; path.  They came from the session journal and are never rebuilt by
-         ;; a production v2 encoder; new writes are v3-only.
-         (legacy-promotion-ids (plist-get projection :promotion-frontier))
+         ;; path; new writes remain v3-only.
          (promotions
-          (delq nil
-                (mapcar
-                 (lambda (entry)
-                   (when (eq (plist-get entry :type) 'context-promotion)
-                     (let ((record (e-session-aggregate-context-record entry)))
-                       (when (and (equal (plist-get record :record-version)
-                                         e-context-lifetime-record-version)
-                                  (member (plist-get record :id)
-                                          legacy-promotion-ids))
-                         record))))
-                 (e-session-local-current-path store session-id))))
-         (curations (copy-tree (plist-get projection :curations))))
+          (seq-filter
+           (lambda (record)
+             (member (e-context-lifetime-promotion-id record)
+                     eligible-record-ids))
+           (plist-get projection :promotions)))
+         (curations
+          (seq-filter
+           (lambda (record)
+             (member (plist-get record :id) eligible-record-ids))
+           (plist-get projection :curations))))
+    (unless (integerp covered-boundary-index)
+      (signal 'e-compaction-error
+              (list "Portable compaction boundary is not on the current path"
+                    covered-session-boundary)))
     (list :generation-id
           (and generation
                (e-context-lifetime-generation-id generation))
@@ -479,10 +499,12 @@ cache counters, runtime frames, and diagnostics."
           :promotions (copy-tree promotions)
           :curations curations
           :promotion-messages
-          (mapcar #'e-context-lifetime-portable-message
-                  (plist-get projection :promotion-messages))
+          (mapcar (lambda (entry)
+                    (e-context-lifetime-portable-message
+                     (plist-get entry :message)))
+                  eligible-message-entries)
           :promotion-message-entries
-          (copy-tree (plist-get projection :promotion-message-entries))
+          (copy-tree eligible-message-entries t)
           :promotion-frontier
           (copy-sequence (plist-get projection :promotion-frontier))
           :covered-session-boundary covered-session-boundary)))
@@ -624,39 +646,42 @@ any active post-boundary promotion facts.  Runtime frames, tool bodies,
 provider replay items, anchors, diagnostics, and other non-message journal
 entries are never included.  This is the sole provider-neutral input builder
 for optional opaque backend compaction."
-  (let ((checkpoint (e-context-lifetime-portable-checkpoint checkpoint t))
-        (path (e-session-local-current-path store session-id))
-        (after-boundary nil)
-        (tail nil))
-    (unless (seq-some (lambda (entry)
-                        (equal (plist-get entry :id)
-                               covered-session-boundary))
-                      path)
+  (let* ((checkpoint (e-context-lifetime-portable-checkpoint checkpoint t))
+         (path (e-session-local-current-path store session-id))
+         (boundary-index
+          (cl-position-if
+           (lambda (entry)
+             (equal (plist-get entry :id) covered-session-boundary))
+           path))
+         (tail nil))
+    (unless (integerp boundary-index)
       (signal 'e-compaction-error
               (list "Portable compaction boundary is not on the current path"
                     covered-session-boundary)))
-    (dolist (entry path)
-      (when after-boundary
+    (cl-loop for entry in path for path-index from 0 do
+      (when (> path-index boundary-index)
         (when-let* ((message (e-session-context-lifetime-durable-message entry)))
-          (push (e-context-lifetime-portable-message message) tail)))
-      (when (equal (plist-get entry :id) covered-session-boundary)
-        (setq after-boundary t)))
+          (push (list :path-index path-index
+                      :entry-id (plist-get entry :id)
+                      :message (e-context-lifetime-portable-message message))
+                tail))))
     (let* ((projection (e-session-local-context-lifetime-projection store session-id))
            (promotion-message-entries
             (or (plist-get projection :promotion-message-entries)
                 (mapcar (lambda (message)
                           (list :kind 'v2 :message message))
                         (plist-get projection :promotion-messages))))
-           (messages (append checkpoint (nreverse tail))))
-      (dolist (entry promotion-message-entries)
-        (let ((promotion-message
-               (e-context-lifetime-portable-message
-                (plist-get entry :message))))
-          (if (eq (plist-get entry :kind) 'v3)
-              (setq messages (append messages (list promotion-message)))
-            (unless (member promotion-message messages)
-              (setq messages (append messages (list promotion-message)))))))
-      messages)))
+           (promotion-message-entries
+           (seq-remove
+             (lambda (entry)
+               (and (eq (plist-get entry :kind) 'v2)
+                    (member (e-context-lifetime-portable-message
+                             (plist-get entry :message))
+                             checkpoint)))
+             promotion-message-entries))
+           (weave (e-context-lifetime-weave-retained-context
+                   (nreverse tail) promotion-message-entries boundary-index)))
+      (append checkpoint (plist-get weave :messages)))))
 
 (defun e-compaction--portable-boundary-on-path-p
     (store session-id boundary-id)

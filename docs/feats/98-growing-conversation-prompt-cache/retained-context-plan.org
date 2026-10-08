@@ -1,0 +1,123 @@
+#+title: Retained context without history cache relocation
+#+date: 2026-10-08
+#+startup: overview
+
+* Scope and authority
+
+In-progress. The user requested the corrective implementation across all
+adapters after the Opus P3 failure. F98-G1 and F98-C1–C6 in [[file:plan.org][plan.org]] remain
+the behavioral authority. This supporting design supersedes F88 addendum 4's
+literal system-role choice for retained facts and summaries; values, provenance,
+authorized retention and erasure remain authoritative.
+
+The direct scenario is two keep cycles followed by later turns: retained facts
+remain usable and unchanged prior durable history stays in its native prefix.
+Summary and erase must remove their excluded source content; the resulting
+projection must support reuse after its actual changed boundary. Implementation
+and endpoint qualification have separate evidence status.
+
+The Opus failure combines two placement errors. Core projects retention as
+system instructions, which Anthropic moves ahead of history. Session projection
+also appends all promotions after the current history tail, so a later turn can
+move earlier retained content again even after correcting its role.
+
+* Supporting design
+
+Core owns retained context semantics. Extend the closed portable role vocabulary
+with =context=, meaning retained reference data rather than instructions or a new
+user utterance. V3 exact/summary and readable v2 promotion records project to
+that role. Their canonical content stays unchanged; provenance remains in the
+records. Real instructions and request-local source markers retain their roles.
+
+The session semantic projection places retention after its existing
+=response-entry-id= anchor, in journal order for multiple records at one anchor.
+Resolve that anchor in the selected canonical journal path before filtering
+semantic messages. A curation-only response can be an audit-only control entry;
+an ordinary tool response can anchor a tool-call entry excluded from the durable
+tail. Both still establish an insertion position without inventing a message.
+Normal and detached projections share the same pure ordering operation. Message
+entry identities remain aligned, with nil identities for derived retention.
+The existing bounded SQLite selected-path query supplies content-free anchor
+path positions before filtering, including audit-only response entries. Keep
+its existing selected-branch, record and byte bounds and lazy aggregate behavior;
+no separate store or runtime registry is introduced.
+Fork seeds and portable compaction consume that ordering instead of rebuilding
+a separate appended tail. Missing eligible anchors are invalid projection data,
+not permission to place retention arbitrarily. Covered promotions belong to the
+checkpoint and must not be inserted again.
+For a partial compaction, partition retention by canonical anchor position
+relative to the selected covered-session boundary. Absorb covered items exactly
+once; preserve later items' role, content, anchor, order and eligibility after
+the generation changes, including records authored in an older generation.
+Do not rewrite the journal or pull later facts into an earlier checkpoint.
+Existing optimistic preparation/frontier and staleness validation still apply.
+
+Adapters map =context= to native user content at its existing position, with a
+short reference-data framing that distinguishes it from a user instruction.
+Anthropic must serialize structured canonical values into supported text
+content; Responses and Chat Completions use their respective text encoders.
+HTTP and WebSocket share Responses translation. Genuine system/developer
+instructions remain in their existing channels. Do not synthesize tool calls,
+rewrite every system message, or introduce cache policy options.
+
+Existing v2/v3 journals replay with the new semantic role without journal
+mutation. New checkpoints preserve =context= through JSON decode, compaction,
+fork and reopen. Old system-only checkpoints have no reliable item provenance;
+retain their roles rather than guessing which instructions were facts. A changed
+portable/native layout invalidates incompatible continuation anchors through
+the existing projection/layout identity; no new compatibility mode is added.
+That identity must cover retained-role, ordering and adapter framing changes
+independently of curation-carrier availability and optional segmented/cache
+wire controls. Older/flattened Responses profiles and unavailable-carrier
+routes still render accepted records. Prove old-layout rejection and new-layout
+continuation compatibility for both qualified-candidate and unavailable routes.
+
+Adapter capability gates remain authoritative. Correct serialization alone
+does not enable curation. Unconfirmed routes retain no carrier. Requalification
+and wrapper-free production acceptance follow the existing P3 protocol; the
+configured gateway route cannot qualify public Anthropic or OpenAI endpoints.
+
+* Delivery package: DP1-R1
+
+| Field | Decision |
+|-------+----------|
+| Useful outcome | All shipped adapters render existing and newly retained context at a stable semantic position, with replay and checkpoint preservation. |
+| Contracts | Corrective realization of F98-C1, C3, C4 and C6; C2/C5 remain regression boundaries. DP1 remains their establishing package. |
+| Owners | Lifetime codec owns content/role; session projection owns chronology; harness composes authoritative projection; adapters own native encoding/cache identity. |
+| Physical boundary | e-context-lifetime, e-session-aggregate, e-harness-context-runtime, e-compaction, selected-path query in e-runtime-store-session-worker; Anthropic, Responses and Chat Completions serializers/profile identity; directly affected tests. |
+| Prerequisites | Existing F98 capability/cache policy and P3 producer; this accepted supporting design. |
+| State/lifetime | Durable record content/anchors unchanged; context role persists only in semantic checkpoints; ordering and wire framing are rebuilt per request. No cache registry or runtime qualification state. |
+| Recovery | Existing curation admission and atomic package commit unchanged. Projection rejects unresolved eligible anchors. Reopen/fork reconstruct from accepted records; continuation reuse requires current semantic/native layout identity. |
+| Public surface | Native requests for all adapter routes and portable checkpoint decoding; no new option or tool. |
+| Evidence | R1–R5 below, canonical Eldev, credential-free cache E2E and isolated current-config gates. Independent source review precedes authoritative live qualification. |
+| Safe deferral | Curation availability remains gated on unconfirmed endpoints; no live Emacs reload or live store migration. |
+| Package boundary | Codec, chronology, serialization and consumers must ship together: a role-only or adapter-only change leaves replay ordering incorrect. |
+
+* Evidence portfolio
+
+| Scenario | Contracts | Observable evidence | Class |
+|----------+-----------+---------------------+-------|
+| R1 retained values | C3 | Exact structured/string values and summary text survive codec with provenance only in records; real instructions preserve their role. | Deterministic |
+| R2 anchored replay | C1/C3 | Two keeps remain after their recorded responses across later turns; message, audit-only and filtered tool-call anchors resolve through journal positions; real bounded SQLite detached audit-only projection agrees without loading the aggregate; native prior prefix remains unchanged under append. | Deterministic |
+| R3 persistent boundaries | C3/C4 | Reopen, selected branch/fork and portable compaction preserve role/content/order for message and non-message anchors; before/at/after-boundary items are absorbed exactly once or stay eligible in the tail, including older-generation uncovered records; old-layout anchors are rejected and new-layout anchors remain compatible on candidate, unavailable-carrier and older/flattened Responses profiles. | Deterministic |
+| R4 native routes | C1/C2/C3/C6 | Anthropic, Responses HTTP/WS and Chat Completions preserve system instructions, inline reference data and structured values; summary/erase content absence and unavailable-carrier negatives remain enforced. | Deterministic |
+| R5 provider qualification | C1/C3/C5/C6 | Existing controlled P3 measures repeated keep, summary and erase with unique native/start/finish/usage joins on configured Opus and Codex. Other endpoints remain separately unconfirmed without credentials. | External |
+
+Replace tests that prescribe system-role retention or appended-tail placement.
+Retain and strengthen assertions for exact values, provenance, exclusions,
+branch/checkpoint identity and forced-call negatives. Native ordering regressions
+must observe a later appended turn, not just the first retained fact. Do not
+weaken P3 read-retention predicates to obtain a pass; changed-boundary declines
+remain inconclusive unless attribution supports a stronger conclusion.
+
+* Validation and delivery
+
+The repository-side implementation can be accepted when R1–R4 and the required
+gates pass on the reviewed revision. R5 records capability status independently;
+a valid layout/semantic failure returns to remediation. A missing credential or
+provider failure does not qualify a route. Availability restoration, if earned,
+uses the separately reviewed exact-route normal-source P3 sequence in plan.org.
+
+Commit scoped changes using the repository identity. Do not push, auto-sync,
+restart/reload the user's Emacs, or mutate any Board or live SQLite store.
+Core/adapter changes require a manual restart before the running Emacs uses them.

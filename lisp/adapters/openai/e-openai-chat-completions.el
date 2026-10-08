@@ -14,11 +14,17 @@
 (require 'e-json)
 (require 'e-tools)
 (require 'seq)
+(require 'e-context-lifetime)
 (require 'e-openai-profile)
 
 (defun e-openai-chat-completions--message-content (content)
   "Return Chat Completions message content for CONTENT."
   (if (stringp content) content (or content "")))
+
+(defun e-openai-chat-completions--retained-context-text (content)
+  "Return framed Chat Completions text for canonical retained CONTENT."
+  (concat e-context-lifetime-retained-reference-prefix
+          (if (stringp content) content (e-json-serialize content))))
 
 (defun e-openai-chat-completions--tool-definition (tool)
   "Map backend-neutral TOOL to a Chat Completions tool definition."
@@ -70,6 +76,10 @@
                :tool_call_id (plist-get result :tool-call-id)
                :content (e-tools-result-content-text
                          (plist-get result :content)))))
+      ('context
+       (list :role "user"
+             :content
+             (e-openai-chat-completions--retained-context-text content)))
       (_
        (list :role (symbol-name role)
              :content (e-openai-chat-completions--message-content content))))))

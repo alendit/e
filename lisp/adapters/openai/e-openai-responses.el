@@ -41,6 +41,11 @@ representation or dropping their structure."
       (when cache-breakpoint-p
         (list :prompt_cache_breakpoint (list :mode "explicit")))))))
 
+(defun e-openai-responses--retained-context-text (content)
+  "Return framed Responses text for canonical retained CONTENT."
+  (concat e-context-lifetime-retained-reference-prefix
+          (if (stringp content) content (e-json-serialize content))))
+
 (defun e-openai-responses--input-message
     (message &optional cache-breakpoint-p)
   "Map backend-neutral MESSAGE to a Responses input item.
@@ -66,9 +71,16 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
       (_
        (append
         (list :type "message"
-              :role (if (eq role 'system) "developer" (symbol-name role))
+              :role (pcase role
+                      ('system "developer")
+                      ('context "user")
+                      (_ (symbol-name role)))
               :content (e-openai-responses--message-content
-                        role content cache-breakpoint-p))
+                        role
+                        (if (eq role 'context)
+                            (e-openai-responses--retained-context-text content)
+                          content)
+                        cache-breakpoint-p))
         (when (and (eq role 'assistant) phase)
           (list :phase phase)))))))
 

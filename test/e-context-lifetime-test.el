@@ -211,6 +211,35 @@ the record-focused assertions concise without restoring the retired wrapper."
          (e-context-lifetime-promotion-from-record bad)
          :type 'e-context-lifetime-invalid-record)))))
 
+(ert-deftest e-context-lifetime-test-v2-projects-canonical-structured-value ()
+  "Readable v2 values stay exact while IDs and provenance stay in records."
+  (let* ((value '(:enabled :json-false :topics ("a" "b")))
+         (record
+          '(:record-version 2
+            :type context-promotion
+            :id "promotion-v2-structured"
+            :frame-id "frame-v2-structured"
+            :generation-id "generation-v2-structured"
+            :consumer-request-id "consumer-v2-structured"
+            :response-entry-id "response-v2-structured"
+            :facts ((:id "internal-fact-id" :value
+                     (:enabled :json-false :topics ("a" "b"))))
+            :source-observation-ids ("observation-v2")
+            :source-refs ("source-v2")
+            :source-fingerprints ("fingerprint-v2")))
+         (decoded (e-context-lifetime-promotion-from-record record))
+         (messages (e-context-lifetime-promotion-fact-messages
+                    (list decoded))))
+    (should (equal (plist-get (car (e-context-lifetime-promotion-facts decoded))
+                              :value)
+                   value))
+    (should (equal messages (list (list :role 'context :content value))))
+    (should (equal (e-context-lifetime-promotion-id decoded)
+                   "promotion-v2-structured"))
+    (should-not (string-match-p
+                 "internal-fact-id\\|observation-v2\\|source-v2\\|fingerprint-v2"
+                 (prin1-to-string messages)))))
+
 (ert-deftest e-context-lifetime-test-frame-completion-validates-consumer ()
   "Only the owning consumer request may complete an open frame once."
   (let ((frame (e-context-lifetime-test--frame)))
@@ -1332,11 +1361,73 @@ the record-focused assertions concise without restoring the retired wrapper."
          (messages (e-context-lifetime-curation-messages decoded)))
     (should (equal decoded record))
     (should (equal messages
-                   '((:role system :content (:enabled :json-false :topic "kept"))
-                     (:role system :content "submitted summary"))))
+                   '((:role context :content (:enabled :json-false :topic "kept"))
+                     (:role context :content "submitted summary"))))
     (should-not (string-match-p
                  "Promoted fact\|fingerprint\|observation\|frame-1"
                  (prin1-to-string messages)))))
+
+(ert-deftest e-context-lifetime-test-retained-context-weaves-after-anchors ()
+  "Retained reference entries follow message, tool-call and audit anchors."
+  (let* ((durable
+          '((:path-index 1 :entry-id "message-before"
+             :message (:role user :content "before"))
+            (:path-index 4 :entry-id "message-after"
+             :message (:role assistant :content "after"))))
+         (retained
+          '((:kind v3 :record-id "keep-message" :record-path-index 2
+             :anchor-path-index 1 :item-index 0
+             :message (:role context :content "message reference"))
+            ;; Position 2 is a tool call omitted from DURABLE.
+            (:kind v2 :record-id "keep-tool" :record-path-index 3
+             :anchor-path-index 2 :item-index 0 :generation-id "older"
+             :message (:role context :content "tool reference"))
+            ;; Position 3 is an audit-only response control, also omitted.
+            (:kind v3 :record-id "keep-audit" :record-path-index 4
+             :anchor-path-index 3 :item-index 0
+             :message (:role context :content "audit reference"))))
+         (projection
+          (e-context-lifetime-weave-retained-context durable retained))
+         (partial
+          (e-context-lifetime-weave-retained-context durable retained 2))
+         (completion
+          (e-context-lifetime-weave-retained-context
+           durable
+           '((:kind v3 :record-id "late-control" :record-path-index 2
+              :anchor-path-index 3 :anchor-position-kind response-completion
+              :item-index 0
+              :message (:role context :content "completed response")))
+           2)))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (plist-get projection :messages))
+                   '("before" "message reference" "tool reference"
+                     "audit reference" "after")))
+    (should (equal (plist-get projection :entry-ids)
+                   '("message-before" nil nil nil "message-after")))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (plist-get partial :messages))
+                   '("before" "audit reference" "after")))
+    (should (equal (mapcar (lambda (entry) (plist-get entry :record-id))
+                           (plist-get partial :retained-entries))
+                   '("keep-audit")))
+    (should (equal (mapcar (lambda (message) (plist-get message :content))
+                           (plist-get completion :messages))
+                   '("before" "completed response" "after")))
+    (should-error
+     (e-context-lifetime-weave-retained-context
+      durable
+      '((:kind v3 :record-id "unresolved" :record-path-index 5
+         :anchor-path-index nil :message (:role context :content "bad")))
+      2)
+     :type 'e-context-lifetime-invalid-record)
+    (should-error
+     (e-context-lifetime-weave-retained-context
+      durable
+      '((:kind v3 :record-id "untyped-late-control" :record-path-index 2
+         :anchor-path-index 3 :item-index 0
+         :message (:role context :content "bad")))
+      2)
+     :type 'e-context-lifetime-invalid-record)))
 
 (ert-deftest e-context-lifetime-test-curation-v3-codec-detaches-and-rejects-drift ()
   "The v3 record boundary detaches content and rejects schema drift."

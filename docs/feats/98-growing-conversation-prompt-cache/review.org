@@ -4678,3 +4678,735 @@ Done is claimed. No further unchanged provider run is required for this
 documentation closure. Reviewer authored only this private artifact; no source,
 Git, provider, runtime, Board/store operation or gate rerun occurred.
 Log-read: none.
+
+
+* Review 24: Independent retained-context implementation-plan admission
+
+** Decision and exact authority
+
+=implementation-plan-fixed-point= for the corrected supporting design and
+complete DP1-R1 delivery relation. No actionable current plan finding or
+required implementation-plan unknown remains. This is a plan-level result;
+it does not claim implementation correctness, passed new gates, improved
+provider cache behavior or restored curation capability. The parent owns
+implementation admission and publication.
+
+Reviewed artifact: =docs/feats/98-growing-conversation-prompt-cache/retained-context-plan.org=.
+Current independently calculated SHA-256:
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=.
+Git blob identity calculated directly from filesystem bytes:
+=0a84202f2b9198e3f2f139dc57a2218a97ef3f73=.
+Parent-supplied clean source dependency revision:
+=4f042f184eb2290bc05f452e0f4b550e48328766=.
+Existing F98 plan dependency blob:
+=ad68b5e0348cff2d1a0b41ba535dbe78b84c3974=.
+No Git operation was needed to establish the content hashes.
+
+F98-G1/C1–C6 remain the normative authority. The current user instruction
+authorizes the correction across adapters. The supporting design explicitly
+supersedes F88 addendum 4's literal system-role projection while preserving
+its canonical content, provenance, authorized retention/erasure and package
+semantics. DP1 remains the sole establishing package for those contracts;
+DP1-R1 is its cohesive corrective realization, not a second contract authority.
+
+** Findings resolved during this plan review
+
+All four material candidates were independently sourced, parent-verified,
+corrected by the parent and read back in the identity above. They carry as
+specific implementation-review risks, not as proof that code is already fixed.
+
+1. R24-PF1, non-message anchor feasibility: =e-loop.el:1198–1230= allocates an
+   audit-only response identity when a reserved curation response has no
+   assistant text. =e-session-aggregate.el:1847–1861= persists it as activity
+   rather than a transcript message. Ordinary tool responses may also anchor
+   a tool-call entry, excluded by the durable filter at =1481–1501=.
+   The initial plan did not explicitly cover these insertion positions.
+   Closed: resolve anchors in the selected canonical journal path before
+   semantic filtering; no synthetic message is introduced. R2/R3 require
+   ordinary-message, audit-only and filtered tool-call anchor evidence.
+
+2. R24-PF2, continuation identity independent of availability:
+   =e-openai-profile.el:591–605= includes the current curation identity only
+   when the carrier is available; =576–589= can leave older/flattened wire
+   layouts without a revision. Accepted journals still render when the
+   carrier is unavailable. Bumping only that gated presentation identity
+   would not fence every changed retained-data layout.
+   Closed: retained role/order/framing identity applies independently of
+   carrier availability and optional segmented/cache controls, in the existing
+   identity owner. R3 proves old-layout rejection and new-layout compatibility
+   on candidate, unavailable and older/flattened Responses profiles.
+
+3. R24-PF3, partial compaction ownership: =e-compaction.el:438–487= captures
+   all active promotion/curation records while selecting only a durable prefix;
+   =595–615= absorbs the flattened list. Session projection at
+   =e-session-aggregate.el:1575–1600= currently filters by active generation.
+   An uncovered retained item must neither move before its anchor into the
+   compacted prefix nor vanish when generation ownership changes.
+   Closed: partition by canonical anchor relative to the covered boundary;
+   absorb covered items exactly once; preserve later role/content/anchor/order
+   and eligibility, including older-generation records, without journal
+   rewriting. Existing optimistic frontier/staleness checks remain. R3 requires
+   before/at/after-boundary compaction, reopen and fork evidence.
+
+4. R24-PF4, detached anchor producer: the selected SQLite query at
+   =e-runtime-store-session-worker.el:2019–2159= builds all path IDs internally
+   but returns messages/indexes and generation/promotion/package records,
+   omitting audit-only activity response positions. The harness cannot recover
+   those positions from its existing bounded payload.
+   Closed: DP1-R1 explicitly includes this existing producer. It supplies
+   bounded content-free anchor positions before filtering under current
+   selected-branch/record/byte limits and lazy aggregate behavior. R2 requires
+   real SQLite audit-only detached parity without loading the aggregate.
+
+** Contract and behavioral design coverage
+
+| Cell | Plan-level disposition | Source/acceptance join |
+|------+------------------------+-----------------------|
+| F98-G1 | cleared | Two keeps followed by appended turns remain the direct scenario; native ordering is observable, provider efficiency separate. |
+| C1 | cleared | Session-owned anchored chronology plus adapter-native mapping; R2/R4 and independent R5. |
+| C2 | cleared, regression boundary | Existing capability-derived cache policy/options remain authoritative; no role change rewrites genuine instructions or cache policy. |
+| C3 | cleared | Closed portable context role, canonical content/provenance, normal/detached projection, summary/erase exclusions and native replay; R1–R4. |
+| C4 | cleared | Selected branch, journal replay, partial compaction, fork/reopen and carrier-independent continuation identity; R2/R3. |
+| C5 | cleared at plan level | Existing complete native/start/finish/usage qualification instrumentation; R5 remains required external proof, with changed-boundary attribution limits. |
+| C6 | cleared at plan level | Carrier absence and forced-call negatives remain deterministic; availability needs independent exact-route wrapper-free acceptance. |
+| DP1/DP1-R1 relation | cleared | One existing establishing package; codec, chronology, native encoding and consumers close together. No partial role-only/adapter-only handoff is acceptance. |
+
+The smallest faithful alternative requires both correcting the retained-data
+role and fixing response-anchored chronology. A role-only change leaves the
+current harness/fork/compaction append-at-tail movement. Anchoring alone leaves
+Anthropic's system-channel relocation. Rewriting all system messages would
+change genuine instructions. A core-owned portable data role, shared pure
+ordering and adapter-local encoding preserve the intended semantics with
+clear ownership and no policy registry.
+
+The reference-data framing is native presentation, not mutation of canonical
+record values or promotion of data into new instructions. Responses HTTP/WS
+share translation; Chat Completions and Anthropic use their text encoders.
+Structured values must become supported native text rather than leaking an
+unsupported native role/content shape. Existing system/developer instructions
+and request-local source markers retain their channels/roles. Old system-only
+checkpoints retain their roles because provenance cannot safely be inferred.
+
+** Required specification and delivery-plan cells
+
+| Required cell | Disposition and reason |
+|---------------+------------------------|
+| Single normative authority | cleared; F98 contracts own outcomes, supporting design supersedes only the named F88 representation choice. |
+| Behavioral design trace | cleared; direct growing-history/curation scenario and smallest faithful alternative above remain authoritative. |
+| Durable contract boundary | cleared; provider-independent retained data/order is semantic, native framing remains adapter-owned. |
+| Scenario diagnosability | cleared; R1 values, R2 chronology, R3 persistence/identity, R4 native semantics, R5 external efficiency localize distinct failures. |
+| Evidence topology | cleared; repository-owned R1–R4/gates are independent of credentials; R5 cannot substitute for deterministic proof. |
+| External freshness | cleared by inherited exact-route/revision/freshness P3 authority; changed source invalidates positive qualification. |
+| Telemetry decision power | cleared; actual counters/digests are evidence under the existing predicate, not an observational hit-rate forecast. |
+| Exact-limit justification | not applicable to new limits; existing bounded SQLite/codec limits remain and no new numeric cap is prescribed. |
+| Defensive actionability | cleared; missing-anchor rejection prevents arbitrary semantic relocation, and layout fencing prevents incompatible continuation. |
+| Change locality | cleared; lifetime codec/session projection/query producer/harness/adapters retain existing responsibilities. |
+| Workflow boundary | cleared; artifact states delivery constraints and gates, without creating a second review or publication protocol. |
+| Decision level | cleared; this result is implementation-plan-fixed-point only, not deterministic implementation or provider qualification. |
+| Contract-to-package coverage | cleared; DP1 remains establishing and DP1-R1 covers changed contracts with C2/C5 regressions. |
+| Useful stopping point | cleared; coherent replay/order/data rendering is useful even while external curation availability stays unavailable. |
+| Cohesion/transaction closure | cleared; existing admission/atomic package commit remain, and every projection/consumer ships together. |
+| Dependency order | cleared; existing F98 policy/producer precedes this correction; R5/availability depend on reviewed implementation. |
+| Package-size tradeoff | cleared; splitting role, chronology or consumers leaves an incorrect public composition; unrelated policy/provider state is excluded. |
+| Acceptance-cost topology | cleared; focused R1–R4, meaningful canonical/config/E2E gates and independent source review precede external qualification. |
+| Checkpoint/package distinction | cleared; checkpoint is semantic state, not an extra delivery package; internal edits do not qualify independently. |
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: corrected replay/order/native semantics improve the
+   repository without requiring capability publication.
+2. Direction: retained reference data remains inline and stable across future
+   appends, with provider-native behavior delegated to adapters.
+3. Stable/uncertain decisions: semantic role/order are core-owned; native
+   framing and unknown external cache benefit are local and separately tested.
+4. Ownership: codec owns values/role; session owns chronology; query owns bounded
+   detached facts; harness composes; adapters encode native data.
+5. Coupling/interfaces: one pure ordering operation prevents divergent
+   normal/detached/fork/compaction derivations; query payload stays consumer-shaped.
+6. Dependency direction: core semantics do not depend on provider implementations;
+   adapter mapping points toward the portable core role.
+7. Side effects: existing journal/app service boundaries remain; projection and
+   framing are derived, and the review proposes no new mutation path.
+8. State/lifetime: no journal rewrite or cache registry; portable checkpoints
+   persist the semantic role, while ordering/framing rebuild per request.
+9. Performance: reuse benefit remains unproved; existing bounded query work
+   must stay lazy. No unbounded aggregate load or performance regression is
+   justified by convenience. New native encoding cost is measured in review.
+10. Substitution: all shipped native adapters consume the same data role and
+    exact values without emitting unsupported roles or narrowing content types.
+11. Compatibility: v2/v3 journals remain readable; new checkpoints retain the
+    new role; old opaque system checkpoints are not guessed/reclassified.
+12. Legacy removal: appended-tail reconstruction and obsolete system-role
+    retention assertions are replaced; required read compatibility remains.
+13. Errors: unresolved eligible anchors and incompatible layout state fail
+    explicitly; provider/credential failure cannot grant capability.
+14. Proof: R1–R4 cover pure values, actual SQLite/native composition, persistence,
+    partial compaction and continuation before external R5.
+
+** Downstream implementation and external boundaries
+
+R1–R4 implementation evidence and exact-revision canonical/configured/
+credential-free gates are future acceptance requirements, not already-passing
+claims. Carry the four source risks above into independent implementation
+review, especially genuine non-message anchors, older-generation uncovered
+retention and unavailable-carrier continuation layouts.
+
+Existing Opus repeated keep relocation/cache recreation and the earlier Codex
+same-turn full-prefix 640-token read decline remain valid bounded negatives.
+The later controlled Codex record remains conservative nonqualification with
+a comparable-prefix/token attribution limitation. This plan does not erase
+those records or guarantee that native correction will qualify either route.
+Unconfirmed routes retain no carrier; a candidate diagnostic alone cannot
+publish availability. Any restoration follows the separately reviewed exact
+normal-source wrapper-free P3 sequence. Public Anthropic/OpenAI endpoints need
+their own evidence; gateway/Codex results cannot qualify them.
+
+Reviewer inspected plan/source/durable authorities and authored only this
+private artifact. No repository edit, Git mutation, provider call, test run,
+user Emacs reload, Board or live-store access occurred. Log-read: none.
+
+
+* Review 25: Independent DP1-R1 source review
+
+** Decision and identity
+
+Three actionable Medium/P2 findings block source admission: R25-F1, R25-F2
+and R25-F3. No implementation fixed point or provider qualification is claimed.
+Required canonical, isolated current-config and credential-free cache E2E
+gates have not run for this package. The feature remains =In-review= and all
+normal curation capability declarations remain unavailable.
+
+Reviewed settled, uncommitted source/test diff against
+=ded7697680a7a0c64a263d79d65a53d02a612a5a=; original implementation scope base
+=4f042f184eb2290bc05f452e0f4b550e48328766=. The intervening committed change
+touches separate tool-output owners. SHA-256 of =git diff --binary -- lisp test=:
+=c6d9567f1d7c52f5d872ca715eb27d0d699b513b1ad595e352ba1158478f8913=.
+The supporting plan SHA-256 was independently read back as
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=.
+F98-G1/C1–C6 and DP1 retain their existing normative authority. Review 24's
+plan-level admission is unchanged; its implementation risks are rebaselined
+below. The parent's v2 realization clarification applies canonical =:value=
+projection to readable v2 records, without changing record/provenance authority.
+
+All nine changed production owners and their changed test seams were inspected:
+lifetime codec/weave, aggregate projection/fork, harness projection/identity,
+bounded SQLite selected-path producer, portable compaction, Anthropic,
+Responses, Chat Completions and OpenAI profile layout identity. Parent-owned
+status/admission prose is not implementation proof. No repository edit, Git
+write, provider request or user runtime/store access occurred. Only private
+review artifacts and disposable synthetic stores were written.
+
+** Ordered findings
+
+*** R25-F1 — Medium/P2: v2 reference projection changes canonical content
+
+=e-context-lifetime.el:2155–2168= changes the model role to =context= but
+still formats ="Promoted fact %s: %s"= and applies =prin1-to-string= to
+structured values. Internal fact IDs and Lisp representation therefore enter
+the model-facing content. This violates retained-context plan R1/F98-C3:
+readable v2 and v3 projections preserve canonical content, with provenance
+remaining in the record and adapter-native framing applied separately.
+
+The independent actual codec/projection witness produced:
+#+begin_example
+v2 canonical=(:enabled :json-false)
+projection=((:role context
+  :content "Promoted fact internal-fact-id: (:enabled :json-false)"))
+#+end_example
+Thus the adapter receives an already mutated string and cannot encode the
+canonical object as JSON. Existing v2 string-based fixtures still prescribe
+that inherited presentation; they do not justify compatibility with it.
+
+Smallest owning correction: =e-context-lifetime-promotion-fact-messages=
+projects each canonical =:value= directly with =:role context=, as v3 exact
+items do. Keep IDs/provenance in records. Strengthen v2 structured codec,
+normal/detached/native, checkpoint/reopen and fork assertions to verify exact
+values and exclude IDs/Lisp formatting from native reference text. Do not
+rewrite old system-only checkpoints or stored records.
+
+*** R25-F2 — Medium/P2: legacy compaction truncates the portable uncovered tail
+
+=e-session-aggregate.el:1542–1546= selects the legacy compacted suffix before
+applying the portable generation boundary at =1596–1614=. The SQLite query
+also returns messages and generation/promotion/package records only after
+the legacy =first-kept-entry-id= cut (=e-runtime-store-session-worker.el:
+2100–2148=). An applicable portable boundary can be earlier: the existing
+=exclude-entry-ids= preparation deliberately stops the portable covered prefix
+before an excluded durable entry (=e-compaction.el:313–337, 414–428=).
+The actual harness commits both the legacy compaction record and the portable
+generation (=e-harness-turn.el:778–806=). Keeping only the legacy suffix loses
+portable-uncovered messages; detached projection additionally loses retained
+records whose older-generation anchors lie in that uncovered interval.
+
+The independent disposable SQLite public lifecycle used real
+=e-compaction-prepare :portable t :exclude-entry-ids '("excluded")=,
+preflight, =e-session-append-compaction=, portable boundary application and
+=session-context-path=. It produced:
+#+begin_example
+boundaries=(:legacy "first-kept" :portable "covered")
+normal/reopened tail:
+  ((context "AFTER-BOUNDARY") (user "kept"))
+detached tail:
+  ((user "kept"))
+canonical portable-context builder:
+  ((system "C1") (user "excluded durable intent")
+   (assistant "later durable answer") (context "AFTER-BOUNDARY")
+   (user "kept"))
+#+end_example
+The fact was authored in the old generation, anchored after ="covered"=,
+and never absorbed in =C1=. The normal and detached paths both violate R3/
+F98-C3, and disagree with each other. Closing/reopening the SQLite store
+preserves the normal loss. The explicit-head fork correctly includes all
+uncovered content in its checkpoint; that separate successful route does
+not clear the normal/detached failures.
+
+Smallest owning correction: aggregate and selected-path query must use the
+applicable accepted portable boundary to govern the semantic lifetime tail;
+the legacy first-kept cut cannot supersede it. Preserve legacy-only behavior
+where no applicable portable replacement exists. Return eligible older-generation
+retention by selected canonical anchor, with existing branch/record/byte bounds
+and lazy detached access. Do not repair this by moving later facts into the
+earlier checkpoint or loading an aggregate on the detached route.
+
+Required proof: turn the lifecycle above into a durable regression covering
+the real legacy-plus-portable commit, before/at/after anchors, exclusions,
+older-generation uncovered retention, normal/detached parity, reopen and
+selected-head fork. The added partial test at =e-compaction-test.el:577–669=
+uses an in-memory store and applies only the generation; existing persistent
+tests do not cover this older-generation partial/excluded composition.
+Reproducer: =/private/tmp/e-retained-context-review25-sqlite-probe.el=,
+completed exit 0; its temporary SQLite directory and worker were closed/deleted.
+
+*** R25-F3 — Medium/P2: ordinary forks become portable replacements without retention
+
+The eligibility condition at =e-session-aggregate.el:1290–1296= replaces
+=promotion-messages= with =ordered-context-tail=. A valid initial identity
+generation has an empty checkpoint; an ordinary durable message now satisfies
+this condition even when no retention exists. The fork enters the portable
+seed path instead of copying ordinary messages. That path filters tool-call/
+tool rows and strips assistant phase and replay metadata through the portable
+role/content codec. The source comment still states the narrower eligibility
+rule: a nonempty checkpoint or active retention authorizes replacement.
+
+An actual public =e-session-fork= witness with an empty initial generation,
+no promotion and no checkpoint returned:
+#+begin_example
+source=((user nil) (assistant "commentary") (tool-call nil) (tool nil))
+fork=((user nil) (assistant nil))
+#+end_example
+The pairs are role/phase. This is a newly introduced F98-C3/R3 replay regression,
+not a necessary consequence of correcting retained-context order.
+
+Smallest owning correction: preserve the original portable eligibility guard
+(a deliberate nonempty checkpoint or actual active retention). Once eligible,
+use =ordered-context-tail= as the seed contents. Add an initial-empty-generation
+fork regression proving ordinary tool-call/result order and assistant phase
+survive, alongside positive retained/checkpoint fork cases.
+
+** Independent verification and rejected candidate
+
+The ordinary two-keep-plus-appended-user scenario was exercised through actual
+session projection and all four native constructors. Previous native items
+remained a prefix: Anthropic 6 items + 1 append; Responses HTTP 6 + 1;
+Responses WebSocket 6 + 1; Chat Completions 8 + 1. The two retained values were
+structured v3 reference data. Only cache-marker metadata was removed for the
+comparison; no content, role, order or provenance text was removed. This proves
+semantic native prefix preservation for that focused composition, not full
+wire identity or provider cache benefit. Private witness:
+=/private/tmp/e-retained-context-review25-native-probe.el=, exit 0.
+Repository native regressions should retain this two-keep/later-append relation;
+the current new native tests otherwise inspect one body only.
+
+The proposed zero-retained-item frontier defect is rejected. V2 facts and v3
+items are required nonempty by =e-context-lifetime.el:343–360, 1929–1943=.
+Valid pure erase/state-only disposition creates no promotion component
+(=1247–1297=), so it must not invent retained messages or a promotion frontier.
+Erasure/package admission and selected-path erasure semantics are unchanged.
+No valid empty-promotion counterexample was established.
+
+Implementer focused pass counts were inspected as handoff locators, not rerun
+or promoted to required full-gate evidence. Broad gates were deliberately not
+run during this independent source review. The native probe initially needed
+the existing websocket package load path and one private-script correction;
+the completed result above is the final valid witness.
+
+** Complete contract/scenario coverage and prior dispositions
+
+| Cell | Current source disposition | Evidence/boundary |
+|------+----------------------------+-------------------|
+| F98-G1 / C1 | candidate | Inline native reference mapping and focused append prefix clear; F2 drops authoritative tail in compaction composition; benefit unmeasured. |
+| C2 | cleared, carried regression | Cache capability/retention/endpoint selectors unchanged; no new fields, caller control or availability inference. |
+| C3 | candidate | F1 canonical v2 content, F2 portable tail, F3 ordinary fork replay require correction; structured v3 mapping and shared weave clear. |
+| C4 | cleared for changed layout owner; regression F3 | Retained revision is unconditional in profile and harness identities, including flat/older/unavailable profiles; ordinary fork eligibility must be restored. |
+| C5 | cleared, carried source boundary | Existing accounting, complete evidence joins and strict P3 predicate unchanged; new qualification unavailable. |
+| C6 | cleared, carried deterministic boundary | No selector is enabled; already accepted records render independently of carrier; forced-effect gating unchanged. |
+| R1 | candidate F1 | v3 canonical structured value/summary and closed context-role codec clear; v2 content mutates. |
+| R2 | cleared focused source composition, F2 dependent | Full selected-path typed anchor maps resolve message/audit/tool positions before filtering; nil derived IDs stay aligned; native later-append probe passed. |
+| R3 | candidate F2/F3 | Real partial/excluded compaction/reopen counterexample; selected fork preserves uncovered content but empty-generation ordinary fork regresses. |
+| R4 | cleared source, full gates pending | Native user framing supports structured JSON; genuine instruction channels/source marker/replay paths remain; HTTP/WS share Responses translation. |
+| R5 | required external unknown | Fresh exact-source P3 required separately; no new provider run or performance forecast. |
+| DP1-R1 closure | blocked by findings | Codec, chronology, query and consumers must close together; full gates follow settled correction. |
+
+R24-PF1: source mechanism cleared for selected-path non-message anchors;
+R24-PF4: bounded detached producer added and branch/typed-owner evidence
+inspected, with F2 invalidating its partial-compaction dependency. R24-PF2:
+carrier/cache-independent retained role/order/framing identity is present
+unconditionally; old/new continuation tests retain the existing fences.
+R24-PF3: covered anchor partition and full active frontier/staleness mechanism
+are present, but F2 prevents the real selected-path consumers from preserving
+the uncovered interval. All older review findings remain closed in their
+unchanged owners; no carried result is used to clear a changed composition.
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: coherent retained data/order/replay is useful while
+   capability stays unavailable; the current three defects block that point.
+2. Direction: core reference data stays after its response anchor and adapters
+   translate it inline instead of relocating it into instruction channels.
+3. Stable/uncertain decisions: role, canonical value and journal chronology are
+   stable semantics; native framing/cache benefit remain adapter-local and
+   externally qualified. No speculative extension point is added.
+4. Ownership: lifetime codec/weave, session chronology, bounded query, harness
+   composition and native adapter encoding retain cohesive responsibilities.
+5. Coupling/interfaces: shared pure weave reduces divergent derivations; SQL
+   positions are consumer-shaped. F2 is a boundary-selection inconsistency
+   within those existing owners, not a reason for a second registry.
+6. Dependency direction: adapters depend on portable semantics; core has no
+   provider/UI/transport dependency introduced by this change.
+7. Side effects: ordering and encoding are pure; existing journal and atomic
+   package/compaction/fork mutations remain at their established owners.
+8. State/lifetime: durable records are not rewritten. Context roles persist in
+   new checkpoints; request ordering/framing rebuild from records. No cache
+   state or runtime qualification store is introduced.
+9. Performance: ordering now sorts selected durable/retained events; anchor
+   maps require selected-path work already bounded on SQLite. Bounds/lazy
+   access remain essential to F2's fix. No latency or cache benefit has been
+   measured or justified by implementation field presence.
+10. Substitution: all native routes accept the same context role and structured
+    values. Normal/detached substitution currently fails in F2; fork semantic
+    substitution fails in F3.
+11. Compatibility: v2 journals remain readable, but F1 must preserve canonical
+    values. Old system-only checkpoints stay untouched; layout identity rejects
+    old anchors and permits matching new layouts independently of availability.
+12. Legacy removal: obsolete v2 ID/Lisp presentation must be removed; legacy
+    compaction remains for compatible legacy-only consumers, without cutting
+    an applicable portable tail. No compatibility option is needed.
+13. Errors: eligible missing/untyped anchors reject invalid projection data;
+    covered records may be omitted; existing admission/preflight errors remain.
+    F2/F3 currently lose data silently and need owner corrections.
+14. Tests: codec, pure weave, bounded SQL and native constructor tests isolate
+    owners. The independent probes reveal missing real partial-compaction and
+    initial-empty-generation fork relations; add those durable regressions and
+    preserve the native later-append relation, then run required full gates.
+
+** Remaining qualification and delivery boundary
+
+All three findings need remediation and independent incremental closure before
+source admission. Required full gates remain pending; there is no deterministic
+fixed-point result. External R5 is separately unmeasured on the corrected layout.
+Historical Opus negative and Codex bounded contradiction/attribution limitation
+remain historical evidence, not current-source successes or forecasts. Public
+OpenAI credentials remain unavailable; production curation stays none. No claim
+of historical Board causality, universal cache benefit, capability restoration
+or whole-feature Done is supported. No live restart or user-state migration was
+performed. log-read: none.
+
+
+* Review 26: Independent incremental DP1-R1 correction review
+
+** Decision and reviewed identity
+
+R25-F1 and R25-F3 are closed at source-review level. R25-F2's original
+portable-checkpoint case is corrected, but its no-checkpoint dependency
+remains actionable Medium/P2 and blocks source admission. No full deterministic
+fixed point, improved provider caching or restored curation capability is
+claimed. Canonical, isolated current-config, credential-free E2E and fresh
+external P3 remain pending for this package.
+
+Reviewed settled uncommitted source/test diff against
+=ded7697680a7a0c64a263d79d65a53d02a612a5a=, original scope base
+=4f042f184eb2290bc05f452e0f4b550e48328766=.
+Independently calculated SHA-256 of =git diff --binary -- lisp test=:
+=3ac17a214dcef84d999e3a200fab56a822797846730fd50ecd552985d495c087=.
+Supporting plan SHA-256 remains
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=.
+F98-G1/C1–C6/DP1 and Review 24's plan admission are unchanged.
+
+This increment rebaselines the three findings and changed codec, fork,
+aggregate boundary, bounded SQL selection and native/persistence evidence
+dependencies. Unchanged whole-scope Review 25 cells carry after these joins.
+No repository edit, Git write, provider call or user runtime/store action
+occurred. The only execution was a private synthetic disposable SQLite
+counterexample; its worker/store were closed and deleted.
+
+** Prior finding dispositions
+
+| Finding | Disposition | Current source and consequential proof |
+|---------+-------------+----------------------------------------|
+| R25-F1 | closed, source level | =e-context-lifetime.el:2148–2161= directly projects canonical v2 =:value= with context role. Structured codec, v2/v3 reopen/fork and all-native prefix assertions exclude internal IDs/provenance/Lisp-format text. |
+| R25-F2 original portable-checkpoint case | corrected, dependency still open below | Aggregate uses the complete selected path when a portable covered boundary applies. Worker resolves that boundary first and selects uncovered durable messages/anchor-eligible older records independently of the legacy cut. New real SQLite lifecycle asserts before/at/after, exclusions, paired legacy/portable commit, normal/detached parity, reopen, fork and bounds. |
+| R25-F3 | closed, source level | =e-session-aggregate.el:1290–1302= requires nonempty checkpoint or actual promotion-message entries before portable fork replacement; ordered tail supplies contents only after eligibility. Empty-generation fork regression preserves role/phase/content/native replay metadata and tool-call/result order. |
+
+The changed tests are meaningful owner/public relations, not relaxed assertions:
+=e-context-lifetime-test-v2-projects-canonical-structured-value=,
+=e-session-test-context-v3-append-reopen-projection-and-fork=,
+=e-session-test-fork-empty-generation-preserves-replay-messages=,
+=e-runtime-store-session-worker-partial-portable-compaction-keeps-uncovered-tail=,
+and =e-harness-test-two-retained-values-remain-native-prefix-after-append=.
+The latter composes literal v2 and v3 retains with real session projection and
+Anthropic/Responses HTTP/WS/Chat Completions constructors, then appends a later
+user turn and compares the prior native prefix. It removes only cache-marker
+metadata, retaining all semantic content/role/order. This is semantic native
+prefix proof, not full wire identity or external benefit. Implementer 5/5 and
+compaction 20/20 results are handoff evidence, not independently rerun full gates.
+
+** Remaining R25-F2 — Medium/P2: no-checkpoint generation and retention are cut away
+
+When the latest generation has =checkpoint=nil=, worker selection leaves
+=portable-boundary-index=nil=. The =include-context-record= cases at
+=e-runtime-store-session-worker.el:2171–2187= then require
+=after-semantic-boundary= for both generation and promotion/package records.
+That boundary is the legacy ordinary-message first-kept cut. A valid identity
+generation and accepted keep before that cut disappear from the detached
+payload even though no portable checkpoint absorbed the keep. Authoritative
+normal projection still returns both from the selected canonical path.
+
+The independent public SQLite lifecycle was: append a valid initial identity
+generation with empty checkpoint; append an assistant anchor and a valid v3
+keep; append the kept user message; append ordinary compaction with that user
+as =first-kept-entry-id=; query normal and detached lifetime projections.
+Actual result:
+#+begin_example
+normal=((:role context :content "NEVER-CHECKPOINTED-FACT")
+        (:role user :content "kept"))
+detached=((:role user :content "kept"))
+normal-generation="identity-generation"; detached-generation=nil
+normal-frontier=("retained"); detached-frontier=nil
+#+end_example
+The retained fact has an actual selected-path assistant anchor and valid
+generation ownership. It was neither summarized into nor covered by any
+portable checkpoint. This is a remaining F98-C3/R3 substitution and accepted
+projection defect, including C6's unavailable-route replay obligation; it is
+not evidence about provider cache behavior. The new partial-compaction fixture
+starts with nonempty =C0= and therefore does not exercise this partition.
+
+Smallest owning correction remains the existing selected-path query: preserve
+the latest valid selected semantic generation even when its checkpoint is nil;
+select eligible retained canonical records/frontier independently of the
+legacy ordinary-message cut when no portable checkpoint covered them.
+Keep legacy-only ordinary message compaction behavior, selected-branch and
+record/byte bounds, typed canonical anchor resolution, missing-anchor rejection
+and lazy detached access. Do not introduce a second policy owner or load an
+aggregate to recover data that this producer omitted.
+
+Required regression: extend real SQLite public lifecycle evidence to the
+nil-checkpoint plus accepted-retention plus ordinary-compaction partition;
+assert normal/detached generation, canonical content/order, aligned IDs and
+full eligible frontier parity, then close/reopen and check selected-path fork.
+Keep the existing nonempty-checkpoint partial/exclusion test unchanged.
+Exact private reproducer:
+=/private/tmp/e-retained-context-review26-legacy-cut-probe.el=, exit 0.
+
+** Complete current coverage
+
+| Cell | Source disposition | Current boundary |
+|------+--------------------+------------------|
+| F98-G1/C1 | candidate through F2 | Native two-keep append relation now has durable proof; detached accepted context remains incomplete in one partition. |
+| C2 | cleared, carried | Capability/cache policy and optional fields unchanged; framing adds no caller policy or unsupported role. |
+| C3 | candidate F2 | V2 canonical data and ordinary fork replay corrected; no-checkpoint detached accepted projection loses data/identity/frontier. |
+| C4 | cleared source | Unconditional retained layout identity and old/new continuation fences carry; ordinary fork eligibility restored. |
+| C5 | cleared, carried source | Accounting, complete request evidence joins and strict P3 predicate unchanged; external result unknown. |
+| C6 | exposure/effects clear, accepted replay candidate F2 | Normal selectors remain none; no availability restoration or caller authority; accepted data must survive detached projection. |
+| R1 | cleared source | Canonical v2/v3 exact and summary values, record-only provenance, structured native JSON and context-role codec. |
+| R2 | cleared source except F2 dependent partition | Journal-position anchors/nil derived IDs and all-native later-append test; selected-path bounded producer still loses older identity-generation retention without checkpoint. |
+| R3 | candidate F2 | Original real paired partial compaction/reopen/fork proof now present; nil-checkpoint ordinary compaction requires producer correction and persistent parity proof. |
+| R4 | cleared source, full gates pending | Instruction channels/source markers, shared HTTP/WS mapper and unavailable capability/forced-call boundaries carry unchanged. |
+| R5 | required external unknown | Fresh exact-source controlled P3 has not run; no benefit or capability claim. |
+| DP1-R1 | blocked by remaining F2 | Source admission requires the bounded producer correction; exact-revision full gates follow settled review closure. |
+
+Review 24's anchor and carrier-independent layout risks carry as source-cleared;
+its partial-compaction/detached-producer risks remain partially open through
+F2. Review 25's rejected empty-promotion/frontier candidate stays rejected:
+valid v2/v3 retention is nonempty, while pure erase creates no promotion.
+Unchanged other prior findings stay closed; source closure does not convert
+historical external negatives or measurement limits into current positives.
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: corrected inline retained replay remains useful with
+   capability unavailable; remaining producer data loss blocks that point.
+2. Direction: anchored reference data remains semantic history across adapters.
+3. Stability/uncertainty: core value/order are stable; native presentation and
+   external cache benefit remain local, reversible and separately qualified.
+4. Ownership: one existing lifetime/session/query/harness/adapter responsibility
+   chain; remaining correction belongs to the bounded query producer.
+5. Coupling: shared weave narrows derivation differences; required producer
+   payload must include the actual semantic generation and eligible records.
+6. Dependency direction: no core dependency on concrete providers or UI is added.
+7. Side effects: existing journal/fork/compaction boundaries unchanged; derived
+   selection and native formatting remain pure.
+8. State/lifetime: no journal rewrite, cache registry or runtime qualification
+   store; role persists in new checkpoints and presentation is request-derived.
+9. Performance: selected-path record and byte guards still bound output; the
+   F2 fix must retain those guards/laziness. No cache/latency gain is measured.
+10. Substitution: all native encoders agree; normal/detached disagreement in
+    the no-checkpoint partition remains the sole confirmed source blocker.
+11. Compatibility: canonical v2 values now survive; old system-only checkpoints
+    stay untouched; empty-generation ordinary fork replay is restored.
+12. Legacy removal: obsolete v2 ID/Lisp presentation is removed; legacy message
+    cuts remain compatible without pretending to absorb portable retained data.
+13. Errors: eligible missing anchors still reject; bounds fail explicitly;
+    remaining query loss is silent and must be corrected at its owner.
+14. Tests: focused codec, replay, real partial SQL and native append witnesses
+    now cover the three original triggers; add nil-checkpoint persistent parity,
+    then run required full gates on the reviewed committed revision.
+
+** Remaining delivery boundary
+
+One confirmed source finding remains, R25-F2's no-checkpoint partition. No
+additional required source unknown was established beyond that correction and
+its regression proof. Full canonical/config/E2E gates and external R5 are
+separate pending obligations, not failed or passed here. Production curation
+stays unavailable; no user Emacs/Board/store action occurred. Historical Opus
+negative and Codex bounded contradiction/attribution limitation retain their
+previous scope. No historical Board cause, universal benefit, restoration or
+whole-feature Done claim is supported. log-read: none.
+
+
+* Review 27: Independent bounded source closure of DP1-R1
+
+** Decision and exact identity
+
+Source admission is clear for the settled package: zero actionable P0–P3
+findings and zero required source unknowns remain in the selected scope.
+R25-F1/F2/F3 are closed. This is source closure before required full gates,
+not a deterministic functional/architectural fixed-point result, provider
+qualification or capability restoration. The parent owns checkpoint commit
+and exact-revision canonical/config/E2E validation.
+
+Reviewed uncommitted attributable source/test diff against
+=ded7697680a7a0c64a263d79d65a53d02a612a5a=, original scope base
+=4f042f184eb2290bc05f452e0f4b550e48328766=.
+Independent SHA-256 of =git diff --binary -- lisp test=:
+=08352ece36ab93316d6e1a9c52ba7f8a9a8ea7ce6d37beeafa1f7c0432eca549=.
+Supporting plan SHA-256 remains
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=.
+F98-G1/C1–C6/DP1 and Review 24's admission are unchanged.
+
+Incremental scope: the remaining worker generation/retention selection and
+its real SQLite regression. All unchanged Review 25/26 whole-scope cells carry;
+affected selected-path, generation/frontier, branch, persistence and bounded
+payload dependencies were independently rejoined. No repository edit, Git
+write, provider call or user runtime/store access occurred.
+
+** Finding dispositions and concrete closure
+
+| Finding | Current disposition | Proof |
+|---------+---------------------+-------|
+| R25-F1 | closed, carried from Review 26 | Direct canonical v2 value projection; structured codec/reopen/fork and all-native reference-data assertions preserve values and exclude IDs/provenance/Lisp formatting. |
+| R25-F2 portable-checkpoint partition | closed, carried | Portable boundary governs uncovered durable messages and anchor-eligible old-generation records; real paired legacy/portable compaction with exclusions, before/at/after, reopen/fork and normal/detached parity. |
+| R25-F2 nil-checkpoint partition | closed in this increment | Worker returns latest selected semantic generation regardless legacy cut and selects unabsorbed retained records independently of the ordinary-message cut. Actual prior counterexample now yields generation/data/frontier parity. |
+| R25-F3 | closed, carried | Ordinary fork replacement requires nonempty checkpoint or actual retention; initial empty generation preserves phase and tool/native replay. |
+
+=e-runtime-store-session-worker.el:2172–2187= now selects
+=latest-generation-entry= directly and retains selected promotion/package
+components without a portable checkpoint. A real portable boundary still
+absorbs retention at/before its canonical anchor. Ordinary messages continue
+to obey the legacy first-kept cut when no portable checkpoint applies. Full
+selected-branch anchor resolution, record/byte guards, missing-boundary error
+and detached lazy access remain in their existing owners; no registry,
+aggregate recovery load or caller policy is added.
+
+The exact independent Review 26 disposable SQLite witness was rerun against
+this settled source and completed exit 0:
+#+begin_example
+normal=((:role context :content "NEVER-CHECKPOINTED-FACT")
+        (:role user :content "kept"))
+detached=((:role context :content "NEVER-CHECKPOINTED-FACT")
+          (:role user :content "kept"))
+normal-generation="identity-generation"
+detached-generation="identity-generation"
+frontiers=("retained")/("retained")
+#+end_example
+Private reproducer:
+=/private/tmp/e-retained-context-review26-legacy-cut-probe.el=.
+Its disposable worker/store were closed and directory deleted.
+
+The durable public regression
+=e-runtime-store-session-worker-legacy-compaction-keeps-context-frontier=
+(=test/e-runtime-store-session-worker-test.el:1168=) independently inspected:
+valid initial nil-checkpoint generation, accepted structured keep with anchor
+before the ordinary legacy cut, actual append-compaction, normal/detached
+generation/content/order/frontier parity, close/reopen, earlier selected-head
+fork excluding later retention, and row/byte bounds. Existing nonempty-checkpoint
+partial/exclusion and all-native later-append regressions remain intact.
+Implementer 31/31 owner, 1/1 restored regression and selective negative-control
+results are reported focused evidence; broad required gates have not been run
+or inferred from those counts by this review.
+
+** Complete selected coverage
+
+| Cell | Source disposition | Remaining acceptance boundary |
+|------+--------------------+-------------------------------|
+| F98-G1/C1 | cleared source | Anchored retained data/native prior semantic prefix survive append; provider efficiency unmeasured on this layout. |
+| C2 | cleared, carried | Existing capability/cache policy, optional fields and no-caller-control authority unchanged. |
+| C3 | cleared source | Canonical v2/v3 content, role/order, normal/detached projection, partial compaction and ordinary/retained fork replay; full gates pending. |
+| C4 | cleared, carried | Unconditional retained role/order/framing identity and existing old/new continuation fences across carrier/cache/flat profiles. |
+| C5 | cleared, carried source | Accounting, complete qualification joins and strict P3 predicate unchanged; new external result unknown. |
+| C6 | cleared source | Normal capability remains none; accepted projection persists independently of availability; exposure/forced-effect fences unchanged. |
+| R1 | cleared source | Exact structured/string v2/v3 values and summary text, record-only provenance, supported context checkpoint codec/native JSON. |
+| R2 | cleared source | Message/audit/tool canonical positions, aligned nil derived IDs, selected detached parity and two-retention native later-append relation. |
+| R3 | cleared source | Covered/uncovered older-generation partition, full frontier/staleness, nil-checkpoint and ordinary-compaction parity, reopen/fork/branch and layout identity. |
+| R4 | cleared source | Anthropic/Responses HTTP+WS/Chat Completions instruction channels, inline reference-data encoding and carried summary/erase/gate semantics. |
+| R5 | required external unknown | Fresh exact-source P3 remains separate; no endpoint qualification inferred. |
+| DP1-R1 | source admission clear | Exact committed canonical, current-config and credential-free E2E gates required before deterministic fixed-point decision. |
+
+All four Review 24 plan risks now have source/evidence closure. The valid
+empty-retention candidate remains rejected by nonempty v2/v3 codec guards;
+pure erase still creates no promotion. No changed dependency was cleared by
+an unrelated historic pass.
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: coherent inline retained replay is now source-clear
+   even while provider curation capability remains unavailable.
+2. Direction: core reference data follows canonical responses; native adapters
+   preserve that position across future appends.
+3. Stability/uncertainty: stable semantic content/order is core-owned; native
+   framing and unknown provider cache behavior remain local and separately tested.
+4. Ownership: lifetime/session/query/harness/native adapter responsibilities
+   stay cohesive; the final correction remains in the existing query producer.
+5. Coupling: shared pure weave and complete bounded producer payload eliminate
+   the confirmed divergent normal/detached derivations.
+6. Dependency direction: no new core dependency on concrete providers, UI or
+   transport; adapters consume the portable context role.
+7. Side effects: ordering/selection/framing are derived; existing journal,
+   package, compaction and fork boundaries remain unchanged.
+8. State/lifetime: no journal rewrite, runtime registry or qualification state;
+   context checkpoints persist semantic data and wire presentation is rebuilt.
+9. Performance: row/byte guards and lazy selected-path query remain; full
+   eligible selected retention is necessary semantic input. No measured cache
+   or latency improvement is claimed.
+10. Substitution: both ordinary-message-cut and portable-checkpoint partitions
+    now agree across normal/detached routes and native serializers.
+11. Compatibility: readable v2 canonical values and ordinary empty-generation
+    fork replay survive; old system-only checkpoints remain untouched.
+12. Legacy removal: obsolete v2 ID/Lisp presentation is removed; legacy message
+    compaction remains without claiming ownership of unabsorbed retained data.
+13. Errors: bounds and missing eligible anchors/boundaries still reject invalid
+    data; no confirmed silent semantic-loss path remains in the reviewed scope.
+14. Tests: focused codecs/pure weave, real partial/nil-checkpoint SQLite
+    lifecycles, ordinary fork and all-native append proofs isolate owners;
+    required complete gates must still establish revision-level acceptance.
+
+** Pending gates and external boundary
+
+Canonical Eldev, isolated current-config and credential-free E2E are pending
+on the accepted committed checkpoint. External P3 must then measure the changed
+native layout with existing full semantics/evidence and strict predicates.
+Production curation remains unavailable; historical Opus negative and Codex
+bounded contradiction/attribution limitation keep their historic scope. Public
+OpenAI credentials remain unavailable. This source result supports no provider
+benefit, historical Board cause, universal reuse, restored capability or
+whole-feature Done claim. No user Emacs/Board/store mutation or restart occurred.
+log-read: none.

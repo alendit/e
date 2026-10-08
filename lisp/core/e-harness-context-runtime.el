@@ -294,35 +294,44 @@ This pure projection never consults or installs a session aggregate."
             (e-context-lifetime-generation-from-record
              (plist-get (plist-get generation-entry :record)
                         :context-record))))
-         (generation-id
-          (and generation (e-context-lifetime-generation-id generation)))
          (boundary-index
           (and generation
                (e-context-lifetime-generation-checkpoint generation)
                (plist-get generation-entry :covered-boundary-index)))
          (message-indexes (plist-get path :message-path-indexes))
          (messages (plist-get path :messages))
-         durable-tail durable-tail-entry-ids
-         promotions curations promotion-groups frontier)
+         durable-entries retained-candidates candidate-records
+         promotions curations)
     (unless (= (length messages) (length message-indexes))
       (error "Detached context path message indexes are misaligned"))
     (cl-mapc
      (lambda (message path-index)
        (when (or (null boundary-index) (> path-index boundary-index))
          (when-let* ((durable
-                      (e-session-context-lifetime-durable-message message)))
+                      (e-session-context-lifetime-durable-message
+                       (plist-put (copy-tree message t) :type 'message))))
            (let ((entry-id (plist-get message :id)))
              (unless (and (stringp entry-id)
                           (not (string-empty-p entry-id)))
                (error "Detached context message has no canonical entry ID"))
-             (push durable durable-tail)
-             (push (copy-sequence entry-id) durable-tail-entry-ids)))))
+             (push (list :path-index path-index
+                         :entry-id (copy-sequence entry-id)
+                         :message durable)
+                   durable-entries)))))
      messages message-indexes)
-    (unless (= (length durable-tail) (length durable-tail-entry-ids))
+    (setq durable-entries (nreverse durable-entries))
+    (unless (= (length durable-entries)
+               (length (delq nil (mapcar (lambda (entry)
+                                           (plist-get entry :entry-id))
+                                         durable-entries))))
       (error "Detached context durable tail identity map is misaligned"))
     (dolist (entry records)
       (let* ((type (plist-get entry :record-type))
              (record (plist-get entry :record))
+             (record-index (plist-get entry :path-index))
+             (anchor-index (plist-get entry :anchor-path-index))
+             (anchor-position-kind
+              (plist-get entry :anchor-position-kind))
              (components
               (cond
                ((equal type "context-promotion")
@@ -331,40 +340,71 @@ This pure projection never consults or installs a session aggregate."
                 (list (plist-get record :promotion)))
                (t nil))))
         (dolist (context-record components)
-          (when (and context-record generation-id
-                     (equal (plist-get context-record :generation-id)
-                            generation-id))
-            (if (equal (plist-get context-record :record-version)
-                       e-context-lifetime-curation-record-version)
-                (let ((curation
-                       (e-context-lifetime-curation-from-record
-                        context-record)))
-                  (push curation curations)
-                  (push
-                   (mapcar (lambda (message) (copy-tree message t))
-                           (e-context-lifetime-curation-messages curation))
-                   promotion-groups))
-              (let ((promotion
-                     (e-context-lifetime-promotion-from-record
-                      context-record)))
-                (push promotion promotions)
-                (push
-                 (mapcar (lambda (message) (copy-tree message t))
-                         (e-context-lifetime-promotion-fact-messages
-                          (list promotion)))
-                 promotion-groups)))
-            (push (plist-get context-record :id) frontier)))))
-    (list :generation generation
-          :current-head-id (plist-get path :current-head-id)
-          :durable-tail (nreverse durable-tail)
-          :durable-tail-entry-ids (nreverse durable-tail-entry-ids)
-          :promotions (nreverse promotions)
-          :curations (nreverse curations)
-          :promotion-messages
-          (if promotion-groups
-              (apply #'append (nreverse promotion-groups))
-            nil)
-          :promotion-frontier (nreverse frontier))))
+          (when context-record
+            (let* ((version (plist-get context-record :record-version))
+                   (messages
+                    (if (equal version
+                               e-context-lifetime-curation-record-version)
+                        (e-context-lifetime-curation-messages
+                         (e-context-lifetime-curation-from-record
+                          context-record))
+                      (e-context-lifetime-promotion-fact-messages
+                       (list (e-context-lifetime-promotion-from-record
+                              context-record)))))
+                   (record-id (plist-get context-record :id)))
+              (push (list :id record-id :version version
+                          :record (copy-tree context-record t))
+                    candidate-records)
+              (cl-loop for message in messages for item-index from 0 do
+                       (push (list :kind (if (equal version
+                                                  e-context-lifetime-curation-record-version)
+                                             'v3 'v2)
+                                   :record-id record-id
+                                   :record-path-index record-index
+                                   :anchor-path-index anchor-index
+                                   :anchor-position-kind
+                                   anchor-position-kind
+                                   :item-index item-index
+                                   :message (copy-tree message t))
+                             retained-candidates)))))))
+    (setq retained-candidates (nreverse retained-candidates)
+          candidate-records (nreverse candidate-records))
+    (let* ((weave (e-context-lifetime-weave-retained-context
+                   durable-entries retained-candidates boundary-index))
+           (promotion-message-entries
+            (plist-get weave :retained-entries))
+           (active-record-ids
+            (delete-dups
+             (mapcar (lambda (entry) (plist-get entry :record-id))
+                     promotion-message-entries)))
+           (frontier nil))
+      (dolist (candidate candidate-records)
+        (when (member (plist-get candidate :id) active-record-ids)
+          (if (equal (plist-get candidate :version)
+                     e-context-lifetime-curation-record-version)
+              (push (e-context-lifetime-curation-from-record
+                     (plist-get candidate :record)) curations)
+            (push (e-context-lifetime-promotion-from-record
+                   (plist-get candidate :record)) promotions))
+          (push (plist-get candidate :id) frontier)))
+      (list :generation generation
+            :current-head-id (plist-get path :current-head-id)
+            :durable-tail (mapcar (lambda (entry)
+                                    (plist-get entry :message))
+                                  durable-entries)
+            :durable-tail-entry-ids (mapcar (lambda (entry)
+                                              (plist-get entry :entry-id))
+                                            durable-entries)
+            :ordered-context-tail (plist-get weave :messages)
+            :ordered-context-tail-entry-ids (plist-get weave :entry-ids)
+            :promotions (nreverse promotions)
+            :curations (nreverse curations)
+            :promotion-messages
+            (mapcar (lambda (entry) (plist-get entry :message))
+                    promotion-message-entries)
+            :promotion-message-entries
+            (copy-tree promotion-message-entries t)
+            :promotion-frontier (nreverse frontier)))))
 
 (defun e-harness-context-runtime--detached-context
     (harness session-id turn-id path &optional context-purpose)
@@ -797,8 +837,6 @@ installed in the session store."
          ;; Session projection is the semantic authority for both the
          ;; temporary v2 compatibility projection and the literal v3 curation
          ;; messages.  Do not rebuild either representation in the harness.
-         (promotion-messages
-          (copy-tree (plist-get projection :promotion-messages)))
          (checkpoint
           (let ((value (and generation
                             (e-context-lifetime-generation-checkpoint
@@ -811,10 +849,10 @@ installed in the session store."
              ((listp value) (copy-tree value))
              (t (list (copy-tree value))))))
          (durable-tail
-          (append (copy-tree (plist-get projection :durable-tail))
-                  promotion-messages))
+          (copy-tree (plist-get projection :ordered-context-tail)))
          (durable-tail-entry-ids
-          (copy-tree (plist-get projection :durable-tail-entry-ids)))
+          (copy-tree
+           (plist-get projection :ordered-context-tail-entry-ids)))
          ;; `e-context' has always permitted a consumer-shaped result with
          ;; only `:messages'.  Keep that public contract valid when lifetime
          ;; projection is enabled by default: such a result is request-local
@@ -907,9 +945,9 @@ installed in the session store."
          (message-entry-ids
           (let ((history-count 0)
                 identities)
-            (unless (= (length (plist-get projection :durable-tail))
+            (unless (= (length durable-tail)
                        (length durable-tail-entry-ids))
-              (error "Context lifetime durable-tail identities are misaligned"))
+              (error "Context lifetime ordered-tail identities are misaligned"))
             (dolist (segment filtered-segments)
               (let* ((segment-messages (plist-get segment :messages))
                      (segment-entry-ids
@@ -917,8 +955,7 @@ installed in the session store."
                           (progn
                             (setq history-count (1+ history-count))
                             (append (make-list (length checkpoint) nil)
-                                    (copy-sequence durable-tail-entry-ids)
-                                    (make-list (length promotion-messages) nil)))
+                                    (copy-sequence durable-tail-entry-ids)))
                         (make-list (length segment-messages) nil))))
                 (unless (= (length segment-messages)
                            (length segment-entry-ids))
@@ -930,8 +967,10 @@ installed in the session store."
               (error "Context message identity map is misaligned"))
             (when (= history-count 1)
               (let ((owned-ids (delq nil (copy-sequence identities))))
-                (unless (and (= (length owned-ids)
-                                (length durable-tail-entry-ids))
+                (unless (and (equal owned-ids
+                                    (delq nil
+                                          (copy-sequence
+                                           durable-tail-entry-ids)))
                              (= (length owned-ids)
                                 (length (delete-dups
                                          (copy-sequence owned-ids)))))
@@ -1389,6 +1428,8 @@ on a caller request is not authority."
                  (plist-get options :anthropic-beta-headers))
            :compaction-boundary
            (plist-get context :provider-anchor-compaction-boundary)
+           :retained-context-layout-revision
+           e-context-lifetime-retained-context-layout-revision
            :lifetime-generation
            (when-let* ((generation (plist-get context :lifetime-generation)))
              (list :id (e-context-lifetime-generation-id generation)
@@ -1448,6 +1489,8 @@ refresh changes the projection that produced it."
            :model (plist-get options :model)
            :provider-continuation
            (plist-get options :provider-continuation)
+           :retained-context-layout-revision
+           e-context-lifetime-retained-context-layout-revision
            :context-capabilities
            (copy-tree capabilities)
            :provider-anchor-fingerprints

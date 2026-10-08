@@ -2016,7 +2016,10 @@ unselected branch rows and unrelated journal families are never returned."
                (= (length rows)
                   (1+ e-runtime-store-session-worker-context-path-row-limit))))
          (path-ids (make-hash-table :test 'equal))
-         entries latest-compaction boundary messages message-path-indexes
+         (response-anchor-paths (make-hash-table :test 'equal))
+         entries latest-compaction boundary legacy-boundary-index
+         latest-generation-entry portable-boundary-index
+         messages message-path-indexes
          context-records tool-receipts (tool-receipt-total-count 0)
          (tool-receipt-bytes 0)
          (erased-tool-call-ids (make-hash-table :test #'equal))
@@ -2041,6 +2044,30 @@ unselected branch rows and unrelated journal families are never returned."
                     (e-runtime-store-session-worker--column row 6))
               entries)))
     (setq entries (nreverse entries))
+    (dolist (entry entries)
+      (let ((record (plist-get entry :record)))
+        (cond
+         ((and (equal (plist-get entry :record-type) "activity-event")
+               (or (eq (plist-get record :event-type)
+                       'context-frame-consumed)
+                   (and (eq (plist-get record :event-type)
+                            'context-curation-response)
+                        (equal (plist-get record :id)
+                               (plist-get (plist-get record :payload)
+                                          :response-entry-id)))))
+          (when-let* ((response-id
+                       (plist-get (plist-get record :payload)
+                                  :response-entry-id)))
+            (unless (gethash response-id response-anchor-paths)
+              (puthash response-id (plist-get entry :path-index)
+                       response-anchor-paths))))
+         ((and (equal (plist-get entry :record-type) "message")
+               (eq (plist-get (plist-get record :message) :role) 'assistant)
+               (plist-get (plist-get record :message) :id))
+          (let ((response-id (plist-get (plist-get record :message) :id)))
+            (unless (gethash response-id response-anchor-paths)
+              (puthash response-id (plist-get entry :path-index)
+                       response-anchor-paths)))))))
     ;; Receipt context is part of this consumer-shaped selected-path query.
     ;; Resolve durable erasures here and return only the small visible tail;
     ;; Emacs never receives or retains the complete receipt history.
@@ -2091,60 +2118,118 @@ unselected branch rows and unrelated journal families are never returned."
                (candidate (plist-get record :first-kept-entry-id)))
           (when (and (stringp candidate) (gethash candidate path-ids))
             (setq latest-compaction record boundary candidate)))))
-    (let ((inside (null boundary)))
-      (dolist (entry entries)
-        (let* ((record (plist-get entry :record))
-               (record-id (plist-get record :id))
-               (record-type (plist-get entry :record-type))
-               (path-index (plist-get entry :path-index)))
-          (when (equal record-id boundary) (setq inside t))
-          (when (and inside (equal record-type "message"))
-            (let* ((message
-                    (e-runtime-store-session-worker--message-with-display
-                     (plist-get record :message)
-                     (plist-get entry :display-payload)))
-                   (message-bytes
-                    (e-runtime-store-codec-measure-bounded
-                     message
-                     e-runtime-store-session-worker-context-path-byte-limit)))
-              (when (> (+ bytes message-bytes)
-                       e-runtime-store-session-worker-context-path-byte-limit)
-                (e-runtime-store-session-worker--error
-                 "Selected session context exceeds byte limit"
-                 session-id
-                 e-runtime-store-session-worker-context-path-byte-limit))
-              (setq bytes (+ bytes message-bytes))
-              (push message messages)
-              (push path-index message-path-indexes)))
-          (when (and inside
-                     (member record-type
-                             '("context-generation" "context-promotion"
-                               "context-curation-package")))
-            (let ((record-bytes
-                   (e-runtime-store-codec-measure-bounded
-                    record
-                    e-runtime-store-session-worker-context-path-byte-limit)))
-              (when (> (+ bytes record-bytes)
-                       e-runtime-store-session-worker-context-path-byte-limit)
-                (e-runtime-store-session-worker--error
-                 "Selected session context exceeds byte limit"
-                 session-id
-                 e-runtime-store-session-worker-context-path-byte-limit))
-              (setq bytes (+ bytes record-bytes))
-              (push
-               (append
-                (list :path-index path-index :record-type record-type
-                      :record
-                      (e-runtime-store-session-worker--detach-query-content
-                       record))
-                (when (equal record-type "context-generation")
-                  (let* ((context-record (plist-get record :context-record))
-                         (covered
-                          (plist-get context-record
-                                     :covered-session-boundary)))
-                    (list :covered-boundary-index
-                          (and covered (gethash covered path-ids))))))
-               context-records))))))
+    (setq legacy-boundary-index (and boundary (gethash boundary path-ids)))
+    (dolist (entry entries)
+      (when (equal (plist-get entry :record-type) "context-generation")
+        (setq latest-generation-entry entry)))
+    (when latest-generation-entry
+      (let* ((context-record
+              (plist-get (plist-get latest-generation-entry :record)
+                         :context-record))
+             (generation
+              (e-context-lifetime-generation-from-record context-record)))
+        (when (e-context-lifetime-generation-checkpoint generation)
+          (let ((covered
+                 (e-context-lifetime-generation-covered-session-boundary
+                  generation)))
+            (setq portable-boundary-index (gethash covered path-ids))
+            (unless (integerp portable-boundary-index)
+              (e-runtime-store-session-worker--error
+               "Context checkpoint boundary is not on the selected path"
+               session-id covered))))))
+    (dolist (entry entries)
+      (let* ((record (plist-get entry :record))
+             (record-type (plist-get entry :record-type))
+             (path-index (plist-get entry :path-index))
+             (after-semantic-boundary
+              (if portable-boundary-index
+                  (> path-index portable-boundary-index)
+                (or (null legacy-boundary-index)
+                    (>= path-index legacy-boundary-index))))
+             (context-record
+              (cond
+               ((equal record-type "context-promotion")
+                (plist-get record :context-record))
+               ((equal record-type "context-curation-package")
+                (plist-get record :promotion))))
+             (anchor-id
+              (and context-record
+                   (plist-get context-record :response-entry-id)))
+             ;; Positions come from the bounded selected path, including rows
+             ;; omitted from the message tail.  This lets an older record stay
+             ;; eligible when its canonical response anchor is after a partial
+             ;; portable boundary.
+             (direct-anchor-index
+              (and anchor-id (gethash anchor-id path-ids)))
+             (response-completion-index
+              (and anchor-id (gethash anchor-id response-anchor-paths)))
+             (anchor-index (or direct-anchor-index response-completion-index))
+             (anchor-position-kind
+              (and response-completion-index
+                   (= response-completion-index anchor-index)
+                   (> anchor-index path-index)
+                   'response-completion))
+             (include-context-record
+              (cond
+               ((equal record-type "context-generation")
+                (eq entry latest-generation-entry))
+               ((member record-type
+                        '("context-promotion" "context-curation-package"))
+                (and context-record
+                     (if portable-boundary-index
+                         (or (null anchor-index)
+                             (> anchor-index portable-boundary-index))
+                       ;; Legacy compaction cuts durable messages, but does
+                       ;; not own the selected canonical retention frontier.
+                       t)))
+               (t nil))))
+        (when (and after-semantic-boundary
+                   (equal record-type "message"))
+          (let* ((message
+                  (e-runtime-store-session-worker--message-with-display
+                   (plist-get record :message)
+                   (plist-get entry :display-payload)))
+                 (message-bytes
+                  (e-runtime-store-codec-measure-bounded
+                   message
+                   e-runtime-store-session-worker-context-path-byte-limit)))
+            (when (> (+ bytes message-bytes)
+                     e-runtime-store-session-worker-context-path-byte-limit)
+              (e-runtime-store-session-worker--error
+               "Selected session context exceeds byte limit"
+               session-id
+               e-runtime-store-session-worker-context-path-byte-limit))
+            (setq bytes (+ bytes message-bytes))
+            (push message messages)
+            (push path-index message-path-indexes)))
+        (when include-context-record
+          (let ((record-bytes
+                 (e-runtime-store-codec-measure-bounded
+                  record
+                  e-runtime-store-session-worker-context-path-byte-limit)))
+            (when (> (+ bytes record-bytes)
+                     e-runtime-store-session-worker-context-path-byte-limit)
+              (e-runtime-store-session-worker--error
+               "Selected session context exceeds byte limit"
+               session-id
+               e-runtime-store-session-worker-context-path-byte-limit))
+            (setq bytes (+ bytes record-bytes))
+            (push
+             (append
+              (list :path-index path-index :record-type record-type
+                    :anchor-path-index anchor-index
+                    :anchor-position-kind anchor-position-kind
+                    :record
+                    (e-runtime-store-session-worker--detach-query-content
+                     record))
+              (when (equal record-type "context-generation")
+                (let* ((generation-record (plist-get record :context-record))
+                       (covered
+                        (plist-get generation-record
+                                   :covered-session-boundary)))
+                  (list :covered-boundary-index
+                        (and covered (gethash covered path-ids))))))
+             context-records)))))
     (list :session-id session-id :current-branch branch
           :current-head-id head-id
           :current-head-path-index (and entries (1- (length entries)))

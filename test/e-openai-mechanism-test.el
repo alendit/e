@@ -357,9 +357,12 @@
                      '((:role user :content "Question")))))
              (body (plist-get supported :body-data))
              (stable-content (first-content body)))
-        (should (eq legacy-revision
-                    e-openai-gpt56-segmented-context-layout-revision))
-        (should (equal (plist-get supported :prompt-layout-revision)
+        (should (equal (plist-get legacy-revision
+                                  :wire-prompt-layout-revision)
+                       e-openai-gpt56-segmented-context-layout-revision))
+        (should (equal (plist-get
+                        (plist-get supported :prompt-layout-revision)
+                        :wire-prompt-layout-revision)
                        e-openai-gpt56-automatic-cache-layout-revision))
         (should-not (plist-member body :previous_response_id))
         (should (equal (plist-get stable-content :prompt_cache_breakpoint)
@@ -510,8 +513,7 @@
          (first (e-openai-responses-prompt-layout-revision first-options))
          (second (e-openai-responses-prompt-layout-revision second-options)))
     (should (equal first second))
-    (should-not (string-match-p "context-curation-revision-identity"
-                                (prin1-to-string first)))
+    (should-not (plist-get first :context-curation-revision-identity))
     (should-not (string-match-p
                  "SOURCE-ONE\|SOURCE-TWO\|frame\|generation\|observation\|fingerprint"
                  (prin1-to-string first)))
@@ -558,6 +560,64 @@
          (e-openai-responses--continuation-response-id
           continuation-options)
          "response-curation"))))))
+
+(ert-deftest e-openai-test-retained-context-layout-rejects-legacy-anchors ()
+  "Reference-role framing fences old anchors across layout and gate profiles."
+  (let* ((flat-options
+          '(:model "gpt-5.6-sol"
+            :responses-transport websocket
+            :response-store :json-false
+            :provider-continuation t
+            :observation-delivery inherited))
+         (segmented-options
+          (append flat-options
+                  '(:responses-context-layout developer-input
+                    :segments
+                    ((:kind static-prefix
+                      :messages ((:role system :content "stable")))
+                     (:kind current-state
+                      :messages ((:role system :content "state")))))))
+         (cases `((,flat-options nil nil)
+                  (,segmented-options nil nil)
+                  (,segmented-options context-curate-wire automatic-explicit))))
+    (dolist (case cases)
+      (let* ((options (nth 0 case))
+             (curation-capability (nth 1 case))
+             (cache-capability (nth 2 case))
+             (e-openai-profile--effective-context-curation-capability
+              curation-capability)
+             (e-openai-profile--effective-prefix-cache cache-capability)
+             (layout (e-openai-responses-prompt-layout-revision options))
+             (old-wire-layout
+              (e-openai-profile-wire-prompt-layout-revision options))
+             (old-layout
+              (if (eq curation-capability 'context-curate-wire)
+                  (list :prompt-layout-revision old-wire-layout
+                        :context-curation-revision-identity
+                        (e-context-lifetime-curation-revision-identity))
+                old-wire-layout))
+             (reasoning (e-openai-profile-reasoning-identity options))
+             (new-anchor
+              (list :provider-id 'openai
+                    :metadata (list :response-id "new-layout-response"
+                                    :prompt-layout-revision layout
+                                    :reasoning-identity reasoning)))
+             (old-anchor
+              (list :provider-id 'openai
+                    :metadata (list :response-id "old-layout-response"
+                                    :prompt-layout-revision old-layout
+                                    :reasoning-identity reasoning)))
+             (new-options
+              (plist-put (copy-sequence options) :provider-anchor new-anchor))
+             (old-options
+              (plist-put (copy-sequence options) :provider-anchor old-anchor)))
+        (should (equal (plist-get layout :retained-context-layout-revision)
+                       e-context-lifetime-retained-context-layout-revision))
+        (should (equal (e-openai-responses--continuation-response-id
+                        new-options)
+                       "new-layout-response"))
+        (should-not (e-openai-responses--continuation-response-id
+                     old-options))))))
 
 
 (ert-deftest e-openai-test-request-context-reports-continuation-metadata ()
@@ -2432,6 +2492,42 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     (should (equal (plist-get final :phase) "final_answer"))
     (should-not (plist-member legacy :phase))
     (should-not (plist-member user :phase))))
+
+(ert-deftest e-openai-test-responses-context-is-framed-user-input-on-http-and-websocket ()
+  "HTTP and WebSocket Responses preserve reference context in input order."
+  (let* ((messages '((:role system :content "Layer instructions.")
+                     (:role user :content "Question one.")
+                     (:role context :content (:fact "kept"))
+                     (:role assistant :content "Answer.")))
+         (http-body
+          (e-openai-codex-request-body
+           :messages messages
+           :options '(:model "gpt-5.6"
+                      :responses-transport http
+                      :responses-context-layout developer-input
+                      :observation-delivery inherited
+                      :response-store t)))
+         (websocket-body
+          (e-openai-codex-request-body
+           :messages messages
+           :options '(:model "gpt-5.6"
+                      :responses-transport websocket
+                      :responses-context-layout developer-input
+                      :observation-delivery inherited
+                      :response-store :json-false)))
+         (http-input (append (plist-get http-body :input) nil))
+         (websocket-input (append (plist-get websocket-body :input) nil)))
+    (should (equal (mapcar (lambda (item) (plist-get item :role)) http-input)
+                   '("developer" "user" "user" "assistant")))
+    (should (equal (plist-get (nth 2 http-input) :content)
+                   (vector
+                    (list :type "input_text"
+                          :text (concat
+                                 e-context-lifetime-retained-reference-prefix
+                                 "{\"fact\":\"kept\"}")))))
+    (should (equal http-input websocket-input))
+    (should (equal (plist-get http-body :instructions)
+                   (plist-get websocket-body :instructions)))))
 
 
 (ert-deftest e-openai-test-provider-compaction-rejects-malformed-output ()

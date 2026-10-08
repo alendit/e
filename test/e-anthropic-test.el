@@ -661,6 +661,32 @@
       :thinking (:type "adaptive")
       :output_config (:effort "high")))))
 
+(ert-deftest e-anthropic-test-retained-context-stays-in-chronological-user-turns ()
+  "Retained reference data stays in history while real instructions stay system."
+  (let* ((body
+          (e-anthropic-test--body-without-rolling-cache-controls
+           (e-anthropic-request-body
+            :messages '((:role system :content "Layer instructions.")
+                        (:role user :content "Question one.")
+                        (:role context :content (:fact "kept"))
+                        (:role assistant :content "Answer.")
+                        (:role user :content "Question two."))
+            :options '(:model "claude-test" :max-tokens 1024
+                       :instructions "Base instructions."))))
+         (messages (append (plist-get body :messages) nil)))
+    (should (equal (mapcar (lambda (block) (plist-get block :text))
+                           (append (plist-get body :system) nil))
+                   '("Base instructions." "Layer instructions.")))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           messages)
+                   '("user" "user" "assistant" "user")))
+    (should (equal (plist-get (nth 1 messages) :content)
+                   (vector
+                    (list :type "text"
+                          :text (concat
+                                 e-context-lifetime-retained-reference-prefix
+                                 "{\"fact\":\"kept\"}")))))))
+
 (ert-deftest e-anthropic-test-request-body-omits-system-when-empty ()
   "No system field is sent when there are no system messages or instructions."
   (should-not

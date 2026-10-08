@@ -223,6 +223,8 @@ later assistant/tool-call message instead of signalling no-boundary."
     (e-session-append-message store session-id
                               '(:id "answer" :role assistant
                                 :content "durable answer"))
+    (e-session-append-message store session-id
+                              '(:id "keep" :role user :content "keep suffix"))
     (e-compaction-test--append-literal-v2-record
      store session-id
      '(:record-version 2
@@ -245,7 +247,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                      '((:role system :content "C0"))))
       (should (equal (mapcar (lambda (message) (plist-get message :content))
                              tail)
-                     '("durable intent")))
+                     '("durable intent" "durable answer")))
       (should-not (string-match-p "RAW-E-PORTABLE" printed))
       (should-not (string-match-p "provider-replay-items" printed))
       (should-not (string-match-p "provider-anchor" printed))
@@ -262,11 +264,10 @@ later assistant/tool-call message instead of signalling no-boundary."
                      store session-id))
              (promotions (plist-get after :promotions)))
         (should-not promotions)
-        (should (string-match-p
-                 "Promoted fact selected: promoted fact"
-                 (prin1-to-string
-                  (e-context-lifetime-generation-checkpoint
-                   (plist-get after :generation)))))))))
+        (should (member
+                 '(:role context :content "promoted fact")
+                 (e-context-lifetime-generation-checkpoint
+                  (plist-get after :generation))))))))
 
 (ert-deftest e-compaction-test-v3-curation-survives-mixed-boundary-reopen-and-fork ()
   "Mixed v2/v3 context records retain literal v3 messages across compaction."
@@ -276,7 +277,7 @@ later assistant/tool-call message instead of signalling no-boundary."
          (v2-record
           '(:record-version 2 :type context-promotion :id "promotion-v2"
             :frame-id "frame-v2" :generation-id "generation-v3-compaction"
-            :consumer-request-id "consumer-v2" :response-entry-id "response-v2"
+            :consumer-request-id "consumer-v2" :response-entry-id "boundary"
             :facts ((:id "fact-v2" :value "legacy value"))
             :source-observation-ids ("observation-v2")
             :source-refs ("source-v2")
@@ -284,7 +285,7 @@ later assistant/tool-call message instead of signalling no-boundary."
          (v3-record
           '(:record-version 3 :type context-promotion :id "curation-v3"
             :frame-id "frame-v3" :generation-id "generation-v3-compaction"
-            :consumer-request-id "consumer-v3" :response-entry-id "response-v3"
+            :consumer-request-id "consumer-v3" :response-entry-id "boundary"
             :items
             ((:kind exact :value (:answer "exact value")
               :source-observation-ids ("observation-v3-exact")
@@ -296,9 +297,9 @@ later assistant/tool-call message instead of signalling no-boundary."
               :source-fingerprints ("fingerprint-v3-a" "fingerprint-v3-b")))))
          (source-checkpoint
           '((:role system :content "C1")
-            (:role system :content "Promoted fact fact-v2: legacy value")
-            (:role system :content (:answer "exact value"))
-            (:role system :content "curation summary"))))
+            (:role context :content "legacy value")
+            (:role context :content (:answer "exact value"))
+            (:role context :content "curation summary"))))
     (unwind-protect
         (progn
           (e-session-create store :id session-id)
@@ -312,7 +313,10 @@ later assistant/tool-call message instead of signalling no-boundary."
           (e-session-append-message store session-id
                                     '(:role user :content "before"))
           (e-session-append-message store session-id
-                                    '(:role assistant :content "boundary"))
+                                    '(:id "boundary" :role assistant
+                                      :content "boundary"))
+          (e-session-append-message store session-id
+                                    '(:role user :content "keep suffix"))
           (e-compaction-test--append-literal-v2-record
            store session-id v2-record)
           (e-session-append-context-curation-package
@@ -339,8 +343,8 @@ later assistant/tool-call message instead of signalling no-boundary."
               ;; passing through `prin1-to-string'.
               (should (equal
                        v3-messages
-                       '((:role system :content (:answer "exact value"))
-                         (:role system :content "curation summary"))))
+                       '((:role context :content (:answer "exact value"))
+                         (:role context :content "curation summary"))))
               (should (listp (plist-get (car v3-messages) :content)))
               ;; The existing user packaging remains for checkpoint, durable
               ;; tail, and v2 compatibility, but has no v3 audit section.
@@ -353,8 +357,8 @@ later assistant/tool-call message instead of signalling no-boundary."
                               "label" "estimated-tokens"))
                 (should-not (string-match-p leak request-text))))
             (should (equal before-v3
-                           '((:role system :content (:answer "exact value"))
-                             (:role system :content "curation summary"))))
+                           '((:role context :content (:answer "exact value"))
+                             (:role context :content "curation summary"))))
             (let* ((checkpoint
                     (e-compaction-portable-checkpoint-from-summary
                      preparation "C1"))
@@ -386,7 +390,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                      (e-context-lifetime-generation-checkpoint
                       (plist-get fork-projection :generation))
                      (append source-checkpoint
-                             '((:role assistant :content "boundary"))))))
+                             '((:role user :content "keep suffix"))))))
       (delete-directory directory t)))))
 
 (ert-deftest e-compaction-test-v3-portable-message-order-and-duplicates-survive-boundary-reopen-and-fork ()
@@ -399,7 +403,7 @@ later assistant/tool-call message instead of signalling no-boundary."
           '(:record-version 3 :type context-promotion :id "curation-v3-first"
             :frame-id "frame-v3-first" :generation-id "generation-v3-duplicates"
             :consumer-request-id "consumer-v3-first"
-            :response-entry-id "response-v3-first"
+            :response-entry-id "boundary"
             :items
             ((:kind exact :value "same durable value"
               :source-observation-ids ("observation-v3-first-a")
@@ -414,7 +418,7 @@ later assistant/tool-call message instead of signalling no-boundary."
           '(:record-version 2 :type context-promotion :id "promotion-v2-middle"
             :frame-id "frame-v2-middle" :generation-id "generation-v3-duplicates"
             :consumer-request-id "consumer-v2-middle"
-            :response-entry-id "response-v2-middle"
+            :response-entry-id "boundary"
             :facts ((:id "fact-v2-middle" :value "legacy middle"))
             :source-observation-ids ("observation-v2-middle")
             :source-refs ("source-v2-middle")
@@ -423,7 +427,7 @@ later assistant/tool-call message instead of signalling no-boundary."
           '(:record-version 3 :type context-promotion :id "curation-v3-second"
             :frame-id "frame-v3-second" :generation-id "generation-v3-duplicates"
             :consumer-request-id "consumer-v3-second"
-            :response-entry-id "response-v3-second"
+            :response-entry-id "boundary"
             :items
             ((:kind exact :value "same durable value"
               :source-observation-ids ("observation-v3-second")
@@ -438,11 +442,15 @@ later assistant/tool-call message instead of signalling no-boundary."
             :id generation-id
             :checkpoint '((:role system :content "C0"))
             :covered-session-boundary (plist-get session :root-event-id)))
-          (let ((before-entry
-                 (e-session-append-message
-                  store session-id '(:role user :content "before"))))
+          (let* ((before-entry
+                  (e-session-append-message
+                   store session-id '(:role user :content "before")))
+                 (boundary-entry
+                  (e-session-append-message
+                   store session-id
+                   '(:id "boundary" :role assistant :content "boundary"))))
             (e-session-append-message
-             store session-id '(:role assistant :content "boundary"))
+             store session-id '(:role user :content "keep suffix"))
             ;; The durable records deliberately interleave v3, v2, and v3;
             ;; the first v3 record also contains two equal-valued items.
             (e-session-append-context-curation-package
@@ -479,7 +487,7 @@ later assistant/tool-call message instead of signalling no-boundary."
               (should (equal entry-shape
                              '((v3 "same durable value")
                                (v3 "same durable value")
-                               (v2 "Promoted fact fact-v2-middle: legacy middle")
+                               (v2 "legacy middle")
                                (v3 "same durable value"))))
               (should (equal
                        (mapcar
@@ -491,7 +499,7 @@ later assistant/tool-call message instead of signalling no-boundary."
                        entry-shape))
               (should (equal checkpoint-contents
                              '("C1" "same durable value" "same durable value"
-                               "Promoted fact fact-v2-middle: legacy middle"
+                               "legacy middle"
                                "same durable value")))
               ;; Preflight must not re-append the already complete v3
               ;; checkpoint, even though equal v3 messages are distinct.
@@ -519,9 +527,11 @@ later assistant/tool-call message instead of signalling no-boundary."
                       (plist-get (plist-get preparation :portable-input)
                                  :covered-session-boundary)))
                 (should (equal covered-boundary
-                               (plist-get before-entry :id)))
+                               (plist-get boundary-entry :id)))
                 (e-session-append-context-curation-package
                  store session-id (list :promotion v3-post :erasure nil))
+                (e-session-append-context-curation-response
+                 store session-id "turn-v3-post" "response-v3-post")
                 (let* ((context-messages
                         (e-compaction-portable-context-messages
                          store session-id checkpoint covered-boundary)))
@@ -532,8 +542,8 @@ later assistant/tool-call message instead of signalling no-boundary."
                   (should (equal context-contents
                                  '("C1" "same durable value"
                                    "same durable value"
-                                   "Promoted fact fact-v2-middle: legacy middle"
-                                   "same durable value" "boundary"
+                                   "legacy middle"
+                                   "same durable value" "keep suffix"
                                    "same durable value")))
                   (should (= (cl-count "same durable value"
                                        context-contents :test #'equal)
@@ -560,8 +570,101 @@ later assistant/tool-call message instead of signalling no-boundary."
                                      (plist-get message :content))
                                    fork-checkpoint)
                            (append checkpoint-contents
-                                   '("boundary" "same durable value"))))))))))
+                                   '("keep suffix" "same durable value"))))))))))
       (delete-directory directory t)))
+
+(ert-deftest e-compaction-test-partial-boundary-partitions-older-generation-curations ()
+  "Portable compaction absorbs before/at anchors and keeps the later old fact."
+  (let* ((store (e-session-store-create))
+         (session-id "partial-retained-boundary")
+         (generation-id "generation-before-partial-boundary")
+         (session (e-session-create store :id session-id))
+         (make-record
+          (lambda (id anchor value)
+            (list :record-version 3 :type 'context-promotion :id id
+                  :frame-id (concat "frame-" id)
+                  :generation-id generation-id
+                  :consumer-request-id (concat "consumer-" id)
+                  :response-entry-id anchor
+                  :items
+                  (list
+                   (list :kind 'exact :value value
+                         :source-observation-ids (list (concat "obs-" id))
+                         :source-refs (list (concat "source-" id))
+                         :source-fingerprints (list (concat "fp-" id)))))))
+         (covered-boundary
+          (plist-get session :root-event-id)))
+    (e-session-append-context-generation
+     store session-id
+     (e-context-lifetime-generation-create
+      :id generation-id :checkpoint '((:role system :content "C0"))
+      :covered-session-boundary covered-boundary))
+    (e-session-append-message
+     store session-id
+     '(:id "response-before" :role assistant :content "before response"))
+    (e-session-append-context-curation-package
+     store session-id
+     (list :promotion (funcall make-record
+                               "retained-before" "response-before" "BEFORE")
+           :erasure nil))
+    (e-session-append-message
+     store session-id
+     '(:id "covered-end" :role assistant :content "covered response"))
+    (e-session-append-context-curation-package
+     store session-id
+     (list :promotion (funcall make-record
+                               "retained-at" "covered-end" "AT")
+           :erasure nil))
+    (e-session-append-message
+     store session-id
+     '(:id "first-kept" :role user :content "first kept turn"))
+    (e-session-append-message
+     store session-id
+     '(:id "response-after" :role assistant :content "later response"))
+    (e-session-append-context-curation-package
+     store session-id
+     (list :promotion (funcall make-record
+                               "retained-after" "response-after" "AFTER")
+           :erasure nil))
+    (let* ((preparation
+            (e-compaction-prepare store session-id
+                                  :keep-recent-tokens 1 :portable t))
+           (input (plist-get preparation :portable-input))
+           (boundary (plist-get input :covered-session-boundary))
+           (checkpoint
+            (e-compaction-portable-checkpoint-from-summary
+             preparation "C1"))
+           (application
+            (e-compaction-preflight-portable-boundary
+             store session-id preparation checkpoint)))
+      (should (equal boundary "covered-end"))
+      (should (equal (mapcar (lambda (record) (plist-get record :id))
+                             (plist-get input :curations))
+                     '("retained-before" "retained-at")))
+      (should (equal
+               (mapcar (lambda (message)
+                         (plist-get message :content))
+                       (cddr (e-compaction-portable-summary-messages input)))
+               '("BEFORE" "AT")))
+      (e-compaction-apply-portable-boundary store session-id application)
+      (let* ((projection
+              (e-session-local-context-lifetime-projection store session-id))
+             (curations (plist-get projection :curations))
+             (ordered (plist-get projection :ordered-context-tail))
+             (tail
+              (e-compaction-portable-context-messages
+               store session-id checkpoint boundary)))
+        (should (equal (mapcar (lambda (record) (plist-get record :id))
+                               curations)
+                       '("retained-after")))
+        (should (equal
+                 (mapcar (lambda (message) (plist-get message :content))
+                         ordered)
+                 '("first kept turn" "later response" "AFTER")))
+        (should (equal
+                 (mapcar (lambda (message) (plist-get message :content)) tail)
+                 '("C1" "BEFORE" "AT" "first kept turn"
+                   "later response" "AFTER")))))))
 
 (ert-deftest e-compaction-test-portable-boundary-retains-checkpoint-and-fresh-generation ()
   "A portable boundary starts a minimal generation and derives a new tail."
@@ -737,11 +840,14 @@ later assistant/tool-call message instead of signalling no-boundary."
          :frame-id "frame-frontier"
          :generation-id "generation-frontier"
          :consumer-request-id "consumer-frontier"
-         :response-entry-id "response-frontier"
+         :response-entry-id "frontier-response"
          :facts ((:id "frontier-fact" :value "selected later"))
          :source-observation-ids ("observation-frontier")
          :source-refs ("external:frontier")
          :source-fingerprints ("frontier-fingerprint")))
+      (e-session-append-message
+       store session-id
+       '(:id "frontier-response" :role assistant :content "late response"))
       (should-error
        (e-compaction-apply-portable-boundary
         store session-id

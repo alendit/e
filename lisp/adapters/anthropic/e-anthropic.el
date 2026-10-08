@@ -479,6 +479,11 @@ Return nil when neither an instructions option nor a system message is present."
 Anthropic requires an object; canonical nil is its empty object."
   arguments)
 
+(defun e-anthropic--retained-context-text (content)
+  "Return framed Messages text for canonical retained CONTENT."
+  (concat e-context-lifetime-retained-reference-prefix
+          (if (stringp content) content (e-json-serialize content))))
+
 (defun e-anthropic--tool-result-block (message)
   "Return the Messages `tool_result' block for backend-neutral MESSAGE."
   (let ((content (plist-get message :content)))
@@ -522,6 +527,11 @@ RESULT-MARKERS maps each marked tool result to its request-local marker."
                              :tool_use_id (plist-get content :tool-call-id)
                              :content (e-tools-result-content-text
                                        (plist-get content :content))))))
+      ('context
+       (list :role "user"
+             :content (vector
+                       (e-anthropic--text-block
+                        (e-anthropic--retained-context-text content)))))
       (_
        (list :role (symbol-name role)
              :content (vector (e-anthropic--text-block content)))))))

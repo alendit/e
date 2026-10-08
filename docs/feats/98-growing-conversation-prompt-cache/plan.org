@@ -4,6 +4,13 @@
 
 * Status
 
+The 2026-10-08 [[file:retained-context-plan.org][retained-context correction]] is implemented and source-cleared
+by Review 27. It replaces system-role retention with anchored reference data
+across adapters and closes partial-compaction, detached-query, fork and
+continuation-identity seams. Full-revision gates and fresh provider tests are
+pending. Historical provider results below precede that correction; availability
+remains unqualified until exact-route external acceptance passes.
+
 In-review.  Adapter-owned cache policy, caller-option removal and capability-
 gated curation admission are implemented. The independently reviewed P3
 producer passes 74 credential-free E2E tests, with 27 expected provider skips.

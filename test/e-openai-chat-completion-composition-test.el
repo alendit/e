@@ -79,6 +79,23 @@
                           :strict :json-false))]
       :tool_choice "auto"))))
 
+(ert-deftest e-openai-test-chat-completion-retained-context-is-framed-user-data ()
+  "Retained reference data remains a chronological user message."
+  (let* ((body
+          (e-openai-chat-completion-request-body
+           :messages '((:role system :content "Layer instructions.")
+                       (:role user :content "Question one.")
+                       (:role context :content (:fact "kept"))
+                       (:role assistant :content "Answer."))
+           :options '(:model "gpt-test" :instructions "Base instructions.")))
+         (messages (append (plist-get body :messages) nil)))
+    (should (equal (mapcar (lambda (message) (plist-get message :role))
+                           messages)
+                   '("system" "system" "user" "user" "assistant")))
+    (should (equal (plist-get (nth 3 messages) :content)
+                   (concat e-context-lifetime-retained-reference-prefix
+                           "{\"fact\":\"kept\"}")))))
+
 (ert-deftest e-openai-test-parse-chat-completion-stream ()
   "Chat Completion SSE chunks become backend-neutral stream items."
   (should
