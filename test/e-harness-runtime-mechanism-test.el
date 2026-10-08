@@ -277,7 +277,9 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
             1.0)
            :record)))
     (e-session-append-context-curation-package
-     store session-id (list :promotion curation :erasure nil))))
+     store session-id (list :promotion curation :erasure nil))
+    (e-session-append-context-curation-response
+     store session-id (format "turn-compaction-%s" suffix) response-id)))
 (ert-deftest e-harness-test-set-message-display-hides-and-emits-event ()
   "Setting a message's display flips it hidden and emits `message-updated'."
   (let* ((harness (e-harness-create :backend (e-backend-fake-create :items nil)))

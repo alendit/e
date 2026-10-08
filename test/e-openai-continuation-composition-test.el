@@ -29,7 +29,16 @@
 (ert-deftest e-openai-test-gpt56-full-fallback-restores-breakpoint ()
   "The safe body for a failed continuation contains the stable marker."
   (e-openai-test--with-prefix-cache-capability 'automatic-explicit
-    (let* ((revision e-openai-gpt56-automatic-cache-layout-revision)
+    (let* ((revision
+            (e-openai-test--prompt-layout-revision
+             '(:model "gpt-5.6-sol"
+               :prompt-cache-key "cache-key"
+               :segments ((:kind static-prefix
+                           :messages ((:role system
+                                       :content "Stable instructions.")))
+                          (:kind current-state
+                           :messages ((:role system
+                                       :content "Fresh dynamic state.")))))))
          (messages '((:role system :content "Stable instructions.")
                      (:role system :content "Fresh dynamic state.")
                      (:role user :content "new prompt")))
@@ -223,17 +232,21 @@
 
 (ert-deftest e-openai-test-reasoning-summary-fences-continuation-anchor ()
   "A changed effective reasoning summary cannot reuse a Responses anchor."
-  (let* ((base
-          '(:model "gpt-test"
-            :reasoning-summary "auto"
-            :provider-continuation t
-            :provider-anchor
-            (:provider-id openai
-             :metadata (:response-id "resp-1"
-                        :reasoning-identity
-                        (:effort "high" :summary "detailed")))
-            :provider-anchor-delta-messages
-            ((:role user :content "new prompt"))))
+  (let* ((anchor-options '(:model "gpt-test"
+                           :reasoning-summary "auto"
+                           :provider-continuation t
+                           :provider-anchor-delta-messages
+                           ((:role user :content "new prompt"))))
+         (layout (e-openai-test--prompt-layout-revision anchor-options))
+         (base
+          (append anchor-options
+                  (list :provider-anchor
+                        (list :provider-id 'openai
+                              :metadata (list :response-id "resp-1"
+                                              :prompt-layout-revision layout
+                                              :reasoning-identity
+                                              '(:effort "high"
+                                                :summary "detailed"))))))
          (unsafe (e-openai-codex-request-body
                   :messages '((:role user :content "new prompt"))
                   :options base))
@@ -241,10 +254,11 @@
     (setq safe-options
           (plist-put safe-options
                      :provider-anchor
-                     '(:provider-id openai
-                       :metadata (:response-id "resp-1"
-                                  :reasoning-identity
-                                  (:effort "high" :summary "auto")))))
+                     (list :provider-id 'openai
+                           :metadata (list :response-id "resp-1"
+                                           :prompt-layout-revision layout
+                                           :reasoning-identity
+                                           '(:effort "high" :summary "auto")))))
     (should-not (plist-member unsafe :previous_response_id))
     (should (equal (plist-get
                    (e-openai-codex-request-body
@@ -276,6 +290,21 @@
 
 (ert-deftest e-openai-test-request-body-uses-continuation-anchor ()
   "Continuation sends previous_response_id with fresh context and transcript delta."
+  (let* ((base-options '(:model "gpt-test"
+                         :provider-continuation t
+                         :provider-anchor-delta-messages
+                         ((:role system :content "changed dynamic context")
+                          (:role user :content "new prompt"))))
+         (layout (e-openai-test--prompt-layout-revision base-options))
+         (options (append base-options
+                          (list :provider-anchor
+                                (list :provider-id 'openai
+                                      :metadata
+                                      (list :response-id "resp-1"
+                                            :prompt-layout-revision layout
+                                            :reasoning-identity
+                                            '(:effort "high"
+                                              :summary "auto")))))))
   (should
    (equal
     (e-openai-codex-request-body
@@ -284,15 +313,7 @@
                  (:role user :content "old prompt")
                  (:role assistant :content "old answer")
                  (:role user :content "new prompt"))
-     :options '(:model "gpt-test"
-                :provider-continuation t
-                :provider-anchor (:provider-id openai
-                                  :metadata (:response-id "resp-1"
-                                             :reasoning-identity
-                                             (:effort "high" :summary "auto")))
-                :provider-anchor-delta-messages
-                ((:role system :content "changed dynamic context")
-                 (:role user :content "new prompt"))))
+     :options options)
     '(:model "gpt-test"
       :store t
       :stream t
@@ -303,11 +324,27 @@
       :tool_choice "auto"
       :parallel_tool_calls t
       :reasoning (:effort "high" :summary "auto")
-      :previous_response_id "resp-1"))))
+      :previous_response_id "resp-1")))))
 
 (ert-deftest e-openai-test-request-body-continuation-includes-in-turn-tool-output ()
   "Anchored follow-up requests include tool messages appended during the turn."
-  (let ((body
+  (let* ((base-options '(:model "gpt-test"
+                         :provider-continuation t
+                         :provider-anchor-source-message-count 5
+                         :provider-anchor-delta-messages
+                         ((:role system :content "changed dynamic context")
+                          (:role user :content "new prompt"))))
+         (layout (e-openai-test--prompt-layout-revision base-options))
+         (options (append base-options
+                          (list :provider-anchor
+                                (list :provider-id 'openai
+                                      :metadata
+                                      (list :response-id "resp-1"
+                                            :prompt-layout-revision layout
+                                            :reasoning-identity
+                                            '(:effort "high"
+                                              :summary "auto"))))))
+         (body
          (e-openai-codex-request-body
           :messages '((:role system :content "current instructions")
                       (:role system :content "changed dynamic context")
@@ -324,16 +361,7 @@
                                  :name "inspect"
                                  :status ok
                                  :content "fresh state")))
-          :options '(:model "gpt-test"
-                     :provider-continuation t
-                     :provider-anchor (:provider-id openai
-                                       :metadata (:response-id "resp-1"
-                                                  :reasoning-identity
-                                                  (:effort "high" :summary "auto")))
-                     :provider-anchor-source-message-count 5
-                     :provider-anchor-delta-messages
-                     ((:role system :content "changed dynamic context")
-                      (:role user :content "new prompt"))))))
+          :options options)))
     (should (equal (plist-get body :previous_response_id) "resp-1"))
     (should
      (equal

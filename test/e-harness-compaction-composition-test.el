@@ -162,10 +162,6 @@
                                 '(:role assistant :content "old answer"))
       (e-session-append-message store "session-1"
                                 '(:role tool :content "RAW-E-MUST-NOT-ESCAPE"))
-      (e-session-append-message store "session-1"
-                                '(:role user :content "kept intent"))
-      (e-session-append-message store "session-1"
-                                '(:role assistant :content "kept answer"))
       (let* ((generation
               (e-session-local-context-lifetime-current-generation store "session-1"))
              (frame
@@ -187,7 +183,17 @@
                 1.0)
                :record)))
         (e-session-append-context-curation-package
-         store "session-1" (list :promotion curation :erasure nil)))
+         store "session-1" (list :promotion curation :erasure nil))
+        (e-session-append-context-curation-response
+         store "session-1" "turn-portable-summary"
+         "response-portable-summary")
+        (e-session-append-message
+         store "session-1"
+         '(:role assistant :content "curation response answer")))
+      (e-session-append-message store "session-1"
+                                '(:role user :content "kept intent"))
+      (e-session-append-message store "session-1"
+                                '(:role assistant :content "kept answer"))
       (e-harness-compact-session-batch harness "session-1"
                                        :keep-recent-tokens 1)
       (let* ((prompt (prin1-to-string captured-messages))
@@ -197,6 +203,7 @@
         (should (string-match-p "Durable tail" prompt))
         (should (string-match-p "old intent" prompt))
         (should (string-match-p "old answer" prompt))
+        (should (string-match-p "curation response answer" prompt))
         (should-not (string-match-p "kept answer" prompt))
         (should (string-match-p "selected durable fact" prompt))
         (should-not (string-match-p "RAW-E-MUST-NOT-ESCAPE" prompt))
@@ -242,7 +249,9 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
             1.0)
            :record)))
     (e-session-append-context-curation-package
-     store session-id (list :promotion curation :erasure nil))))
+     store session-id (list :promotion curation :erasure nil))
+    (e-session-append-context-curation-response
+     store session-id (format "turn-compaction-%s" suffix) response-id)))
 
 (ert-deftest e-harness-test-enabled-async-compaction-absorbs-curation-and-filters-provider-state ()
   "Async enabled compaction absorbs facts and excludes runtime/provider state."
@@ -289,26 +298,27 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
          '(:role tool
            :content (:tool-call-id "async-call"
                      :content "ASYNC-RAW-RESULT")))
-        (e-session-append-message
-         store session-id
-         '(:role user :content "ASYNC-RETAINED-SUFFIX"))
-        (e-session-append-message
-         store session-id
-         '(:role assistant :content "ASYNC-RETAINED-ANSWER"))
         (e-session-append-provider-anchor
          store session-id 'fake
          :model "async-model"
          :covered-entry-id (plist-get tool-call :id)
          :fingerprints '(:prompt-layout async-layout)
-         :metadata '(:response-id "ASYNC-ANCHOR-MARKER")))
-      (let* ((generation
-              (e-session-local-context-lifetime-current-generation store session-id))
-             (generations-before
-              (length (e-session-local-context-generations store session-id))))
+         :metadata '(:response-id "ASYNC-ANCHOR-MARKER"))
         (e-harness-test--append-compaction-curation
          store session-id
-         (e-context-lifetime-generation-id generation)
+         (e-context-lifetime-generation-id
+          (e-session-local-context-lifetime-current-generation
+           store session-id))
          "async")
+        (e-session-append-message
+         store session-id
+         '(:role assistant :content "ASYNC-CURATION-ANSWER")))
+      (e-session-append-message
+       store session-id '(:role user :content "ASYNC-RETAINED-SUFFIX"))
+      (e-session-append-message
+       store session-id '(:role assistant :content "ASYNC-RETAINED-ANSWER"))
+      (let* ((generations-before
+              (length (e-session-local-context-generations store session-id))))
         (e-harness-compact-session-start
          harness session-id
          :keep-recent-tokens 1
@@ -336,6 +346,7 @@ SUFFIX makes the runtime identities and fact unique to the owning test."
                      (1+ generations-before)))
           (should (string-match-p "ASYNC-OLD-INTENT" prompt))
           (should (string-match-p "ASYNC-OLD-ANSWER" prompt))
+          (should (string-match-p "ASYNC-CURATION-ANSWER" prompt))
           (should (string-match-p "selected-async" prompt))
           (should-not (string-match-p "ASYNC-RAW-CALL" prompt))
           (should-not (string-match-p "ASYNC-RAW-RESULT" prompt))

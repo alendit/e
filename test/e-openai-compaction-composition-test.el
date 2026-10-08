@@ -204,6 +204,13 @@
             :item (:type "function_call_output"
                    :call_id "curation-call"
                    :output "")))
+         (options '(:model "gpt-test"
+                    :provider-continuation t
+                    :response-store t
+                    :provider-anchor-delta-messages
+                    ((:role assistant
+                      :content "selected"))))
+         (anchor (e-openai-test--provider-anchor "resp-promotion" options))
          (body
           (e-openai-codex-request-body
            :messages
@@ -215,11 +222,7 @@
            `(:model "gpt-test"
              :provider-continuation t
              :response-store t
-             :provider-anchor
-             (:provider-id openai
-              :metadata (:response-id "resp-promotion"
-                         :reasoning-identity
-                         (:effort "high" :summary "auto")))
+             :provider-anchor ,anchor
              :provider-anchor-delta-messages
              ((:role assistant
                :content "selected"
@@ -301,7 +304,7 @@
                       (if (= request-count 1)
                           first-response
                         second-response)
-                      nil
+                      (e-openai-test--prompt-layout-revision options)
                       '(:effort "high" :summary "auto"))))
                 (when (= request-count 1)
                   (setq first-items (copy-tree items)))
@@ -528,14 +531,11 @@
                                :responses-transport 'websocket)
            :tools nil))
          (second-options
-          '(:model "gpt-5.6"
-            :provider-continuation t
-            :response-store t
-            :provider-anchor
-            (:provider-id openai
-             :metadata (:response-id "fresh-anchor"
-                        :reasoning-identity
-                        (:effort "high" :summary "auto")))))
+          (let* ((base '(:model "gpt-5.6"
+                         :provider-continuation t
+                         :response-store t))
+                 (anchor (e-openai-test--provider-anchor "fresh-anchor" base)))
+            (append base (list :provider-anchor anchor))))
          (second-http-body
           (e-openai-codex-request-body
            :messages delta :options second-options :tools nil))

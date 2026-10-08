@@ -560,7 +560,16 @@
 (ert-deftest e-openai-test-gpt56-continuation-reuses-carried-breakpoint ()
   "A matching layout anchor sends dynamic context without stable duplication."
   (e-openai-test--with-prefix-cache-capability 'automatic-explicit
-    (let* ((revision e-openai-gpt56-automatic-cache-layout-revision)
+    (let* ((revision
+            (e-openai-test--prompt-layout-revision
+             '(:model "gpt-5.6-sol"
+               :prompt-cache-key "cache-key"
+               :segments ((:kind static-prefix
+                           :messages ((:role system
+                                       :content "Stable instructions.")))
+                          (:kind current-state
+                           :messages ((:role system
+                                       :content "Fresh dynamic state.")))))))
          (body
           (e-openai-codex-request-body
            :messages '((:role system :content "Stable instructions.")
@@ -602,7 +611,18 @@
 
 (ert-deftest e-openai-test-gpt56-segmented-continuation-needs-no-breakpoint ()
   "A segmented implicit profile carries stable context without unsupported fields."
-  (let* ((revision e-openai-gpt56-segmented-context-layout-revision)
+  (let* ((revision
+          (e-openai-test--prompt-layout-revision
+           '(:model "gpt-5.6-sol"
+             :prompt-cache-key "cache-key"
+             :responses-context-layout developer-input
+             :observation-delivery inherited
+             :segments ((:kind stable-context
+                         :messages ((:role system
+                                     :content "Stable instructions.")))
+                        (:kind current-state
+                         :messages ((:role system
+                                     :content "Fresh dynamic state.")))))))
          (body
           (e-openai-codex-request-body
            :messages '((:role system :content "Stable instructions.")
@@ -772,6 +792,7 @@
                          :replaceable-current-state (,same-message)
                          :context-segment-message-count 4
                          :segments ,segments))
+         (layout (e-openai-test--prompt-layout-revision base-options))
          (messages `((:role system :content "stable")
                      ,same-message
                      ,same-message
@@ -788,7 +809,7 @@
                               (:provider-id openai
                                :metadata (:response-id "resp-equal"
                                           :prompt-layout-revision
-                                          ,e-openai-gpt56-automatic-cache-layout-revision
+                                          ,layout
                                           :reasoning-identity
                                           (:effort "high" :summary "auto")))
                               :provider-anchor-delta-messages

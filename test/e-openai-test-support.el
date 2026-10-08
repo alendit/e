@@ -43,6 +43,38 @@ Production adapters derive these values from the endpoint and model."
           'context-curate-wire))
      ,@body))
 
+(defun e-openai-test--prompt-layout-revision (options)
+  "Return the material prompt identity under the current test profile bindings.
+
+Use this for synthetic provider anchors so fixtures follow the same role,
+ordering, framing, cache, and curation layout as the request they model."
+  (e-openai-responses-prompt-layout-revision options))
+
+(defun e-openai-test--provider-anchor (response-id options)
+  "Build an OpenAI anchor fixture for RESPONSE-ID and OPTIONS."
+  (list :provider-id 'openai
+        :metadata
+        (list :response-id response-id
+              :prompt-layout-revision
+              (e-openai-test--prompt-layout-revision options)
+              :reasoning-identity
+              (e-openai-profile-reasoning-identity options))))
+
+(defun e-openai-test--provider-anchor-candidate (response-id)
+  "Return the expected default-profile candidate for RESPONSE-ID."
+  (list :type 'provider-anchor-candidate
+        :provider-id 'openai
+        :metadata
+        (list :response-id response-id
+              :prompt-layout-revision
+              (e-openai-test--prompt-layout-revision '(:model "gpt-test"))
+              :reasoning-identity
+              '(:effort "high" :summary "auto"))))
+
+(defconst e-openai-test--default-prompt-layout-revision
+  (e-openai-test--prompt-layout-revision '(:model "gpt-test"))
+  "Material identity for the default unsegmented gpt-test renderer fixture.")
+
 (defun e-openai-test--jwt ()
   "Return a fake JWT with a Codex account-id claim."
   (let* ((payload (e-json-serialize

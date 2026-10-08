@@ -2989,7 +2989,7 @@
                          '(:type "response.completed"
                            :response (:id "response-curation")))
                         "")
-                       nil
+                       (e-openai-responses-prompt-layout-revision options)
                        (e-openai-responses-reasoning-identity options)))
                    (funcall on-item item)))
                 (2

@@ -637,12 +637,14 @@
            :provider 'eng-responses
            :messages '((:role system :content "current instructions")
                        (:role user :content "new prompt"))
-           :options '(:model "gpt-test"
+           :options `(:model "gpt-test"
                       :provider-continuation t
                       :provider-anchor
                       (:provider-id openai
                        :covered-entry-id "entry-1"
                        :metadata (:response-id "resp-1"
+                                  :prompt-layout-revision
+                                  ,e-openai-test--default-prompt-layout-revision
                                   :reasoning-identity
                                   (:effort "high" :summary "auto")))
                       :provider-anchor-delta-messages
@@ -659,7 +661,7 @@
                    "entry-1"))
     (should (equal (plist-get metadata :provider-continuation-delta-count) 1))
     (should (equal (plist-get metadata :diagnostics)
-                   '(:model "gpt-test"
+                   `(:model "gpt-test"
                      :reasoning-effort "high"
                      :reasoning-summary "auto"
                      :response-store t
@@ -681,7 +683,9 @@
                      :replaceable-current-state-present nil
                      :current-state-fingerprint nil
                      :context-rendering-strategy nil
-                     :provider-anchor-safety nil)))))
+                     :provider-anchor-safety nil
+                     :prompt-layout-revision
+                     ,e-openai-test--default-prompt-layout-revision)))))
 
 
 (ert-deftest e-openai-test-profile-records-request-context-spans ()
@@ -1074,8 +1078,14 @@
              (plist-member
               (aref (plist-get (aref (plist-get body :input) 0) :content) 0)
               :prompt_cache_breakpoint))
-            (should (equal (plist-get context :prompt-layout-revision)
-                           e-openai-gpt56-segmented-context-layout-revision))
+            (should (equal
+                     (plist-get (plist-get context :prompt-layout-revision)
+                                :wire-prompt-layout-revision)
+                     e-openai-gpt56-segmented-context-layout-revision))
+            (should (equal
+                     (plist-get (plist-get context :prompt-layout-revision)
+                                :retained-context-layout-revision)
+                     e-context-lifetime-retained-context-layout-revision))
             (should (equal
                      (plist-get
                       (plist-get (plist-get context :metadata) :diagnostics)
@@ -2288,12 +2298,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
           (e-openai-codex-request-body
            :messages messages
            :options
-           '(:model "gpt-test"
+           `(:model "gpt-test"
              :provider-continuation t
              :response-store t
              :provider-anchor
              (:provider-id openai
               :metadata (:response-id "resp-curation"
+                         :prompt-layout-revision
+                         ,e-openai-test--default-prompt-layout-revision
                          :reasoning-identity
                          (:effort "high" :summary "auto")))
              :provider-anchor-delta-messages

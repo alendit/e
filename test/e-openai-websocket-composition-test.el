@@ -63,12 +63,14 @@
                            (:role user :content "old prompt")
                            (:role assistant :content "old answer")
                            (:role user :content "new prompt"))
-               :options '(:model "gpt-test"
+               :options `(:model "gpt-test"
                           :responses-transport websocket
                           :response-store :json-false
                           :provider-continuation t
                           :provider-anchor (:provider-id openai
                                             :metadata (:response-id "resp-1"
+                                                       :prompt-layout-revision
+                                                       ,e-openai-test--default-prompt-layout-revision
                                                        :reasoning-identity
                                                        (:effort "high" :summary "auto")))
                           :provider-anchor-delta-messages
@@ -521,13 +523,10 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should-not (plist-member sent :store))
         (should-not (plist-member sent :stream))
         (should (equal (nreverse seen)
-                       '((:type assistant-delta :content "ok")
-                         (:type provider-anchor-candidate
-                          :provider-id openai
-                          :metadata (:response-id "resp-ws-1"
-                                    :reasoning-identity
-                                    (:effort "high" :summary "auto")))
-                         (:type done :reason stop))))
+                       (list '(:type assistant-delta :content "ok")
+                             (e-openai-test--provider-anchor-candidate
+                              "resp-ws-1")
+                             '(:type done :reason stop))))
         (should (eq (plist-get (e-backend-request-metadata request)
                                :transport)
                     'websocket))))))
@@ -583,14 +582,11 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (e-openai-test--wait-until (lambda () done-status) 0.2))
         (should-not error)
         (should (equal (nreverse seen)
-                       '((:type provider-anchor-candidate
-                          :provider-id openai
-                          :metadata (:response-id "resp-ws-1"
-                                    :reasoning-identity
-                                    (:effort "high" :summary "auto")))
-                         (:type assistant-message
-                          :content "candidate answer")
-                         (:type done :reason stop))))))))
+                       (list (e-openai-test--provider-anchor-candidate
+                              "resp-ws-1")
+                             '(:type assistant-message
+                               :content "candidate answer")
+                             '(:type done :reason stop))))))))
 
 (ert-deftest e-openai-test-websocket-does-not-use-http-request-timeout ()
   "Responses WebSocket requests do not inherit the HTTP whole-request timeout."
@@ -633,12 +629,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should (e-openai-test--wait-until (lambda () done-status) 0.2))
         (should-not error)
         (should (equal (nreverse seen)
-                       '((:type provider-anchor-candidate
-                          :provider-id openai
-                          :metadata (:response-id "resp-ws-1"
-                                    :reasoning-identity
-                                    (:effort "high" :summary "auto")))
-                         (:type done :reason stop))))))))
+                       (list (e-openai-test--provider-anchor-candidate
+                              "resp-ws-1")
+                             '(:type done :reason stop))))))))
 
 (ert-deftest e-openai-test-websocket-completion-retains-connection ()
   "Responses WebSocket completion retains the transport for reuse."
@@ -687,12 +680,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         (should-not error)
         (should (= close-count 0))
         (should (equal (nreverse late-seen)
-                       '((:type provider-anchor-candidate
-                          :provider-id openai
-                          :metadata (:response-id "resp-ws-1"
-                                    :reasoning-identity
-                                    (:effort "high" :summary "auto")))
-                         (:type done :reason stop))))
+                       (list (e-openai-test--provider-anchor-candidate
+                              "resp-ws-1")
+                             '(:type done :reason stop))))
         (should (e-backend-cancel-request request))
         (should (= close-count 1))))))
 
@@ -753,12 +743,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                backend
                :messages '((:role user :content "one"))
                :options
-               '(:model "gpt-test"
+               `(:model "gpt-test"
                  :session-id "session-one"
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
                   :metadata (:response-id "resp-one"
+                             :prompt-layout-revision
+                             ,e-openai-test--default-prompt-layout-revision
                              :reasoning-identity
                              (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
@@ -841,12 +833,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                :messages '((:role system :content "instruction two")
                            (:role user :content "two"))
                :options
-               '(:model "gpt-test"
+               `(:model "gpt-test"
                  :session-id "session-one"
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
                   :metadata (:response-id "resp-one"
+                             :prompt-layout-revision
+                             ,e-openai-test--default-prompt-layout-revision
                              :reasoning-identity
                              (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
@@ -929,12 +923,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                :messages '((:role user :content "one")
                            (:role user :content "two"))
                :options
-               '(:model "gpt-test"
+               `(:model "gpt-test"
                  :session-id "session-one"
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
                   :metadata (:response-id "resp-one"
+                             :prompt-layout-revision
+                             ,e-openai-test--default-prompt-layout-revision
                              :reasoning-identity
                              (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
@@ -1033,12 +1029,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                :messages '((:role user :content "one")
                            (:role user :content "two"))
                :options
-               '(:model "gpt-test"
+               `(:model "gpt-test"
                  :session-id "session-one"
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
                   :metadata (:response-id "resp-one"
+                             :prompt-layout-revision
+                             ,e-openai-test--default-prompt-layout-revision
                              :reasoning-identity
                              (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
@@ -1067,12 +1065,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                            (:role user :content "two")
                            (:role user :content "three"))
                :options
-               '(:model "gpt-test"
+               `(:model "gpt-test"
                  :session-id "session-one"
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
                   :metadata (:response-id "resp-one"
+                             :prompt-layout-revision
+                             ,e-openai-test--default-prompt-layout-revision
                              :reasoning-identity
                              (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
@@ -1093,12 +1093,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
                            (:role user :content "three")
                            (:role user :content "four"))
                :options
-               '(:model "gpt-test"
+               `(:model "gpt-test"
                  :session-id "session-one"
                  :provider-continuation t
                  :provider-anchor
                  (:provider-id openai
                   :metadata (:response-id "resp-two"
+                             :prompt-layout-revision
+                             ,e-openai-test--default-prompt-layout-revision
                              :reasoning-identity
                              (:effort "high" :summary "auto")))
                  :provider-anchor-delta-messages
@@ -1232,12 +1234,14 @@ result from the canonical messages supplied by the caller."
                                 :name "inspect"
                                 :content "RAW-RESULT")))
                  :options
-                 '(:model "gpt-test"
+                 `(:model "gpt-test"
                    :session-id "session-one"
                    :provider-continuation t
                    :provider-anchor
                    (:provider-id openai
                     :metadata (:response-id "resp-latest"
+                               :prompt-layout-revision
+                               ,e-openai-test--default-prompt-layout-revision
                                :reasoning-identity
                                (:effort "high" :summary "auto")))
                    :provider-anchor-delta-messages

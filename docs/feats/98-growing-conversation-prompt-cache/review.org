@@ -5410,3 +5410,138 @@ OpenAI credentials remain unavailable. This source result supports no provider
 benefit, historical Board cause, universal reuse, restored capability or
 whole-feature Done claim. No user Emacs/Board/store mutation or restart occurred.
 log-read: none.
+
+
+* Review 28: Independent bounded canonical-fixture correction admission
+
+** Decision and identity
+
+The settled test-only correction is source/fixture-admission clear: zero
+actionable P0–P3 findings or required source/fixture unknowns in this increment.
+Review 27's production-source closure carries. The required full canonical gate
+must be rerun on the committed correction before any deterministic fixed-point
+decision. Provider qualification and normal curation capability remain pending.
+
+Production checkpoint:
+=e42a89a53a2c9084b64933957712a142ce21a989=.
+Reviewed uncommitted delta: nine test files, 225 insertions/115 deletions after
+the parent removed redundant fixture syntax and a cross-test helper dependency.
+Independent SHA-256 of =git diff --binary -- test=:
+=48567541bd5ab88e931fed6af832804c08ed2f2c91d0dc448ab45497133e922c=.
+=git diff --quiet -- lisp e2e= independently returned exit 0.
+Supporting plan SHA remains
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=;
+F98-G1/C1–C6/DP1 are unchanged. No repository/Git/provider/user-state mutation
+or test execution occurred during this review.
+
+** Fixture-to-contract trace
+
+All nine diffs and the consequential preserved assertions were independently
+inspected. The corrections establish valid prerequisites for the same behaviors:
+
+- OpenAI continuation/request/WebSocket fixtures replace missing or scalar-only
+  layout metadata with the composite material identity for the selected request
+  options. Fresh candidate expectations include that identity; the Codex profile
+  assertion independently checks both wire and retained-context revisions.
+  Production HTTP parses with its request-context prompt/reasoning identities
+  (=e-openai.el:417–429=); fixtures now reproduce that composition.
+- The unchanged =e-openai-test-retained-context-layout-rejects-legacy-anchors=
+  still rejects old wire-only/material shapes and accepts matching new shapes
+  across flat, segmented, unavailable and candidate profiles. The separate
+  GPT-5.6 legacy-layout rejection witness also remains. Reasoning-summary
+  mismatch still forces fallback even with a valid current layout.
+- The immediate reserved curation ack and late ordinary-tool-followup fixtures
+  pass current layout identity into the real Responses parser. Their original
+  assertions still require the exact anchored ack/output behavior and retained
+  ordinary tool bundle; no fallback or ack assertion is removed.
+- WebSocket tests still prime actual connection-local response state, send an
+  immediate matching incremental function output, then require exactly one
+  canonical full replay containing call, encrypted reasoning and result after
+  either unavailable-response error form. Retry count, missing previous ID,
+  terminal settlement and diagnostics assertions remain intact.
+- Both compaction absorption fixtures append selected typed response-completion
+  controls and an assistant response before the retained suffix. The anchor is
+  therefore inside the asserted covered prefix. Added assertions verify that
+  response participates in the summary; existing selected-fact absorption,
+  suffix-once, raw-tool/provider-state absence and generation assertions remain.
+  Late-curation staleness helpers now create valid typed anchors while preserving
+  frontier rejection and no partial compaction/generation mutation assertions.
+
+Shared synthetic-anchor helpers only construct the required fixture metadata
+from the existing public identity owner. They do not add production controls or
+serve as capability evidence. The loop-only fixture calls
+=e-openai-responses-prompt-layout-revision= directly; =e-loop-test.el= already
+requires =e-openai=, so it has no dependency on another test file being loaded.
+No production legacy-layout, inherited-partition, replay or admission fence was
+weakened to obtain the focused pass.
+
+** Observed gates and required next gate
+
+The complete supplied focused log was consumed:
+=/private/tmp/e-retained-context-correction-focused-final.log:1–49=.
+It names all 27 prior failures plus the retained layout-rejection regression
+coverage: 29 tests, 29 expected, zero unexpected, zero skips. Matrix
+=/private/tmp/e-retained-context-gates.org= locates the affected owner relations.
+
+The proper prior full canonical result remains 2,858/2,885 expected with 27
+unexpected; this review does not promote the focused run into a whole-suite
+pass. The parent-reported private current-config 9/9 and credential-free E2E
+74 pass/27 expected skips may carry because production and E2E dependencies
+are independently unchanged. Those gate logs were not newly read or rerun here.
+The committed test correction needs a fresh complete canonical result.
+
+** Complete carried contract and prior finding dispositions
+
+| Cell | Disposition at this admission level |
+|------+-------------------------------------|
+| F98-G1/C1 | Review 27 source closure carried; retained role/order/native append proof unchanged; cache benefit unmeasured. |
+| C2 | carried; capability-derived policy, endpoints and optional controls unchanged. |
+| C3 | source closure carried; current fixture identities now reach actual continuation/ack/retry/frontier assertions instead of failing their prerequisites. |
+| C4 | source closure carried; old-layout rejection remains, matching fresh anchors exercise continuation and full fallback. |
+| C5 | carried; accounting, complete qualification evidence and strict predicate unchanged; candidate metadata assertions now include truthful layout identity. |
+| C6 | carried; normal selectors remain none; test helper metadata creates no production availability authority. |
+| R1–R4 / R24 risks | source closure carried; corrected fixtures preserve canonical values, selected anchors, compaction/persistence/replay and native route assertions. |
+| R25-F1/F2/F3 | remain closed; none of their corrected production owners changed. |
+| DP1-R1 required gates | canonical rerun pending; unchanged config/E2E evidence carries by dependency. |
+| R5 external qualification | pending, separate; no provider run or benefit/capability result inferred. |
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: valid current fixtures can establish complete gates
+   without changing accepted production semantics.
+2. Direction: tests follow the already-admitted retained role/order/layout.
+3. Stability/uncertainty: layout prerequisites are derived from the public owner;
+   external benefit remains uncertain and separately measured.
+4. Ownership: fixture helpers own synthetic anchor construction; production
+   codec/projection/query/adapter responsibilities are unchanged.
+5. Coupling: shared OpenAI fixture metadata reduces stale shapes; the loop test
+   uses its existing public dependency, avoiding cross-file load-order coupling.
+6. Dependency direction: no production dependency on tests or new provider owner.
+7. Side effects: only test fixtures change; public journal/control appends remain
+   the means of constructing real compaction scenarios.
+8. State/lifetime: no new persistent/runtime state or qualification registry.
+9. Performance: production and bounded-query cost unchanged; no cache gain claim.
+10. Substitution: current identity permits the existing HTTP/WS/continuation and
+    retry behaviors to be tested under valid prerequisites.
+11. Compatibility: explicit old-layout rejection remains; fresh compatible
+    anchors do not create a migration mode or weaken unavailable-route fences.
+12. Legacy removal: obsolete synthetic scalar/missing layout fixtures are
+    updated, while the deliberate legacy-negative fixtures remain.
+13. Errors: missing provider response retries and stale-frontier failures retain
+    their original settlement/error assertions; no exception is suppressed.
+14. Tests: exact behavioral assertions remain, typed anchors now represent the
+    intended covered prefix, and independent rejection tests prevent fixture
+    identity helpers from replacing layout contract proof. Full canonical
+    acceptance still requires the rerun.
+
+** Delivery boundary
+
+The parent may commit this scoped test correction and rerun the proper full
+canonical gate. No full functional/architectural fixed-point result is issued
+yet. Normal curation remains unavailable; fresh exact-source external P3 and
+independent evidence closure are still required. Historical negatives and
+attribution limits retain their prior scope. No live reload/restart, Board/store
+operation, historical Board cause, universal benefit or whole-feature Done
+claim is supported.
+
+log-read: /private/tmp/e-retained-context-correction-focused-final.log:1–49.
