@@ -579,6 +579,34 @@ printf '%s\\n' notes/delayed.txt
                     '(:unit "line" :start 2 :end 3))
                    "two\nthree\n"))))
 
+(ert-deftest e-session-tmp-test-read-supports-char-ranges ()
+  "Char ranges page a one-line tmp resource that line ranges cannot split."
+  (let ((harness (e-harness-create
+                  :backend (e-backend-fake-create :items nil)
+                  :intrinsic-capabilities
+                  (list (e-session-tmp-capability-create)))))
+    (unwind-protect
+        (let ((resources (e-harness-resources harness "session-1" "turn-1")))
+          (e-session-tmp-write harness "session-1" "one-line.json"
+                               "{\"a\":\"abcdefghij\"}")
+          (should (equal (e-resources-read
+                          resources "tmp://one-line.json"
+                          '(:unit "char" :start 7 :limit 4))
+                         "abcd"))
+          (should (equal (e-resources-read
+                          resources "tmp://one-line.json"
+                          '(:unit "char" :start 7 :end 8))
+                         "ab"))
+          (should (equal (e-resources-read
+                          resources "tmp://one-line.json"
+                          '(:unit "char" :start 17))
+                         "\"}"))
+          (should (equal (e-resources-read
+                          resources "tmp://one-line.json"
+                          '(:unit "char" :start 99 :limit 5))
+                         "")))
+      (e-session-tmp-cleanup-harness harness))))
+
 (ert-deftest e-session-tmp-test-raw-result-reference-is-bounded ()
   "Raw-result references carry bounded preview and ownership metadata."
   (should (require 'e-session-tmp-resources nil t))

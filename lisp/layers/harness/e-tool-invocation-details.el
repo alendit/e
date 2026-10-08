@@ -674,8 +674,9 @@ and is never attached to CALL or its transcript metadata."
                      (plist-get context :archival-received-arguments))))
              (metadata (copy-sequence (plist-get result :metadata)))
              (copy (copy-sequence result)))
-        (when (e-tools-file-content-p (plist-get result :content))
-          (e-tools-file-content-dispose (plist-get result :content)))
+        ;; A file-backed carrier stays owned: presentation may still link
+        ;; its plain text as the readable full output, and disposes it when
+        ;; the result fits inline.
         ;; The harness passes this fresh slot to presentation only after the
         ;; archive write succeeds.  Presentation must not trust a URI copied
         ;; into an arbitrary result metadata plist.

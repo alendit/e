@@ -133,17 +133,19 @@
       (should (string-prefix-p "one\ntwo\n" (plist-get truncated :content)))
       (should-not (string-prefix-p content (plist-get truncated :content))))))
 
-(ert-deftest e-tool-output-truncation-test-reuses-invocation-details-uri ()
-  "A session-owned result reuses its complete details artifact for previewing."
+(ert-deftest e-tool-output-truncation-test-full-output-is-plain-text-not-details ()
+  "Session results link plain text, never the one-line details archive."
   (should (require 'e-tool-output-truncation nil t))
   (let* ((harness (e-tool-output-truncation-test--harness))
          (call '(:id "call-details" :name "echo"
                  :arguments (:text "full")))
-         (semantic-result '(:tool-call-id "call-details"
-                            :name "echo"
-                            :status ok
-                            :content "abcdefghijklmnopqrstuvwxyz"
-                            :metadata (:semantic t)))
+         (complete (mapconcat (lambda (n) (format "line %d" n))
+                              (number-sequence 1 40) "\n"))
+         (semantic-result (list :tool-call-id "call-details"
+                                :name "echo"
+                                :status 'ok
+                                :content complete
+                                :metadata '(:semantic t)))
          (context (list :harness harness
                         :session-id "session-1"
                         :turn-id "turn-1"
@@ -156,39 +158,57 @@
           (plist-get (plist-get result :metadata)
                      :invocation-details-uri)))
     (unwind-protect
+        (let* ((e-tool-output-truncation-max-bytes 30)
+               (e-tool-output-truncation-max-lines 2000)
+               (truncated
+                (e-tool-output-truncation-post-tool-call result context))
+               (metadata (plist-get truncated :metadata))
+               (uri (plist-get metadata :tmp-uri))
+               (resources (e-harness-resources harness "session-1" "turn-1")))
+          (should (plist-get metadata :truncated))
+          (should (stringp details-uri))
+          (should-not (equal uri details-uri))
+          (should (equal uri "tmp://tool-results/turn-1/echo-call-details.txt"))
+          (should (string-match-p (regexp-quote uri)
+                                  (plist-get truncated :content)))
+          (should (equal (e-resources-read resources uri nil) complete))
+          (should (equal (e-resources-read resources uri
+                                           '(:unit "line" :start 39 :end 40))
+                         "line 39\nline 40"))
+          ;; The archive stays complete for receipts.
+          (should (equal (plist-get
+                          (plist-get
+                           (e-tool-invocation-details-decode
+                            (e-resources-read resources details-uri nil))
+                           :result)
+                          :content)
+                         complete)))
+      (e-session-tmp-cleanup-harness harness))))
+
+(ert-deftest e-tool-output-truncation-test-oversized-tmp-read-points-back ()
+  "An oversized read of tmp:// links its source instead of nesting a copy."
+  (should (require 'e-tool-output-truncation nil t))
+  (let* ((harness (e-tool-output-truncation-test--harness))
+         (source "tmp://tool-results/turn-0/bash-call-0.txt")
+         (content (make-string 64 ?y))
+         (context (list :harness harness
+                        :session-id "session-1"
+                        :turn-id "turn-1"
+                        :tool-call (list :id "call-read" :name "read"
+                                         :arguments (list :uri source))))
+         (result (list :tool-call-id "call-read" :name "read"
+                       :status 'ok :content content)))
+    (unwind-protect
         (let* ((e-tool-output-truncation-max-bytes 10)
                (e-tool-output-truncation-max-lines 2000)
                (truncated
-                (e-tool-output-truncation-post-tool-call
-                 result
-                 context))
-               (metadata (plist-get truncated :metadata))
-               (reference (plist-get metadata :raw-result-reference))
+                (e-tool-output-truncation-post-tool-call result context))
                (root (e-session-tmp-directory harness "session-1")))
-          (should (plist-get metadata :truncated))
-          (should (equal (plist-get context :invocation-details-uri)
-                         details-uri))
-          (should (equal (plist-get metadata :tmp-uri) details-uri))
-          (should (equal (plist-get reference :uri) details-uri))
-          (should (eq (plist-get reference :storage) 'session-tmp))
-          (should (equal (plist-get reference :original-bytes) 26))
-          (should (equal (plist-get reference :preview) "abcdefghij"))
-          (should (equal (plist-get reference :preview-bytes) 10))
-          (should (file-exists-p
-                   (expand-file-name
-                    (substring details-uri (length "tmp://"))
-                    root)))
+          (should (equal (plist-get (plist-get truncated :metadata) :tmp-uri)
+                         source))
           (should-not (file-exists-p
                        (expand-file-name
-                        "tool-results/turn-1/echo-call-details.txt"
-                        root)))
-          (let ((archived
-                 (e-tool-invocation-details-decode
-                  (e-resources-read
-                   (e-harness-resources harness "session-1" "turn-1")
-                   details-uri nil))))
-            (should (equal (plist-get (plist-get archived :result) :content)
-                           "abcdefghijklmnopqrstuvwxyz"))))
+                        "tool-results/turn-1/read-call-read.txt" root))))
       (e-session-tmp-cleanup-harness harness))))
 
 (ert-deftest e-tool-output-truncation-test-does-not-trust-forged-details-uri ()

@@ -1446,7 +1446,8 @@ they are never included in the transcript message or lifecycle event."
          ;; successful stage result to presentation through a fresh overlay.
          (presentation-context
           (append (list :invocation-details-uri
-                        (plist-get detail-context :invocation-details-uri))
+                        (plist-get detail-context :invocation-details-uri)
+                        :tool-call tool-call)
                   context)))
     (when details-holder
       (setcar details-holder

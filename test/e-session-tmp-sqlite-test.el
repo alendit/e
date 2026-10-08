@@ -142,6 +142,63 @@
         (should (equal (plist-get (plist-get document :result) :content)
                        "complete output"))))))
 
+(ert-deftest e-session-tmp-sqlite-char-range-pages-past-visible-limit ()
+  "Char ranges reach a one-line value larger than the 256 KiB read page."
+  (e-session-tmp-sqlite-test--with-harness
+      (store harness resources directory)
+    (let ((content (concat (make-string (* 300 1024) ?x) "TAIL")))
+      (e-session-tmp-sqlite-test--work
+       resources e-operation-write "tmp://big.json" content)
+      (should-error
+       (e-session-tmp-sqlite-test--work
+        resources e-operation-read "tmp://big.json" nil)
+       :type 'e-session-tmp-resources-page-too-large)
+      (should (equal (e-session-tmp-sqlite-test--work
+                      resources e-operation-read "tmp://big.json"
+                      (list :unit "char" :start (1+ (* 300 1024)) :limit 10))
+                     "TAIL"))
+      (should (equal (e-session-tmp-sqlite-test--work
+                      resources e-operation-read "tmp://big.json"
+                      '(:unit "char" :start 1 :end 3))
+                     "xxx")))))
+
+(ert-deftest e-session-tmp-sqlite-truncated-file-output-is-readable ()
+  "A truncated file-backed result links plain text stored in SQLite."
+  (require 'e-tool-output-truncation)
+  (e-session-tmp-sqlite-test--with-harness
+      (store harness resources directory)
+    (let* ((relative "tool-results/turn-1/bash-call-1.txt")
+           (path (e-session-tmp-file-path harness "session-1" relative))
+           (complete (mapconcat #'number-to-string
+                                (number-sequence 1 200) "\n"))
+           (carrier (e-tools-file-content-create
+                     :path path :uri (concat "tmp://" relative)
+                     :preview "1\n2\n"
+                     :original-bytes (string-bytes complete)
+                     :original-lines 200 :preview-bytes 4 :preview-lines 2
+                     :owned t))
+           (context (list :harness harness :session-id "session-1"
+                          :turn-id "turn-1"
+                          :tool-call '(:id "call-1" :name "bash"))))
+      (write-region complete nil path nil 'silent)
+      (let* ((e-tool-output-truncation-max-bytes 64)
+             (truncated
+              (e-tool-output-truncation-post-tool-call
+               (list :tool-call-id "call-1" :name "bash" :status 'ok
+                     :content carrier)
+               context))
+             (uri (plist-get (plist-get truncated :metadata) :tmp-uri)))
+        (should (equal uri (concat "tmp://" relative)))
+        (should-not (file-exists-p path))
+        (e-session-tmp-sqlite-test--drain store)
+        (should (equal (e-session-tmp-sqlite-test--work
+                        resources e-operation-read uri nil)
+                       complete))
+        (should (equal (e-session-tmp-sqlite-test--work
+                        resources e-operation-read uri
+                        '(:unit "line" :start 200 :end 200))
+                       "200"))))))
+
 (ert-deftest e-session-tmp-sqlite-s4-enqueue-is-immediate-and-bounded ()
   "A practical tmp value enqueues immediately and remains queryable."
   (e-session-tmp-sqlite-test--with-harness

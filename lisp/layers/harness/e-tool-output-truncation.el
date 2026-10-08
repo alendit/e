@@ -136,35 +136,43 @@
        :preview preview
        :preview-bytes e-tool-output-truncation-max-bytes))))
 
+(defun e-tool-output-truncation--session-p (context)
+  "Return non-nil when CONTEXT names an owning harness session."
+  (and (plist-get context :harness)
+       (stringp (plist-get context :session-id))
+       (not (string-empty-p (plist-get context :session-id)))))
+
+(defun e-tool-output-truncation--readback-uri (result context)
+  "Return the tmp:// URI RESULT read, when RESULT is a `read' of one."
+  (let* ((call (plist-get context :tool-call))
+         (uri (plist-get (plist-get call :arguments) :uri)))
+    (when (and (equal (plist-get result :name) "read")
+               (equal (plist-get call :name) "read")
+               (stringp uri)
+               (string-prefix-p "tmp://" uri)
+               (e-tool-output-truncation--session-p context))
+      uri)))
+
 (defun e-tool-output-truncation--reference
     (result context content preview)
-  "Return the full-output REFERENCE for RESULT's bounded PREVIEW.
-Reuse the already-written invocation-details URI for a session-owned
-top-level result.  Nested results do not receive that URI and retain the
-existing raw-result behavior."
-  (let* ((metadata (plist-get result :metadata))
-         (details-uri (plist-get context :invocation-details-uri))
-         (result-uri (plist-get metadata :invocation-details-uri))
-         (harness (plist-get context :harness))
-         (session-id (plist-get context :session-id)))
-    (if (and (stringp details-uri)
-             (equal details-uri result-uri)
-             (string-prefix-p "tmp://" details-uri)
-             harness
-             (stringp session-id)
-             (not (string-empty-p session-id))
-             (not (plist-get context :nested)))
-        (list :uri details-uri
-              :owner (e-tool-output-truncation--owner result context)
-              :storage 'session-tmp
-              :original-bytes (string-bytes content)
-              :preview preview
-              :preview-bytes (string-bytes preview)
-              :preview-truncated (not (equal content preview))
-              :redaction-policy 'none
-              :cleanup-lifetime 'session-tmp)
-      (e-tool-output-truncation--write-raw-result
-       result context content preview))))
+  "Return the full-output reference for RESULT's bounded PREVIEW.
+The reference always names plain text.  The invocation-details record is a
+one-line JSON archive, so pointing the model at it makes every readback
+oversized again."
+  (if-let* ((uri (e-tool-output-truncation--readback-uri result context)))
+      ;; Saving a copy of an oversized tmp:// read would only nest the same
+      ;; text under a new name; send the model back to the source instead.
+      (list :uri uri
+            :owner (e-tool-output-truncation--owner result context)
+            :storage 'session-tmp
+            :original-bytes (string-bytes content)
+            :preview preview
+            :preview-bytes (string-bytes preview)
+            :preview-truncated t
+            :redaction-policy 'none
+            :cleanup-lifetime 'session-tmp)
+    (e-tool-output-truncation--write-raw-result
+     result context content preview)))
 
 (defun e-tool-output-truncation--authorized-details-uri (result context)
   "Return RESULT's lifecycle-authorized details URI, or nil."
@@ -182,52 +190,64 @@ existing raw-result behavior."
 
 (defun e-tool-output-truncation--file-content-reference
     (result context content preview)
-  "Return full-output reference for file-backed CONTENT."
-  (let* ((details-uri
-          (e-tool-output-truncation--authorized-details-uri result context))
-         (source-uri (e-tools-file-content-uri content))
+  "Return a plain-text full-output reference for file-backed CONTENT."
+  (let* ((source-uri (e-tools-file-content-uri content))
+         (source-path (e-tools-file-content-path content))
          (owner (e-tool-output-truncation--owner result context))
          (original-bytes (e-tools-file-content-original-bytes content))
-         (reference
-          (cond
-           (details-uri
-            (list :uri details-uri
-                  :owner owner
-                  :storage 'session-tmp
-                  :original-bytes original-bytes
-                  :preview preview
-                  :preview-bytes (string-bytes preview)
-                  :preview-truncated t
-                  :redaction-policy 'none
-                  :cleanup-lifetime 'session-tmp))
-           ((and (stringp source-uri)
-                 (string-prefix-p "tmp://" source-uri)
-                 (plist-get context :harness)
-                 (stringp (plist-get context :session-id))
-                 (not (string-empty-p (plist-get context :session-id))))
-            (list :uri source-uri
-                  :owner owner
-                  :storage 'session-tmp
-                  :original-bytes original-bytes
-                  :preview preview
-                  :preview-bytes (string-bytes preview)
-                  :preview-truncated t
-                  :redaction-policy 'none
-                  :cleanup-lifetime 'session-tmp))
-           (t
-            (prog1
-                (e-raw-results-import-file
-                 (e-tools-file-content-path content)
-                 :id (e-tool-output-truncation--raw-result-id
-                      (e-tool-output-truncation--relative-name result context))
-                 :owner owner
-                 :redaction-policy 'none
-                 :cleanup-lifetime 'raw-result-store
-                 :preview preview
-                 :preview-bytes e-tool-output-truncation-max-bytes
-                 :original-bytes original-bytes)
-              (e-tools-file-content-dispose content))))))
-    reference))
+         (session-p (e-tool-output-truncation--session-p context))
+         (tmp-source-p (and (stringp source-uri)
+                            (string-prefix-p "tmp://" source-uri)))
+         (harness (plist-get context :harness))
+         (session-id (plist-get context :session-id)))
+    (cond
+     ((and session-p tmp-source-p (file-regular-p source-path))
+      ;; A persistent store reads tmp:// from SQLite, not from the producer's
+      ;; staging file, so the text must be ingested under the same name.
+      (let ((uri (if (e-session-tmp--sqlite-store harness)
+                     (prog1
+                         (e-session-tmp-write-generated
+                          harness session-id
+                          (substring source-uri (length "tmp://"))
+                          (lambda (path) (copy-file source-path path t)))
+                       (e-tools-file-content-dispose content))
+                   source-uri)))
+        (list :uri uri
+              :owner owner
+              :storage 'session-tmp
+              :original-bytes original-bytes
+              :preview preview
+              :preview-bytes (string-bytes preview)
+              :preview-truncated t
+              :redaction-policy 'none
+              :cleanup-lifetime 'session-tmp)))
+     ((file-regular-p source-path)
+      (prog1
+          (e-raw-results-import-file
+           source-path
+           :id (e-tool-output-truncation--raw-result-id
+                (e-tool-output-truncation--relative-name result context))
+           :owner owner
+           :redaction-policy 'none
+           :cleanup-lifetime 'raw-result-store
+           :preview preview
+           :preview-bytes e-tool-output-truncation-max-bytes
+           :original-bytes original-bytes)
+        (e-tools-file-content-dispose content)))
+     (t
+      ;; The source was consumed upstream; the details archive is the only
+      ;; complete copy left.
+      (list :uri (or (e-tool-output-truncation--authorized-details-uri
+                      result context)
+                     source-uri)
+            :owner owner
+            :storage 'session-tmp
+            :original-bytes original-bytes
+            :preview preview
+            :preview-bytes (string-bytes preview)
+            :preview-truncated t
+            :redaction-policy 'none
+            :cleanup-lifetime 'session-tmp)))))
 
 (defun e-tool-output-truncation--file-content-result (result context content)
   "Return bounded presentation RESULT for file-backed CONTENT."
@@ -275,7 +295,7 @@ existing raw-result behavior."
 (defun e-tool-output-truncation--notice
     (shown-bytes shown-lines original-bytes original-lines uri)
   "Return truncation notice text."
-  (format "[Tool output truncated: showing first %d bytes / %d lines of %d bytes / %d lines. Full output: %s]"
+  (format "[Tool output truncated: showing first %d bytes / %d lines of %d bytes / %d lines. Full output: %s (plain text; read it with a line or char range)]"
           shown-bytes
           shown-lines
           original-bytes

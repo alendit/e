@@ -1062,49 +1062,65 @@ root and is suitable for streaming writes."
     (make-directory (file-name-directory path) t)
     path))
 
+(defun e-session-tmp--char-range-p (range)
+  "Return non-nil when RANGE is a valid character range."
+  (let ((start (plist-get range :start))
+        (end (plist-get range :end))
+        (limit (plist-get range :limit)))
+    (and (equal (plist-get range :unit) "char")
+         (integerp start) (> start 0)
+         (or (null end) (and (integerp end) (>= end start)))
+         (or (null limit) (and (integerp limit) (> limit 0))))))
+
+(defun e-session-tmp--char-range-length (range)
+  "Return the character count RANGE selects, or nil for the rest."
+  (let ((end (plist-get range :end)))
+    (if end
+        (1+ (- end (plist-get range :start)))
+      (plist-get range :limit))))
+
+(defun e-session-tmp--read-range-in-buffer (range)
+  "Return the current buffer's text selected by optional line or char RANGE."
+  (cond
+   ((not range)
+    (buffer-string))
+   ((e-session-tmp--char-range-p range)
+    ;; Character ranges exist because one-line payloads such as JSON tool
+    ;; results cannot be paged by line.
+    (let* ((beg (min (point-max) (+ (point-min) (1- (plist-get range :start)))))
+           (length (e-session-tmp--char-range-length range))
+           (end (if length (min (point-max) (+ beg length)) (point-max))))
+      (buffer-substring-no-properties beg end)))
+   (t
+    (let ((unit (plist-get range :unit))
+          (start (plist-get range :start))
+          (end (plist-get range :end)))
+      (unless (and (equal unit "line")
+                   (integerp start)
+                   (> start 0)
+                   (or (null end)
+                       (and (integerp end)
+                            (>= end start))))
+        (signal 'wrong-type-argument (list 'tmp-range-p range)))
+      (goto-char (point-min))
+      (forward-line (1- start))
+      (let ((beg (point)))
+        (if end
+            (forward-line (1+ (- end start)))
+          (goto-char (point-max)))
+        (buffer-substring-no-properties beg (point)))))))
+
 (defun e-session-tmp--read-file (path range)
-  "Read text PATH, honoring optional line RANGE."
+  "Read text PATH, honoring optional line or char RANGE."
   (with-temp-buffer
     (insert-file-contents path)
-    (if (not range)
-        (buffer-string)
-      (let ((unit (plist-get range :unit))
-            (start (plist-get range :start))
-            (end (plist-get range :end)))
-        (unless (and (equal unit "line")
-                     (integerp start)
-                     (> start 0)
-                     (or (null end)
-                         (and (integerp end)
-                              (>= end start))))
-          (signal 'wrong-type-argument (list 'line-range-p range)))
-        (goto-char (point-min))
-        (forward-line (1- start))
-        (let ((beg (point)))
-          (if end
-              (forward-line (1+ (- end start)))
-            (goto-char (point-max)))
-          (buffer-substring-no-properties beg (point)))))))
+    (e-session-tmp--read-range-in-buffer range)))
 
 (defun e-session-tmp--read-content (content range)
-  "Read text CONTENT with the same optional line RANGE contract as files."
+  "Read text CONTENT with the same optional RANGE contract as files."
   (with-temp-buffer
     (insert content)
-    (if (not range)
-        (buffer-string)
-      (let ((unit (plist-get range :unit))
-            (start (plist-get range :start))
-            (end (plist-get range :end)))
-        (unless (and (equal unit "line") (integerp start) (> start 0)
-                     (or (null end)
-                         (and (integerp end) (>= end start))))
-          (signal 'wrong-type-argument (list 'line-range-p range)))
-        (goto-char (point-min))
-        (forward-line (1- start))
-        (let ((beg (point)))
-          (if end (forward-line (1+ (- end start)))
-            (goto-char (point-max)))
-          (buffer-substring-no-properties beg (point)))))))
+    (e-session-tmp--read-range-in-buffer range)))
 
 (defun e-session-tmp--count-occurrences (content needle)
   "Return count of NEEDLE in CONTENT."
@@ -1180,9 +1196,16 @@ root and is suitable for streaming writes."
             (list "Opening tmp resource" (e-session-tmp--uri relative-name))))
   (when (plist-get page :next)
     (signal 'e-session-tmp-resources-page-too-large
-            (list (format "tmp://%s exceeds the 256 KiB visible read page"
+            (list (format "tmp://%s exceeds the 256 KiB visible read page; read it with a char range"
                           relative-name))))
   (e-session-tmp--read-content (plist-get page :content) range))
+
+(defun e-session-tmp--sqlite-char-read-result (relative-name page)
+  "Return the content of character PAGE for RELATIVE-NAME."
+  (unless page
+    (signal 'file-missing
+            (list "Opening tmp resource" (e-session-tmp--uri relative-name))))
+  (or (plist-get page :content) ""))
 
 (defun e-session-tmp--sqlite-search-result (rows uri query options)
   "Shape a bounded tmp search over detached ROWS."
@@ -1259,16 +1282,30 @@ root and is suitable for streaming writes."
                  (plist-get arguments :operation-arguments)))
            (pcase (e-operation-id-of operation)
              ('read
-              (let ((relative-name
-                     (e-session-tmp--safe-relative-name
-                      (plist-get parsed-uri :address))))
+              (let* ((relative-name
+                      (e-session-tmp--safe-relative-name
+                       (plist-get parsed-uri :address)))
+                     (range (car operation-arguments))
+                     (char-range-p (e-session-tmp--char-range-p range)))
                 (e-session-tmp--sqlite-submit-work
                  handle harness session-id 'read
-                 (list :op 'resource-read :path relative-name
-                       :offset 0 :limit (* 256 1024))
+                 (if char-range-p
+                     ;; Page in SQL so a resource larger than the visible
+                     ;; read page stays reachable one slice at a time.
+                     (list :op 'resource-read :path relative-name
+                           :offset (1- (plist-get range :start))
+                           :limit (min (* 256 1024)
+                                       (or (e-session-tmp--char-range-length
+                                            range)
+                                           (* 256 1024))))
+                   (list :op 'resource-read :path relative-name
+                         :offset 0 :limit (* 256 1024)))
                  (lambda (page)
-                   (e-session-tmp--sqlite-read-result
-                    relative-name (car operation-arguments) page)))))
+                   (if char-range-p
+                       (e-session-tmp--sqlite-char-read-result
+                        relative-name page)
+                     (e-session-tmp--sqlite-read-result
+                      relative-name range page))))))
              ('write
               (let ((relative-name
                      (e-session-tmp--safe-relative-name
@@ -1317,7 +1354,7 @@ root and is suitable for streaming writes."
     :operation e-operation-read
     :description "Ephemeral session-scoped temporary text resources."
     :uri-patterns '("tmp://<relative-path>")
-    :range-modes '("line")
+    :range-modes '("line" "char")
     :handler (lambda (uri range)
                (e-session-tmp--read-relative
                 harness session-id (plist-get uri :address) range))

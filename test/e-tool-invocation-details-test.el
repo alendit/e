@@ -391,8 +391,8 @@ ordinary tool implementation used by the test capability."
                    result)))
       (e-session-tmp-cleanup-harness harness))))
 
-(ert-deftest e-tool-invocation-details-test-streams-and-cleans-file-content ()
-  "An owned file carrier is archived completely and consumed after success."
+(ert-deftest e-tool-invocation-details-test-streams-and-keeps-file-content ()
+  "An owned file carrier is archived completely and left for presentation."
   (let* ((session-id "invocation-details-file-content")
          (harness (e-harness-create
                    :backend (e-backend-fake-create :items nil)))
@@ -417,9 +417,10 @@ ordinary tool implementation used by the test capability."
           (write-region complete nil source nil 'silent)
           (setq archived
                 (e-tool-invocation-details--post-tool-call result context))
-          (should-not (file-exists-p source))
+          ;; Presentation links this plain text as the readable full output.
+          (should (file-exists-p source))
           (should (eq (plist-get archived :content) carrier))
-          (should-not (e-tools-file-content-owned carrier))
+          (should (e-tools-file-content-owned carrier))
           (let* ((uri (plist-get (plist-get archived :metadata)
                                  :invocation-details-uri))
                  (details

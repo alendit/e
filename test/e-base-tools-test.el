@@ -1354,15 +1354,23 @@ picker."
           (should-not (plist-get (e-tools-request-metadata request) :buffer))
           (let* ((metadata (plist-get result :metadata))
                  (uri (plist-get metadata :tmp-uri))
+                 (details-uri (plist-get metadata :invocation-details-uri))
+                 (resources (e-harness-resources harness "session-1" "turn-1"))
                  (details
                   (e-tool-invocation-details-decode
-                   (e-resources-read
-                    (e-harness-resources harness "session-1" "turn-1")
-                    uri nil))))
+                   (e-resources-read resources details-uri nil))))
             (should (equal (plist-get result :status) 'ok))
             (should (plist-get metadata :truncated))
-            (should (equal uri
+            (should (equal details-uri
                            "tmp://tool-invocations/turn-1/call-1.json"))
+            ;; The model-facing link is the streamed plain text, which a
+            ;; char range can page.
+            (should (string-prefix-p "tmp://tool-results/" uri))
+            (should (equal (e-resources-read
+                            resources uri
+                            (list :unit "char"
+                                  :start (1+ output-bytes) :limit 10))
+                           "END"))
             (should (< (string-bytes (plist-get result :content)) 2048))
             (should (string-prefix-p (make-string 100 ?x)
                                      (plist-get result :content)))
@@ -1373,9 +1381,7 @@ picker."
               (should (= (string-bytes archived) (string-bytes expected)))
               (should (equal (secure-hash 'sha256 archived)
                              (secure-hash 'sha256 expected))))
-            ;; The exact streamed source is consumed after the canonical
-            ;; details write; no second artifact for this call remains.
-            (should-not (file-exists-p output-file))))
+            (should (file-exists-p output-file))))
       (e-session-tmp-cleanup-harness harness)
       (delete-directory directory t))))
 
