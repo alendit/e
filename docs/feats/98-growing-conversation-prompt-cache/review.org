@@ -5656,3 +5656,132 @@ independent external evidence closure remain pending. Historical negatives,
 attribution limits and unavailable credentials retain their prior scope. No
 live reload/restart, Board/store operation, universal benefit or whole-feature
 Done claim is supported. log-read: none.
+
+
+* Review 30: Independent exact-checkpoint deterministic DP1-R1 closure
+
+** Decision and exact boundary
+
+=deterministic-fixed-point= for the selected repository-controlled DP1-R1
+contract and evidence boundary. Zero actionable P0–P3 findings and zero required
+deterministic source/gate unknowns remain. Production closure from Review 27,
+fixture admissions from Reviews 28/29 and the required full gates now join on
+the exact committed checkpoint.
+
+This result covers retained role/canonical content, anchored chronology,
+normal/detached/persistent projection, partial compaction/frontier, ordinary
+and retained fork replay, native encoding, material continuation identity and
+unchanged policy/admission enforcement. It is not full Feature 98 acceptance:
+provider efficiency under F98-G1/C1, repeated-curation capability under C6 and
+R5 remain external qualification obligations. Normal carriers remain none and
+Feature 98 remains =In-review=.
+
+Current independently verified clean revision:
+=cb8aaf92ae2357024f1e893be57a74460ba3a31e=.
+Production checkpoint:
+=e42a89a53a2c9084b64933957712a142ce21a989=.
+Supporting plan SHA-256 remains
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=;
+F98-G1/C1–C6/DP1 and the admitted plan relationship are unchanged.
+
+** Admission identity joins
+
+Independent committed-range hashes reproduce the leaf-reviewed identities:
+
+| Committed range/content | SHA-256 | Admission |
+|-------------------------+---------+-----------|
+| =ded7697..e42a89a -- lisp test= | =08352ece36ab93316d6e1a9c52ba7f8a9a8ea7ce6d37beeafa1f7c0432eca549= | Review 27 exact source/test closure |
+| =e42a89a..1786868f -- test= | =48567541bd5ab88e931fed6af832804c08ed2f2c91d0dc448ab45497133e922c= | Review 28 fixture admission |
+| =1786868f..cb8aaf92 -- test= | =9f723674b9a3eb31759de4abfbeaf0293612aada3b0e1bcddeff5ea72ba13538= | Review 29 shared-fixture/load-order admission |
+
+=git diff --quiet e42a89a..cb8aaf92 -- lisp e2e= separately returned exit 0;
+current worktree status is empty. Thus no changed production dependency
+invalidates the carried source closure or production/config/E2E evidence.
+No new broad source review, gate rerun, repository/Git write, provider call or
+user runtime/store action was performed during this identity/gate closure.
+
+** Required gate evidence
+
+- Full canonical at clean =cb8aaf92=: 2,885 tests, 2,885 expected, zero
+  unexpected and zero skips, exit 0; elapsed 369.919 seconds. The isolated
+  gate artifact records the revision/command/lifecycle; raw log summary at
+  =/private/tmp/e-retained-context-gates-eldev-final2.log:3796–3807= was
+  independently consumed. All three prior canonical load-order failures
+  are closed by the full-suite pass, not merely by focused selectors.
+- Isolated current-config: 9 tests, zero unexpected, read back at
+  =/private/tmp/e-retained-context-gates-current-config-escalated.log:1–4=.
+- Credential-free E2E: 101 selected, 74 expected passes, zero unexpected,
+  27 expected provider/configuration skips; summary read back at
+  =/private/tmp/e-retained-context-gates-e-e2e.log:107–111=.
+
+The latter two completed gates carry from =e42a89a= because production and E2E
+trees are identical. The E2E directory does not reference the changed unit-test
+support helpers. Unit fixture changes required the canonical rerun above but
+do not turn expected external skips into provider acceptance.
+
+** All prior finding and coverage dispositions
+
+| Cell | Deterministic disposition / separate external boundary |
+|------+-------------------------------------------------------|
+| F98-G1/C1 | Repository-controlled source/semantic realization cleared; actual provider reuse on this layout remains unconfirmed. |
+| C2 | cleared/carried; capability-derived optional controls and caller-policy prohibition unchanged. |
+| C3 | cleared; canonical v2/v3 data, anchored normal/detached projection, partial/no-checkpoint compaction, replay/fork and native mapping proven by reviewed source plus complete gates. |
+| C4 | cleared; unconditional material layout identity, deliberate old-anchor rejection and valid fresh continuation/fallback are retained. |
+| C5 | repository-controlled evidence/accounting clear; external growing/repeated-curation acceptance remains independent. |
+| C6 | deterministic absence/admission/effects and accepted-record replay clear; no normal selector enabled, external capability still unconfirmed. |
+| R1–R4 / R24 risks | all source/evidence cells cleared; complete canonical closes owner integration and loader seams. |
+| R25-F1 | closed; canonical v2 value projection, provenance outside model content. |
+| R25-F2 | closed; portable covered/uncovered and initial nil-checkpoint generation/data/frontier partitions, persisted normal/detached parity. |
+| R25-F3 | closed; ordinary empty-generation fork preserves phase/tool/native replay; retained eligible fork uses ordered context. |
+| Review 28 fixture corrections | closed; current composite identity and typed covered anchors, strict rejection/retry/stale-frontier assertions preserved. |
+| Review 29 helper collision | closed; one shared helper, both supplied load orders and now the full canonical suite pass. |
+| DP1-R1 selected deterministic boundary | fixed point at =cb8aaf92= with exact admission/gate joins. |
+| R5/provider qualification | required external unknown; fresh exact-source controlled P3 and independent evidence review remain. |
+
+The rejected empty-promotion candidate remains rejected by nonempty codec
+guards; valid pure erase creates no promotion. Historical Opus and Codex
+negative/attribution evidence retains its historical scope. No prior finding
+is reopened by the unchanged production dependency identity or new gate result.
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: repository-controlled retained data/order/replay is
+   useful and now fully gated while external capability stays unavailable.
+2. Direction: canonical reference data remains inline after its response anchor.
+3. Stability/uncertainty: semantic value/order is stable; native cache benefit
+   remains separately qualified rather than hidden in policy/state abstractions.
+4. Ownership: lifetime, session, bounded query, harness and adapters retain
+   their cohesive responsibilities; shared test support owns fixture construction.
+5. Coupling: shared weave and complete query inputs reduce projection drift;
+   one fixture helper removes load-order-dependent test behavior.
+6. Dependency direction: core does not acquire concrete provider/UI/test coupling.
+7. Side effects: existing journal/package/compaction/fork boundaries remain;
+   projections and native encoding are derived.
+8. State/lifetime: no journal rewrite, cache registry or runtime qualification
+   store; context checkpoints persist semantics, presentation rebuilds per request.
+9. Performance: selected-path row/byte guards and lazy query remain; no latency
+   or provider cache gain is claimed by this deterministic result.
+10. Substitution: normal/detached and all native encoders preserve the reviewed
+    semantic contract across the covered/uncovered and no-checkpoint partitions.
+11. Compatibility: v2 values, old opaque system checkpoints, ordinary fork replay
+    and intentional old/new layout compatibility fences retain their authority.
+12. Legacy removal: obsolete v2 ID/Lisp presentation and duplicate helpers are
+    removed; legacy message cuts do not absorb uncheckpointed retained data.
+13. Errors: invalid anchors/boundaries, bounds, stale frontiers and transport
+    recovery remain explicit and covered; no suppression created the gate pass.
+14. Tests: focused source/public lifecycle/native proofs plus fresh complete
+    canonical and unchanged config/E2E gates establish the selected boundary.
+
+** External and delivery boundary
+
+The reviewed committed repository checkpoint is eligible for the separately
+authorized authoritative provider tests. Their evidence must determine actual
+repeat keep/summary/erase efficiency and capability; this deterministic result
+does not supply it. Normal curation remains unavailable, public OpenAI
+credentials remain absent, and no restoration, universal cache benefit,
+historical Board cause or whole-feature Done is claimed. No live reload/restart
+or user-state mutation occurred.
+
+log-read: /private/tmp/e-retained-context-gates-eldev-final2.log:3796–3807;
+/private/tmp/e-retained-context-gates-current-config-escalated.log:1–4;
+/private/tmp/e-retained-context-gates-e-e2e.log:107–111.
