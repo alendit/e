@@ -6678,3 +6678,77 @@ No main enablement, provider-causal failure or whole-feature Done is claimed.
 
 log-read: /private/tmp/e-retained-context-p3-opus-normal-source-20261009.log:5–7,
 19–32.
+
+#+title: Feature 98 independent implementation review 36
+
+* Review 36: shared P3 runner execution closure
+
+** Target and identity
+
+Reviewed the settled isolated candidate =98df4929eb0c0d43248cb43bd612d5d03db92a4a= in =/private/tmp/e-retained-context-opus-candidate= against Review 35 base =7e7ff826a274a479255bd652354fcd7cba755946=. The complete binary diff SHA256 is =bb2a9f591fc106b4b4a0453bf9217e9806c8d584614face4fead283661c111aa=; its sole changed owner is =e2e/e-cache-efficiency-e2e-test.el=. The candidate is clean. Original candidate scope, F98-G1/C1–C6, DP1-R1, supporting-plan identity =e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=, and step 5 remain unchanged.
+
+This is independent, read-only incremental closure of R35-F1 and its execution/error/report/cleanup dependencies. Review 34's unaffected whole-scope source and architecture coverage carries after the content joins below. No provider request, repository edit, Git mutation, or user runtime/store access was performed by this reviewer.
+
+** Prior finding disposition and current findings
+
+R35-F1 (Medium/P2): CLOSED. The missing delimiter now terminates the =capture-and-run= binding list before authority checks. Reading the actual definition establishes one binding; its body contains =unless=, =when=, and =e-cache-efficiency-e2e--p3-run-with-authority=. The enclosing =condition-case= has the actual =error= handler. Queue flush and the observation/report =let*= are subsequent sibling forms. The compensating terminal delimiter was removed. This corrects the executable form rather than replacing or bypassing the shared runner.
+
+The catch for later semantic observations now retains =(or semantic-error caught)=. Therefore the initial run condition remains authoritative when absent observations also fail assertions, while semantic status remains failure. The report continues through the existing measured-result predicate, then the original condition is re-signaled inside the real harness cleanup boundary.
+
+The new =e-cache-efficiency-e2e-test-p3-live-runner-no-provider-smoke= invokes the actual shared runner for both =normal-source= and =ert-exact-route-wrapper= with the dedicated synthetic configuration, real private SQLite store, real factory/session/subscription, and actual harness cleanup macro. An error injected at the first prompt stops before native dispatch. Assertions establish one run-body entry, flush before report, original error re-signal, zero requests, false measured carrier evidence, unconfirmed semantic efficiency, and cleanup of subscription, store, and temporary root. Normal source calls no capability wrapper; the diagnostic calls its wrapper once but grants zero support because no request is dispatched. No layout/body override or capability proxy was introduced.
+
+No current actionable P0–P3 functional or architectural findings. R32-F1/F2 and R33-F1/F2 remain closed under unchanged production/authority content. All earlier retained-context findings and gate-fixture corrections remain closed by the carried review chain.
+
+** Evidence and gate dependency joins
+
+| Evidence | Identity and result | Disposition |
+|----------+---------------------+-------------|
+| Actual read-form scope | Independent inspection of current source and parsed runner relationships | Clear; binding/body/handler/sibling forms now match intended execution |
+| Actual macro/compiler proof | =/private/tmp/e-retained-context-r35-runner-form-check.el= loads real test macros, reads the actual defun, checks scopes, macroexpands and byte-compiles its actual lambda; implementation log lines 137–141 records successful probe and =eldev compile= | Clear; no fake macro expansion |
+| Actual shared-runner smoke | Exact revision module log lines 24–31 includes successful smoke for both authorities | Clear; body, error precedence, flush/report, absence semantics, cleanup |
+| Full changed E2E module | Exact =98df4929=; =/private/tmp/e-retained-context-r35-cache-e2e.log:118–120,151=: 108 selected, 80 passes, 28 expected provider/config skips, zero unexpected, exit 0 | PASS; skipped live tests are not external proof |
+| Canonical | Review 34's proper elevated gate at =9bbea297=: 2886/2886, zero unexpected | Reused; =git diff --quiet 7395a4d..98df4929 -- lisp test= succeeds; the Review 34 canonical content identity join remains unchanged |
+| Current configured private daemon | Review 34's private-source equivalent configuration: 9/9, zero unexpected | Reused; current-config module, bootstrap, script, Eldev, entrypoint and production source are unchanged from =7395a4d= |
+
+The complete candidate delta was inspected. The independent dependency comparison additionally included =e2e/e-current-config-e2e-test.el=, =e2e/e-e2e-bootstrap.el=, =e2e/run-current-config-tests.sh=, =Eldev=, and =e.el= and returned no differences. The isolated source/config equivalence audit and original user-config hash proof from Review 34 carry. The corrected E2E module receives its own fresh exact-revision gate instead of borrowing its invalidated execution result.
+
+** Current required contract cells
+
+| Cell | Current disposition |
+|------+---------------------|
+| F98-G1 / package and delivery relation | Repository-controlled isolated candidate clear; external/publication boundary retained |
+| C1 / adapter-driven strongest compatible selection | Prior production selection, endpoint/model/auth/API/transport/requester and provider-alias coverage carries unchanged |
+| C2 / compatible native caching, no caller policy | Prior native wire/diagnostic/configuration proof carries unchanged |
+| C3 / retained chronology and mandatory same-turn native replay | Prior retained-context/native replay/compaction/fork and P3 scenario/projection proof carries; no scenario change |
+| C4 / transport, continuation and layout fences | Prior full coverage carries unchanged |
+| C5 / complete truthful evidence | Runner execution, catch, flush/report and zero-observation semantics clear; counters, joins, ordinal attribution, full chronological P3 predicate and evidence format unchanged |
+| C6 / qualified availability and enforcement | Normal-source owner remains genuine; diagnostic independence retained; production acceptance still requires wrapper-free external qualification |
+
+No required deterministic unknown remains within this isolated source/gate package. No cache benefit is inferred from a passing smoke, compiled form, field presence, or skipped provider test.
+
+** Architecture self-checks
+
+| Question | Answer / carried disposition |
+|----------+-------------------------------|
+| 1. Useful stopping point | Executable isolated source candidate with completed repository-controlled gates; external acceptance remains the next separate unit |
+| 2. Architectural direction | Existing trusted adapter owner and shared P3 runner remain the owners |
+| 3. Local uncertainty | Provider benefit stays in bounded external evidence; error-path proof is local and deterministic |
+| 4. Ownership | Sole correction is in the existing E2E runner and its actual-runner regression |
+| 5. Interfaces and coupling | No new interface, public option, wrapper authority, or policy coupling |
+| 6. Dependency direction | Production remains independent of E2E; the test calls actual production/harness owners |
+| 7. Side effects | Genuine disposable SQL/factory/subscription exercised; provider dispatch intercepted before first request |
+| 8. State and lifetime | Actual cleanup macro unsubscribes, closes store, removes temporary root after the re-signaled condition |
+| 9. Performance | No production performance change; qualification measurements remain unclaimed |
+| 10. Substitution | Both authorities use the actual shared runner; stubbing only the first prompt provides a meaningful execution boundary |
+| 11. Compatibility | Production/config/canonical dependencies unchanged; prior endpoint/model/layout compatibility proof carries |
+| 12. Legacy cleanup | Minimal delimiter repair; no alternate runner or duplicate capability owner |
+| 13. Errors | Original run error preserved through later absence assertions; reporting remains conservative and cleanup executes |
+| 14. Meaningful tests | Actual shared-runner failure lifecycle plus real-macro/compiler structure proof and fresh full changed-module gate |
+
+** Decision and external boundary
+
+=deterministic-fixed-point= for the selected repository-controlled isolated candidate source/gate package. R35-F1 is closed and Review 34's execution-cell withdrawal is resolved by actual no-provider execution evidence. The candidate is admitted for the next authoritative wrapper-free P3 attempt; this result grants no main-checkout publication or provider qualification.
+
+The previous wrapper-free attempt at =c0912987= remains invalid: it stopped before provider calls and report creation, with no evidence JSON. Preserve that failure as runner diagnostic history. Review 31's bounded wrapper-based Opus positive remains evidence for isolated candidate admission only. Fresh normal-source Opus P3 and independent external closure are still pending. Main production remains unavailable; Codex P3 remains unqualified and public OpenAI API credentials unavailable. Feature 98 is not Done, and no historical Board cause or universal cache improvement is claimed.
+
+log-read: =/private/tmp/e-retained-context-r35-cache-e2e.log:24–31,118–120,151=; =/private/tmp/e-retained-context-20261008-impl.log:137–141=. Completed handoff and scope-probe source were read in full; no active logs were polled.
