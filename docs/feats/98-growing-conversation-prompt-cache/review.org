@@ -5785,3 +5785,204 @@ or user-state mutation occurred.
 log-read: /private/tmp/e-retained-context-gates-eldev-final2.log:3796–3807;
 /private/tmp/e-retained-context-gates-current-config-escalated.log:1–4;
 /private/tmp/e-retained-context-gates-e-e2e.log:107–111.
+
+#+title: Feature 98 Retained Context External Review 31
+#+startup: overview
+
+* Review 31: Independent R5 candidate evidence disposition
+
+** Decision and boundary
+
+The configured Opus candidate independently satisfies the current P3 predicate
+on the reviewed retained-context implementation. It supports the existing
+plan.org step 5: separately admit an unpublished isolated normal-source
+availability candidate for the tested effective endpoint/model/auth/API/
+transport/requester, then require exact-revision gates, independent source
+review and complete wrapper-free P3. It does not authorize main/shipped
+availability. Both Codex records are valid complete nonqualification from
+insufficient qualifying reuse observations; neither establishes a cache-loss
+failure in this run. No additional retry is required by this disposition.
+
+Zero actionable source/evidence-owner P0–P3 findings were established in this
+bounded review. Review 30's repository-controlled DP1-R1 deterministic fixed
+point carries unchanged. Full Feature 98 remains =In-review=; normal carriers
+remain =none= and public OpenAI evidence remains unavailable.
+
+** Identity and authority
+
+All three records identify
+=ccaffe55c0c0e5d494515907630720a115852846=, the supplied docs/status-only
+descendant of the reviewed production checkpoint
+=e42a89a53a2c9084b64933957712a142ce21a989= and fully gated
+=cb8aaf92ae2357024f1e893be57a74460ba3a31e=.
+F98-G1/C1–C6, DP1-R1 and supporting plan SHA-256
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=
+remain the carried authority. This review does not re-audit unchanged source
+or rerun gates/providers. The records were independently read, not inferred
+from an ERT exit status or parent summary.
+
+| Raw artifact | SHA-256 | Timestamp / elapsed |
+|--------------+---------+---------------------|
+| =/private/tmp/e-retained-context-p3-opus-20261009.json= | =e008fc11ce25c67a1d2bf56afaad0d14bcd387c46092af53f124eb70900ed897= | 2026-10-09T08:18:06Z / 151.059 seconds |
+| =/private/tmp/e-retained-context-p3-codex-20261009.json= | =cdac24cd142fce8fe7a0cff2b791aa95df6039e4dfc102ed37b335a120a230e5= | 2026-10-09T08:24:10Z / 94.321 seconds |
+| =/private/tmp/e-retained-context-p3-codex-20261009-repeat.json= | =7480fb5dd7f0a66d04b10ca1520778f3e9488bf4567a8c3f10be38a62c1577c5= | 2026-10-09T08:30:51Z / 97.540 seconds |
+
+Each record is fresh within the existing 24-hour evidence window at review.
+The two Codex records remain separate experiments; their observations cannot
+be spliced into one passing lifecycle.
+
+** Complete attribution and native evidence audit
+
+Independent local computation verified 33/33 Opus and 29/29 requests in each
+Codex record, with equal native capture/start/finish/usage counts. Every usage
+joins its captured request by ID, authentic provider ordinal and source turn;
+chronological capture ordinals are consecutive, while authentic ordinals reset
+per actual top turn. Request IDs and turn/ordinal pairs are unique. Every start
+and finish is matched, finishes are done, usage is ordinal-attributed, and every
+shared classifier request has =complete-request-join-p t=. No usage was dropped
+to obtain a pass. All route/model/auth/API/transport/requester/static-prefix
+identities remain constant within each experiment.
+
+Provider-normalized raw counters agree with captured and shared evidence.
+For Opus, every total equals uncached input plus cache read plus cache creation
+and equals explicit context input; the fresh 2/4-token component is not mistaken
+for whole input. Codex total equals its inclusive input counter. Cached input
+never exceeds total. Usage provenance retains and agrees with the authentic
+request ID/ordinal, tool cause and raw counters.
+
+The audit independently recomputed semantic history vector digests, shared
+group-prefix fingerprints and protected-prefix vector digests from the retained
+ordered item hashes, and verified the corresponding capture/classifier joins.
+Wire item and complete request hashes are retained separately. Native body
+contents intentionally are not retained, so this is not a new body-hash
+reconstruction claim. The reviewed capture owner calls the original native
+constructor before capture (e-cache-efficiency-e2e-test.el:1932–2023), includes
+system/instructions plus native history, removes only cache metadata from
+semantic hashes, and strips transient body/messages from reports. The wrapper
+at lines 565–616 changes only the exact-route capability result, not the body
+or portable layout.
+
+All records contain exactly four uniquely accepted =keep/keep/summary/erase=
+boundaries. Response, consumer and consumed-frame IDs are distinct; replay and
+fresh request IDs bind the correct turns and chronological order. Fresh-boundary
+IDs agree with the report. Both keep prefixes match their measured prior warm
+groups: Opus protects 4 and 11 native semantic items; Codex protects 5 and 12.
+Summary/erase evidence binds source-before indexes/hashes to the actual consumer
+capture and projection-after indexes/hashes to the actual fresh capture.
+Summary has one replacement position and erase has none. Bounded source-location
+records corroborate source presence before and absence after: Opus positions
+23/30, Codex positions 25/32. The in-process native assertions also establish
+the two retained facts, summary replacement and strict erased-source absence;
+semantic results are pass with nil failure in all three records.
+
+No prompt/message/body/content/argument/header/API-key/token/authorization
+payload fields occur recursively in the JSONs. Auth descriptors, route names,
+tool IDs, synthetic source labels, bounded role/type/index locations, hashes
+and counters are nonsecret evidence. No credentials were read during review.
+
+** Independently recomputed P3 outcome
+
+The source predicate at e-live-e2e-test.el:1415–1777 requires append-only control,
+complete provenance, exact route identity, protected keeps, summary and erase,
+all actual continuity/growth checks and two distinct advances of at least 128
+tokens per rebuilt cycle. Plateaus are retained observations, not advances.
+The independent computation used every actual request and verified these
+checks, including interim/replay continuity and additional observations after
+a qualifying pair.
+
+| Experiment | Baseline whole-input ceiling | Control cached reads | Above-ceiling control advances |
+|------------+------------------------------+----------------------+--------------------------------|
+| Opus | 20,551 | 0 / 20,547 / 30,634 / 30,634 / 40,725 | 10,087 and 10,091 |
+| Codex first | 13,877 | 0 / 13,696 / 19,840 / 19,840 / 25,856 | 6,144 and 6,016 |
+| Codex repeat | 13,877 | 0 / 13,696 / 19,840 / 19,840 / 25,856 | 6,144 and 6,016 |
+
+Request numbers below are capture chronology, not provider ordinals.
+
+| Experiment/cycle | Fresh/reuse requests | Cached reads | Actual qualifying advances |
+|------------------+----------------------+--------------+----------------------------|
+| Opus keep 1 | 9–12 | 40,821 / 48,736 / 48,736 / 56,340 | 7,915; 7,604 |
+| Opus keep 2 | 16–19 | 56,442 / 64,357 / 64,357 / 71,961 | 7,915; 7,604 |
+| Opus summary | 23–26 | 72,074 / 79,981 / 79,981 / 87,579 | 7,907; 7,598 |
+| Opus erase | 30–33 | 87,665 / 95,250 / 95,250 / 102,842 | 7,585; 7,592 |
+| Codex first keep 1 | 9–12 | 25,984 / 30,720 / 30,720 / 35,328 | 4,736; 4,608 |
+| Codex first keep 2 | 16–18 | 35,328 / 40,064 / 40,064 | 4,736 only |
+| Codex first summary | 22–24 | 44,800 / 49,536 / 49,536 | 4,736 only |
+| Codex first erase | 28–29 | 54,144 / 58,752 | 4,608 only |
+| Codex repeat keep 1 | 9–12 | 25,984 / 30,720 / 30,720 / 35,328 | 4,736; 4,608 |
+| Codex repeat keep 2 | 16–19 | 35,328 / 40,064 / 40,064 / 44,672 | 4,736; 4,608 |
+| Codex repeat summary | 23–24 | 44,800 / 49,536 | 4,736 only |
+| Codex repeat erase | 28–29 | 54,144 / 58,752 | 4,608 only |
+
+Opus independently yields =pass= with cycle counts =2/2/2/2=. Fresh keep reads
+40,821 and 56,442 retain the preceding reusable floors 40,725 and 56,340.
+All later reads retain continuity and grow beyond the initial whole-request
+ceiling; this is not static-only warming or one hit after curation stops.
+
+Codex first independently yields =insufficient-post-curation-reuse= first at
+the summary boundary because keep 2 has only one advance. Summary and erase
+also have only one. The repeat closes keep 2 but lacks a second advance after
+summary, and again after erase. The respective sequences have fewer actual
+cache_probe tool subturns than the Opus run; the capture preserves those
+terminal turns rather than inventing additional observations. This is complete
+nonqualification with missing qualifying observations, not missing telemetry,
+malformed joins, a semantic failure or an observed cache-retention failure.
+Both runs show substantial history reuse but neither qualifies the full P3
+portfolio. They must not be reported as passes or combined into one pass.
+
+** Exact capability and publication disposition
+
+The Opus positive is bounded to the configured gateway Messages route:
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages=,
+resolved model =claude-opus-5-5=, auth descriptor
+=(bearer authorization environment-token)=, API =messages=, transport =http=,
+requester =messages-http-start=, tested synthetic material shape and revision.
+It does not qualify public Anthropic or another team/endpoint/model/transport.
+
+Codex remains unconfirmed for P3 at
+=wss://chatgpt.com/backend-api/codex/responses=, =gpt-6-sol=,
+=managed-chatgpt-auth=, Responses/WebSocket/=responses-websocket=.
+The top-level HTTPS base descriptor is the trusted route identity; the native
+capture records its actual WebSocket Responses URL. Those established distinct
+representations are not a new endpoint-equivalence grant.
+
+All records truthfully state =ert-exact-route-wrapper=, carrier available and
+production qualification unavailable. The current native capability owners
+still return =:reserved-effect-carrier none=
+(e-anthropic.el:1243–1254; e-openai-profile.el:795–816). Exact identity plumbing,
+unknown-route and injected-requester negatives, publication/effect guards and
+accepted-record replay carry their reviewed deterministic proof. A positive
+wrapper measurement supports only a new isolated normal-source candidate;
+wrapper-free acceptance and independent closure must precede integration of
+identical admitted selection. No main enablement, public knob, registry,
+runtime reload/restart, push or user-state mutation is admitted by this review.
+
+** Complete carried contract and architecture coverage
+
+| Cell | Current disposition |
+|------+---------------------|
+| F98-G1/C1 | DP1-R1 deterministic fixed point carries; Opus tested-shape growing and repeated-curation candidate proof positive; Codex P3 unconfirmed. No historical Board cause or universal benefit claimed. |
+| C2 | cleared/carried; capability-owned policy and caller-control prohibition unchanged. |
+| C3 | cleared/carried; actual four-package/native semantic evidence positive on all three runs. |
+| C4 | cleared/carried; source/replay/continuation identities unchanged. |
+| C5 | complete external provenance/accounting independently joined; separate results and conservative attribution preserved. |
+| C6/R5 | Opus candidate measurement positive, next isolated normal-source admission eligible; production still none. Codex and public API remain unqualified. |
+| R1–R4 / R24–R29 findings | all deterministic closures and full coverage carry unchanged from Review 30. |
+| Gates | canonical 2,885/2,885 at cb8aaf92, unchanged-production config 9/9 and E2E 74 passes/27 expected skips carry Review 30; no gate rerun or provider acceptance inferred from skips. |
+
+The fourteen architecture answers carry with this external delta: (1) useful
+repository stopping point retained; (2) anchored reference-data direction
+retained; (3) provider uncertainty stays explicit; (4) existing owners retained;
+(5) complete joins avoid hidden coupling; (6) no provider/test dependency added
+to core; (7) no production side effect; (8) disposable evidence, no qualification
+store; (9) bounded measured reuse, no forecast; (10) normal/detached/native
+substitution remains covered; (11) compatibility fences unchanged; (12) no new
+legacy mode; (13) incomplete observations remain conservative; (14) exact gates
+and raw complete lifecycle evidence serve distinct proof obligations.
+
+Historical Opus failures and the prior Codex 640-token comparable-prefix
+contradiction keep their original source/shape scope. These new results neither
+erase those records nor establish the cause of historical Board behavior.
+Overall production qualification, Codex complete P3 and public API evidence
+remain external obligations; no whole-feature Done is claimed.
+
+log-read: none.

@@ -327,7 +327,7 @@ remains unavailable; these limits keep the feature In-review.
 The separate [[file:98-growing-conversation-prompt-cache/p3-validation.org][2026-10-07 P3 tests]] passed keep/summary/erase semantics on
 Opus and Codex. Opus failed cache efficiency through native prefix relocation;
 Codex showed history reuse but remains unqualified at changed-boundary token
-attribution. Neither result enables production curation.
+attribution. The anchored reference-data correction passes 2,885 canonical tests. Fresh [[file:98-growing-conversation-prompt-cache/retained-context-validation.org][2026-10-09 candidate tests]] qualify the Opus synthetic P3 lifecycle; both Codex runs preserve prefixes but lack enough reuse observations. Main curation remains unavailable pending isolated normal-source Opus acceptance.
 
 | ID | Status      | Path                                      | Title                                                |
 |----+-------------+-------------------------------------------+------------------------------------------------------|

@@ -1,0 +1,141 @@
+#+title: Feature 98 retained-context P3 provider validation
+#+date: 2026-10-09 UTC
+
+* Scope and disposition
+
+Validated the admitted retained-context source on exact revision
+=ccaffe55c0c0e5d494515907630720a115852846= (production source =e42a89a=;
+status/review-only descendant of canonical =cb8aaf92=). The repository was
+clean before and after. This package made no source, test, configuration, or
+Git changes. Both provider tests used the existing synthetic-only P3 layer and
+fresh disposable SQLite sessions; no default/project layer was synced. The
+candidate wrapper remained authoritative. Production qualification and trusted
+curation capability remain unavailable.
+
+* Route results
+
+| Route / recorded report time (UTC) | Identity | Requests / starts / finishes / usage | Curation responses / consumed frames / accepted packages | Result |
+|-
+| Opus 5.5, 08:18:06 | bearer via environment token; Anthropic Messages HTTP; requester =messages-http-start= | 33 / 33 / 33 / 33 unique, complete joins | 4 / 29 / 4 | Semantic pass; P3 classifier =pass= |
+| Managed Codex GPT-6 Sol, 08:24:10 | managed ChatGPT auth; Responses WebSocket; requester =responses-websocket= | 29 / 29 / 29 / 29 unique, complete joins | 4 / 25 / 4 | Semantic pass; classifier =insufficient-post-curation-reuse= |
+| Managed Codex GPT-6 Sol repeat, 08:30:51 | Same managed Responses WebSocket route | 29 / 29 / 29 / 29 unique, complete joins | 4 / 25 / 4 | Semantic pass; classifier =insufficient-post-curation-reuse= |
+
+Exact route identities:
+
+- Opus: =eng-ai-gateway-opus-5-5=, endpoint
+  =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages=,
+  model =claude-opus-5-5=, API =messages=, transport =http=, auth mode
+  =bearer/authorization/environment-token=. Only the presence of
+  =ENG_AI_MODEL_GW_KEY= was checked; its value is absent from evidence.
+- Codex: endpoint =https://chatgpt.com/backend-api/codex=, model =gpt-6-sol=,
+  API =responses=, transport =websocket=, auth mode =managed-chatgpt-auth=.
+  The public OpenAI and Anthropic API keys were absent; no public API route was
+  substituted.
+
+The report includes one provider-request ID per request and matched start,
+finish, and usage provenance for every ID. Candidate grant counts were 147 for
+Opus and 131 for each Codex run. All records say
+=candidate-authority= =ert-exact-route-wrapper= and
+=production-qualification= =unavailable=.
+
+* Opus cache and native-history evidence
+
+The measured fields sum consistently across 33 requests: provider context
+input =2,217,273=, uncached =96=, cache reads =2,045,521=, cache creation
+=171,656=. Baseline context was 20,551 (read 0, creation 20,547); the final
+pre-curation control read was 40,725.
+
+| Curation boundary | Warm read before boundary | Fresh total / read / creation | Two advancing post-curation reads | Protected native-history items |
+|-
+| Keep one | 40,725 | 48,740 / 40,821 / 7,915 | 48,736; 56,340 | 4 |
+| Keep two | 56,340 | 64,361 / 56,442 / 7,915 | 64,357; 71,961 | 11 |
+| Summary | 71,961 | 79,985 / 72,074 / 7,907 | 79,981; 87,579 | 18 |
+| Erase | 87,579 | 95,254 / 87,665 / 7,585 | 95,250; 102,842 | 25 |
+
+Every fresh request's ordered native semantic-item hash array begins with the
+exact protected hash array captured at the corresponding warm boundary. All
+four comparisons passed. The stable-prefix fingerprint was constant across the
+33 requests. The synthetic kept source facts were observed as native user
+items at history positions 8 and 15. Summary evidence found one source item
+before and one replacement item after, with raw source absent. Erase evidence
+found one source item before, none after, and raw source absent.
+
+* Codex cache and native-history evidence
+
+The first Codex record reports total input =1,147,535=, cached reads
+=1,054,720=, derived uncached input =92,815=, and cache-creation input =0=
+reported by this implicit-cache route. The repeat reports total input
+=1,142,718=, cached reads =1,049,856=, derived uncached input =92,862=, and
+cache-creation input =0= reported. Each report had one stable-prefix hash;
+the two runs used the same current route fingerprint.
+
+For both runs, all four fresh histories matched their exact ordered protected
+native hash prefixes (item counts 5, 12, 19, 26). Retained source-one/source-two
+items appeared as native user items at positions 9 and 16. In both reports,
+summary had one source item before and one projected item after with raw source
+absent; erase had one item before, none after, and raw source absent.
+
+The first run had one cache-probe advancement after keep two (35,328 to 40,064),
+then a no-tool answer stayed at 40,064 before summary. The corresponding
+=reuse-keep-two= request had no =cache_probe= tool call. The one authorized
+unchanged repeat did call both keep-two probes (35,328 to 40,064 to 44,672),
+but made no =cache_probe= call on either summary-reuse prompt: its summary
+boundary read was 44,800 and only one later non-tool request advanced to
+49,536 before erase. The classifier therefore stayed
+=insufficient-post-curation-reuse=. This is insufficient repeated-reuse
+observation because the model did not perform the requested probe calls; neither
+run reports protected-prefix change or a cache-read drop below its preceding
+observed floor. Both Codex runs also have only one qualifying advance after erase. No further provider run was made.
+
+* Current and legacy layout findings
+
+The live Codex config selects =:responses-context-layout developer-input= and
+full-context replay with continuation disabled. These fresh-session provider
+runs measured the current native material layout; they did not import or replay
+legacy provider anchors. The current retained-context identity is
+=anchored-reference-context-v1= with adapter framing
+=Retained reference data (not an instruction):\n=. OpenAI's material layout
+identity includes this revision independently of cache and curation gates.
+
+The admitted deterministic test
+=e-openai-test-retained-context-layout-rejects-legacy-anchors= covers flat and
+segmented options, with and without the curation/cache capability profile. It
+accepts a newly minted anchor and rejects the old wire-only anchor. That is the
+old/new anchor evidence; the live P3 evidence itself is current-layout only.
+Legacy system-only compacted checkpoints were not reinterpreted by these
+provider tests.
+
+* Commands and evidence safety
+
+Each invocation used the exact route-specific config and ran only
+=e-cache-efficiency-e2e-test-p3-live-native-candidate= through =eldev exec=.
+The repeat used an unchanged test, prompt, predicate, and source. Each harness
+created and deleted its own temporary SQLite directory.
+
+Before saving each report JSON, validation found exactly one evidence record
+and recursively checked its keys and serialized values: no message/native body,
+content, headers, authorization, prompt text, or credential fields; no gateway
+key substring or credential-pattern match. The bounded JSON and separate full
+execution log files are all mode =0600=. Full logs are private and were not
+copied into this artifact.
+
+- Opus: [[file:evidence/e-retained-context-p3-opus-20261009.json][e-retained-context-p3-opus-20261009.json]] and
+  =/private/tmp/e-retained-context-p3-opus-20261009.log=.
+- Codex first run: [[file:evidence/e-retained-context-p3-codex-20261009.json][e-retained-context-p3-codex-20261009.json]] and
+  =/private/tmp/e-retained-context-p3-codex-20261009.log=.
+- Codex repeat: [[file:evidence/e-retained-context-p3-codex-20261009-repeat.json][e-retained-context-p3-codex-20261009-repeat.json]]
+  and =/private/tmp/e-retained-context-p3-codex-20261009-repeat.log=.
+
+Existing deterministic/current-config/credential-free E2E gate evidence was
+accepted before this read-only provider-validation package and its dependencies
+did not change. No live Emacs, Board, user runtime store, reload, restart, or
+production capability probe was performed; these isolated tests do not qualify
+production availability.
+
+* Acceptance
+
+Independent Review 31 accepts this bounded candidate evidence. Opus has a positive P3 candidate result with ordered
+native prefixes and repeated cache-read growth preserved through keep, summary,
+and erase. Codex remains unqualified because the unchanged provider run did not
+supply the required repeated cache-probe observations; its native prefix and
+summary/erase projections passed in both reports.
