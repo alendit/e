@@ -6168,3 +6168,207 @@ closure and identical admitted publication remain required after source/gate
 closure. No full-feature Done or historical Board cause is claimed.
 
 log-read: none.
+
+#+title: Feature 98 Isolated Opus Candidate Review 33
+#+startup: overview
+
+* Review 33: Independent identity-remediation and evidence-owner Tick
+
+** Decision and exact identity
+
+R32-F1 and R32-F2 are closed in production capability selection and actual
+backend/native composition. Two new Medium/P2 evidence-owner defects block
+complete source admission for the isolated normal-source candidate. Remediate
+them together, retain the production closures, then bind the corrected evidence
+owner to required checks and independent closure. This is not a deterministic
+fixed point or permission to run authoritative wrapper-free P3 yet.
+
+Exact reviewed isolated candidate:
+=9bbea297d229d1b6a1f6f2b853d22544b5f421b9= in
+=/private/tmp/e-retained-context-opus-candidate=.
+Original base:
+=87a435974156e3ab9de9a4e8c17db24e1103aa1f=.
+Independent complete base-to-candidate binary diff SHA-256:
+=8a33a669cf804d83cd93d4e70df538ad169b29f69c7bf37a681d63d43393a657=,
+matching the handed identity. The complete range contains five files,
+564 additions and 34 deletions: the four code/test files and the verbatim
+Review 32 ledger. The changed source/test seam and its consequential callers
+were independently read; unchanged original-range Review 32 cells carry.
+
+F98-G1/C1–C6, DP1-R1, plan.org step 5 and supporting plan SHA-256
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=
+remain unchanged. Main remains at its separate unavailable-carrier source;
+Review 31's bounded Opus wrapper positive is not normal-source acceptance.
+
+** Prior finding dispositions
+
+R32-F1 closed: the existing owner now selects the six trusted effective fields
+=endpoint/model/auth-mode/API/transport/requester=. Provider symbol is retained
+as diagnostic provenance and is excluded from capability selection. Alias
+tests exercise the ordinary backend and actual native tool serialization,
+while wrong endpoint/model/auth/requester and injected transport negatives remain.
+
+R32-F2 closed in production and capture: supplied =:model= is documented and
+used as already resolved; raw options/profile fallback is resolved once.
+The backend/native owners continue passing their once-resolved wire model.
+Native capture records both body model and derived identity model. New actual
+capture tests cover prefixed options, backend default, profile default and a
+changed model negative; the candidate route builder preserves the resolved
+model and provider provenance.
+
+Independent credential-free repetition of the previously failing public
+composition witnesses now reports:
+
+#+begin_example
+provider=eng-ai-gateway-opus-5-5
+backend-carrier=context-curate-wire
+native-model="claude-opus-5-5" native-curation=t
+
+provider=review-equivalent-alias
+backend-carrier=context-curate-wire
+native-model="claude-opus-5-5" native-curation=t
+
+prefixed-option backend-carrier=context-curate-wire
+native-model="claude-opus-5-5"
+identity-model="claude-opus-5-5" native-curation=t
+#+end_example
+
+These are isolated constructor/helper probes with process-local synthetic
+tokens, not provider calls or qualification evidence.
+
+** R33-F1: Diagnostic eligibility now requires ordinary availability
+
+Priority: Medium/P2. Owner:
+=e-cache-efficiency-e2e--p3-live-candidate-route= at
+=e2e/e-cache-efficiency-e2e-test.el:2936–2948= and its caller
+=e-cache-efficiency-e2e--run-p3-live-native=.
+Contracts: existing supporting method step 2 and diagnostic/normal-source
+authority partition under F98-C5/C6; Review 32 required diagnostic behavior
+to remain independent.
+
+The shared route builder now requires the ordinary capability owner to return
+=context-curate-wire=. The run function builds its route before it enters
+=p3-run-with-authority= and installs the diagnostic wrapper. Therefore the
+diagnostic entry skips an otherwise exact eligible route whenever normal
+availability is conservatively =none=, precisely the state for which the
+private candidate wrapper is required. This creates circular qualification
+authority: diagnostics cannot measure the candidate until its normal owner
+already enables it.
+
+An independent probe evaluated the actual route-builder and wrapper definitions
+from the settled source. It used the exact gateway route/model/auth and dedicated
+Opus config, synthetic token, and a conservative ordinary owner returning none:
+
+#+begin_example
+unwrapped-route=SKIPPED:
+  "The selected Messages route does not match the P3 candidate."
+same-route-with-wrapper=accepted
+  model="claude-opus-5-5" grants=1
+#+end_example
+
+Only wrapper installation order differs. The public run function uses the
+first order, so the new guard prevents the diagnostic branch from reaching its
+authority. Its current isolated normal declaration happens to hide this defect.
+
+Smallest correction: route eligibility should independently validate the exact
+effective tested endpoint/model/auth/API/transport/requester, without requiring
+ordinary availability. Keep normal-source authority's separate genuine-owner
+carrier requirement and native-schema evidence unchanged. Add a composition
+regression proving an exact eligible route with normal owner none can reach the
+diagnostic wrapper, while the same state rejects normal-source execution. Keep
+changed effective-field negatives, no caller grants and identical scenarios/
+predicate/provenance. Do not make the normal-source path use a proxy or wrapper.
+
+** R33-F2: Effective-route comparison changed the wrong adapter branch
+
+Priority: Medium/P2. Owner:
+=e-cache-efficiency-e2e--with-p3-candidate-capability= at
+=e2e/e-cache-efficiency-e2e-test.el:565–618=.
+Contracts: R32-F1's changed effective-identity dependency and the existing
+diagnostic authority/evidence partition; unchanged OpenAI scope is carried.
+
+The remediation replaces equality in the OpenAI wrapper branch with
+=e-anthropic--context-capability-same-route-p= at lines 586–587. The Anthropic
+branch still compares provider-bearing entire identity at line 607. Thus the
+intended Anthropic diagnostic consumer retains the very provider-symbol
+dependency removed from its production owner, while unrelated OpenAI diagnostic
+authority is broadened and coupled to an Anthropic-local helper without its own
+admitted protocol change.
+
+Independent actual wrapper composition used identical trusted effective fields
+and distinct expected/actual provider aliases on synthetic unsupported endpoints
+(ordinary owners none). The settled functions report:
+
+#+begin_example
+Anthropic same-effective-route=t carrier=none grants=0
+OpenAI same-effective-route=t carrier=context-curate-wire grants=1
+#+end_example
+
+The wrapper still denies equivalent Anthropic alias evidence solely by provider
+symbol, even though the same production effective fields now select a carrier
+on the reviewed route. Conversely the OpenAI wrapper grants where its prior
+full-identity comparison would not. This is not a proposed new OpenAI capability
+claim: it is a source-proven unintended cross-adapter authority change.
+
+Smallest correction: apply the Anthropic effective-route comparison to the
+Anthropic wrapper branch and preserve OpenAI's admitted comparison unless its
+own separately justified protocol change is necessary. Add actual wrapper
+tests proving equivalent Anthropic aliases retain their own diagnostic provider
+provenance while granting the same effective route, and independently rejecting
+changed endpoint/model/auth/API/transport/requester. Do not reuse a fabricated
+grant as normal-source availability. Retain normal-source grant count zero and
+its bypass test; preserve historical evidence and candidate status labels.
+
+** Complete coverage and architecture disposition
+
+| Cell / dependency | Current disposition |
+|-------------------+---------------------|
+| R32-F1 production selector / alias composition | closed; six effective fields, provider provenance retained. |
+| R32-F2 production model representation / capture | closed; actual native model and identity agree, fallback resolved once. |
+| Backend/direct request authority and unsupported routes | cleared/carried; real pre-dispatch re-evaluation, strict changed-field/injected negatives, no copied-option authority. |
+| Diagnostic route eligibility | candidate; R33-F1. |
+| Diagnostic adapter-branch identity binding | candidate; R33-F2. |
+| Normal-source runner authority | cleared/carried; genuine normal owner, native requests and zero wrapper/grant proxy. |
+| Shared prompts / semantic lifecycle / P3 predicate | cleared/carried; no source change to four packages, protected prefixes, material boundaries, every request or two-advance/continuity predicate. |
+| Source/capture/reporter accounting | cleared/carried; identity-model is bounded diagnostic evidence; native body model remains actual classifier model. |
+| F98-G1/C1/C2 | prior deterministic source proof and capability-driven cache policy carry; no fresh normal-source cache benefit inferred. |
+| C3/C4 | retained canonical data/chronology/replay/checkpoint/fork/layout fences carry; model-identity production correction closed. |
+| C5/C6 | production semantic enforcement carries; changed diagnostic evidence relation blocked by the two findings. |
+| Prior R24–R30 findings/gates | all unchanged production/deterministic closures carry as historical baseline, not new candidate acceptance. |
+| Review 31 external records | bounded Opus wrapper positive and separate Codex nonqualification retained; no root cause, universal benefit or main enablement. |
+
+All fourteen architecture questions carry with the following current answers:
+(1) useful stopping remains retained-context deterministic closure; (2) production
+capability direction now follows effective fields; (3) external uncertainty must
+remain independent of normal declaration; (4) existing adapter/evidence owners
+remain sufficient; (5) diagnostic coupling requires F1/F2 closure; (6) no new
+core/provider dependency; (7) no main/runtime side effect; (8) disposable evidence
+and no qualification registry; (9) no benefit forecast from source; (10) actual
+alias/model substitution now proved, diagnostic substitution still open;
+(11) existing unsupported-route/layout compatibility fences preserved;
+(12) no new policy/legacy mode; (13) conservative unavailable behavior retained
+without circularly suppressing diagnostics; (14) tests must establish authority
+and branch composition rather than only helper equality, followed by exact gates
+and authoritative wrapper-free provider evidence.
+
+** Gate and delivery boundary
+
+Parent reports focused owner 2/2, P3 E2E 5/5 and parens/diff checks green. The
+required exact-candidate full canonical/socket, current-config and credential-free
+E2E gates were still running during this bounded source review. No running logs
+were polled and no completed gate result is fabricated. The two findings require
+changed evidence-owner acceptance even if broad suites pass. Production-only
+gate dependencies may carry when their exact content identity is unchanged;
+the corrected evidence owner must bind its focused/credential-free E2E proof
+to the new revision under the existing review contract.
+
+No source/Git write, provider request, user Emacs/Board/store operation or main
+enablement was performed. Read-only comparisons and isolated batch probes were
+used; initial broad file-loading attempts lacked local dependencies and were
+replaced by evaluation of the exact relevant source definitions, without
+altering target files. Only this private immutable artifact was authored.
+After source/gate closure the next allowed step remains isolated wrapper-free
+P3, then independent external closure before identical admitted publication.
+No whole-feature Done is claimed.
+
+log-read: none.
