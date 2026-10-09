@@ -583,7 +583,8 @@ capability and leaves production declarations unchanged."
                      (cl-loop for key in '(:provider :base-url :request-function)
                               when (plist-member route key)
                               append (list key (plist-get route key))))))
-              (if (equal actual identity)
+              (if (e-anthropic--context-capability-same-route-p
+                   actual identity)
                   (progn
                     (setq e-cache-efficiency-e2e--p3-candidate-grant-count
                           (1+ e-cache-efficiency-e2e--p3-candidate-grant-count))
@@ -1830,6 +1831,84 @@ STEPS defaults to the original three-step public-API scenario."
            'diagnostic-ran))
       (should (equal wrapper-identities '(diagnostic-route))))))
 
+(ert-deftest e-cache-efficiency-e2e-test-anthropic-prefixed-model-identity-is-resolved-once ()
+  "Backend, native body, and captured identity agree on prefixed model ids."
+  (let* ((provider 'eng-ai-gateway-opus-5-5)
+         (base-url
+          "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
+         (process-environment
+          (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (e-anthropic-model-providers
+          `((,provider :name "synthetic route label"
+             :base-url ,base-url :auth bearer :auth-header authorization
+             :env-key "ENG_AI_MODEL_GW_KEY" :model-prefix "claude-"
+             :default-model "sonnet-5-5"))))
+    (cl-labels
+        ((check-route (session backend-model options expected-model carrier)
+           (let* ((options (append `(:session-id ,session
+                                    :context-lifetime-enabled t)
+                                  options))
+                  (backend (e-anthropic-backend-create
+                            :provider provider :base-url base-url
+                            :model backend-model))
+                  (capabilities (e-backend-context-capabilities backend options))
+                  (requests (make-hash-table :test #'equal))
+                  (context
+                   (e-cache-efficiency-e2e--capture-p3-native-request
+                    'anthropic #'e-anthropic--request-context requests
+                    (list :provider provider :base-url base-url
+                          :model backend-model
+                          :requester 'messages-http-start
+                          :messages '((:role user :content "synthetic model route"))
+                          :options options)))
+                  (captured (car (gethash session requests))))
+             (should (stringp (plist-get context :body)))
+             (should (eq (plist-get capabilities :reserved-effect-carrier)
+                         carrier))
+             (should (equal (plist-get captured :model) expected-model))
+             (should (equal (plist-get captured :identity-model) expected-model))
+             (should (eq (plist-get captured :context-curation-tool-present)
+                         (eq carrier 'context-curate-wire)))
+             captured)))
+      (check-route "p3-prefixed-option" "sonnet-5-5"
+                   '(:model "opus-5-5") "claude-opus-5-5"
+                   'context-curate-wire)
+      (check-route "p3-prefixed-backend-default" "opus-5-5" nil
+                   "claude-opus-5-5" 'context-curate-wire)
+      (check-route "p3-prefixed-profile-default" nil nil
+                   "claude-sonnet-5-5" 'none)
+      (check-route "p3-prefixed-model-change" "opus-5-5"
+                   '(:model "sonnet-5-5") "claude-sonnet-5-5" 'none))))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-route-resolves-effective-model-once ()
+  "The P3 route builder accepts an equivalent provider alias and resolved model."
+  (let* ((provider 'review-equivalent-alias)
+         (base-url
+          "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
+         (process-environment
+          (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (e-anthropic-default-provider provider)
+         (e-anthropic-model-providers
+          `((,provider :name "route label may differ"
+             :base-url ,base-url :auth bearer :auth-header authorization
+             :env-key "ENG_AI_MODEL_GW_KEY" :model-prefix "claude-"
+             :default-model "opus-5-5")))
+         route)
+    (cl-letf (((symbol-function 'e-live-e2e--config-file)
+               (lambda ()
+                 (expand-file-name
+                  "e2e/e-e2e-config-anthropic-p3.el" default-directory))))
+      (setq route (e-cache-efficiency-e2e--p3-live-candidate-route))
+      (should (equal (plist-get route :model) "claude-opus-5-5"))
+      (should (eq (plist-get (plist-get route :identity) :provider) provider))
+      (should (equal (plist-get (plist-get route :identity) :model)
+                     "claude-opus-5-5"))
+      (should (eq (plist-get
+                   (e-cache-efficiency-e2e--p3-route-capabilities
+                    provider (plist-get route :options) (plist-get route :route))
+                   :reserved-effect-carrier)
+                  'context-curate-wire)))))
+
 (defun e-cache-efficiency-e2e--p3-register-source-tool (registry)
   "Register a deterministic P3 tool that resolves opaque source keys."
   (e-tools-register
@@ -2009,6 +2088,7 @@ STEPS defaults to the original three-step public-API scenario."
                 :provider (plist-get context :provider)
                 :endpoint (plist-get context :url)
                 :model (plist-get body :model)
+                :identity-model (plist-get identity :model)
                 :auth-mode (plist-get identity :auth-mode)
                 :api (plist-get identity :api)
                 :transport (plist-get identity :transport)
@@ -2853,10 +2933,14 @@ STEPS defaults to the original three-step public-API scenario."
               (e-cache-efficiency-e2e--p3-route-identity
                provider options route))
              (env-key (plist-get profile :env-key)))
-        (unless (and (eq provider 'eng-ai-gateway-opus-5-5)
-                     (equal model "claude-opus-5-5")
+        (unless (and (equal model "claude-opus-5-5")
                      (eq (plist-get profile :auth) 'bearer)
-                     (equal env-key "ENG_AI_MODEL_GW_KEY"))
+                     (equal env-key "ENG_AI_MODEL_GW_KEY")
+                     (eq (plist-get
+                          (e-cache-efficiency-e2e--p3-route-capabilities
+                           provider options route)
+                          :reserved-effect-carrier)
+                         'context-curate-wire))
           (ert-skip "The selected Messages route does not match the P3 candidate."))
         (unless (and (stringp env-key)
                      (not (string-empty-p (or (getenv env-key) ""))))

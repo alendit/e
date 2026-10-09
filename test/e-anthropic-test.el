@@ -908,10 +908,12 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                    :reserved-effect-carrier)
                   'none)))))
 
-(ert-deftest e-anthropic-test-context-capability-selects-only-reviewed-route ()
-  "Only the resolved gateway Opus Messages identity receives curation."
+(ert-deftest e-anthropic-test-context-capability-selects-by-effective-route ()
+  "Equivalent provider aliases share the reviewed Messages capability."
   (let* ((provider 'eng-ai-gateway-opus-5-5)
          (alias 'unreviewed-provider-alias)
+         (process-environment
+          (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
          (base-url
           "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
          (model "claude-opus-5-5")
@@ -959,7 +961,35 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
            alias options :base-url base-url :model model
            :requester 'messages-http-start)
           :reserved-effect-carrier)
-         'none))
+         'context-curate-wire))
+    (let* ((alias-identity
+            (e-anthropic--context-capability-identity
+             alias options :base-url base-url :model model
+             :requester 'messages-http-start))
+           (alias-backend (e-anthropic-backend-create
+                           :provider alias :base-url base-url :model model))
+           (alias-capabilities
+            (e-backend-context-capabilities alias-backend options))
+           (alias-context
+            (e-anthropic--request-context
+             :provider alias :base-url base-url :model model
+             :requester 'messages-http-start
+             :messages '((:role user :content "effective alias route"))
+             :options options))
+           (alias-body (e-json-parse-string (plist-get alias-context :body)))
+           (alias-tools (append (plist-get alias-body :tools) nil)))
+      (should (eq (plist-get alias-identity :provider) alias))
+      (should (e-anthropic--context-capability-same-route-p
+               alias-identity
+               (e-anthropic--context-capability-identity
+                provider options :base-url base-url :model model
+                :requester 'messages-http-start)))
+      (should (eq (plist-get alias-capabilities :reserved-effect-carrier)
+                  'context-curate-wire))
+      (should (equal (plist-get alias-body :model) model))
+      (should (member "context-curate"
+                      (mapcar (lambda (tool) (plist-get tool :name))
+                              alias-tools))))
     (dolist (route
              (list (list :base-url "https://other.example/v1"
                          :model model :requester 'messages-http-start)

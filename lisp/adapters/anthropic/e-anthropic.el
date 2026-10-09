@@ -1215,14 +1215,15 @@ last written boundary reachable after a growing suffix crosses the lookback."
 (cl-defun e-anthropic--context-capability-identity
     (provider options &key base-url model request-function requester)
   "Return the effective non-secret Messages context identity.
-The backend and direct native request owners use the same resolved route data,
-so an isolated candidate wrapper can be scoped without caller authority."
+MODEL is already resolved when supplied; OPTIONS and profile defaults are raw
+and are resolved here only when MODEL is absent."
   (let* ((profile (e-anthropic-provider-profile provider))
          (effective-base-url
           (or base-url (e-anthropic--provider-base-url profile)))
          (effective-model
-          (e-anthropic--provider-model
-           profile (or model (plist-get options :model))))
+          (or model
+              (e-anthropic--provider-model profile
+                                           (plist-get options :model))))
          (auth-mode
           (list (plist-get profile :auth)
                 (plist-get profile :auth-header)
@@ -1240,17 +1241,28 @@ so an isolated candidate wrapper can be scoped without caller authority."
                              'injected
                            'messages-http-start)))))
 
-(defun e-anthropic--context-capability-candidate-p (identity)
+(defun e-anthropic--context-capability-route-identity (identity)
+  "Return only the effective route fields from capability IDENTITY."
+  (cl-loop for key in '(:endpoint :model :auth-mode :api :transport :requester)
+           append (list key (plist-get identity key))))
+
+(defun e-anthropic--context-capability-same-route-p (identity expected)
+  "Return non-nil when IDENTITY and EXPECTED name the same effective route.
+Provider symbols remain useful diagnostics but do not select capabilities."
+  (equal (e-anthropic--context-capability-route-identity identity)
+         (e-anthropic--context-capability-route-identity expected)))
+
+(defun e-anthropic--context-capability-supported-p (identity)
   "Return non-nil when IDENTITY is the reviewed Opus 5.5 Messages route."
-  (equal identity
-         '(:provider eng-ai-gateway-opus-5-5
-           :endpoint
-           "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages"
-           :model "claude-opus-5-5"
-           :auth-mode (bearer authorization environment-token)
-           :api messages
-           :transport http
-           :requester messages-http-start)))
+  (e-anthropic--context-capability-same-route-p
+   identity
+   '(:endpoint
+     "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages"
+     :model "claude-opus-5-5"
+     :auth-mode (bearer authorization environment-token)
+     :api messages
+     :transport http
+     :requester messages-http-start)))
 
 (cl-defun e-anthropic-context-capabilities
     (provider options &key base-url model request-function requester)
@@ -1263,7 +1275,7 @@ only for the exact reviewed effective route identity."
           :request-function request-function :requester requester)))
     (list :prefix-cache 'automatic-explicit
           :reserved-effect-carrier
-          (if (e-anthropic--context-capability-candidate-p request-identity)
+          (if (e-anthropic--context-capability-supported-p request-identity)
               'context-curate-wire
             'none))))
 
