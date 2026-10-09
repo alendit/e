@@ -6372,3 +6372,175 @@ P3, then independent external closure before identical admitted publication.
 No whole-feature Done is claimed.
 
 log-read: none.
+
+#+title: Feature 98 Isolated Opus Normal-Source Closure Review 34
+#+startup: overview
+
+* Review 34: Independent candidate source, authority and gate closure
+
+** Decision and exact scope
+
+=deterministic-fixed-point= for the selected isolated normal-source candidate
+source and repository-controlled evidence/gate boundary. R32-F1/F2 and R33-F1/F2
+are closed; zero actionable functional or architectural P0–P3 findings and zero
+required deterministic unknowns remain in this selected boundary.
+
+The candidate is admitted for authoritative wrapper-free Opus P3 only.
+Actual normal-source external qualification and independent evidence closure
+remain pending. Main/shipped availability remains none; identical admitted
+selection must not enter main until that separate external closure passes.
+No full Feature 98 Done or universal cache benefit is claimed.
+
+Exact independently checked clean isolated candidate:
+=7395a4d25162e5395fa1ff0176214d5ffef1d7ad= in
+=/private/tmp/e-retained-context-opus-candidate=.
+Original selected package base:
+=87a435974156e3ab9de9a4e8c17db24e1103aa1f=.
+R33 remediation base:
+=3ec9f921e580fca4815eab1081bb333a4d59744d=.
+The complete remediation binary-diff SHA-256 independently matches
+=91a6ac40fc2fcecc8a5cb8b2a6938c8e7e43273a1ca2b0f88afc4672cface521=.
+It changes only the cache/P3 E2E owner: 120 additions and eight deletions.
+The full original-base package and unaffected source cells carry Reviews 32/33,
+with their production identity corrections retained and no additional producer
+or normal capability change during this review.
+
+F98-G1/C1–C6, DP1-R1, plan.org step 5 and supporting plan SHA-256
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=
+remain the admitted authority. Review 31's exact-route wrapper positive admits
+this isolated candidate, not its production publication.
+
+** All prior finding dispositions
+
+| Finding | Closure |
+|---------+---------|
+| R32-F1 provider-symbol capability selection | closed/carried; production owner compares six effective fields, retains provider as provenance, actual equivalent alias backend/native composition succeeds. |
+| R32-F2 double-resolved model | closed/carried; supplied effective model used directly, raw fallback resolved once, actual backend/native/captured model assertions agree across option/backend/profile defaults and changed-model denial. |
+| R33-F1 diagnostic/normal authority circularity | closed; shared route builder validates the exact supported effective identity independently of ordinary carrier. Normal-source still requires the real owner; diagnostic can install its wrapper while that owner returns none. |
+| R33-F2 wrong wrapper adapter branch | closed; Anthropic branch uses its effective-route comparison; OpenAI branch restores its original full-identity comparison. Composed tests cover alias provenance and every changed effective field. |
+
+The independent repeat of the previous failing source-definition probes now
+reports:
+
+#+begin_example
+normal-owner-none diagnostic-route=accepted
+normal-owner-none normal-source=rejected
+Anthropic alias carrier=context-curate-wire grants=1
+OpenAI changed provider carrier=none grants=0
+#+end_example
+
+These probes evaluate the settled route/wrapper/authority definitions, not
+replacement implementations. They use process-local synthetic token values and
+make no provider calls. The new complete composition regressions separately
+deny changes in endpoint, model, auth, API, transport and requester while
+preserving the actual Anthropic alias in diagnostic provenance. The normal
+branch bypasses the diagnostic wrapper, requires genuine owner availability,
+and introduces no synthetic grant count or caller-authority proxy.
+
+** Current-config source and behavioral equivalence
+
+The ordinary user init imports the main checkout, so its earlier candidate gate
+could not establish candidate source. That failed source-selection trial remains
+invalid gate evidence; it is not a provider/product failure. The accepted rerun
+uses only a private source-path overlay and the existing current-config runner.
+
+Provenance artifact:
+=/private/tmp/e-retained-context-r33-current-config-provenance.org=,
+independently matched SHA-256
+=1ee5db04a1340892bf820977238151e02c347da3199b4f63cfe19f4aca95994d=.
+The following equivalence assertions were independently checked against the
+actual private and original files rather than accepted from that prose alone:
+
+- Private init =/private/tmp/e-retained-context-r33-init.d5grB5= sets only the
+  private DOOMDIR/DOOMLOCALDIR before loading the original early-init. Other
+  init entries refer to the installed original framework.
+- Private Doom copy =/private/tmp/e-retained-context-r33-doom.NuZYk2= contains
+  684 compared regular files. Only =config.el= differs. Its added prelude errors
+  if e is already loaded, removes the main entrypoint's load-path entry and
+  prepends candidate source. It never requires, loads or fabricates e/capability
+  before the normal configuration. After that prelude, original =config.el= is
+  byte-identical. =init.el/config.org/packages.el/custom.el= are identical copies.
+- Private generated profile copy
+  =/private/tmp/e-retained-context-r33-local.ZLukPf/etc= has 17 Elisp files.
+  Every file equals its original except exact absolute or tilde Doom-directory
+  substitutions to the private copy: five changed files, no other byte changes.
+  State is private; installed package/cache trees remain the existing framework
+  dependencies. No original generated loader was edited.
+- Original early-init and all five named original user-config SHA-256 values
+  match the provenance record. No config marker or policy override is introduced.
+
+The runner's existing =E_E2E_EMACS_INIT_DIRECTORY= selects the private init;
+=E_E2E_CONFIG= is unset and private runtime/test state directories are established
+by =run-current-config-tests.sh=. Ordinary configuration loads e before the
+bootstrap. The bootstrap at =e-e2e-bootstrap.el:103–110= rejects missing startup
+loading or an e source directory unequal to the candidate root before adding
+checkout test paths. Thus this is normal configuration startup with a bounded
+source-path substitution, not early loading of a proxy backend or an isolated
+minimal init in place of the current configuration.
+
+The accepted raw log explicitly reports Emacs 31.1, private generated
+=init.31.1.el=, candidate e source, 230 packages across 40 modules, nine tests
+and zero unexpected. This proves the relevant configured candidate composition;
+it does not claim every possible user workflow was exercised.
+
+** Required gates and exact dependency joins
+
+| Gate | Independently consumed result | Identity / applicability |
+|------+-------------------------------+--------------------------|
+| Proper canonical/socket run | 2,886 tests, 2,886 expected, zero unexpected; 367.607 seconds | completed at =9bbea297d229d1b6a1f6f2b853d22544b5f421b9=; unchanged canonical dependency content at target |
+| Private-source current-config | 9 tests, zero unexpected | accepted candidate source proven by startup/bootstrap and private overlay audit above |
+| Full credential-free cache/P3 E2E | 107 selected, 79 expected passes, zero unexpected, 28 expected external/config skips; 10.337 seconds | fresh at exact =7395a4d=; changed evidence owner independently covered |
+
+Independent =git diff --quiet 9bbea297..7395a4d -- lisp test= returned exit 0.
+Both exact revisions reproduce the same inventory hash using
+=git ls-tree -r --format='%(objectname) %(path)' REV -- lisp test=:
+=1128a6b38f65f37fc5b3ea94c47751367658cda5f5bb8b75157ffcdb515e71c9=.
+Current-config runner, test module and bootstrap, Eldev and =e.el= blobs also
+match between the two revisions. The normal Eldev fileset includes its unchanged
+post-cutover modules; the changed cache/P3 module is included only in the opt-in
+=E_E2E= path. Those default modules do not import the changed module. This
+establishes the canonical reuse dependency, while the fresh explicit E2E gate
+covers the corrected owner instead of repeating an equivalent full suite.
+
+No skipped external case is credited as provider qualification. In particular,
+the normal-source live P3 has not run. Exact complete gate summaries were read
+at the ranges listed below; no running log polling or provider run was performed
+by this reviewer.
+
+** Complete contract and architecture coverage
+
+| Cell | Current disposition |
+|------+---------------------|
+| F98-G1/C1 | deterministic retained-context and isolated effective-policy source cleared; normal-source provider benefit remains external. |
+| C2 | cleared/carried; capability-owned compatible caching and no caller opt-out/control remain. |
+| C3 | cleared/carried; canonical values, anchored chronology, material projections and native/replay/checkpoint/fork proof unchanged. |
+| C4 | cleared; corrected canonical model identity plus carried material layout/continuation fences. |
+| C5 | cleared; independent diagnostic authority, truthful normal-source reports and complete unchanged accounting/provenance predicate. |
+| C6 | candidate deterministic effective-field/native/core enforcement cleared; exact isolated availability only, unpublished normal-source qualification pending. |
+| R1–R4 / prior retained-context findings | complete Review 30 closure carries unchanged. |
+| R5 / Review 31 records | bounded Opus wrapper positive retained; two separate Codex missing-advance records remain unqualified. Public API credentials/evidence unavailable. |
+| Original-base-to-current package | selected deterministic candidate fixed point; publication and full Feature 98 remain outside this result. |
+
+All fourteen architecture answers remain covered: (1) useful stopping point is
+a gated unpublished candidate; (2) policy follows effective capability;
+(3) provider qualification uncertainty is explicit and no longer circular;
+(4) existing adapter and E2E owners remain sufficient; (5) one effective identity
+with deliberate adapter-specific diagnostic authority avoids accidental coupling;
+(6) no new core/provider dependency; (7) no main/runtime side effect;
+(8) disposable evidence, no new persistence/registry; (9) no source-only performance
+forecast; (10) actual aliases/models and authority substitutions proved;
+(11) unknown-route, injected requester and continuation compatibility fences
+retained; (12) no policy switch or legacy mode; (13) absent normal carriers and
+incomplete evidence remain conservative; (14) meaningful public composition,
+full canonical, configured startup and fresh deterministic E2E prove different
+obligations without substituting for live evidence.
+
+Only this private review artifact was authored. No repository/Git write,
+provider request, live Emacs/Board/store operation, sync, push or reload/restart
+was performed. Main remains unavailable. The next authorized unit is the exact
+reviewed committed candidate's authoritative wrapper-free Opus P3; independent
+external evidence closure must precede identical admitted publication.
+
+log-read: /private/tmp/e-retained-context-gates-opus-r32-eldev.log:3815–3823;
+/private/tmp/e-retained-context-r33-current-config-final2.log:1–6;
+/private/tmp/e-retained-context-r33-cache-e2e.log:113–121.
