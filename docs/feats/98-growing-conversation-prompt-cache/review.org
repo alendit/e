@@ -6854,3 +6854,31 @@ G1/delivery source identity, C1/C2 capability selection and wire policy, C3/C4 r
 Identical-source integration and accepted evidence are CLEAR. One current documentation finding remains; no P0–P3 implementation defect or required scoped external unknown is introduced. The selected implementation/source/gate/external qualification remains accepted, while final delivery documentation fixed point awaits R38-F1 closure. Feature-wide public API and Codex P3 limits remain separate; no full-feature Done or live runtime change is claimed.
 
 log-read: none. Previously accepted gate/raw-record proof was reused through exact content identity; no logs were polled or tests repeated.
+
+#+title: Feature 98 independent delivery closure 39
+
+* Review 39: current availability documentation closure
+
+** Identity and scope
+
+Reviewed clean main =9dfd1c62dcc92ea60b78564b325654f35be55e19= after Review 38's audited integration =72d1ee6f20f99919774e5c931645caae72ce9d8d=. Review 38 was preserved verbatim in the durable ledger at preceding docs-only =d0a20b95=. This review closes only R38-F1 and its source/evidence identity dependencies; the complete Review 38 audit and all carried source, gate, external and 14-question architecture coverage remain applicable.
+
+** Finding disposition and readback
+
+R38-F1 (Low/P3): CLOSED. The current =Behavioral status= paragraph in =plan.org:72–77= now says:
+
+#+begin_quote
+Curation is available for the exact effective gateway Opus 5.5 Messages HTTP combination accepted by Review 37; other combinations remain unavailable pending qualification.
+#+end_quote
+
+This matches integrated normal-source capability, the current Status/index/qualification report, and Review 37's bounded external acceptance. Historical fixed-ceiling evidence, unknown Board cause, Anthropic minimal-shape uncertainty and public API limits remain explicit. No historical record or normative contract was rewritten.
+
+** Dependency identity and decision
+
+The source/evidence comparison =72d1ee6f..9dfd1c62= over =lisp/test/e2e= and the durable evidence directory returns no differences. Shared-runner SHA256 remains =5f49f9e1ae4c930925541e4afba9a26bf69eccd0b5d6cd93409c94a7fe8db748=. The accepted wrapper-free record remains SHA256 =978808cf95edf36c1a9d2ba761ac57694bb0f98c53ede3d44a85c56f2533e423=. Review 38's full immutable artifact is present verbatim. Repository-controlled canonical/configuration/module gates and actual external joins/counters/prefix/material proof therefore retain their accepted identities and scopes; no rerun was needed or claimed.
+
+Zero current actionable P0–P3 findings or required unknowns in the selected implementation/integration/documentation delivery unit. =deterministic-fixed-point= carries for the repository-controlled source/gates; exact-route external P3 qualification and identical-source publication are complete. Final documentation delivery closure is CLEAR. G1/C1–C6, DP1-R1, owner/interface/lifetime/error/compatibility boundaries and all architecture answers carry unchanged.
+
+This selected delivery result does not mark all Feature 98 Done. The tested effective gateway Opus 5.5 Messages HTTP combination is available in local integrated source; other combinations remain gated. Codex P3 and public API external limitations remain explicit, and the feature remains =In-review=. The user's running Emacs, configuration, Board and live store were not changed by this review; no runtime load, provider request, Git mutation or source edit was performed. This artifact does not claim a restart or remote publication.
+
+log-read: none. Only the requested paragraph, bounded documentation diff, immutable-ledger and source/evidence identities were read back; no broad review, test or provider run was repeated.
