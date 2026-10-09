@@ -583,8 +583,7 @@ capability and leaves production declarations unchanged."
                      (cl-loop for key in '(:provider :base-url :request-function)
                               when (plist-member route key)
                               append (list key (plist-get route key))))))
-              (if (e-anthropic--context-capability-same-route-p
-                   actual identity)
+              (if (equal actual identity)
                   (progn
                     (setq e-cache-efficiency-e2e--p3-candidate-grant-count
                           (1+ e-cache-efficiency-e2e--p3-candidate-grant-count))
@@ -603,7 +602,8 @@ capability and leaves production declarations unchanged."
                               '(:base-url :model :request-function :requester)
                               when (plist-member route key)
                               append (list key (plist-get route key))))))
-              (if (equal actual identity)
+              (if (e-anthropic--context-capability-same-route-p
+                   actual identity)
                   (progn
                     (setq e-cache-efficiency-e2e--p3-candidate-grant-count
                           (1+ e-cache-efficiency-e2e--p3-candidate-grant-count))
@@ -1831,6 +1831,122 @@ STEPS defaults to the original three-step public-API scenario."
            'diagnostic-ran))
       (should (equal wrapper-identities '(diagnostic-route))))))
 
+(ert-deftest e-cache-efficiency-e2e-test-p3-anthropic-diagnostic-uses-route-identity ()
+  "The diagnostic wrapper accepts Anthropic aliases but checks every route field."
+  (let* ((provider 'p3-route-owner)
+         (alias 'p3-route-alias)
+         (base-url
+          "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
+         (model "claude-opus-5-5")
+         (env-key "ENG_AI_MODEL_GW_KEY")
+         (process-environment
+          (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (profile `(:name "route label is diagnostic"
+                    :base-url ,base-url :auth bearer
+                    :auth-header authorization :env-key ,env-key
+                    :default-model ,model))
+         (e-anthropic-default-provider provider)
+         (e-anthropic-model-providers
+          `((,provider . ,profile) (,alias . ,profile)))
+         (options `(:model ,model))
+         (identity
+          (e-anthropic--context-capability-identity
+           provider options :base-url base-url :model model
+           :requester 'messages-http-start))
+         (e-cache-efficiency-e2e--p3-candidate-grant-count 0)
+         observed-provider)
+    (cl-letf (((symbol-function 'e-live-e2e--config-file)
+               (lambda ()
+                 (expand-file-name
+                  "e2e/e-e2e-config-anthropic-p3.el" default-directory)))
+              ((symbol-function 'e-anthropic-context-capabilities)
+               (lambda (&rest _args)
+                 '(:reserved-effect-carrier none))))
+      (let ((route (e-cache-efficiency-e2e--p3-live-candidate-route)))
+        (should (eq (plist-get route :provider) provider))
+        (should (eq (plist-get
+                     (e-cache-efficiency-e2e--p3-route-capabilities
+                      provider options (plist-get route :route))
+                     :reserved-effect-carrier)
+                    'none))
+        (let (normal-thunk-called)
+          (should-error
+           (e-cache-efficiency-e2e--p3-run-with-authority
+            'normal-source identity nil
+            (lambda () (setq normal-thunk-called t)))
+           :type 'error)
+          (should-not normal-thunk-called))
+        (should
+         (eq (e-cache-efficiency-e2e--p3-run-with-authority
+              'ert-exact-route-wrapper identity nil
+              (lambda ()
+                (let ((actual
+                       (e-anthropic--context-capability-identity
+                        alias options :base-url base-url :model model
+                        :requester 'messages-http-start))
+                      (capabilities
+                       (e-anthropic-context-capabilities
+                        alias options :base-url base-url :model model
+                        :requester 'messages-http-start)))
+                  (setq observed-provider (plist-get actual :provider))
+                  (should (eq (plist-get capabilities
+                                         :reserved-effect-carrier)
+                              'context-curate-wire))
+                  'diagnostic-ran)))
+             'diagnostic-ran))
+        (should (eq observed-provider alias))
+        (should (= e-cache-efficiency-e2e--p3-candidate-grant-count 1))
+        (dolist (change
+                 '((:endpoint . "https://different.example.test/v1/messages")
+                   (:model . "claude-sonnet-4-5")
+                   (:auth-mode . (bearer x-api-key environment-token))
+                   (:api . responses)
+                   (:transport . injected)
+                   (:requester . another-requester)))
+          (let ((candidate-identity
+                 (plist-put (copy-sequence identity)
+                            (car change) (cdr change)))
+                (e-cache-efficiency-e2e--p3-candidate-grant-count 0)
+                carrier)
+            (e-cache-efficiency-e2e--with-p3-candidate-capability
+             candidate-identity
+             (lambda ()
+               (setq carrier
+                     (plist-get
+                      (e-anthropic-context-capabilities
+                       alias options :base-url base-url :model model
+                       :requester 'messages-http-start)
+                      :reserved-effect-carrier))))
+            (should (eq carrier 'none))
+            (should (= e-cache-efficiency-e2e--p3-candidate-grant-count 0))))))))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-openai-diagnostic-keeps-provider-identity ()
+  "The Anthropic route comparison does not broaden OpenAI diagnostic grants."
+  (let* ((source 'p3-openai-source)
+         (alias 'p3-openai-alias)
+         (profile '(:name "synthetic Responses profile"
+                    :base-url "https://responses.example.test/v1"
+                    :wire-api responses :responses-transport http
+                    :requires-openai-auth nil :env-key "E98_OPENAI_TOKEN"
+                    :default-model "gpt-6-sol"))
+         (e-openai-model-providers `((,source . ,profile) (,alias . ,profile)))
+         (options '(:model "gpt-6-sol"))
+         (identity
+          (e-openai-profile--context-capability-identity
+           profile options :provider source))
+         (e-cache-efficiency-e2e--p3-candidate-grant-count 0)
+         carrier)
+    (e-cache-efficiency-e2e--with-p3-candidate-capability
+     identity
+     (lambda ()
+       (setq carrier
+             (plist-get
+              (e-cache-efficiency-e2e--p3-route-capabilities
+               alias options '(:base-url "https://responses.example.test/v1"))
+              :reserved-effect-carrier))))
+    (should (eq carrier 'none))
+    (should (= e-cache-efficiency-e2e--p3-candidate-grant-count 0))))
+
 (ert-deftest e-cache-efficiency-e2e-test-anthropic-prefixed-model-identity-is-resolved-once ()
   "Backend, native body, and captured identity agree on prefixed model ids."
   (let* ((provider 'eng-ai-gateway-opus-5-5)
@@ -2936,11 +3052,7 @@ STEPS defaults to the original three-step public-API scenario."
         (unless (and (equal model "claude-opus-5-5")
                      (eq (plist-get profile :auth) 'bearer)
                      (equal env-key "ENG_AI_MODEL_GW_KEY")
-                     (eq (plist-get
-                          (e-cache-efficiency-e2e--p3-route-capabilities
-                           provider options route)
-                          :reserved-effect-carrier)
-                         'context-curate-wire))
+                     (e-anthropic--context-capability-supported-p identity))
           (ert-skip "The selected Messages route does not match the P3 candidate."))
         (unless (and (stringp env-key)
                      (not (string-empty-p (or (getenv env-key) ""))))
