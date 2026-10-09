@@ -1,3 +1,10 @@
+#+title: Retained Context Candidate Diagnostics
+#+date: 2026-10-09
+
+These are the earlier wrapper-based diagnostics. Final normal-source Opus
+qualification and current availability are recorded in
+[[file:opus-curation-qualification.org][the wrapper-free qualification report]].
+
 #+title: Feature 98 retained-context P3 provider validation
 #+date: 2026-10-09 UTC
 

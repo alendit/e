@@ -4,51 +4,36 @@
 
 * Status
 
-The 2026-10-08 [[file:retained-context-plan.org][retained-context correction]] is implemented and source-cleared
-by Review 27. Review 30 clears its repository-controlled delivery with canonical
-2,885/2,885, isolated current-config 9/9 and credential-free E2E 74 passes plus
-27 expected provider/configuration skips. It replaces system-role retention with anchored reference data
-across adapters and closes partial-compaction, detached-query, fork and
-continuation-identity seams. Fresh 2026-10-09 [[file:retained-context-validation.org][candidate provider tests]] pass Opus P3 across 33 requests; both Codex runs preserve native prefixes but remain unqualified from insufficient reuse observations. Review 31 admits only a separately isolated, normal-source Opus acceptance candidate; main curation remains unavailable pending wrapper-free acceptance.
-Historical provider results below precede that correction; availability
-remains unqualified until exact-route external acceptance passes.
+In-review. The [[file:retained-context-plan.org][retained-context correction]] is implemented across adapters:
+kept facts and summaries are anchored reference data in history. Reviews 27/30
+close its production source, compaction, detached-query, fork and continuation
+seams. Reviews 34/36 close the effective-route selector and actual shared P3
+runner. Required repository gates pass: canonical 2,886/2,886, isolated current
+configuration 9/9, and credential-free cache/P3 80 passes with 28 expected
+external/configuration skips.
 
-In-review.  Adapter-owned cache policy, caller-option removal and capability-
-gated curation admission are implemented. The independently reviewed P3
-producer passes 74 credential-free E2E tests, with 27 expected provider skips.
-Canonical 2,869/2,869 and isolated current-configuration 9/9 coverage carries
-through unchanged dependencies; the affected structural test passes 1/1.
+[[file:opus-curation-qualification.org][Fresh wrapper-free Opus qualification]] passes all four repeated
+keep/keep/summary/erase cycles across 33 joined native requests. Review 37
+independently confirms semantics and efficient growing-history caching with
+zero test capability grants. The identical accepted source is integrated into
+local main, restoring curation for the tested effective gateway Opus 5.5
+Messages HTTP endpoint/model/auth/transport/requester combination. Equivalent
+cosmetic provider aliases retain that effective selection; changed or unknown
+routes remain unavailable.
 
-The separate real cache-plus-curation tests completed on 2026-10-07:
-[[file:p3-validation.org][P3 validation results]]. Configured Opus 5.5 passed semantics across 33
-native requests but failed efficiency: kept facts relocate the native prefix
-and recreate growing history. Managed Codex passed semantics across 32 requests
-and demonstrated growing cache reads, but its strict retention result remains
-unqualified because the token extent of changed boundary tails is unproved.
-An earlier same-turn full-native-prefix 640-token cache decline also remains
-recorded. All production curation capabilities remain unavailable. Public
-OpenAI API evidence remains unavailable without its credential. These results
-keep Feature 98 In-review; no user runtime or Board was changed.
+Both fresh [[file:retained-context-validation.org][Codex diagnostic runs]] preserve native prefixes and pass semantics
+but lack enough actual reuse advances; they remain unqualified. Public API
+credentials are absent. These broader external obligations keep Feature 98
+In-review; no universal provider benefit or historical Board cause is claimed.
+The running Emacs, user configuration, Board and live store remain unchanged.
+Using the core/adapter correction requires a restart.
 
-The 2026-10-06 ordinary Codex P1/P2 at clean =fd656ab5= (unchanged reviewed code) passed
-2/2.  The configured =gpt-6-sol= managed-auth Responses WebSocket route
-preserves joined ordinary-session affinity.  The repeated no-tool P1 has
-three complete semantic/usage joins and reads 0 / 10,368 / 10,368 tokens.
-The separate inherited-observation/encrypted-reasoning P2 proves growing
-history reuse: reads 0 / 8,064 / 20,608 / 31,616 / 42,752 across five requests.
-Both have unchanged native stable guidance and durable history prefixes.
-Qualification is bounded to this endpoint/model/protocol/material shape and
-revision.  Independent Review 13 confirms these scoped P1/P2 results with
-zero new findings; they do not prove the historical Board ceiling's cause.
-
-Prior configured Opus 5.5 tool/thinking P2 and the actual read-only Board main
-chat audit demonstrate growing reuse.  The separate Anthropic minimal no-tool
-repeat remains unconfirmed.  Public OpenAI API external benefit remains
-unconfirmed because its credentials are absent; its capability-derived policy,
-major-only model names and equivalent endpoint/alias compositions pass
-repository tests.  All production P3 capabilities remain none/unconfirmed and
-curation unavailable.  These broader qualification limits keep Feature 98
-In-review.  The user's running Emacs and Board were unchanged.
+Historical [[file:p3-validation.org][2026-10-07 P3 results]] precede this correction: Opus moved kept facts
+ahead of history and failed efficiency; Codex reuse remained unqualified at
+changed boundaries. Those results and the prior comparable-prefix decline
+remain preserved at their actual source identities. Earlier configured Opus
+and Codex ordinary-history P1/P2 evidence retains its original scope; no new
+public API or minimal no-tool Anthropic qualification is inferred.
 
 * Goal and authority
 

@@ -1,0 +1,91 @@
+#+title: Opus Cache and Curation Qualification
+#+date: 2026-10-09
+#+startup: overview
+
+* Result
+
+The configured gateway Opus 5.5 route now exposes curation through the normal
+adapter capability owner. Independent Review 37 accepts its wrapper-free P3
+run: 33 complete native request/start/finish/usage joins, four accepted
+keep/keep/summary/erase packages, semantic pass and cache-efficiency pass.
+The local main checkout contains the identical accepted source. The running
+Emacs was left unchanged; using the adapter change requires a restart.
+
+Qualification is bounded to the effective Messages endpoint
+=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages=,
+resolved model =claude-opus-5-5=, auth
+=(bearer authorization environment-token)=, API =messages=, transport =http=,
+and requester =messages-http-start=. Equivalent provider labels select the
+same capability. Changed or unknown effective fields and injected requesters
+remain unavailable. No caller option or copied capability map can grant it.
+
+Codex curation remains unavailable: both fresh diagnostic runs preserve native
+prefixes and pass semantics but lack sufficient repeated reuse observations.
+Public OpenAI and Anthropic API routes remain unqualified without credentials.
+These limits keep Feature 98 =In-review=; this result does not qualify all
+providers or establish a historical Board's cause.
+
+* Why the fix preserves caching
+
+Retained facts and summaries are portable reference data, rendered at their
+canonical response anchors in history. They no longer become system instructions
+or move behind new history on later requests. Anthropic Messages, OpenAI
+Responses (HTTP and Codex WebSocket), and Chat Completions all consume this
+ordered projection. Partial compaction, detached SQLite queries, reopen/fork
+and continuation identity are covered by the repository tests.
+
+The fresh Opus run preserves the ordered native history prefix through both
+keeps. Summary and erase replace or remove only their observed source while
+retaining subsequent cache-read continuity. The normal-source runner records
+zero capability-wrapper grants and actual native tool availability on every
+request. It uses the same scenario, semantic assertions and strict classifier
+as the diagnostic run.
+
+* Actual repeated cache reads
+
+All values below are provider cache-read tokens. Plateaus remain in the raw
+record; each cycle also has two distinct qualifying advances. The initial whole
+request is 20,551 tokens. Append-only control reads reach 40,725 before curation.
+
+| Projection | Prior reusable floor | Fresh read | Two later advancing reads |
+|------------+----------------------+------------+---------------------------|
+| Keep one | 40,725 | 40,821 | 48,736; 56,340 |
+| Keep two | 56,340 | 56,442 | 64,357; 71,961 |
+| Summary | 71,961 | 72,074 | 79,981; 87,579 |
+| Erase | 87,579 | 87,665 | 95,250; 102,842 |
+
+The final request has 109,343 total input tokens and 102,842 cache-read tokens.
+Anthropic total input includes fresh, cache-read and cache-creation input;
+fresh input alone is not the request's whole context size. Review 37 recomputes
+all counters, authentic ordinals, ordered prefix hashes and material source
+joins from the full bounded record.
+
+* Verification and delivery identity
+
+- Canonical: 2,886/2,886 passed at =9bbea297=; production/unit source content is
+  unchanged through the accepted integration.
+- Current configuration: 9/9 passed using the actual user configuration in a
+  private daemon with only the source path redirected to the candidate.
+  Review 34 independently verifies the copied configuration and generated
+  loader equivalence and original file hashes.
+- Credential-free cache/P3 module: 80 passes, zero unexpected, 28 expected
+  external/configuration skips at =98df4929=. These skips provide no provider
+  qualification.
+- Actual shared-runner smoke and real-macro/compiler checks pass. The earlier
+  malformed-runner attempt sent no provider requests and produced no evidence
+  record; Reviews 35/36 preserve the failure and its correction.
+- Wrapper-free P3: 1/1 passed, 143.35 seconds, recorded
+  =2026-10-09T10:59:39Z= at =0285854b76fe3ef40837b5a5bef47156b187625e=.
+  This documentation-only descendant has identical =lisp/test/e2e= source to
+  independently reviewed =98df4929=.
+- Main integration fast-forwards to that exact accepted candidate. No push,
+  automatic remote synchronization, runtime load/restart, user configuration,
+  Board or live store mutation was performed.
+
+[[file:evidence/e-retained-context-p3-opus-normal-source-20261009.qualified.json][Full bounded normal-source evidence]] has SHA-256
+=978808cf95edf36c1a9d2ba761ac57694bb0f98c53ede3d44a85c56f2533e423=.
+It preserves every request, raw counter, digest and provenance join, with no
+prompt bodies or credentials. Independent source/gate and external decisions
+are recorded verbatim in [[file:review.org][Reviews 34–37]]. Earlier diagnostic
+results remain in [[file:retained-context-validation.org][the candidate report]];
+pre-fix negatives remain in [[file:p3-validation.org][the 2026-10-07 report]].

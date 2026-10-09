@@ -6752,3 +6752,65 @@ No required deterministic unknown remains within this isolated source/gate packa
 The previous wrapper-free attempt at =c0912987= remains invalid: it stopped before provider calls and report creation, with no evidence JSON. Preserve that failure as runner diagnostic history. Review 31's bounded wrapper-based Opus positive remains evidence for isolated candidate admission only. Fresh normal-source Opus P3 and independent external closure are still pending. Main production remains unavailable; Codex P3 remains unqualified and public OpenAI API credentials unavailable. Feature 98 is not Done, and no historical Board cause or universal cache improvement is claimed.
 
 log-read: =/private/tmp/e-retained-context-r35-cache-e2e.log:24–31,118–120,151=; =/private/tmp/e-retained-context-20261008-impl.log:137–141=. Completed handoff and scope-probe source were read in full; no active logs were polled.
+
+#+title: Feature 98 independent external acceptance review 37
+
+* Review 37: wrapper-free Opus repeated-curation qualification
+
+** Identity and review boundary
+
+Reviewed the fresh bounded record =/private/tmp/e-retained-context-p3-opus-normal-source-20261009.qualified.json=, SHA256 =978808cf95edf36c1a9d2ba761ac57694bb0f98c53ede3d44a85c56f2533e423=, and its source/report/log joins. The record names clean isolated candidate =0285854b76fe3ef40837b5a5bef47156b187625e= at =2026-10-09T10:59:39Z=, elapsed =143.35027599334717= seconds. Source comparison against independently cleared =98df4929eb0c0d43248cb43bd612d5d03db92a4a= returns no differences in =lisp/test/e2e=. The shared E2E source SHA256 is =5f49f9e1ae4c930925541e4afba9a26bf69eccd0b5d6cd93409c94a7fe8db748=, matching the admitted source.
+
+This is external acceptance of the existing step-5 isolated normal-source candidate under unchanged F98-G1/C1–C6, DP1-R1 and supporting-plan identity. Review 36 source/gates, all earlier closed findings, and unchanged whole-scope/14-question architecture proof carry. No provider request, source/Git mutation, or user runtime/store access was performed by the reviewer.
+
+** Independent result and attribution
+
+The unchanged actual strict P3 classifier independently returns =pass= for all 37 chronological events. This recomputation evaluated the actual pure source definitions in an isolated batch process and restored JSON enum values to their original symbols; it neither replaced the predicate nor reran a provider test. Separate independent checks establish:
+
+- 33 chronological native requests, 33 usage records, and 33 unique provider request IDs, with complete matched start/finish attribution and =done= finishes. Every usage event has the same complete native/provider join, authentic per-turn ordinals, and usage provenance; request chronology 1–33 is separate from provider ordinals resetting within each turn. No event was dropped or combined with an earlier run.
+- Every provider total equals Anthropic fresh input plus read plus creation, and equals reported context input. Every total-token count additionally includes output. Counters, native wire/semantic hashes and ordered semantic item digests agree between captured request and classifier event. Recomputed semantic-vector and protected-prefix digests match.
+- Four distinct accepted packages and response/consumer/frame identities bind =keep, keep, summary, erase=. The record preserves all 29 consumed frames while the four curation boundaries are unique and complete. Consumer, mandatory same-turn replay, and fresh later-turn request relationships are valid and correctly ordered.
+- The previously warm ordered common native prefixes contain 4 and 11 items for the two keeps, and are unchanged at their fresh requests. Retained exact facts remain user reference data at native positions 8 and 15; they are not moved into instructions. Shared prefix/history fingerprints independently recompute for the control and each reuse group (4/11/18/25/31 items).
+- Both material boundaries bind actual observed source IDs, source-before indexes/hashes, response, consumer, curation and fresh request IDs. Summary source index 23 is replaced at fresh index 22; erase source index 30 has no replacement. Fresh semantic history count/digest and after-projection hashes match the captured native request. Raw source hashes and bounded source-location evidence are absent after each material projection; keep facts remain present. The reviewed runner's actual native semantic assertions execute before content stripping.
+- All 33 native requests contain the reserved curation tool and the same effective route/model/auth/API/transport/requester/stable-prefix identity. Every interim and applicable keep replay retains the prior reusable read floor within the unchanged 128-token granularity. Every subsequent reuse observation preserves continuity; both actual advances in each cycle exceed the whole initial control ceiling.
+
+** Actual cache cycles
+
+The initial whole-request ceiling is =20551=. Append-only control totals are =30638/37135/40729/47226= with reads =20547/30634/30634/40725=. Two actual advances exceed the ceiling, so static warming alone cannot qualify this control.
+
+| Projection | Prior reusable floor | Fresh/reuse provider totals | Fresh/reuse reads | Actual qualifying advances |
+|------------+----------------------+----------------------------+-------------------+----------------------------|
+| Keep 1 | 40725 | 48740 / 55237 / 56344 / 62841 | 40821 / 48736 / 48736 / 56340 | 7915, 7604 |
+| Keep 2 | 56340 | 64361 / 70858 / 71965 / 78462 | 56442 / 64357 / 64357 / 71961 | 7915, 7604 |
+| Summary | 71961 | 79985 / 86482 / 87583 / 94080 | 72074 / 79981 / 79981 / 87579 | 7907, 7598 |
+| Erase | 87579 | 95254 / 101751 / 102846 / 109343 | 87665 / 95250 / 95250 / 102842 | 7585, 7592 |
+
+Each cycle contains four actual observations, including its plateau. Total input grows at every reuse observation, no read falls beyond allowed granularity, and each cycle has two distinct qualifying advances. The result proves the selected repeated keep plus summary and erase scenario rather than one post-curation warm hit.
+
+** Genuine authority, source and gates
+
+The report records =candidate-authority: normal-source-candidate=, =carrier-availability-evidence: normal-owner-and-native-requests=, =candidate-grant-count: 0=, and actual =carrier-available: true=. Semantic result is =pass= with no condition; production qualification remains labeled =isolated-source-candidate=. The reviewed shared runner bypasses the diagnostic wrapper on this authority. The normal trusted owner and the actual native constructors re-evaluate the effective identity before dispatch.
+
+The exact effective combination matches the admitted six-field selector: endpoint =https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages=, resolved model =claude-opus-5-5=, auth =(bearer authorization environment-token)=, API =messages=, transport =http=, requester =messages-http-start=. Provider label =eng-ai-gateway-opus-5-5= is provenance, not authority. Prior actual alias/model-resolution and changed-endpoint/model/auth/API/transport/requester negative proof remains intact.
+
+The same dedicated context-free configuration, disposable real SQLite scenario, shared classifier and native assertion path were used. Review 36's exact changed-module gate (80 passes, 28 expected skips, zero unexpected), reused proper canonical 2886/2886, and isolated source-equivalent current-config 9/9 carry through the docs-only source identity join. No credential-free skip is credited as provider evidence.
+
+The raw private log's line-5 report parses to the exact supplied JSON. Lines 6–11 establish 1/1 expected result, zero unexpected and exit 0, but those statuses are corroboration rather than the acceptance predicate. The bounded JSON contains no body/messages/content/headers/arguments/credential fields. Native bodies were intentionally removed after assertions; nonsecret full counters, digests, source indexes and attribution remain available. The former malformed-runner attempt and its lack of provider evidence are preserved separately.
+
+** Contract disposition and decision
+
+| Required cell | Current scoped disposition |
+|---------------+----------------------------|
+| G1 / delivery relation | Existing unpublished-candidate qualification step completed for the exact tested combination |
+| C1 / capability-driven default | Reviewed six-field normal selector and actual dispatch reevaluation remain clear |
+| C2 / compatible native caching | Existing wire-selection proof carries; current actual read/write accounting confirms measured reuse |
+| C3 / retained/replay semantics | Keep chronology, preserved native prefix, mandatory replay and actual material projection joins clear |
+| C4 / transport/layout/continuation | Prior deterministic full coverage carries unchanged; this run exercises only the named HTTP Messages path |
+| C5 / meaningful truthful evidence | Full chronological joins, actual counter attribution, strict predicate and raw-report identity clear |
+| C6 / efficient curation availability | Wrapper-free repeated-curation qualification confirmed for the tested exact effective combination; all unknown/injected/other-route fences carry |
+
+Zero current actionable P0–P3 findings or required unknowns within this bounded normal-source Opus qualification unit. The selected candidate has both deterministic source/gate closure and independently confirmed external P3 acceptance. Identical admitted source may now be integrated into main through the existing scoped publication step; evidence and dependency identity must remain unchanged. This decision is not a claim that integration or live loading has occurred.
+
+Qualification is limited to this effective gateway/model/auth/API/transport/requester combination and the tested synthetic native material shape at the recorded revision/time. It does not qualify a different model, endpoint, injected requester, transport or credential mechanism. Equivalent cosmetic aliases retain the same effective selection under the already reviewed matcher. Codex P3 remains unqualified, public OpenAI API evidence remains unavailable, and unknown routes remain unavailable. Preserve earlier valid negatives and incomplete runs at their actual source identities. No historical Board cause, universal provider benefit, whole-feature Done, or live-user-state change is inferred. All 14 architecture answers carry from Review 36; this external evidence changes only the exact-route qualification disposition, with no new owner, policy control or state lifetime.
+
+log-read: =/private/tmp/e-retained-context-p3-opus-normal-source-20261009.qualified.log:1–11=; line 5 was parsed and matched to the bounded JSON. The report was read in full. No active logs were polled and no provider test was repeated.
