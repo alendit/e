@@ -1240,17 +1240,32 @@ so an isolated candidate wrapper can be scoped without caller authority."
                              'injected
                            'messages-http-start)))))
 
+(defun e-anthropic--context-capability-candidate-p (identity)
+  "Return non-nil when IDENTITY is the reviewed Opus 5.5 Messages route."
+  (equal identity
+         '(:provider eng-ai-gateway-opus-5-5
+           :endpoint
+           "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages"
+           :model "claude-opus-5-5"
+           :auth-mode (bearer authorization environment-token)
+           :api messages
+           :transport http
+           :requester messages-http-start)))
+
 (cl-defun e-anthropic-context-capabilities
     (provider options &key base-url model request-function requester)
   "Return provider API capabilities for Anthropic Messages PROVIDER.
-Cache controls belong to this native Messages adapter.  Curation stays
-unavailable until this endpoint/model has passed the separate P3 evidence."
+Cache controls belong to this native Messages adapter.  Curation is available
+only for the exact reviewed effective route identity."
   (let ((request-identity
          (e-anthropic--context-capability-identity
           provider options :base-url base-url :model model
           :request-function request-function :requester requester)))
-    (ignore request-identity)
-    '(:prefix-cache automatic-explicit :reserved-effect-carrier none)))
+    (list :prefix-cache 'automatic-explicit
+          :reserved-effect-carrier
+          (if (e-anthropic--context-capability-candidate-p request-identity)
+              'context-curate-wire
+            'none))))
 
 (defun e-anthropic--stable-cache-segment-p (segment)
   "Return non-nil when SEGMENT belongs to the cacheable stable prefix."

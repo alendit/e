@@ -631,6 +631,19 @@ capability and leaves production declarations unchanged."
            (e-openai-provider-profile provider) options
            (append (list :provider provider) route))))
 
+(defun e-cache-efficiency-e2e--p3-run-with-authority
+    (authority identity normal-source-carrier thunk)
+  "Run THUNK under the P3 test AUTHORITY.
+Only the existing diagnostic authority uses the private wrapper."
+  (pcase authority
+    ('ert-exact-route-wrapper
+     (e-cache-efficiency-e2e--with-p3-candidate-capability identity thunk))
+    ('normal-source
+     (unless normal-source-carrier
+       (error "Normal-source route has no admitted carrier"))
+     (funcall thunk))
+    (_ (error "Unknown P3 test authority: %S" authority))))
+
 (defun e-cache-efficiency-e2e--p3-exact-route-negative-p
     (provider options route identity)
   "Return non-nil when P3 wrapper denies a changed trusted route."
@@ -1783,6 +1796,39 @@ STEPS defaults to the original three-step public-API scenario."
                                       (plist-get wrong :body))
                                      :tools)
                                     nil)))))))))))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-normal-source-bypasses-wrapper ()
+  "The normal-source runner uses no wrapper or synthetic grant count."
+  (let ((e-cache-efficiency-e2e--p3-candidate-grant-count 0)
+        (wrapper-identities nil)
+        thunk-called)
+    (cl-letf (((symbol-function
+                'e-cache-efficiency-e2e--with-p3-candidate-capability)
+               (lambda (identity thunk)
+                 (push identity wrapper-identities)
+                 (funcall thunk))))
+      (should
+       (eq (e-cache-efficiency-e2e--p3-run-with-authority
+            'normal-source 'route-identity t
+            (lambda () (setq thunk-called t) 'ran))
+           'ran))
+      (should thunk-called)
+      (should-not wrapper-identities)
+      (should (= e-cache-efficiency-e2e--p3-candidate-grant-count 0))
+      (setq thunk-called nil)
+      (should-error
+       (e-cache-efficiency-e2e--p3-run-with-authority
+        'normal-source 'route-identity nil
+        (lambda () (setq thunk-called t)))
+       :type 'error)
+      (should-not thunk-called)
+      (should-not wrapper-identities)
+      (should
+       (eq (e-cache-efficiency-e2e--p3-run-with-authority
+            'ert-exact-route-wrapper 'diagnostic-route nil
+            (lambda () 'diagnostic-ran))
+           'diagnostic-ran))
+      (should (equal wrapper-identities '(diagnostic-route))))))
 
 (defun e-cache-efficiency-e2e--p3-register-source-tool (registry)
   "Register a deterministic P3 tool that resolves opaque source keys."
@@ -3321,12 +3367,30 @@ STEPS defaults to the original three-step public-API scenario."
                     "pass" '(ert-test-failed "wrong OK marker") t 'openai evidence)
                    "unconfirmed-semantic-evidence"))))
 
-(ert-deftest e-cache-efficiency-e2e-test-p3-live-native-candidate ()
-  "Run P3 through the selected native provider and ordinary public chat path."
+(defun e-cache-efficiency-e2e--run-p3-live-native (authority)
+  "Run P3 through the ordinary public chat path using AUTHORITY.
+AUTHORITY is either the existing ERT-only wrapper or the normal candidate
+source.  Both runs share the same prompts and evidence checks."
   (e-live-e2e--require-enabled)
+  (when (and (eq authority 'normal-source)
+             (not (equal
+                   (file-truename (e-live-e2e--config-file))
+                   (file-truename
+                    (expand-file-name
+                     "e2e/e-e2e-config-anthropic-p3.el" default-directory)))))
+    (ert-skip "Normal-source P3 is admitted only for gateway Opus Messages."))
   (let* ((route (e-cache-efficiency-e2e--p3-live-candidate-route))
          (adapter (plist-get route :adapter))
          (identity (plist-get route :identity))
+         (normal-source-carrier
+          (and (eq authority 'normal-source)
+               (eq (plist-get
+                    (e-cache-efficiency-e2e--p3-route-capabilities
+                     (plist-get route :provider)
+                     (plist-get route :options)
+                     (plist-get route :route))
+                    :reserved-effect-carrier)
+                   'context-curate-wire)))
          (layer (e-cache-efficiency-e2e--p3-live-layer))
          (started-at (float-time))
          (deadline (+ started-at
@@ -3374,20 +3438,28 @@ STEPS defaults to the original three-step public-API scenario."
                    (should marker)
                    (should (string-match-p (regexp-quote marker) answer)))))))
         (condition-case caught
-            (e-cache-efficiency-e2e--with-p3-candidate-capability
-             identity
-             (lambda ()
-               (if (eq adapter 'anthropic)
-                   (cl-letf (((symbol-function 'e-anthropic--request-context)
-                              (lambda (&rest args)
-                                (e-cache-efficiency-e2e--capture-p3-native-request
-                                 'anthropic native requests-by-session args))))
-                     (e-cache-efficiency-e2e--p3-with-response-capture run))
-                 (cl-letf (((symbol-function 'e-openai--request-context)
-                            (lambda (&rest args)
-                              (e-cache-efficiency-e2e--capture-p3-native-request
-                               'openai native requests-by-session args))))
-                   (e-cache-efficiency-e2e--p3-with-response-capture run)))))
+            (let ((capture-and-run
+                   (lambda ()
+                     (if (eq adapter 'anthropic)
+                         (cl-letf (((symbol-function 'e-anthropic--request-context)
+                                    (lambda (&rest args)
+                                      (e-cache-efficiency-e2e--capture-p3-native-request
+                                       'anthropic native requests-by-session args))))
+                           (e-cache-efficiency-e2e--p3-with-response-capture run))
+                       (cl-letf (((symbol-function 'e-openai--request-context)
+                                  (lambda (&rest args)
+                                    (e-cache-efficiency-e2e--capture-p3-native-request
+                                     'openai native requests-by-session args))))
+                         (e-cache-efficiency-e2e--p3-with-response-capture run)))))
+              (unless (or (eq authority 'normal-source)
+                          (and (eq authority 'ert-exact-route-wrapper)
+                               (memq adapter '(anthropic openai))))
+                (error "Unsupported P3 source authority: %S" authority))
+              (when (eq authority 'normal-source)
+                (unless (eq adapter 'anthropic)
+                  (error "Normal-source P3 only supports the admitted Messages route")))
+              (e-cache-efficiency-e2e--p3-run-with-authority
+               authority identity normal-source-carrier capture-and-run))
           (error (setq condition caught)))
         (e-session-flush-write-queue (e-harness-sessions harness))
         (let* ((captured (gethash session-id requests-by-session))
@@ -3439,7 +3511,10 @@ STEPS defaults to the original three-step public-API scenario."
                 (e-cache-efficiency-e2e--p3-classifier-evidence
                  joined packages response-events consumed-events adapter))
                (carrier-available
-                (and (> e-cache-efficiency-e2e--p3-candidate-grant-count 0)
+                (and (if (eq authority 'normal-source)
+                         normal-source-carrier
+                       (> e-cache-efficiency-e2e--p3-candidate-grant-count 0))
+                     captured
                      (cl-every (lambda (request)
                                  (plist-get request
                                             :context-curation-tool-present))
@@ -3513,7 +3588,9 @@ STEPS defaults to the original three-step public-API scenario."
                  semantic-result semantic-error carrier-available
                  provider-id classifier-evidence))
           (e-cache-efficiency-e2e--report-evidence
-           (list :scenario "p3-live-native-candidate"
+           (list :scenario (if (eq authority 'normal-source)
+                               "p3-live-native-normal-source"
+                             "p3-live-native-candidate")
                  :repository-revision (e-live-e2e--repository-revision)
                  :timestamp (format-time-string "%FT%TZ" nil t)
                  :elapsed-seconds (- (float-time) started-at)
@@ -3523,11 +3600,21 @@ STEPS defaults to the original three-step public-API scenario."
                  :api (plist-get identity :api)
                  :transport (plist-get identity :transport)
                  :requester (plist-get identity :requester)
-                 :candidate-authority "ert-exact-route-wrapper"
+                 :candidate-authority
+                 (if (eq authority 'normal-source)
+                     "normal-source-candidate"
+                   "ert-exact-route-wrapper")
+                 :carrier-availability-evidence
+                 (if (eq authority 'normal-source)
+                     "normal-owner-and-native-requests"
+                   "ert-wrapper-and-native-requests")
                  :candidate-grant-count
                  e-cache-efficiency-e2e--p3-candidate-grant-count
                  :carrier-available (and carrier-available t)
-                 :production-qualification "unavailable"
+                 :production-qualification
+                 (if (eq authority 'normal-source)
+                     "isolated-source-candidate"
+                   "unavailable")
                  :semantic-result semantic-result
                  :candidate-efficiency-result candidate-efficiency-result
                  :semantic-failure
@@ -3556,7 +3643,15 @@ STEPS defaults to the original three-step public-API scenario."
           (when semantic-error
             (signal (car semantic-error) (cdr semantic-error)))
           (when condition
-            (signal (car condition) (cdr condition))))))))
+            (signal (car condition) (cdr condition)))))))))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-live-native-candidate ()
+  "Run diagnostic P3 through the private exact-route wrapper."
+  (e-cache-efficiency-e2e--run-p3-live-native 'ert-exact-route-wrapper))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-live-native-normal-source ()
+  "Run the same P3 scenario through the isolated normal-source candidate."
+  (e-cache-efficiency-e2e--run-p3-live-native 'normal-source))
 
 (ert-deftest e-cache-efficiency-e2e-test-codex-minimal-session-affinity ()
   "The normal Codex harness sends its ordinary identity in both wire fields."

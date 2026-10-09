@@ -378,7 +378,7 @@
       (should (eq (plist-get capabilities :prefix-cache)
                   'automatic-explicit))
       (should (eq (plist-get capabilities :reserved-effect-carrier)
-                  'none)))
+                  'context-curate-wire)))
     (should (e-harness-effective-layer-ids harness))
     (dolist (case '((eng-ai-gateway-opus "claude-opus-4-8")
                     (eng-ai-gateway-sonnet "claude-sonnet-5")

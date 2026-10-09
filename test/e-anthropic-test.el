@@ -908,6 +908,118 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                    :reserved-effect-carrier)
                   'none)))))
 
+(ert-deftest e-anthropic-test-context-capability-selects-only-reviewed-route ()
+  "Only the resolved gateway Opus Messages identity receives curation."
+  (let* ((provider 'eng-ai-gateway-opus-5-5)
+         (alias 'unreviewed-provider-alias)
+         (base-url
+          "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
+         (model "claude-opus-5-5")
+         (profile `(:name "Arbitrary display label"
+                    :base-url ,base-url
+                    :auth bearer
+                    :auth-header authorization
+                    :env-key "ENG_AI_MODEL_GW_KEY"
+                    :model-prefix ""
+                    :default-model ,model))
+         (e-anthropic-model-providers
+          (list (cons provider profile) (cons alias profile)))
+         (options `(:model ,model
+                    :context-lifetime-enabled t
+                    :reserved-effect-carrier context-curate-wire
+                    :context-capabilities
+                    (:reserved-effect-carrier context-curate-wire)))
+         (backend (e-anthropic-backend-create
+                   :provider provider :base-url base-url :model model))
+         (capabilities (e-backend-context-capabilities backend options))
+         (context
+          (e-anthropic--request-context
+           :provider provider :base-url base-url :model model
+           :requester 'messages-http-start
+           :messages '((:role user :content "native route dispatch"))
+           :options options))
+         (body (e-json-parse-string (plist-get context :body)))
+         (tool-names (mapcar (lambda (tool) (plist-get tool :name))
+                             (append (plist-get body :tools) nil))))
+    (should (eq (plist-get capabilities :reserved-effect-carrier)
+                'context-curate-wire))
+    (should (equal (plist-get context :url)
+                   (concat base-url "/messages")))
+    (should (member "context-curate" tool-names))
+    (should
+     (eq (plist-get
+          (e-anthropic-context-capabilities
+           provider options :base-url base-url :model model
+           :requester 'messages-http-start)
+          :reserved-effect-carrier)
+         'context-curate-wire))
+    (should
+     (eq (plist-get
+          (e-anthropic-context-capabilities
+           alias options :base-url base-url :model model
+           :requester 'messages-http-start)
+          :reserved-effect-carrier)
+         'none))
+    (dolist (route
+             (list (list :base-url "https://other.example/v1"
+                         :model model :requester 'messages-http-start)
+                   (list :base-url base-url :model "claude-sonnet-5-5"
+                         :requester 'messages-http-start)
+                   (list :base-url base-url :model model
+                         :request-function #'ignore :requester 'injected)
+                   (list :base-url base-url :model model
+                         :requester 'messages-http-sync)))
+      (should
+       (eq (plist-get (apply #'e-anthropic-context-capabilities
+                             provider options route)
+                      :reserved-effect-carrier)
+           'none)))
+    (let* ((wrong-auth-profile (copy-sequence profile))
+           (e-anthropic-model-providers
+            (list (cons provider
+                        (plist-put wrong-auth-profile :auth-header 'x-api-key)))))
+      (should
+       (eq (plist-get
+            (e-anthropic-context-capabilities
+             provider options :base-url base-url :model model
+             :requester 'messages-http-start)
+            :reserved-effect-carrier)
+           'none)))
+    (let* ((wrong-auth-profile (copy-sequence profile))
+           (e-anthropic-model-providers
+            (list (cons provider
+                        (progn
+                          (cl-remf wrong-auth-profile :env-key)
+                          wrong-auth-profile)))))
+      (should
+       (eq (plist-get
+            (e-anthropic-context-capabilities
+             provider options :base-url base-url :model model
+             :requester 'messages-http-start)
+            :reserved-effect-carrier)
+           'none)))
+    (let* ((different-label-profile
+            (plist-put (copy-sequence profile) :name "Changed display name"))
+           (e-anthropic-model-providers
+            (list (cons provider different-label-profile))))
+      (should
+       (eq (plist-get
+            (e-anthropic-context-capabilities
+             provider options :base-url base-url :model model
+             :requester 'messages-http-start)
+            :reserved-effect-carrier)
+           'context-curate-wire)))
+    (let* ((wrong
+            (e-anthropic--request-context
+             :provider provider :base-url "https://other.example/v1"
+             :model model :requester 'messages-http-start
+             :messages '((:role user :content "caller fields are not authority"))
+             :options options))
+           (wrong-body (e-json-parse-string (plist-get wrong :body))))
+      (should-not
+       (seq-some (lambda (tool) (equal (plist-get tool :name) "context-curate"))
+                 (append (plist-get wrong-body :tools) nil))))))
+
 (ert-deftest e-anthropic-test-request-body-retains-native-tool-schema ()
   "Messages carries the native operation schema without reinterpretation."
   (let* ((body
