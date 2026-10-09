@@ -72,8 +72,9 @@ Independently reviewed committed code demonstrates growing reuse in the
 configured Opus and Codex tool probes; the read-only Board audit also verifies
 actual Opus main-chat reuse.  The Board was not rerun and its historical Codex
 cause remains unknown.  Anthropic minimal-shape and public OpenAI API external
-benefit remain unconfirmed.  Remediation mechanisms are complete; production
-curation remains unavailable pending P3.
+benefit remain unconfirmed. Curation is available for the exact effective
+gateway Opus 5.5 Messages HTTP combination accepted by Review 37; other
+combinations remain unavailable pending qualification.
 
 * Evidence and cause
 
