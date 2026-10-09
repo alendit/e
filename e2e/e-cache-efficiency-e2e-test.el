@@ -3646,7 +3646,7 @@ source.  Both runs share the same prompts and evidence checks."
                                   (lambda (&rest args)
                                     (e-cache-efficiency-e2e--capture-p3-native-request
                                      'openai native requests-by-session args))))
-                         (e-cache-efficiency-e2e--p3-with-response-capture run)))))
+                         (e-cache-efficiency-e2e--p3-with-response-capture run))))))
               (unless (or (eq authority 'normal-source)
                           (and (eq authority 'ert-exact-route-wrapper)
                                (memq adapter '(anthropic openai))))
@@ -3778,7 +3778,8 @@ source.  Both runs share the same prompts and evidence checks."
                 (should (= (length captured) (length usage-events)))
                 (should (e-cache-efficiency-e2e--usage-join-complete-p joined))
                 (setq semantic-result (if semantic-error "failure" "pass")))
-            (error (setq semantic-error caught semantic-result "failure")))
+            (error (setq semantic-error (or semantic-error caught)
+                         semantic-result "failure")))
           (setq candidate-efficiency-result
                 (e-cache-efficiency-e2e--p3-measured-result
                  semantic-result semantic-error carrier-available
@@ -3839,7 +3840,7 @@ source.  Both runs share the same prompts and evidence checks."
           (when semantic-error
             (signal (car semantic-error) (cdr semantic-error)))
           (when condition
-            (signal (car condition) (cdr condition)))))))))
+            (signal (car condition) (cdr condition))))))))
 
 (ert-deftest e-cache-efficiency-e2e-test-p3-live-native-candidate ()
   "Run diagnostic P3 through the private exact-route wrapper."
@@ -3848,6 +3849,109 @@ source.  Both runs share the same prompts and evidence checks."
 (ert-deftest e-cache-efficiency-e2e-test-p3-live-native-normal-source ()
   "Run the same P3 scenario through the isolated normal-source candidate."
   (e-cache-efficiency-e2e--run-p3-live-native 'normal-source))
+
+(ert-deftest e-cache-efficiency-e2e-test-p3-live-runner-no-provider-smoke ()
+  "Exercise both shared-runner authorities through cleanup without a request."
+  (let ((process-environment (copy-sequence process-environment))
+        (e-anthropic-default-model nil)
+        (e-anthropic-default-provider nil)
+        (e-anthropic-model-providers nil)
+        (e-default-harness-specs nil))
+    (setenv "CI" nil)
+    (setenv "E_E2E" "1")
+    (setenv "E_E2E_CONFIG" "e2e/e-e2e-config-anthropic-p3.el")
+    (setenv "ENG_AI_MODEL_GW_KEY" "synthetic-only")
+    (load (expand-file-name (getenv "E_E2E_CONFIG") default-directory)
+          nil nil t)
+    (let* ((route (e-cache-efficiency-e2e--p3-live-candidate-route))
+           (normal-capabilities
+            (e-cache-efficiency-e2e--p3-route-capabilities
+             (plist-get route :provider)
+             (plist-get route :options)
+             (plist-get route :route))))
+      (should (eq (plist-get normal-capabilities :reserved-effect-carrier)
+                  'context-curate-wire))
+      (dolist (authority '(normal-source ert-exact-route-wrapper))
+        (let* ((run-body-count 0)
+               (wrapper-call-count 0)
+               (flush-report-order nil)
+               (cleanup-events nil)
+               (temporary-root nil)
+               report-record
+               (real-make-temp-file (symbol-function 'make-temp-file))
+               (real-flush (symbol-function 'e-session-flush-write-queue))
+               (real-unsubscribe
+                (symbol-function 'e-harness-activity-unsubscribe))
+               (real-store-close
+                (symbol-function 'e-session-sqlite-store-close))
+               (real-candidate-wrapper
+                (symbol-function
+                 'e-cache-efficiency-e2e--with-p3-candidate-capability)))
+          (cl-letf
+              (((symbol-function 'e-live-e2e--require-enabled)
+                (lambda () t))
+               ((symbol-function 'e-live-e2e--make-harness)
+                (lambda (store)
+                  (e-e2e-config-anthropic-p3-chat-harness-create
+                   :sessions store)))
+               ((symbol-function 'e-live-e2e--prompt-batch-before-deadline)
+                (lambda (&rest _arguments)
+                  (setq run-body-count (1+ run-body-count))
+                  (error "P3 no-provider smoke run-body failure")))
+               ((symbol-function
+                 'e-cache-efficiency-e2e--with-p3-candidate-capability)
+                (lambda (route-identity thunk)
+                  (setq wrapper-call-count (1+ wrapper-call-count))
+                  (funcall real-candidate-wrapper route-identity thunk)))
+               ((symbol-function 'e-session-flush-write-queue)
+                (lambda (store)
+                  (setq flush-report-order
+                        (append flush-report-order '(flush)))
+                  (funcall real-flush store)))
+               ((symbol-function 'e-cache-efficiency-e2e--report-evidence)
+                (lambda (record)
+                  (setq report-record record
+                        flush-report-order
+                        (append flush-report-order '(report)))))
+               ((symbol-function 'e-harness-activity-unsubscribe)
+                (lambda (harness subscription)
+                  (setq cleanup-events
+                        (append cleanup-events '(unsubscribe)))
+                  (funcall real-unsubscribe harness subscription)))
+               ((symbol-function 'e-session-sqlite-store-close)
+                (lambda (store)
+                  (setq cleanup-events
+                        (append cleanup-events '(store-close)))
+                  (funcall real-store-close store)))
+               ((symbol-function 'make-temp-file)
+                (lambda (prefix &optional dir-flag suffix)
+                  (let ((path
+                         (funcall real-make-temp-file prefix dir-flag suffix)))
+                    (when (equal prefix "e-live-e2e-")
+                      (setq temporary-root path))
+                    path))))
+            (let ((condition
+                   (should-error
+                    (e-cache-efficiency-e2e--run-p3-live-native authority)
+                    :type 'error)))
+              (should (equal (cadr condition)
+                             "P3 no-provider smoke run-body failure"))
+              (should (= run-body-count 1))
+              (should report-record)
+              (should (equal flush-report-order '(flush report)))
+              (should (equal (plist-get report-record :semantic-result)
+                             "failure"))
+              (should (equal
+                       (plist-get report-record :candidate-efficiency-result)
+                       "unconfirmed-semantic-evidence"))
+              (should (= (plist-get report-record :candidate-grant-count) 0))
+              (should-not (plist-get report-record :carrier-available))
+              (should (= (plist-get report-record :request-count) 0))
+              (should (= wrapper-call-count
+                         (if (eq authority 'normal-source) 0 1)))
+              (should (equal cleanup-events '(unsubscribe store-close)))
+              (should temporary-root)
+              (should-not (file-exists-p temporary-root)))))))))
 
 (ert-deftest e-cache-efficiency-e2e-test-codex-minimal-session-affinity ()
   "The normal Codex harness sends its ordinary identity in both wire fields."
