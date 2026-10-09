@@ -222,37 +222,6 @@
                           :durable-tail))
                  '("kept intent" "kept answer")))))))
 
-(defun e-harness-test--append-compaction-curation
-    (store session-id generation-id suffix)
-  "Append one valid curation for GENERATION-ID to SESSION-ID.
-SUFFIX makes the runtime identities and fact unique to the owning test."
-  (let* ((frame-id (format "frame-compaction-%s" suffix))
-         (consumer-id (format "consumer-compaction-%s" suffix))
-         (response-id (format "response-compaction-%s" suffix))
-         (observation-id (format "observation-compaction-%s" suffix))
-         (frame
-          (e-harness-test--curation-frame
-           generation-id frame-id
-           (format "RAW-COMPACTION-%s" suffix)
-           observation-id
-           (format "external:compaction-%s" suffix)
-           (format "compaction-fingerprint-%s" suffix)))
-         (curation
-          (plist-get
-           (e-context-lifetime-prepare-curation-disposition
-            frame
-            (list :keep []
-                  :summaries
-                  (vector (list :sources [1]
-                                :text (format "selected-%s" suffix))))
-            response-id
-            1.0)
-           :record)))
-    (e-session-append-context-curation-package
-     store session-id (list :promotion curation :erasure nil))
-    (e-session-append-context-curation-response
-     store session-id (format "turn-compaction-%s" suffix) response-id)))
-
 (ert-deftest e-harness-test-enabled-async-compaction-absorbs-curation-and-filters-provider-state ()
   "Async enabled compaction absorbs facts and excludes runtime/provider state."
   (let* ((store (e-session-store-create))

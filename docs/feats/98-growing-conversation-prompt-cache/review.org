@@ -5545,3 +5545,114 @@ operation, historical Board cause, universal benefit or whole-feature Done
 claim is supported.
 
 log-read: /private/tmp/e-retained-context-correction-focused-final.log:1–49.
+
+
+* Review 29: Independent bounded shared-fixture correction admission
+
+** Decision and identity
+
+The settled test-only correction is source/fixture-admission clear: zero
+actionable P0–P3 findings and zero required source/fixture unknowns remain in
+this increment. Review 27 production closure and Review 28 fixture/contract
+coverage carry. A fresh full canonical gate on the committed correction is
+still required; no deterministic fixed point or provider qualification is
+issued here.
+
+Reviewed uncommitted delta against
+=1786868f5fc4bc2698ccfca7e99bd942a386bc18=, production checkpoint
+=e42a89a53a2c9084b64933957712a142ce21a989=.
+Four test files change, 39 insertions/90 deletions. Independent SHA-256 of
+=git diff --binary -- test=:
+=9f723674b9a3eb31759de4abfbeaf0293612aada3b0e1bcddeff5ea72ba13538=.
+=git diff --quiet -- lisp e2e= separately returned exit 0. Supporting plan
+SHA remains
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=;
+F98-G1/C1–C6/DP1 are unchanged. No repository/Git/provider/user-state mutation
+or test execution occurred during this review.
+
+** Concrete ownership and loader closure
+
+All four diffs were independently inspected. Repository search confirms exactly
+one definition of =e-harness-test--append-compaction-curation=:
+=test/e-harness-test-support.el:126=. The competing copies in compaction
+composition, runtime mechanism and composition support are removed. The
+composition-support copy had appended the package without the typed response
+completion, so a later support load could replace the corrected implementation
+and make otherwise valid compaction scenarios fail with an unresolved anchor.
+
+The central helper directly uses the existing lifetime frame constructor and
+curation preparation, then appends package plus selected typed completion.
+It does not depend on another file's =e-harness-test--curation-frame= definition.
+The source body, observation/ref/fingerprint and selected summary contents
+remain the same; frame/consumer/response identities are valid test-local
+identities. Caller signatures and all tested compaction/staleness assertions
+are unchanged.
+
+Existing consumers already load the central support: runtime mechanism loads it
+directly; compaction composition loads composition support, which loads it.
+Loading either owner first can no longer overwrite this helper with a body
+that omits the selected response control. The shared file explicitly requires
+the lifetime constructor it now uses. No new production dependency, fixture
+compatibility switch or assertion relaxation is introduced.
+
+** Evidence and remaining gate
+
+Supplied focused evidence: all three previously failing cases passed with each
+owner-file load order, 3/3 + 3/3, with assertions unchanged. Those results are
+parent/implementer-reported; no focused log was read or execution repeated in
+this narrow review. Independent source/load-chain proof establishes the owning
+correction rather than inferring it from pass counts.
+
+The prior canonical result on =1786868f= remains 2,882/2,885 expected and three
+unexpected until a fresh full rerun closes it. Current-config 9/9 and
+credential-free E2E 74 pass/27 expected skips may carry because production/E2E
+dependencies are independently unchanged. No supplied focused result is
+promoted into full-suite acceptance.
+
+** Complete carried coverage and prior dispositions
+
+| Cell | Current disposition |
+|------+---------------------|
+| F98-G1/C1/C2 | Review 27 source closure carried; native role/order/cache policy and adapter capability declarations unchanged. |
+| C3 | source closure carried; real compaction/stale-frontier fixtures retain valid anchors independently of file load order. |
+| C4 | carried; material layout and old/new continuation fences unchanged. |
+| C5 | carried; accounting/qualification evidence and diagnostics unchanged. |
+| C6 | carried; normal declarations remain none, accepted projection and forced-effect rules unchanged. |
+| R1–R4 / R24 risks | source closure carried; only fixture ownership changes, without modifying covered-prefix, exclusions, replay or assertion semantics. |
+| R25-F1/F2/F3 | remain closed in unchanged production owners. |
+| Review 28 fixture prerequisites | carried with the global overwrite defect now removed. |
+| DP1-R1 full gate | fresh committed canonical rerun pending; unchanged config/E2E evidence carries by dependency. |
+| R5 external | pending separately; no provider result or availability inference. |
+
+** Architecture self-check, all fourteen questions
+
+1. Useful stopping point: one valid shared fixture removes load-order-dependent
+   failures while preserving accepted production behavior.
+2. Direction: meaningful canonical gate proof follows the admitted role/order.
+3. Stable/uncertain choices: shared fixture behavior is explicit; external cache
+   benefit remains uncertain and outside this correction.
+4. Ownership: one existing test-support owner replaces three competing copies.
+5. Coupling: consumers retain their existing support load paths; direct frame
+   construction avoids dependence on another global fixture definition.
+6. Dependency direction: no production dependency points toward tests.
+7. Side effects: existing public journal appends construct isolated fixtures;
+   no production callback or user state is mutated.
+8. State/lifetime: no new durable/runtime registry; helper state is test-local.
+9. Performance: production/bounded-query work unchanged; no benefit claim.
+10. Substitution: loader order no longer selects a different package/anchor
+    contract for the same fixture call.
+11. Compatibility: helper signature and genuine layout rejection remain.
+12. Legacy removal: all three stale duplicate helper definitions are removed.
+13. Errors: unresolved-anchor and stale-frontier production rules stay strict;
+    fixtures supply valid anchors rather than suppressing failures.
+14. Tests: original behavioral assertions remain; both supplied loader-order
+    runs target the prior failure, and complete canonical rerun remains required.
+
+** Delivery boundary
+
+The parent may commit the scoped test correction and rerun full canonical.
+Normal curation remains unavailable; authoritative exact-source P3 and
+independent external evidence closure remain pending. Historical negatives,
+attribution limits and unavailable credentials retain their prior scope. No
+live reload/restart, Board/store operation, universal benefit or whole-feature
+Done claim is supported. log-read: none.

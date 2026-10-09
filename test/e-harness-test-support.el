@@ -6,6 +6,7 @@
 (require 'e-harness-turn)
 (require 'e-chat-service)
 (require 'e-session)
+(require 'e-context-lifetime)
 
 (defconst e-harness-test--attachment-token 'e-harness-test-attachment)
 
@@ -121,6 +122,44 @@ mutating any production callback slot."
       (plist-put entry :attached-turn-port port))
     (e-harness-attached-turn-port-follow-up
      port prompt :references references :metadata metadata)))
+
+(defun e-harness-test--append-compaction-curation
+    (store session-id generation-id suffix)
+  "Append a curation package with its selected response-completion anchor."
+  (let* ((frame-id (format "frame-compaction-%s" suffix))
+         (consumer-id (format "consumer-compaction-%s" suffix))
+         (response-id (format "response-compaction-%s" suffix))
+         (observation-id (format "observation-compaction-%s" suffix))
+         (frame
+          (e-context-lifetime-frame-create
+           :id frame-id
+           :generation-id generation-id
+           :consumer-request-id consumer-id
+           :observations
+           (list
+            (list :observation-id observation-id
+                  :kind "current-state"
+                  :source-entry-ref (format "external:compaction-%s" suffix)
+                  :source-fingerprint
+                  (format "compaction-fingerprint-%s" suffix)
+                  :effective-delivery "inherited"
+                  :body (list :role 'system
+                              :content (format "RAW-COMPACTION-%s" suffix))))))
+         (curation
+          (plist-get
+           (e-context-lifetime-prepare-curation-disposition
+            frame
+            (list :keep []
+                  :summaries
+                  (vector (list :sources [1]
+                                :text (format "selected-%s" suffix))))
+            response-id
+            1.0)
+           :record)))
+    (e-session-append-context-curation-package
+     store session-id (list :promotion curation :erasure nil))
+    (e-session-append-context-curation-response
+     store session-id (format "turn-compaction-%s" suffix) response-id)))
 
 (provide 'e-harness-test-support)
 

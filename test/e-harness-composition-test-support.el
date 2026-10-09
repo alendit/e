@@ -266,35 +266,6 @@ Return request options, persisted anchors, and the final context."
           :context (e-harness-turn-context
                     harness "session-1" "after-refresh"))))
 
-(defun e-harness-test--append-compaction-curation
-    (store session-id generation-id suffix)
-  "Append one valid curation for GENERATION-ID to SESSION-ID.
-SUFFIX makes the runtime identities and fact unique to the owning test."
-  (let* ((frame-id (format "frame-compaction-%s" suffix))
-         (consumer-id (format "consumer-compaction-%s" suffix))
-         (response-id (format "response-compaction-%s" suffix))
-         (observation-id (format "observation-compaction-%s" suffix))
-         (frame
-          (e-harness-test--curation-frame
-           generation-id frame-id
-           (format "RAW-COMPACTION-%s" suffix)
-           observation-id
-           (format "external:compaction-%s" suffix)
-           (format "compaction-fingerprint-%s" suffix)))
-         (curation
-          (plist-get
-           (e-context-lifetime-prepare-curation-disposition
-            frame
-            (list :keep []
-                  :summaries
-                  (vector (list :sources [1]
-                                :text (format "selected-%s" suffix))))
-            response-id
-            1.0)
-           :record)))
-    (e-session-append-context-curation-package
-     store session-id (list :promotion curation :erasure nil))))
-
 (provide 'e-harness-composition-test-support)
 
 ;;; e-harness-composition-test-support.el ends here
