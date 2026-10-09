@@ -5986,3 +5986,185 @@ Overall production qualification, Codex complete P3 and public API evidence
 remain external obligations; no whole-feature Done is claimed.
 
 log-read: none.
+
+#+title: Feature 98 Isolated Opus Normal-Source Review 32
+#+startup: overview
+
+* Review 32: Independent isolated normal-source candidate Tick
+
+** Decision and exact identity
+
+Source admission is blocked by two Medium/P2 findings in the existing trusted
+capability identity/selection boundary. The wrapper-free runner and unchanged
+semantic/evidence dependencies inspected in this delta are clear, but the
+candidate is not at a deterministic fixed point and is not admitted for its
+authoritative external run. Remediate both findings together, then independently
+close the changed joins and bind the required gates to the corrected revision.
+No main/shipped availability is authorized.
+
+Reviewed isolated worktree:
+=/private/tmp/e-retained-context-opus-candidate=.
+Exact candidate:
+=9871b2cfb16e00a7c16f855b36d1ae4b81f6577a=.
+Base:
+=87a435974156e3ab9de9a4e8c17db24e1103aa1f=.
+Independent complete binary-diff SHA-256 reproduces the handed identity:
+=15755e87262d8b6e7f5521b588bd798577f8eb47171ec4b13ec645161bbde6d6=.
+The complete diff is four files, 248 additions and 26 deletions; all were read.
+Formal F98-G1/C1–C6, DP1-R1, plan.org step 5 and supporting plan SHA-256
+=e4959fb16ba5e3ac873c0bc07596fc6da18720d3bc0b7e59691bdec89548879a=
+retain their admitted authority. Review 31 admits only this separate unpublished
+effective-route candidate and subsequent wrapper-free qualification sequence.
+
+** R32-F1: Provider symbol incorrectly determines effective capability
+
+Priority: Medium/P2. Contracts: F98-C6, effective-capability selection under
+C1/C2 and plan.org step 5. Owner:
+=lisp/adapters/anthropic/e-anthropic.el:1243–1253=;
+the new test at =test/e-anthropic-test.el:911–1025= prescribes the defect.
+
+The candidate matcher compares the entire identity against a quoted plist
+containing =:provider eng-ai-gateway-opus-5-5=. The new test deliberately maps
+both that symbol and =unreviewed-provider-alias= to the identical trusted
+profile and asserts the alias gets =none=. Thus two normal backend/native
+requests to the identical resolved endpoint/model/auth/API/transport/requester
+have different availability solely because the configuration symbol differs.
+Changing the display name is tested, but that does not establish provider-symbol
+independence.
+
+Independent credential-free public composition reproduced:
+
+#+begin_example
+provider=eng-ai-gateway-opus-5-5
+backend-carrier=context-curate-wire
+endpoint=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages
+native-model=claude-opus-5-5 native-curation=t
+
+provider=review-equivalent-alias
+backend-carrier=none
+endpoint=https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages
+native-model=claude-opus-5-5 native-curation=nil
+#+end_example
+
+Both profiles shared the same endpoint/auth/model declarations and synthetic
+environment-token source. Options included copied carrier/capability fields;
+they did not change either result. No provider request was dispatched.
+
+This is not useful unknown-route conservatism: none of the trusted effective
+dimensions changed. F98-C6 selects an effective adapter/API/model capability;
+step 5 restricts the tested effective combination, and plan.org:531 explicitly
+states provider labels cannot supply capability proof. Provider identity remains
+useful provenance but must not become a substitute capability dimension.
+
+Smallest correction: keep this decision in the existing adapter owner; compare
+the tested resolved endpoint/model/auth/API/transport/requester fields rather
+than the cosmetic provider symbol. Preserve the provider field in diagnostics
+and retain every genuinely unknown or changed effective-field rejection. Invert
+the equivalent-alias assertion and prove it through both ordinary backend
+capability and actual native constructor/tool serialization, alongside the
+existing wrong-endpoint/model/auth/requester/injected negatives. Do not broaden
+endpoint equivalence, add a policy option or grant an unsupported route.
+
+** R32-F2: Supplied resolved model is prefixed a second time
+
+Priority: Medium/P2. Contracts: F98-C6/C4 effective model re-evaluation and
+step 5 exact normal-source identity. Owner:
+=e-anthropic--context-capability-identity= at =e-anthropic.el:1215–1241=,
+with consequential callers at =2671–2697= and =2734–2754=.
+
+The backend and native request owners already call
+=e-anthropic--provider-model= and pass their =resolved-model= into the
+capability owner. The identity helper calls that resolver again on the supplied
+model. For a supported nonempty =:model-prefix=, the capability identity no
+longer identifies the model actually dispatched. All new candidate tests use an
+empty prefix, so they cannot distinguish these representations.
+
+Independent credential-free witness used the admitted provider symbol and exact
+gateway endpoint/auth, with =:model-prefix "claude-"= and raw option model
+="opus-5-5"=. It reproduced both helper and actual compositions:
+
+#+begin_example
+resolved="claude-opus-5-5"
+identity-model="claude-claude-opus-5-5"
+carrier=none
+prefixed-option backend-carrier=none
+native-model="claude-opus-5-5" native-curation=nil
+#+end_example
+
+The native body uses the once-resolved canonical model, while the candidate
+selector denies that same tested effective model because its identity contains
+the twice-prefixed string. This is an activated defect in the changed capability
+dependency, not a need to support an unqualified model. Existing prefixed-model
+serialization remains valid and must not be weakened to fit the matcher.
+
+Smallest correction: document and enforce the existing shared representation
+boundary. A supplied effective =:model= is already resolved and must be used
+directly; only a raw options/profile/backend-default fallback is resolved once.
+Keep actual wire model and backend/direct-request identity equal. Audit the
+identity helper's consumers together: normal backend and native capability,
+private diagnostic wrapper identity, candidate route construction and native
+capture/report provenance. Do not fix only the matcher or strip prefixes
+heuristically. Add backend/native/captured-identity assertions for prefixed raw
+options and backend default, plus a changed actual model negative; retain
+unsupported-route and caller-copied-map denial.
+
+** Remaining changed cells and carried coverage
+
+| Cell / consequential seam | Disposition |
+|---------------------------+-------------|
+| Exact effective route selection | candidate; R32-F1/R32-F2 block closure. |
+| Backend/native pre-dispatch authority | source mechanism clear, representation defects above; both boundaries re-evaluate actual route rather than trust copied options. |
+| Unknown endpoint/auth/model/requester and injected transport | current strict fences retained; required remediation must preserve them. No universal endpoint/model grant admitted. |
+| Normal-source runner authority | cleared; =p3-run-with-authority= normal branch calls the thunk directly only after normal owner selection, without the diagnostic wrapper or grant proxy. |
+| Native availability / report truthfulness | cleared; carrier availability requires normal owner result, nonempty captures and actual native curation schema presence. Report labels isolated-source candidate separately from wrapper availability. |
+| Scenario / semantic predicate / full attribution | cleared/carried; one shared run function retains the exact prompts, public SQLite lifecycle, four strict packages, all actual request/usage/finish joins and unchanged P3 predicate. |
+| Prior diagnostic path | retained unchanged through the separate wrapper authority; normal source does not fabricate grants. The grant counter is initialized locally to zero and reported. |
+| Accepted projections / native prefix / replay | Review 30 deterministic source coverage carries; no codec, journal, core projection, compaction, continuation or renderer change in this delta. |
+| F98-G1/C1 | prior retained-context proof carries; current normal candidate selection remains blocked. No fresh normal-source provider benefit has been measured. |
+| C2 | compatible cache policy and caller-control prohibition carry; candidate changes only trusted curation selection. |
+| C3 | canonical retained data/order/lifecycle and all prior findings remain closed; no semantic rewrite. |
+| C4 | material layout/capability fences carry; resolved model representation requires R32-F2 closure. |
+| C5 | shared complete evidence/accounting carries; normal report adds explicit authority/status labels without changing classifier evidence. |
+| C6 | effective selection blocked by two findings; core admission/effect/forced-call and accepted-record replay coverage carries unchanged. |
+| Review 31 external | bounded Opus wrapper P3 positive remains positive; both Codex records remain separate complete nonqualification. It does not substitute for normal-source qualification. |
+
+The changed current-config expectation applies only to the isolated candidate:
+it now expects the trusted tested-route carrier and still asserts no public
+cache/carrier knobs. It does not imply main was enabled. Normal-source run is
+restricted to the dedicated Opus configuration; its captured native constructors
+still delegate to the original constructor. No body/layout override, registry,
+new public cache control or persistence owner was introduced.
+
+** Gates, architecture and next boundary
+
+Parent-supplied focused results are 2/2 owner and 4/4 P3 E2E, with parens/diff
+checks green. The required exact-candidate canonical/current-config/full
+credential-free E2E gates were still pending during source review. They cannot
+clear the two independently reproduced contract defects; source remediation
+invalidates their changed-source acceptance identity. Prior Review 30 canonical
+2,885/2,885 and unchanged config/E2E results remain historical baseline evidence,
+not a passing normal-source candidate gate. No broad gate rerun was performed.
+
+All fourteen architecture questions were considered, carrying unchanged prior
+answers with these deltas: (1) useful stopping is the retained-context fixed
+point plus a separately qualified route; (2) capability-driven direction needs
+F1 correction; (3) qualification uncertainty stays explicit; (4) existing adapter
+owner is correct; (5) one identity seam needs F2 correction across consumers;
+(6) no reverse core/provider dependency; (7) no main/runtime side effect;
+(8) disposable evidence and no new persistent state; (9) no unmeasured benefit
+forecast; (10) aliases/canonical-model substitution need the two findings closed;
+(11) existing layout/unsupported-route fences preserved; (12) no legacy mode or
+policy switch added; (13) errors and absent carriers remain conservative;
+(14) focused tests must distinguish effective identity from provider spelling
+and raw versus resolved model, followed by exact complete gates and actual
+wrapper-free evidence.
+
+Review operations were read-only source/Git comparisons and two isolated
+=emacs -Q --batch= credential-free constructor/helper probes. The probes used
+process-local synthetic token values, made no network/provider calls and did
+not touch the user's Emacs, Board or stores. Only this private review artifact
+was authored. Main remains none; normal-source external P3, independent external
+closure and identical admitted publication remain required after source/gate
+closure. No full-feature Done or historical Board cause is claimed.
+
+log-read: none.
