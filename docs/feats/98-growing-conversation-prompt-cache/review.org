@@ -6544,3 +6544,137 @@ external evidence closure must precede identical admitted publication.
 log-read: /private/tmp/e-retained-context-gates-opus-r32-eldev.log:3815–3823;
 /private/tmp/e-retained-context-r33-current-config-final2.log:1–6;
 /private/tmp/e-retained-context-r33-cache-e2e.log:113–121.
+
+#+title: Feature 98 Isolated Opus Runner Failure Review 35
+#+startup: overview
+
+* Review 35: Actual shared-runner control-flow defect
+
+** Decision and rebaseline
+
+One confirmed Medium/P2 runner defect blocks authoritative wrapper-free P3.
+Review 34's shared-runner execution-cell clearance is withdrawn; its production
+identity, authority design, configuration equivalence and completed gate facts
+remain valid. The gate suite skipped the live entry points and did not execute
+this malformed form. Balanced parentheses and helper-level authority tests did
+not establish actual runner execution.
+
+The attempted run at
+=c0912987023836d0fee130defb4845fd3328bef3= is a repository execution failure,
+not provider/cache evidence. It fails before provider calls and report emission.
+There is no evidence JSON or P3 qualification result to accept. Preserve the
+failed raw log and do not replace it with a successful-test/cache interpretation.
+Main remains unavailable, and the next actual run remains pending corrected
+source/evidence-owner closure.
+
+The attempted revision is a documentation-only descendant of independently
+reviewed =7395a4d25162e5395fa1ff0176214d5ffef1d7ad=.
+Independent =git diff --quiet 7395a4d..c0912987 -- lisp test e2e= returned exit 0.
+F98-G1/C1–C6, DP1-R1, plan.org step 5 and the admitted supporting plan are
+unchanged. No production owner or native semantic correction is called for by
+this defect.
+
+** R35-F1: Misplaced closing parenthesis invalidates binding and handler scopes
+
+Priority: Medium/P2. Contracts: F98-C5/C6 and step 5's executable actual
+normal-source acceptance route. Owner:
+=e-cache-efficiency-e2e--run-p3-live-native= in
+=e2e/e-cache-efficiency-e2e-test.el=, especially =3636–3661= and its final
+closing delimiters at =3837–3841=.
+
+The =capture-and-run= lambda closes without closing its surrounding binding
+list before the =unless= authority guard. The reader therefore interprets the
+guards and authority call as additional let bindings, not body forms. The
+intended =(error (setq condition caught))= handler becomes the malformed let's
+body. Flush and evidence/report code are absorbed as condition-case handlers.
+The file is balanced and readable but its executable control structure is wrong.
+
+Independent inspection of the actual read function form reports:
+
+#+begin_example
+CONDITION protected-head=let
+  handler-heads=(e-session-flush-write-queue let*)
+INVALID-BINDING name=unless length=3
+  all-binding-names=(capture-and-run unless when p3-run-with-authority)
+  body-heads=(error)
+INVALID-BINDING name=when length=3
+INVALID-BINDING name=p3-run-with-authority length=5
+CONDITION protected-head=progn handler-heads=(error)
+#+end_example
+
+The second, valid condition-case is the later semantic assertion block. The
+first must instead protect a let with only =capture-and-run= as its binding,
+authority guard/call as its body, and exactly its error handler. Flush and
+evidence/report processing must follow as ordinary sibling forms.
+
+The actual ERT run corroborates this source structure. Raw log condition:
+
+#+begin_example
+(error "`let' bindings can have only one value-form" unless
+       (or (eq authority 'normal-source)
+           (and (eq authority 'ert-exact-route-wrapper)
+                (memq adapter '(anthropic openai))))
+       (error "Unsupported P3 source authority: %S" authority))
+#+end_example
+
+It reports one selected test, zero expected results and one unexpected, before
+native/provider execution. The raw log
+=/private/tmp/e-retained-context-p3-opus-normal-source-20261009.log= has SHA-256
+=80a2064251a5aaeecfe658a45d54da6e751e079ffe820c7804337ff7eb6e05d4=
+and zero =E98_CACHE_EVIDENCE= markers. Its backtrace contains the same malformed
+binding/handler structure. This is one owning control-flow finding, not separate
+policy, parser or provider defects.
+
+** Minimal correction and required proof
+
+Relocate the missing binding-list closing parenthesis after the lambda at
+line 3649, with the compensating terminal delimiter removed. Preserve the
+existing shared owner and scenario; do not redesign or weaken authority,
+semantic checks, provenance, the four-package requirement or P3 predicate.
+Review the resulting read/expanded form so the intended error catch, subsequent
+flush and report/re-signal forms have the scopes stated above.
+
+Add a no-provider smoke regression that calls the actual shared runner rather
+than only =p3-run-with-authority=. Exercise both diagnostic and normal-source
+entry modes and an intentional run failure. Use bounded synthetic interactions
+and existing private harness machinery; no provider request or fabricated
+normal-source qualification is required. Establish that the run body is reached,
+normal-source never invokes the wrapper/grant proxy, flush and report processing
+are reached in the intended order, an error remains nonpositive and is re-signaled,
+and harness subscription/store/temp-root cleanup executes. Missing or synthetic
+observations must remain conservative evidence, not be relabeled as live benefit.
+
+Also compile/check the actual shared runner form with its real macros available
+so malformed binding/handler control structure is rejected before another live
+attempt. A paren-balance/read check or skipped credential-gated test alone is
+insufficient. The owning evidence correction is E2E-only: canonical production/
+unit and configured-startup evidence may carry if their exact dependencies stay
+unchanged; rebind focused actual-runner and credential-free E2E proof to the
+corrected committed source and independently close this finding first.
+
+** Coverage and delivery boundary
+
+| Cell | Current disposition |
+|------+---------------------|
+| R32-F1/F2 | closed/carried; effective route selection and once-resolved native model remain correct. |
+| R33-F1/F2 | closed/carried; independent diagnostic route eligibility and adapter-specific wrapper comparison remain correct. |
+| Actual shared runner execution, catch/flush/report | candidate; R35-F1, required smoke/compile proof pending. |
+| Native semantic protocol, all request joins and P3 predicate | source design/evidence rules carried; this failed attempt establishes no observations or benefit. |
+| Prior retained context / replay / compaction / fork / layout proof | unchanged deterministic coverage carries. |
+| Review 34 gates | completed facts remain true; external skips do not prove runner execution, and selected fixed-point execution cell is reopened. |
+| Review 31 Opus/Codex records | historical bounded wrapper positive and separate Codex nonqualification retain their original source/shape scope. |
+| F98-C5/C6 / step 5 external | blocked on repository runner correction; no valid new provider contradiction or cache qualification has occurred. |
+
+All fourteen architecture answers carry Review 34 except test/evidence sufficiency
+and error-control-flow realization now require this owning correction. Existing
+source/authority ownership, effective-field boundaries, no new public controls,
+state/lifetime and production publication constraints remain appropriate. The
+required useful stopping point is corrected executable evidence owner plus its
+deterministic closure, followed by the still-pending actual wrapper-free run.
+
+No source/Git write, provider call or user Emacs/Board/store operation was
+performed during review. Only this private immutable review artifact was authored.
+No main enablement, provider-causal failure or whole-feature Done is claimed.
+
+log-read: /private/tmp/e-retained-context-p3-opus-normal-source-20261009.log:5–7,
+19–32.
