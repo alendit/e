@@ -5475,7 +5475,7 @@ source.  Both runs share the same prompts and evidence checks."
                          (e-cache-efficiency-e2e--f99-safe-wire-type
                           (car-safe caught))
                          :http-status
-                         (e-cache-efficiency-e2e--f99-current-http-status)
+                         e-cache-efficiency-e2e--f99-current-http-status
                          :message
                          (e-cache-efficiency-e2e--f99-redacted-error-text
                           (error-message-string caught))
@@ -5679,7 +5679,7 @@ source.  Both runs share the same prompts and evidence checks."
                            (e-cache-efficiency-e2e--f99-safe-wire-type
                             (car-safe caught))
                            :http-status
-                           (e-cache-efficiency-e2e--f99-current-http-status)
+                           e-cache-efficiency-e2e--f99-current-http-status
                            :message
                            (e-cache-efficiency-e2e--f99-redacted-error-text
                             (error-message-string caught))
