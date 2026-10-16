@@ -5631,7 +5631,7 @@ source.  Both runs share the same prompts and evidence checks."
                                 harness session-id
                                 (e-cache-efficiency-e2e--f99-probe-prompt step)
                                 deadline))
-                              (answer (e-cache-efficiency-e2e--assistant-content result)))
+                              (answer (e-live-e2e--assistant-content result)))
                          (if (eq (plist-get result :status) 'done)
                              (unless (string-match-p
                                       (format "PROBE-%d-CODE=%d" step (+ 731 step))
@@ -5681,7 +5681,7 @@ source.  Both runs share the same prompts and evidence checks."
                                             unavailable-empty-completion))
                                     (format "unavailable:%s" failure-class)
                                   "unresolved-failure"))
-                               (t "pass"))))))
+                               (t "pass")))))
               (error
                (setq run-condition caught
                      failure-class
@@ -5700,7 +5700,7 @@ source.  Both runs share the same prompts and evidence checks."
                            (e-cache-efficiency-e2e--f99-redacted-error-text
                             (error-message-string caught))
                            :classification (symbol-name failure-class))
-                     semantic-result "unresolved-failure")))
+                     semantic-result "unresolved-failure"))))
       (let* ((requests (gethash session-id requests-by-session))
              (start-payloads
               (mapcar (lambda (event) (plist-get event :payload))
