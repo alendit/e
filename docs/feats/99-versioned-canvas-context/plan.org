@@ -4,241 +4,223 @@
 
 * Status and authority
 
-Planned. Implementation has not started.
-The operator requested two improvements: correct canvas placement in the Anthropic adapter, and versioned canvas snapshots with diffs.
-Snapshot selection uses bytes, not percentages of changed lines.
-This plan records that scope; it does not authorize implementation, changing the running Emacs, or modifying a live Daily or session store.
+Planned; implementation-plan validation is in progress.
+The operator authorized validation and implementation on 2026-10-16 through =my-skills:complex-work=.
+The accepted direction is canvas reference-data placement plus versioned snapshots and exact diffs, with byte-based selection rather than changed-line percentages.
+Section checkouts remain a follow-up, and existing targeted =read= operations remain available.
+The [[file:../../references/runtime_concepts.org][runtime vocabulary]] and [[file:../98-growing-conversation-prompt-cache/plan.org][Feature 98]] remain dependency authorities.
+The numbered contract rows below are this feature's sole normative requirements; the supporting implementation appendix is replaceable while those rows remain satisfied.
 
-The first implementation keeps a known snapshot, exact changes against it, and bounded snapshot fallback.
-Section checkouts are a follow-up: use the existing targeted =read= operation in the meantime rather than adding a second document API.
-The [[file:../../references/runtime_concepts.org][runtime vocabulary]] and the [[file:../98-growing-conversation-prompt-cache/plan.org][Feature 98 cache contracts]] remain authoritative.
-This work must preserve current-state freshness, evidence provenance, curation exclusions, and the distinction between reference data and instructions.
+* Behavioral goal
 
-* Goal and direct scenario
+| Field | Record |
+|-------+--------|
+| Goal | F99-G1 |
+| Behavior | A mostly unchanged attached canvas remains current and usable without repeatedly replacing the reusable conversation prefix or adding duplicate document-body observations. |
+| Direct scenario | A Daily is open; the user changes a checkbox, the agent edits a section through ordinary resource tools, and intervening tools leave the document unchanged. Requests use the correct revision and stale agent writes preserve newer user text. Compaction or lost context establishes a valid new baseline. |
+| Product authority | The operator owns behavioral changes; the primary may resolve supporting implementation choices within the authorized two-issue scope. |
+| Owning contracts | C1–C7 below |
+| Behavioral status | Unavailable before implementation; historical cache observations do not establish F99 behavior. |
 
-=F99-G1=: A mostly unchanged canvas remains current and usable without repeatedly replacing an early prompt prefix or appending duplicate document bodies.
-Small edits should add a small exact change after the reusable conversation prefix.
-The complete document must remain recoverable from the model's active context, independently of whether a provider cache hits.
+* Current evidence
 
-Direct scenario: a Daily is open while the user changes a checkbox, the agent edits a section, and intervening tool calls leave the document unchanged.
-Every request sees the correct revision, user edits survive, and unchanged conversation history retains its native prefix.
-After compaction or loss of the required baseline, the next request establishes a fresh snapshot instead of delivering an unusable diff.
+[[file:../../../lisp/layers/chat/e-chat-session.el::e-chat-session-context-attachments-provider][Attachment context]] renders complete live-buffer/file text as dynamic system context.
+[[file:../../../lisp/layers/org-canvas/e-org-canvas-capabilities.el::e-org-canvas--context-provider-messages][Org Canvas context]] also mixes instructions with focus/visibility metadata.
+[[file:../../../lisp/adapters/anthropic/e-anthropic.el::e-anthropic--system-blocks][Anthropic]] hoists system messages before conversation history; automatic caching and rolling markers already exist.
+Claude's [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache][cache hierarchy]] explains why changing this prefix can invalidate later reusable history.
 
-Success concerns both semantics and useful reuse.
-Resending fewer wire bytes is not sufficient if the model loses the document; a stable-instructions cache hit is not sufficient if document changes force the whole conversation to be processed again.
+The October 16 read-only audit observed 170 usage-bearing requests in the October 14 Daily parent chat: 18,111,932 input tokens, including 17,453,809 cache reads, 657,763 writes, and 360 fresh tokens.
+These are whole-request observational counters, not canvas-only cost or proof of an individual miss's cause.
 
-* Current behavior and evidence
+[[file:../../../lisp/core/e-harness-context-runtime.el::e-harness-context-lifetime-apply-projection][Current projection]] appends current observation segments after durable history, while completed lifetime frames contribute no observation bytes.
+Retaining an old chain at that moving frontier alone would not preserve its position among later messages.
+Ordinary [[file:../../../lisp/core/e-operations.el::e-operation-write][write/edit dispatch]] currently has no expected-revision argument; file/buffer coherence alone cannot detect an already saved coherent user edit.
+Attachment capture is complete and currently uncapped; ordinary read-result limits do not bound it or a diff algorithm.
 
-- [[file:../../../lisp/layers/chat/e-chat-session.el::e-chat-session--attachment-content][Attachment content]] reads the entire live buffer, including unsaved edits, or the file when no live buffer exists.
-  [[file:../../../lisp/layers/chat/e-chat-session.el::e-chat-session-context-attachments-provider][The attachment context provider]] renders the current document as a system message under =dynamic-context=.
-- [[file:../../../lisp/layers/org-canvas/e-org-canvas-capabilities.el::e-org-canvas--context-provider-messages][Org Canvas context]] separately contributes instructions, point, heading, focus, and visibility state.
-  Document revision must not change merely because the user moves point or folds a heading.
-- [[file:../../../lisp/core/e-context.el::e-context-source-create][Source descriptors]] already derive an evidence handle and digest from document identity and content.
-  [[file:../../../lisp/core/e-harness-context-runtime.el::e-harness-context-runtime--context-observation-frontier][The harness observation frontier]] already distinguishes current-state delivery and fingerprints; reuse these semantic boundaries rather than inventing another session authority.
-- [[file:../../../lisp/adapters/anthropic/e-anthropic.el::e-anthropic--system-blocks][Anthropic system serialization]] puts system messages before conversation messages.
-  Automatic caching and rolling markers already exist; the problem is not an unconditional absence of caching.
-- [[file:../../../lisp/adapters/openai/e-openai-responses.el::e-openai-responses--instructions][Responses serialization]] can send complete current state through request-local instructions.
-  The new revision semantics must preserve correctness on full requests and on any separately qualified continuation route.
+* Contract and evidence authority
 
-The read-only October 16 audit observed 170 usage-bearing requests in the October 14 Daily parent chat: 18,111,932 input tokens, including 17,453,809 cache reads, 657,763 cache writes, and 360 fresh tokens.
-These whole-request counters do not isolate the canvas, establish the cause of individual misses, or prove a prospective saving.
-The audited parent used the configured Opus route; the numbers do not establish another provider's behavior.
+All rows begin =proposed= until their establishing package is accepted.
+S1–S5 are deterministic; E1/E2/P3 are external compatibility evidence.
+Unthresholded bytes, CPU/memory, latency, and usage totals are observational for every row.
+An unavailable external route does not fail an independent deterministic row.
 
-Claude's [[https://platform.claude.com/docs/en/build-with-claude/prompt-caching#what-invalidates-the-cache][cache hierarchy]] orders tools, system, then messages; a changed prefix can invalidate later cached content.
-The design implication is to keep changing document data out of the early instruction prefix, while retaining genuine system/developer authority.
-Actual benefits on the configured gateway require fresh joined request and usage evidence.
+| ID | Observable invariant | Semantic owner / public composition | Lifetime, bound, recovery | Evidence | Establishing package |
+|----+----------------------+-------------------------------------+--------------------------+----------+----------------------|
+| F99-C1 | Attached canvas text is reference data after reusable history; genuine instructions retain authority and native tool-call/result pairing remains valid. Volatile editor metadata does not rewrite an earlier conversation prefix. | Context semantic boundary and native adapters; ordinary chat/Org Canvas requests | Request projection; incompatible layouts reject old anchors | S1/S4; external not required for serialization correctness | DP1 |
+| F99-C2 | One captured source reconstructs one exact complete resulting revision and full-document evidence handle, including unsaved text, Unicode, deletions, and empty content. | Attachment capture and pure revision/patch policy; capture to model document | Source-consistent text/hash; no lossy patch base | S2; external not required | DP2 |
+| F99-C3 | An unchanged revision adds no new body observation. Accepted baseline/changes retain positions among later selected history, and full requests include every required byte independently of provider memory. | Harness context chronology; ordinary initial/tool/user follow-ups | Selected-path insertion boundaries; reset replaces superseded chains | S1/S3; external not required | DP2 |
+| F99-C4 | Representation selection uses serialized UTF-8 payload bytes; construction and retained change chains are bounded. Missing bases or explicit construction limits select a complete snapshot, never truncated data or hidden encoding errors. | Pure capture/patch/selection policy; context construction | Bounds apply to full operands and active chain, separately from context-window admission | S2/S3; private-default checks are mechanism evidence | DP2 |
+| F99-C5 | Only accepted request/context state establishes a baseline for the same document, branch, generation, and native layout. Failed sends and stale completions cannot advance it. State has the smallest rebuildable process-local lifetime; loss resets safely and authorized curation exclusions remain effective. | Harness context/lifetime and response settlement; retry, branch, compaction, reopen | Pending versus accepted state; no new durable authority or resurrection of excluded sources | S3/S4; external not required | DP2 |
+| F99-C6 | Ordinary advertised revision-aware write/edit operations targeting an attached canvas require the caller's expected revision and atomically compare it with the authoritative resource. Stale/missing expectations change nothing and return a bounded visible conflict/current revision. Supported file/buffer aliases share the guard. Non-canvas operations keep existing semantics. Arbitrary shell or unrestricted Lisp mutation is outside this resource-operation guarantee. | Operation dispatch and resource mutation owners; ordinary write/edit/read tools | Request-scoped target identity; read/reconsider after conflict; unsupported methods make no revision-aware promise | S5; external not required | DP2 |
+| F99-C7 | Changed-layout cache/curation qualification has an honest enforced disposition: unconfirmed material routes do not advertise qualified curation, successful evidence enables only its exact route, and semantic, growing-reuse, and capability results stay separately reportable. Existing F98 gates remain authoritative. | Adapter capability/evidence owners; normal capability selection and isolated probe paths | F98 identity, freshness, failure classification, and qualification rules | S4 plus E1/E2 and applicable F98-P3; initial changed-layout capability-unconfirmed | DP3 |
 
-* Contracts
+* Supporting implementation appendix
 
-| ID | Required behavior |
-|----+-------------------|
-| F99-C1 | Canvas contents are reference data at a stable semantic position; real instructions retain their authority and tool-call/result pairing remains valid. |
-| F99-C2 | A snapshot or exact diff determines one complete current document revision, including unsaved edits, deletions, Unicode, and empty content. |
-| F99-C3 | An unchanged revision contributes no new document-body observation; full stateless requests still contain the baseline and required changes. |
-| F99-C4 | Diff selection compares serialized UTF-8 byte sizes; bounded chains and missing baselines cause an explicit fresh snapshot. |
-| F99-C5 | Baseline eligibility follows accepted model context, branch, generation, document identity, and request outcome, not merely the last attempted send. |
-| F99-C6 | Writes against an obsolete document revision fail visibly without overwriting newer user changes. |
-| F99-C7 | Provider rendering preserves the reusable prefix and existing capability gates; semantic, cache-efficiency, and route-qualification results are reported separately. |
+This appendix chooses a feasible initial design for the rows above; its private names, representation, and tuning values may change with equivalent contract evidence.
 
-* Ownership and state
+** Owners and smallest faithful design
 
-The attachment/resource boundary owns exact text capture and document identity, preferring the live buffer as it does today.
-It produces a snapshot from one consistent read; revision hashing and diffing must use that same captured text.
-The shell owns presentation state such as point, heading, and folds, not document history or provider policy.
+Source capture stays at the attachment/resource boundary, preferring the live buffer to disk.
+Pure revision, patch, and selection operations belong beside the context owner, without file I/O or provider calls.
+The harness owns derived document chronology and pending/accepted state, and adapters only translate it.
+The shell retains presentation state; resource owners retain atomic mutation.
+No version-control service, database schema, durable canvas transcript copy, new document tool family, or provider-specific canvas subsystem is needed.
 
-The harness context layer owns snapshot/diff selection and the representation known to be present in the active context.
-Keep the selection policy pure: given a captured document, an eligible baseline/chain, and limits, return a snapshot, diff, or unchanged decision.
-I/O, lifecycle settlement, and provider serialization stay outside that operation.
-Place the small document-specific implementation beside the existing attachment/context owners; do not introduce a general version-control service or a provider-specific canvas subsystem.
+A full replacement-only frontier is smaller and is the useful DP1 stopping point, but cannot establish C3's exact append-preserving changes.
+A durable retained-context copy adds another authority and the wrong lifetime for C5.
+The selected alternative is one process-local harness document chronology, one linear patch operation, and a narrow addition to existing resource operations.
 
-The backend adapter owns native role, ordering, framing, cache markers, and continuation compatibility.
-Canvas data must not be promoted into instructions, synthesized as a fake tool call, or enabled by a fabricated capability grant.
-If native encoding needs a new semantic distinction, define it narrowly in the existing context contract and cover every shipped serializer.
-Do not broadly reinterpret existing system messages or reuse durable retained-context records to preserve a canvas beyond its authorized lifetime.
+** DP1 semantic split
 
-The actual buffer/resource remains the source of truth.
-A model-context baseline is a derived, process-local chain scoped to document URI, selected branch/context generation, and compatible native layout.
-Retain exact text needed to reconstruct that chain only while it serves the active context; release obsolete branches and pending requests through existing lifecycle cleanup.
-Do not persist every refresh, duplicate the SQLite transcript, or require a new database schema for this package.
-After restart, missing state means a new snapshot, not inferred provider memory.
+Separate stable canvas behavior instructions, canvas reference data, and volatile focus/visibility data at their contributing context boundaries.
+Use the existing reference-data role where it faithfully represents the semantics, with narrow metadata distinguishing active canvas data from instructions/retained facts.
+Do not reinterpret arbitrary system messages, synthesize tool calls, or persist active canvas data through the retained-fact journal.
+All shipped serializers consume the same semantic split; Anthropic maps data to native reference content after the canonical conversation prefix.
+Responses/Chat Completions preserve genuine instruction authority and valid native tool pairing.
+DP1 still supplies a complete current snapshot at the request frontier.
+Material layout identities cover the new distinction independently of optional curation carriers; affected routes remain unconfirmed until DP3.
 
-Document revision is a content hash of the exact property-free source text under the existing evidence encoding rules.
-Use explicit UTF-8 encoding for size calculations, with no extra whitespace or newline normalization.
-URI is a separate identity component; equal text in two canvases does not share a mutable cursor.
-Focus and visibility metadata neither enter the document hash nor precede reusable history as changing system text.
-An effective current-state source handle must still identify the complete resulting revision, even when the request presents it through a baseline and changes.
+** Exact source, patch, and byte policy
 
-* Snapshot and diff representation
+Capture immutable property-free source text once and use that same value for hashing, evidence, and patching.
+Use the existing evidence encoding rule for the content hash, explicit UTF-8 for payload size, and no additional whitespace/newline normalization.
+URI remains a separate identity; focus/folds do not enter the document revision.
 
-** Logical context versus transport
+Choose a single exact replacement span derived from common-prefix/common-suffix scans of the complete old and current strings.
+The suffix scan does not overlap the prefix; positions are character boundaries and replacement text is exact.
+Applying the span to the baseline must reproduce the captured result and hash before publication.
+The algorithm has linear work/allocation bounded by the complete operands, avoiding arbitrary superlinear multi-hunk diff work on the Emacs thread.
+Escaping and applying the payload also remain linear.
+Capture still reads the complete attachment: read-tool truncation is not an attachment cap, and ordinary context-window handling remains independent.
+Benchmark separated edits as well as one-checkbox changes; separated small edits may select a snapshot rather than justify a multi-hunk engine by default.
 
-A snapshot contains the exact captured text, document URI, resulting revision, and reference-data framing.
-A diff names its exact base revision and resulting revision and carries deterministic, lossless changes.
-Validate locally that applying the diff to the base yields the captured current text and resulting hash before it can be sent.
-Use readable text hunks with exact positions and replacement content; do not use fuzzy matching or lossy model-generated summaries as the patch format.
-Line-oriented hunks are acceptable for readability; their line counts never drive representation selection.
+Measure complete backend-neutral model-facing UTF-8 payloads, including URI/revision fields, coordinates, replacement text, escaping, and framing.
+Compare a patch with a snapshot of the same current source under the same envelope rules.
+Provider-specific envelope bytes are observed separately; bytes are not exact tokenizer or billing estimates.
 
-Keep the baseline and accepted changes in their original order within the derived model-context chain.
-An unchanged document adds no new body; a change appends a new data observation after the reusable history prefix.
-Do not rewrite an earlier snapshot to the newest document on every turn, move an old patch to the newest tail, or send a diff alongside a second full copy of its resulting document.
-New snapshots supersede the previous chain in the next selected projection; they do not leave an unbounded collection of obsolete documents in model context.
-A snapshot reset is an intentional cache boundary whose cost must be measured.
+Initial private defaults for implementation experiments:
+- Choose a snapshot without an eligible complete baseline/chain.
+- Equal resulting hash chooses no new observation.
+- Otherwise choose a snapshot when patch bytes are at least 30% of snapshot payload bytes, when cumulative patch payload bytes would reach one current snapshot payload, or when the next patch would exceed 16 patches since the baseline.
+- Otherwise append the exact patch.
 
-For a full API request, serialize the complete required baseline and change chain again unless a qualified provider continuation already supplies them.
-Provider caching may reuse those prefix tokens, but it does not make the underlying context unnecessary or remove its context-window occupancy.
-The unchanged decision therefore means no new observation, not omission of required context from a stateless request.
+These values are tuning candidates, not stable product contracts or provider cache switches.
+Use integer comparisons and explicit equality cases, including empty documents, and report realistic byte/runtime comparisons before retaining or revising them.
+Changing the constants invalidates their mechanism checks rather than the semantic portfolio.
+Unexpected hash/encoding errors surface; there is no catch-all snapshot fallback that hides bugs.
 
-** Byte selection policy
+** Chronology and request settlement
 
-Measure the complete backend-neutral model-facing payload encoded as UTF-8, including document identity, revision fields, patch coordinates, escaping, and framing.
-Compare a diff and a fresh snapshot of the same current text using the same envelope rules.
-Provider envelope differences are checked in native-request evidence; byte size is a deterministic proxy, not an exact token or billing estimate.
+The harness context owner keeps accepted snapshot/patch observations at insertion boundaries in the selected canonical session path, not at a moving global tail.
+Use the request's selected-path frontier anchor and existing bounded path-position machinery, including anchors whose message is filtered from semantic history.
+Merge accepted canvas observations with selected history at those boundaries before deriving final messages, segments, entry alignment, lifetime source presentation, full native requests, or eligible continuation deltas.
+For example, H0,S0 becomes H0,S0,A0,U1,P1, never H0,A0,U1,S0,P1.
+The pending observation belongs at the current request frontier, after the accepted chronological projection.
+Only its successful terminal response plus existing semantic acceptance makes that observation eligible for subsequent projections.
+Preview/status calls may inspect but never commit or advance document state.
 
-| Condition | Decision |
-|-----------+----------|
-| No eligible baseline, or current context no longer contains its exact chain | Fresh snapshot |
-| Current content hash equals the eligible resulting revision | Unchanged; append no document body |
-| Current document is empty | Exact empty snapshot or a valid deletion diff, selected by the same byte rules |
-| Diff bytes are at least 30% of fresh snapshot bytes | Fresh snapshot |
-| Appending the diff would make cumulative diff payload bytes at least the current snapshot payload bytes | Fresh snapshot |
-| Appending the diff would exceed 16 patches since the baseline | Fresh snapshot |
-| Otherwise | Exact diff |
+Scope state to harness/session, canonical canvas identity, selected branch/generation, and compatible layout; retain exact base text, accepted operations/anchors, and per-request pending captures only while needed.
+Bind settlement to the immutable request and prepared state identity so an older completion cannot overwrite a newer cursor.
+Retry an immutable valid request or rebuild from the last accepted state; failed, cancelled, or ambiguous attempts do not authorize a new base.
+Tool continuations receive that same authoritative projection, rather than an independently maintained serializer-only list.
 
-The 30% ratio and 16-patch bound are proposed initial internal constants for review, not claims of optimality or user-configurable provider cache switches.
-Use integer byte comparisons with explicit equality boundaries; a zero-length document must not cause division by zero.
-Count all accepted patches in the active chain, even if later edits cancel earlier changes.
-Also respect the existing context/resource size bounds; diffing must not bypass admission limits.
-Bound diff construction work before processing pathological input, and select a snapshot when that explicit work bound is reached.
-Unexpected encoding or hash failures remain visible errors rather than being hidden by a snapshot fallback.
-Before implementation acceptance, record byte-size and runtime comparisons on realistic Daily edits, then retain or adjust these defaults with evidence.
+When a selected-path boundary disappears, a generation/branch/layout changes, curation removes required bytes, or state is lost on restart, discard the ineligible chain and establish one authorized current snapshot at the new frontier.
+A reset removes the superseded chain from the next projection and is a deliberate measured cache boundary.
+Never treat summarized content as an exact patch base or reintroduce a source whose current authorized projection excludes it.
+Process-local state is released through existing session/turn invalidation and cleanup; no new persistent schema is introduced.
 
-** Lifecycle and concurrency
+An unchanged decision adds no observation but does not authorize dropping required bytes from a stateless request.
+Full requests serialize the complete baseline and accepted changes unless a separately qualified continuation supplies them.
+The current effective evidence handle identifies the reconstructed complete resulting text; framing distinguishes historical patches from the one current revision.
 
-Prepare each request from immutable captured text and a baseline identity tied to the selected context projection.
-Separate its pending representation from the accepted baseline cursor.
-Advance eligibility only at the existing successful terminal-response and semantic-acceptance boundary; writing an HTTP body or opening a stream is insufficient.
-Failure, cancellation, ambiguous settlement, or lost baseline state must not authorize a diff against an unaccepted revision.
-Retries reuse a valid immutable request or rebuild from the last eligible context; they never double-advance the chain.
+** Ordinary revision-checked resource mutation
 
-An older successful request cannot overwrite a newer cursor after concurrent completion or a branch/generation change.
-Compaction, curation, branching, and continuation invalidation must check whether the exact baseline and required patches remain available.
-If unavailable or only summarized, establish a fresh snapshot from the current authoritative resource.
-Do not resurrect a source excluded by curation or claim that a summary is an exact patch base.
-Reuse existing projection/layout identities to reject incompatible provider anchors after placement changes.
+Choose an explicit optional =expectedRevision= string on existing =write= and =edit= operation schemas, not a new action/tool.
+Dispatch it through the existing resource-operation path to revision-aware file/buffer mutation owners.
+For an attached canvas the argument is required; absence is a visible conflict rather than an unguarded legacy route.
+The argument comes from the revision the caller was shown, not a silently substituted latest harness cursor.
+Canvas context, successful supported reads, and successful guarded mutations expose the complete resource revision so subsequent calls can use it.
+A partial read reports the revision of the complete captured resource, not a digest of only the returned range.
+A conflict exposes the current revision and directs a fresh read/reconsideration; it performs no edit, save, or linked-buffer synchronization.
 
-Carry the expected content revision through canvas-targeted edit/write operations.
-Compare it with the current live resource immediately before mutation; validate and apply without an intervening asynchronous gap.
-On conflict, change nothing, expose the current revision, and let the caller obtain current text and reconsider the edit.
-For resource methods that cannot provide this atomic check-and-apply contract, do not advertise revision-checked writes as supported.
-Keep ordinary non-canvas file operations and their authorization unchanged.
+Derive attached-canvas target scope from immutable trusted request context and carry it through ordinary tool dispatch; do not query unrelated live session state synchronously inside a file handler.
+Canonical resource resolution belongs to the existing file/buffer owners: relative/absolute file aliases and a visiting buffer identify the same target; authorization and path/symlink policy remain in force.
+Check current authoritative live-buffer/file text and apply the mutation in one synchronous check-and-apply section with no intervening await/process callback.
+Preserve existing coherence and exact-text replacement checks as additional constraints.
+Non-canvas calls without the argument remain unchanged; an unsupported method cannot silently accept and ignore an explicitly requested revision check.
+Arbitrary shell or unrestricted =run_elisp= writes remain outside C6, rather than acquiring a misleading global safety promise.
 
-* Delivery packages
+* Delivery relation and package closure
 
-** DP1: Correct canvas placement
+| Package | Establishing IDs | Required earlier acceptance | Useful stopping point |
+|---------+------------------+-----------------------------+-----------------------|
+| DP1 | C1 | Current F98/context/resource authorities and this reviewed plan | Correct full-snapshot reference placement without chain state |
+| DP2 | C2–C6 | DP1/C1 | Exact versioned canvas behavior, bounded policy, accepted chronology, guarded ordinary writes; external benefit still unconfirmed |
+| DP3 | C7 | DP2/C2–C6 and DP1/C1 | Enforced honest route disposition plus qualification/activation evidence |
 
-Separate canvas reference data from stable instructions and volatile presentation metadata.
-Render current canvas data after the reusable conversation prefix in Anthropic, preserving its authority and native message constraints.
-Inspect the corresponding Responses and Chat Completions seams so the semantic change remains correct across shipped adapters; do not enable an unqualified continuation or curation route.
-Invalidate incompatible layout identities using existing machinery.
+DP1 owns the context semantic split, contributing chat/Org Canvas providers, native serializers, and layout identities.
+Its state is one immutable request snapshot; it adds no accepted document chronology.
+Source capture/assembly failures fail that request; retries build a correct fresh snapshot; old-layout anchors are rejected.
+Its public surface is ordinary chat/Org Canvas across all shipped serializers, with S1/S4 focused proof and existing F98 semantic/gating regression checks.
+C2–C6 and dedicated checkout remain safely absent at this stopping point.
 
-This package may stop with full snapshots: it must already preserve freshness and protect earlier history from canvas edits without depending on DP2.
-Prove the actual native request ordering across an initial request, an unchanged follow-up, and a checkbox edit.
+DP2 owns the harness chronology/pure policy and operation/resource mutation boundaries selected above, plus their directly affected consumers.
+Its process-local pending/accepted state, success/failure/retry rules, path resets, provenance, and atomic resource conflict behavior are closed in the appendix.
+Its public surface is ordinary canvas context plus optional =expectedRevision= on existing read/write/edit result/call contracts as described above.
+S1–S5 establish the complete package; policy/patch helpers and internal milestones are not separate delivery packages.
+Unknown external benefit and unqualified curation routes remain explicit; they do not weaken exact repository-controlled document semantics.
 
-** DP2: Versioned snapshots and exact diffs
+DP3 owns existing adapter qualification selection and evidence producers, not canvas persistence or UI activation.
+It uses F98's exact effective endpoint/team/model/auth/API/protocol/transport/requester/material-layout identity and records the accepted source revision and UTC completion.
+Probe failure leaves its classified capability state unconfirmed; valid contradictory semantics or reuse evidence returns to remediation.
+Its public behavior is normal capability availability/disposition, with S4 plus E1/E2 and applicable P3 proving the result.
+It adds no production activation side effect or durable model-context store.
 
-Implement the pure byte-selection and exact patch operations, active-context chain ownership, lifecycle settlement, and revision-checked canvas writes together.
-Provide one authoritative resulting-document revision for provenance and stale-write checks.
-Full requests, retries, tool follow-ups, and lost-context recovery must remain correct before enabling diffs on the ordinary path.
-Remove the superseded unconditional canvas-body projection; do not leave competing snapshot and diff authorities or a permanent legacy mode.
+DP1 is separate because early-prefix placement is useful without chain state.
+DP2 keeps chronology, settlement, provenance, and guarded writes together because partial activation would expose mismatched revision authority; splitting helpers would not establish another complete outcome.
+DP3 separates external availability and evidence from correct local semantics; combining it would let infrastructure availability obscure the independent deterministic result.
+Use focused gates at package decisions, and canonical/current-config gates at the completed candidate or an earlier materially informative boundary, not after every helper.
+Review/commit mechanics remain owned by repository guidance and the invoked workflows.
 
-This package closes C2–C6 on every shipped serializer, with C1/C7 as regression boundaries.
-Existing ordinary targeted reads remain sufficient; a dedicated section-checkout protocol is not a prerequisite.
+* Scenario and evidence portfolio
 
-** DP3: Qualify useful reuse and document activation
+| ID | Observable invariant and realistic entry | Failure localization | Class |
+|----+-----------------------------------------+----------------------+-------|
+| S1 | Ordinary canvas initial request, tool/user append, unchanged call, and two small edits preserve instruction authority and earlier native blocks; final segments/messages cover exactly one projection. | Semantic chronology versus native serialization | Deterministic release gate |
+| S2 | Exact capture/patch/apply reconstructs source/hash/provenance for empty text, Unicode, source newline encoding, deletion, one huge line, and separated edits; byte policy is independent of line counts. | Capture, patch, framing, policy | Deterministic release gate |
+| S3 | Accepted requests alone advance isolated session/canvas chains; failed/cancelled/retried/stale completions, branch/generation changes, missing anchors, compaction, curation, and reopen reset or preserve only eligible complete state. | Pending settlement versus selected projection | Deterministic release gate |
+| S4 | Each shipped serializer preserves real instructions, tool adjacency, full stateless reconstruction, compatible continuation behavior, and truthful curation/layout gates. | Serializer versus capability/lifetime owner | Deterministic release gate |
+| S5 | Ordinary write/edit dispatch rejects stale/missing canvas expectations after saved or unsaved user edits, with no mutation/save/sync effects; a current read and expectation succeeds once; aliases share the guard and non-canvas behavior stays unchanged. | Operation dispatch versus atomic resource mutation | Deterministic release gate |
+| E1 | Reuse F98-P1's minimal endpoint capability procedure for the changed material shape, separate from ordinary Canvas composition. | Endpoint capability | External compatibility |
+| E2 | Compose Canvas edits/unchanged calls with F98-P2's growing-history predicate and stable-only negative control, separating unchanged, small-edit, and reset/large-rewrite phases. | Actual native-prefix identity versus provider cache behavior | External compatibility |
+| P3 | Where the material layout affects an advertised curation route, repeat F98-P3 without weakening its normal capability gate. | Efficient curation capability | External compatibility |
 
-Use isolated ordinary chat/Org Canvas entry points and provider request/usage joins, following Feature 98's exact-route evidence discipline.
-Exercise repeated small edits and unchanged tool follow-ups on the configured Opus route; test other available routes separately without extending an Opus result to them.
-Show preserved unchanged native prefixes, bounded representation size, correct data-dependent answers, and repeated cache-read advances where the provider makes reuse observable.
-Include larger rewrites and snapshot resets so the report captures their actual costs instead of reporting warm hits only.
-Any changed layout covered by an existing curation qualification requires the applicable regression and exact-route requalification before claiming restored qualification.
-Unrelated unavailable routes remain explicitly unqualified.
+E2 must prove cache reads attributable to unchanged conversation suffix beyond the stable-only control; two later advances must exceed the initial total as specified by F98-P2.
+A stable-prefix hit or unobservable counters do not establish useful growing reuse.
+Reuse external evidence only under F98's same-identity/material-shape/accepted-revision and 24-hour rule; prior F98 success does not qualify this changed layout.
+Authentication/configuration failure, provider/infrastructure failure, timeout, unavailable counters, and stale evidence remain capability-unconfirmed; a valid controlled contradiction is a product-contract failure.
+Unconfirmed affected curation remains unavailable, independently of local ordinary-chat correctness.
 
-* Validation portfolio
+Use focused ERT and native request composition tests for S1–S5.
+Private threshold equality/empty-input checks and linear-work benchmarks are mechanism evidence; constants may change without weakening the scenario invariants.
+Use the private graphical harness for live-buffer, unsaved-edit, and synchronization behavior, and inspect its settled artifacts.
+Run canonical Eldev and exact-candidate current-config gates before deterministic implementation acceptance; prove the private config loaded the candidate source rather than the live checkout.
+No deterministic correctness assertion requires paid provider access.
 
-| Scenario | Required proof |
-|----------+----------------|
-| Unchanged canvas and growing tools/history | No new document body; full requests retain required context; earlier native prefix stays identical. |
-| One checkbox or short paragraph edit | Exact diff reconstructs the new text and appears after reusable history; the answer uses the new value. |
-| One huge line versus many tiny edits | Selection follows serialized UTF-8 bytes rather than line counts. |
-| Unicode, CRLF/source encoding, deleted sections, trailing newline, empty file | Exact round trip and source-consistent hash, with no text normalization or invalid UTF-8 offsets. |
-| Ratio, cumulative bytes, and chain bounds | Values immediately below, at, and above each bound produce the specified representation. |
-| Repeated edits and a large rewrite | Bounded chain; snapshot supersedes old documents; no duplicate current body or unbounded reset history. |
-| Unsaved user edit and stale agent write | Live-buffer revision wins; stale write changes nothing; a revised edit succeeds once. |
-| Failed stream, cancellation, retry, and stale completion | No premature or duplicate baseline advancement and no cross-request mutable state leakage. |
-| Branch, reopen/restart, compaction, and curation | A proven complete chain is used or a fresh snapshot is established; no excluded source is reintroduced. |
-| Two canvases and multiple sessions | Identity/cursors remain isolated even when text or request ordinals match. |
-| Every shipped native serializer | Genuine instructions retain authority, document data retains meaning, and tool-result adjacency and layout identity remain valid. |
-| Ordinary public canvas flow | Initial submit, tool edit, user edit, follow-up, and recovery all use the current document without a synthetic privileged path. |
+Bytes, cumulative payload, CPU/memory, logical context occupancy, token totals, cache creation, and latency are observational unless a separately adopted baseline/procedure/threshold makes them a gate.
+Compare a matched scripted edit sequence, source/model/route identity, and snapshot-reset phases; whole-request totals are not canvas-only cost attribution.
+Use the existing bounded diagnostics/request-usage joins without raw documents, credentials, or a new telemetry subsystem.
 
-Use focused ERT for pure policy, projection, request settlement, and revision conflicts, plus composed native-request tests that observe later appends rather than one isolated serialization.
-Use the private graphical harness for behavior involving live buffers, unsaved edits, or document synchronization; inspect its settled artifacts.
-Run the canonical repository suite and the required current-config gate on the final candidate before implementation acceptance.
-No correctness test should require paid provider access; external cache qualification is a separate result.
+* Architecture review and activation
 
-Record bounded byte counters for the captured snapshot, selected payload, cumulative patches, and selection reason through the existing diagnostic boundary.
-Correlate provider request identity with total/context input, cache reads, cache writes, fresh input, and output without logging raw documents.
-Compare the same scripted edit sequence and source/model/route identities before and after; whole-request input totals are not canvas-only cost attribution.
-Report local diff CPU/memory, native payload size, logical context occupancy, and provider usage as distinct measurements.
+Use the repository's fourteen architecture questions at plan and implementation acceptance, with current owner/state/dependency and performance evidence.
+The aggregate comparison and package split decisions above address the current design; a new public vocabulary, durable state, or extra coordinator requires renewed justification.
+No broad modularization or unrelated cleanup is admitted.
+Core/context and adapter changes require a manual restart before the user's running Emacs uses them; isolated validation does not reload it.
+The operator's user-facing Daily and runtime store remain outside implementation mutation scope.
 
 * Follow-up: section checkouts
 
-An outline plus revision-scoped section reads can reduce context occupancy further when the task does not need the complete Daily.
-It is separate from preserving an append-only cached baseline: snapshots and diffs still occupy model context even when provider caches reuse them.
-Design this only after the baseline protocol is accepted and measurements show a remaining whole-document cost.
-Define section identity, missing-section behavior, revision conflicts, and completeness for whole-document tasks before introducing any dedicated checkout action.
-
-* Architecture review questions
-
-1. Does each delivery package leave correct, useful behavior if work stops there?
-2. Does the design move toward worker/task-relevant current context while preserving ordinary canvas semantics?
-3. Are byte thresholds and patch encoding local, reversible decisions, with no speculative version-control framework?
-4. Do source capture, revision policy, lifecycle settlement, native rendering, and presentation each have one clear owner?
-5. Do consumers use narrow existing context/resource contracts rather than depending on provider or shell internals?
-6. Do stable policy dependencies remain independent of concrete providers, file I/O, and UI state?
-7. Are capture, mutation, and provider effects outside pure selection and patch operations?
-8. Is each retained snapshot/cursor scoped to the smallest active context lifetime, released on invalidation, and rebuildable without another durable authority?
-9. Does measured diff work justify its cost against avoided payload and processing, including pathological inputs and snapshot resets?
-10. Can each advertised serializer/resource capability honor the same semantics without weakening a precondition or inventing provider memory?
-11. Are layout compatibility and unsupported routes explicit, without a permanent old-mode shim?
-12. Has the unconditional canvas-body path been removed where the new representation replaces it?
-13. Are expected conflicts and missing baselines handled by their owner while unexpected errors remain visible?
-14. Do independent semantic, lifecycle, native-prefix, and route-usage scenarios prove behavior without mirroring implementation details?
-
-* Plan validation and delivery boundary
-
-This change creates the plan and marks Feature 99 =Planned= in the feature index.
-Check Org structure, local source/reference links, status consistency, and =git diff --check= before committing the documentation slice.
-No runtime tests or provider requests are required for this documentation-only change.
-Commit with the repository's =alendit@gmail.com= / =~/.ssh/alendit_public= identity; do not push or auto-sync.
-Implementation remains a later authorized task.
-Core/context and adapter implementation changes will require a manual restart before the user's running Emacs uses them; never reload or restart it as a side effect of planning.
+Outline plus revision-scoped section reads may reduce context occupancy further when the task does not need a complete Daily.
+Snapshots/diffs preserve cached chronology but still occupy logical model context.
+A dedicated checkout surface remains deferred until measurements justify it and section identity, stale revisions, missing sections, and whole-document completeness are specified.

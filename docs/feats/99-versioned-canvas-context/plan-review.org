@@ -1,0 +1,252 @@
+#+title: Feature 99 implementation-plan review 01
+#+date: 2026-10-16
+#+startup: overview
+
+* Decision and identity
+
+Result: implementation-plan-fixed-point NOT established. There are six required corrections/unknowns below. This is an implementation-plan review, not an implementation review or a contract acceptance on behalf of product authority.
+
+Reviewed scope: F99-G1, F99-C1--C7, DP1--DP3, all specification-review cells, and current context/lifetime, attachment/resource, serializer, request-settlement, and Feature 98 dependencies. Section checkout remains deferred.
+
+Candidate: =/private/tmp/e-f99-work/candidate=.
+Base: =80160b06f469428fb48b40ee58938ba2e5ee0605=.
+Plan SHA256: =704fd049e79ee91599396192a4dcbb3847e0c472a13d356661f5f95dab5bf450=.
+The dependency manifest at the end binds the source observations in this report. No runtime behavior was changed or executed. No live Emacs, Board, runtime-store, configuration, credential, or external-service operation was performed.
+
+Behavioral progress: unavailable; F99-G1 is proposed, and the ordinary current source still emits a complete current attachment as a system message. Mechanism progress: not-started, consistent with the plan's status. Historical F98 evidence is not F99 acceptance evidence.
+
+* Confirmed findings
+
+** TODO High R1: Settle chronology against the real context projection
+
+Contracts: C1, C3, C5, C7. Plan evidence: lines 71--85 and 99--109 require an active chain, original order, stable history prefix, and no moved old patches, but do not define where accepted observations remain relative to later session messages. DP2 (169--175) does not close this join.
+
+Source proof:
+- =lisp/core/e-harness-context-runtime.el:797--999= reconstructs selected durable history, then appends all observation segments as one late frontier (especially 887--946). Existing observations do not occupy preserved positions among later durable messages.
+- =lisp/core/e-context-lifetime.el:2181--2247= explicitly contributes no observation bytes from a completed frame. Reusing the current frame alone cannot retain an accepted baseline in a later full request.
+- =lisp/core/e-harness-context-runtime.el:1329--1363= requires exact equality of segment and message coverage; inserting a second independent list only at serialization breaks that consumer boundary.
+- =lisp/core/e-harness-context-runtime.el:1539--1562= continuation deltas are derived from session-entry coverage plus current dynamic messages, rather than from a stored canvas chronology.
+
+Counterexample: R0 has H0,S0. A later full request must have H0,S0,A0,U1,P1 to preserve its earlier accepted prefix. Merely retaining the chain and appending it after reconstructed history yields H0,A0,U1,S0,P1. Keeping S0 and P1 mutually ordered does not preserve their positions relative to A0/U1. This fails the central prefix outcome without any cache measurement.
+
+Smallest correction: decide one process-local chronology owner and its selected-path insertion boundaries before admission. Keep it within the harness context owner; do not turn observations into durable transcript/promotions. Explain how that same projection feeds segments, messages, frame sources, full requests, and admitted continuation deltas. State reset behavior when an insertion boundary disappears. A private representation remains replaceable.
+
+Proposed implementation-appendix text (the precise storage shape remains private):
+#+begin_quote
+C3/C5 implementation: the harness context owner retains each accepted canvas observation at an insertion boundary in the selected session path. Later projection merges those observations with the selected history at those boundaries, before deriving segments, messages, lifetime source presentation, and native requests. It does not append the whole old chain after the newly grown history. Pending observations belong to the immutable provider request and become eligible only after accepted response settlement. If the selected path/generation or authorized projection no longer contains a required insertion boundary or complete chain, discard that chain and establish one current snapshot at the new frontier. A reset removes superseded chain observations from the next projection. Preview/status construction never advances the accepted chain.
+#+end_quote
+
+Resolution proof: deterministic three-request full replay with H0/S0, later tool/user history, P1, an unchanged follow-up, then P2. Assert the old native message/block prefix remains equal through each append; assert exact segments/messages coverage and one resulting-document source handle. Include a selected-path change and snapshot reset. Add a separate admitted-continuation case only for the qualified capability. Do not use external cache counters as the sole proof.
+
+** TODO High R2: Define expected-revision propagation through ordinary canvas writes
+
+Contract: C6. Plan lines 149--154 require atomic expected-revision writes, while preserving ordinary non-canvas operations, but no package chooses the public call/context boundary or fallback behavior for missing expectations. The current ordinary Org Canvas path specifically tells the model to use a targeted file edit or write (=lisp/layers/org-canvas/e-org-canvas-capabilities.el:291--292=).
+
+Source proof:
+- =lisp/core/e-operations.el:65--116=: write has uri/content; edit has uri/edits. Their dispatchers pass only those values. There is no expected revision in either schema or dispatch.
+- =lisp/core/e-resources.el:137--168=: resource calls route positional values; write/edit wrappers have no expected revision.
+- =lisp/layers/base/e-base-tools-file.el:1117--1184,1330--1348=: ordinary file handlers check current resource coherence, then overwrite/apply replacements. They do not compare with the revision presented to the agent.
+- =lisp/layers/emacs/e-emacs-tools.el:421--445=: ordinary buffer write/edit similarly have no revision check.
+
+Existing coherence detection is valuable containment for dirty/stale linked views, but it cannot detect a user edit that has already been saved and is now coherent. An old full write can overwrite that new text. Exact oldText replacement only detects a changed matching region; it does not establish C6's whole-document expectation.
+
+Smallest correction: choose how an ordinary model/tool invocation obtains the expected revision, how it reaches file and buffer mutation owners, and what happens when it is missing or the scheme cannot honor it. Bind expectations to the resource revision actually delivered to that request/caller, not a newly refreshed global cursor at mutation time. Include alias/canonical-resource handling so the same canvas cannot bypass the check through another equivalent URI. Explicitly exclude unrestricted run_elisp/shell escape hatches if C6 is about advertised resource operations; otherwise its present universal wording overclaims enforcement.
+
+Proposed row text (requires parent/product approval for the precise public scope):
+#+begin_quote
+F99-C6: Ordinary advertised write/edit operations targeting an attached canvas compare the expected revision delivered to that caller with the current authoritative resource immediately before mutation. An obsolete or missing expectation fails visibly and changes nothing; the conflict exposes the current revision so the caller can read and reconsider. Equivalent supported URIs identify the same canvas target. Non-canvas operations retain their existing semantics. This guarantee covers the advertised revision-aware resource path, not arbitrary shell or unrestricted Emacs Lisp mutation.
+#+end_quote
+
+Implementation-plan insertion:
+#+begin_quote
+DP2 chooses the existing resource-operation boundary for revision propagation and records whether the expectation is an explicit optional argument or trusted request context. The caller cannot silently substitute a newer harness cursor for the revision it saw. File and buffer mutation owners perform check and apply in one synchronous critical section; capability/dispatch code handles required-versus-non-canvas scope without weakening authorization. A missing expectation on a canvas is a conflict, not an unguarded legacy path. Unsupported methods expose no revision-aware promise.
+#+end_quote
+
+The alternative explicit-argument versus trusted-context choice is still required; this review does not pick product vocabulary. A new dedicated section/document API is unnecessary.
+
+Resolution proof: compose ordinary write and edit dispatch with a canvas shown at r1, a saved user edit r2, and a stale agent call. Verify no content/save/sync effects on conflict, then read r2 and succeed exactly once. Repeat for live unsaved text and supported file/buffer aliases, a missing expectation, and an ordinary non-canvas operation. Verify conflicts are bounded visible tool results.
+
+** TODO Medium R3: Normalize one contract authority before admitting the plan
+
+The table at plan 51--62 has behavior-only rows. Material lifetime, provenance, curation exclusion, no-durable-copy, and recovery requirements remain independently normative throughout 63--154. The document does not say those are replaceable implementation choices, and several are genuine requirements rather than private choices. The byte table also states exact behavior and the validation table treats its constants as specified acceptance, although 30% and 16 are labeled proposed internal defaults. This leaves two competing interpretations of which changes require product acceptance.
+
+Smallest correction: make C1--C7 the sole normative authority; attach semantic owner, public composition, deterministic evidence IDs, external applicability, telemetry role, and status there. Move real outcomes such as full-revision evidence provenance, authorized lifetime/curation exclusion, and rebuild-after-loss into the owning rows. Label the supporting design as a proposed, replaceable implementation appendix keyed to those IDs. Keep delivery mapping separate from stable rows. The goal can remain authoritative as the package-level outcome; it is not another detailed requirement table.
+
+Suggested stable-row deltas, preserving the current accepted direction:
+- C1 owns reference-data authority, separation from genuine instructions and volatile editor metadata, semantic positioning, and native tool pairing. Owner: context semantic boundary with adapters translating; composition: ordinary chat/Org Canvas request; evidence: S1/S4.
+- C2 owns exact complete resulting revision from one capture, unsaved text, deletions/Unicode/empty content, and the complete resulting-document provenance handle. Owner: attachment capture plus pure document revision/patch policy; composition: source capture to reconstructed model document; evidence: S2.
+- C3 owns unchanged-no-new-observation, retained complete baseline/changes on stateless full requests, and append-preserving positions. Owner: harness context projection; evidence: S1/S3.
+- C4 owns serialized-byte selection and bounded representation/construction with explicit snapshot recovery, without freezing private thresholds. Owner: pure selection policy; evidence: S2/S3 plus disposable exact-default checks.
+- C5 owns branch/generation/document/layout/request acceptance eligibility, no promotion of failed sends, smallest process-local lifetime, loss/reset recovery, and preservation of authorized curation exclusions. Owner: harness context/lifetime and request settlement; evidence: S3/S4.
+- C6 uses the scoped mutation row proposed in R2. Owner: resource operation/mutation boundary; evidence: S5.
+- C7 owns preservation of adapter policy/capability gates plus separately classified semantic, reuse, and route-qualification results. Owner: adapters plus existing evidence/qualification boundary; evidence: S4, F98 S1--S4 regressions, E1/E2, and P3 where materially invalidated.
+
+For each row: telemetry is observational unless separately thresholded; status is proposed. External is not applicable to repository-controlled exact reconstruction/settlement/conflict guarantees; the external cache and provider-comprehension cells of C7 remain capability-unconfirmed for the changed layout. Do not imply that external availability blocks C2--C6 deterministic proof.
+
+Delete duplicate outcome definitions elsewhere or replace them with ID references plus implementation-specific decisions. Keep 30%/16 only as private starting defaults, their boundary tests explicitly mechanism evidence; preserve correctness when benchmarks change those defaults.
+
+** TODO Medium R4: Complete DP1--DP3 ownership, establishing relation, and stopping-point records
+
+Only DP2 explicitly establishes C2--C6 (plan 174). C1 and C7 have no unique establishing assignment. Both DP1 and DP3 appear to establish pieces of C7, whose row mixes provider rendering and result reporting. DP1--DP3 do not yet record their complete semantic owner/state/transaction/recovery/public-surface/evidence closures or explain the adjacent combine/split tradeoff. DP3's relationship to enabling or withdrawing a qualification is especially important: collecting counters alone is not a delivery behavior.
+
+This is a plan-level blocker, not a request to freeze filenames or mandate three implementation commits. Internal design checks and focused changes are not separately accepted delivery packages.
+
+Smallest correction: add a relation with exactly one establishing package per row, then complete these compact package records. A feasible relation is DP1 -> C1, DP2 -> C2--C6, DP3 -> C7, provided C7's provider-rendering preservation is clearly a regression dependency of DP1/DP2 and its new established behavior is the route/evidence disposition. Another valid correction is to combine DP3 with DP2 if it cannot establish a standalone complete contract. Do not duplicate C7 or call partial contract coverage an establishing relation.
+
+Required package fields:
+- DP1: context semantic split and all shipped adapters consume it; no accepted document history yet; full current snapshots and volatile metadata are tail data; real instructions stay stable; native layout identity changes invalidate stale anchors. Acceptance demonstrates useful earlier-history protection on initial/unchanged/edited requests, separately acknowledging that DP1 has not established unchanged-no-new-observation or exact diffs. It can stop here with ordinary full-snapshot correctness.
+- DP2: the chronology/resource owners decided by R1/R2; process-local accepted and request-pending state; commit/rollback rules at accepted response and resource mutation boundaries; invalidation/recovery for selected path, generation, curation, restart, failed/cancelled/stale completion; ordinary public entrypoints and all shipped serializers; S1--S5 proof. It can stop here with correct exact revision semantics while external cache benefit and materially changed curation qualification remain unconfirmed/unavailable as applicable.
+- DP3: existing qualification/evidence owner; the exact route tuple and changed material shape; explicit availability/disposition of the affected curation capability; no new document persistence or production activation side effect; E1/E2 and applicable F98 P3; unavailable external evidence leaves capability-unconfirmed rather than fabricating a cache pass. Its useful result is an honest, enforced capability disposition plus operator activation guidance, not merely a benchmark log.
+
+Tradeoff text:
+#+begin_quote
+DP1 remains separate because full-snapshot reference-data placement fixes the early-prefix defect and is useful without chain state. DP2 keeps chronology, settlement, provenance, and guarded writes together because a partial activation would expose mismatched revision authority; its policy/helpers are internal checkpoints. DP3 remains separate only because external route qualification has a different availability/evidence boundary; repository-controlled correctness is independently useful and its unconfirmed capability state is explicit. Splitting DP2 further would require a new complete observable contract, not just a helper checkpoint. Combining DP3 would make unrelated external availability govern deterministic work without increasing semantic closure.
+#+end_quote
+
+A package-specific focused gate and parent acceptance are useful. Run canonical/current-config gates at the completed candidate or an earlier materially informative package boundary; do not replicate the whole expensive suite at every helper checkpoint. Existing repository/skill authorities own commit/review mechanics.
+
+** TODO Medium R5: Give useful-reuse evidence a deciding predicate and separate its lanes
+
+Plan 177--212 asks for repeated cache-read advances, answers, measurements, and before/after comparison. It does not name a cache acceptance predicate or negative control, nor distinguish which measurements are gates and which are observations. A warmed stable prefix can show several advances while still failing useful growing-history reuse. The plan already correctly recognizes this risk at 26--28 and in its historical-evidence caveat; close the evidence definition at the named scenario boundary.
+
+Feature 98 already supplies the needed authority: =docs/feats/98-growing-conversation-prompt-cache/plan.org:371--440= separates P1/P2/P3, defines the static-prefix control, requires two later read advances exceeding the initial total in the public probe, and records the identity/freshness/failure classes. Reuse it by explicit ID rather than invent a competing classifier. Its material-shape invalidation means the old exact-route result cannot qualify a changed layout.
+
+Smallest insertion:
+#+begin_quote
+Deterministic S1--S5 establish repository-controlled contracts independently of provider access. E1 reuses F98-P1's minimal endpoint capability procedure for the changed material shape. E2 composes ordinary Canvas behavior with F98-P2's growing-history predicate and static-only negative control: native captures identify the unchanged conversation suffix and joined cache reads must demonstrate reuse beyond that control. Exercise unchanged requests, repeated small edits, and reset/large-rewrite phases separately. An unobservable counter leaves benefit unknown. Where layout affects an advertised curation route, repeat F98-P3 and preserve its ordinary capability gate. Apply F98's exact identity and 24-hour reuse rule and its explicit failure classes. No prior F98 result qualifies a changed material shape by itself.
+
+Snapshot/payload/cumulative bytes, local CPU/memory, logical occupancy, usage totals, cost, and latency are observational; comparisons use one scripted edit sequence and matched source/model/route identities. They neither pass nor fail semantic release acceptance without an explicitly adopted baseline/procedure/regression threshold. Private-default tuning uses these observations and does not turn a chosen number into a durable product contract. No raw document is logged.
+#+end_quote
+
+S1--S5 suggested portfolio (capture helpers can be shared):
+| ID | Observable invariant | Localization |
+|----+----------------------+--------------|
+| S1 Placement and chronological appends | Stable authority and preserved native prefix across ordinary initial/tool/user/unchanged requests | Semantic projection versus serializer |
+| S2 Exact capture and byte policy | Reconstruct exact source/resulting hash; serialized UTF-8 comparison chooses representation under current private defaults | Capture, patch, framing, or policy |
+| S3 Eligibility and recovery | Only accepted branch/generation/layout chains are usable; resets remove superseded chains | Pending settlement versus active projection |
+| S4 Adapter/lifetime/capability composition | All shipped serializers preserve native pairing and authorized curation/continuation semantics; changed qualification is unavailable until confirmed | Capability owner versus serialization |
+| S5 Revision-checked ordinary mutation | Stale/missing expectations leave current resource unchanged; current expectation applies once | Operation dispatch versus atomic resource mutation |
+
+No mandatory new credentialed run is needed to approve this plan itself. Initial evidence for the changed shape remains unknown until implementation qualification. Requiring external success now would conflate planning with implementation acceptance.
+
+** TODO Medium R6: Replace the assumed attachment bound with an implementable construction bound
+
+Plan 128--132 says to respect existing context/resource size bounds and to hit an explicit diff-work bound, but names neither an applicable canvas capture admission boundary nor the work bound/algorithm class. This matters because the implementation executes inside interactive Emacs.
+
+Source proof:
+- =e-chat-session.el:364--381,443--450= reads whole buffer/file content and builds the descriptor/section; no attachment-byte admission cap is applied.
+- =e-context.el:221--247= composes that full provider output without a capture-size cap.
+- The familiar =e-base-tools-file--max-bytes= 8 KiB and max-lines 1000 at =e-base-tools-file.el:45--49= bound returned read results, not this direct attachment path.
+- =e-harness-turn.el:1337--1375= estimates context usage for best-effort auto-compaction; that is not a pre-diff CPU/memory admission cap.
+- The existing file-save implementation separately documents and bounds superlinear buffer diff work (=e-base-tools-file.el:51--57=). It is evidence that assuming arbitrary built-in diff construction is harmless would be unsafe, not a requirement to copy its timeout into F99.
+
+Smallest correction: choose a linear construction design or a private bounded-work policy before implementation admission; state its operand/work limit, equality/fallback behavior, and owner. Do not invent a new normative document size cap merely to satisfy a review template. Explicitly distinguish full attachment capture from truncated ordinary reads and normal context-window handling.
+
+Locally repairable clarification:
+#+begin_quote
+C4 implementation does not inherit the ordinary read tool's output truncation as an attachment capture cap. Captured text remains complete. The pure patch constructor must have a stated upper work bound for its complete operands, or use an algorithm whose linear work and allocation are bounded by those operands. A private construction budget exhaustion selects a complete snapshot; it never truncates source text, emits a partial patch, or hides encoding/hash errors. The implementation appendix records the chosen algorithm/budget and below/at/above behavior before enabling diffs. Normal context-window/compaction behavior remains a separate owner and is measured with the full selected representation.
+#+end_quote
+
+That clarification alone is not the missing algorithm decision. A single exact replacement span derived by common-prefix/common-suffix scans is a small linear alternative worth comparing with bounded multi-hunk construction. It may choose a snapshot for separated small edits; benchmark the accepted workload and decide whether additional hunk machinery earns its burden. Do not prescribe a general diff/version-control service.
+
+* Normalized contract and plan disposition
+
+| Contract | Durable boundary | Current plan status | Establishing relation |
+|----------+------------------+---------------------+-----------------------|
+| G1 | Direct ordinary canvas usefulness with complete current document and growing native prefix | Clear direction; proposed authority/product owner should be named | Whole feature; not a helper acceptance |
+| C1 | Reference authority and native placement | Unknown at exact semantic/serializer join, R1/R3 | DP1 proposed, R4 |
+| C2 | Exact full revision and provenance | Implementable capture/pure policy; normalize R3 | DP2 explicitly stated |
+| C3 | No new unchanged body; full replay and stable original positions | Unknown chronology, R1 | DP2 explicitly stated |
+| C4 | Byte choice and bounded fallback | Unknown construction bound; defaults private, R3/R6 | DP2 explicitly stated |
+| C5 | Active accepted lifetime and recovery | Existing acceptance seam usable; chronology/cleanup integration unknown, R1/R4 | DP2 explicitly stated |
+| C6 | Guarded ordinary canvas mutation | Unknown operation propagation/public scope, R2 | DP2 explicitly stated |
+| C7 | Adapter gates plus independently reportable reuse/qualification | Unknown exact evidence/establishing closure, R4/R5 | DP3 proposed, not currently unique |
+
+* Complete specification-cell coverage
+
+Statuses use cleared/candidate/unknown/not-applicable. Every required implementation-plan cell is dispositioned here.
+
+| Cell | Disposition | Evidence / decision |
+|------+-------------+---------------------|
+| Single normative authority | candidate | R3; behavior-only rows omit independent normative lifetime/provenance/recovery text |
+| Behavioral design trace | unknown | G1/direct scenario are strong; product authority and aggregate comparison absent; R1/R2/R6 comparison below |
+| Durable contract boundary | candidate | R3; separate exact private defaults/patch shape from durable semantics |
+| Scenario diagnosability | unknown | Good breadth at 188--201; IDs/classes/localization and deciding invariants need R5 |
+| Evidence topology | unknown | Correct intent of separate results; exact composition/probe/gate records need R5 |
+| External freshness | cleared by dependency | F98 24-hour identity/freshness/failure rule applies; changed material shape invalidates old result; R5 makes that application explicit |
+| Telemetry decision power | candidate | R5; measurements currently mixed with success prose without role/predicate |
+| Exact-limit justification | unknown | 30% and 16 can remain replaceable defaults; no normative numeric proof demanded; work/admission bound unresolved R6 |
+| Defensive actionability | cleared for accepted outcomes | Stale write threatens durable user text; unaccepted baseline threatens correct document; see risk comparison below |
+| Change locality | unknown | Broad owners are right; real chronology and write dispatch seams need R1/R2; layout identity machinery exists |
+| Workflow boundary | candidate, low ancillary cleanup | Plan 237--244 copies documentation commit identity, push, validation, and admission instructions; remove historical workflow prose from product plan and leave status/dependency/activation notes |
+| Decision level and plan disposition | unknown | This review is explicitly plan level; plan itself lacks complete relation/closure R4; no fixed-point result granted |
+| Contract-to-package coverage | unknown | DP2 C2--C6 explicit; C1/C7 unique establishing assignments need R4 |
+| Useful stopping point | unknown | DP1 full placement is useful; DP2 coherent if R1/R2 close; DP3 needs enforced capability disposition R4 |
+| Cohesion and transaction closure | unknown | DP2 settlement and write transaction joins not settled, R1/R2/R4 |
+| Dependency order | unknown | Can be DP1 -> DP2 -> DP3; R4 must expose unconfirmed qualification between packages and dependencies |
+| Package-size tradeoff | unknown | No causal adjacent combine/split explanation, R4 |
+| Acceptance-cost topology | unknown | Final canonical/current-config intent is good; package records need focused-versus-global boundary, R4 |
+| Checkpoint/package distinction | cleared intent, dependent closure unknown | No helper listed as DP; preserve DP2 internal checkpoints and complete package fields in R4 |
+
+* Aggregate comparison and economic decisions
+
+Accepted behavior to preserve: complete current authoritative text, no stale overwrite, stable native prefix across small edits/unchanged calls, bounded exact representation, existing curation/continuation authority. No checkout API or new database is needed.
+
+Current proposed aggregate: one attachment capture owner; harness process-local accepted/pending chain and pure selection; resource mutation expectation path; adapters translate; existing evidence classifiers qualify. This is a reasonable direction. The missing joins are chronology and expected-revision propagation, not evidence for adding another semantic owner.
+
+Smallest faithful alternative: one derived harness-context document chronology integrated before the existing segment/message frontier; exact source capture; a small linear exact patch constructor unless workload evidence justifies bounded multi-hunk complexity; ordinary resource-operation guard in the existing file/buffer owners; all provider differences remain adapters. A full replacement-only current observation is smaller but cannot satisfy the accepted small exact append outcome, so it is a valid DP1 stopping point rather than the final substitute. A durable retained-context copy would violate the intended lifetime and add an unnecessary authority.
+
+Decision: retain the high-level decomposition, settle the two real joins, and compare the patch constructor options locally. Do not create a generic version-control service or new checkout/document tool vocabulary to hide the missing joins. The parent/product owner must accept any new advertised mutation vocabulary or changed scope before it becomes durable.
+
+Defensive actions:
+- Stale writes: source proves a saved coherent edit can be overwritten; operational frequency is unknown, but impact is durable loss of user work and C6 expressly requests the guarantee. Existing coherence/exact-match checks only partly contain it. One expected-revision comparison at the actual mutation owner is proportionate. No broad file-operation restrictions are justified.
+- Baseline loss/failed send/branch change: source exposes immutable per-request frames and selected paths; a diff without a complete base is unusable by construction. Snapshot fallback and acceptance-owned eligibility directly protect C2/C5; no speculative provider-memory recovery is justified.
+- Pathological diff work: arbitrary superlinear diff on interactive Emacs has a concrete existing local precedent, but no new workload probability is fabricated. A linear constructor or local work budget is the smallest adequate response. New durable services/queues/metrics are not justified.
+
+* Repository design self-check
+
+1. Useful stopping point: DP1 yes; DP2/DP3 require R4 closure.
+2. Final direction: correct current canvas with reusable appended observations; checkout remains later.
+3. Uncertain choices: patch algorithm/thresholds and native framing stay private; mutation vocabulary requires an authority decision.
+4. Owners: capture, context chronology/selection, resource mutation, adapter rendering, shell metadata; do not add cross-domain coordinator.
+5. Coupling: existing context/resource contracts suffice after narrow semantic distinction/expectation propagation.
+6. Dependency direction: core policy must not import chat shells/provider modules; integration belongs at capture and adapter seams.
+7. Effects: capture/mutation/HTTP outside pure selection and patch validation.
+8. State: process-local accepted/pending chronology only; branch/generation/layout invalidation and cleanup still need concrete plan closure.
+9. Performance: UTF-8 complete payloads are the correct comparison unit; F99 cannot claim savings from whole-request historical totals; constructor bound and observed costs need R6/R5.
+10. Substitution: all shipped serializers must preserve C1--C5; unsupported revision-aware schemes must not claim C6.
+11. Compatibility: invalidate material native layout identities; preserve genuine F98 gates; no permanent old full-body mode after DP2 activation.
+12. Removal: unconditional canvas-body projection is superseded in DP2; ordinary non-canvas attachments remain their own behavior.
+13. Errors: visible conflict and exact snapshot recovery are expected; unexpected hash/encoding errors surface.
+14. Tests: S1--S5 keep stable semantic/owner behavior; private threshold/hunk tests are disposable mechanism checks; preserve/strengthen F98 and context lifetime tests rather than preserve an obsolete system-body representation.
+
+* Verification and boundaries
+
+Read AGENTS.md and docs/agents/review.org, EER specification/behavioral/economic authorities, and review-fixpoint result identity rules. Used outlines and targeted source ranges; inspected source at the recorded base. =git status --short= was empty. No runtime test was needed to establish these plan/source mismatches. Tests proposed here are resolution evidence for implementation, not claims of executed proof.
+
+No provider or live Emacs test was run. Existing current-config source-equality discipline must be applied when later gates run against the isolated candidate. External qualification remains capability-unconfirmed for F99's changed layout. No deterministic-fixed-point, capability-confirmed, or Done claim is made.
+
+Required unknowns before implementation-plan-fixed-point: R1 chronology owner/integration; R2 mutation expectation scope and propagation choice; R3 normalized stable authority; R4 complete unique delivery relation and package closure; R5 deciding evidence topology; R6 concrete bounded construction decision. Ancillary workflow cleanup is locally repairable. After remediation, review the changed identity and invalidate only dependent cells while carrying forward unchanged source facts.
+
+* Dependency identity manifest
+
+All paths below are relative to the candidate. SHA256 identities were captured at the reviewed base. Changes to the plan, F98 contracts, context lifetime/projection/settlement, operation/resource contract, capture owners, serializer layout/capability, or evidence classifiers invalidate their dependent plan cells. A review-artifact-only commit does not invalidate an otherwise unchanged plan identity.
+
+#+begin_example
+e664c563ad7ffb06be67f6bd6afe81943a108964f104b8af9b32d1697ce999f8  docs/feats/98-growing-conversation-prompt-cache/plan.org
+6f7a4fa66a4f699281f60e7e389a18b4b6002a977a6adc51748df18eb17657e1  lisp/core/e-context.el
+33135bf6f26780cdf45f1816356081c7a33cdf8b282fbaff50d09a0e9699a2d4  lisp/core/e-context-lifetime.el
+8496e3857456f196afb32cbd45a0dabe91a8de28f85e61f546f081ac077949b7  lisp/core/e-harness-context-runtime.el
+2469e236f8cecb510ba16bd0440bffda1d2fa380b1bd3ea50366df2463d383d5  lisp/core/e-harness-state.el
+7d19b2bb412169d1c3c05976197dd06b5c9bb54e7085c7d51c14ab7f0e1e9661  lisp/core/e-harness-turn.el
+419fa3f3e63c8f66fa2b91b110d9cf47f079b4a8d9b359c11a9c968703a02dcb  lisp/core/e-operations.el
+b2ab4f35846a13e910c32e7910e34cbe4a39539bd8d224370b0263c5f242cbf9  lisp/core/e-resources.el
+f0794ad975fb9323a9c224c64571ce8e3d4bcb231723bfa41078fa6fdbfb6323  lisp/layers/chat/e-chat-session.el
+b2681827339a1abfc5df6217d98c89b81d35511cf8a560c9e6c188962d1ad938  lisp/layers/org-canvas/e-org-canvas-capabilities.el
+e611b182ece4707007cdeddd8aa14209aba918419b6312a45b8d11ba0f6034c0  lisp/layers/base/e-base-tools-file.el
+a4c985dc657b17dd80a1acdb6738dd59b922b91b4c80abfb9840b9b732982687  lisp/layers/emacs/e-emacs-tools.el
+089b2bdf645c497284a2dfd1622336a33cc99855169b61d59874fd68cf92968b  lisp/adapters/anthropic/e-anthropic.el
+f6a1b32086f90f949b4f3e4d699e403e21df767be69293b74c297acdbeae650c  lisp/adapters/openai/e-openai-responses.el
+d68bb7a6e14c0c1ddb1fb439321d7659bd5e9736947f31331a0cbf48f247e7bc  lisp/adapters/openai/e-openai-chat-completions.el
+5f49f9e1ae4c930925541e4afba9a26bf69eccd0b5d6cd93409c94a7fe8db748  e2e/e-cache-efficiency-e2e-test.el
+#+end_example
