@@ -16,6 +16,7 @@
 (require 'e-harness-state)
 (require 'e-capabilities)
 (require 'e-capability-config)
+(require 'e-context-canvas)
 (require 'e-hooks)
 (require 'e-layers)
 (require 'e-message-details)
@@ -433,16 +434,40 @@ available through e:// resources instead of repeating it in every request.")
    :interactive-policy 'async
    :owner 'resources
    :runner
-   (lambda (handle arguments _context)
-     (let ((dispatch (e-operation-dispatch operation))
-           child-handle)
+   (lambda (handle arguments context)
+     (let* ((dispatch (e-operation-dispatch operation))
+            (expected-present (plist-member arguments :expectedRevision))
+            (targets (copy-tree
+                      (plist-get context :attached-canvas-targets) t))
+            (e-resource-operation-revision-context
+             (list :operation (e-operation-id-of operation)
+                   :expected-revision-present expected-present
+                   :expected-revision (plist-get arguments :expectedRevision)
+                   :attached-canvas-targets targets))
+            child-handle)
        (funcall
         dispatch
         (lambda (uri &rest operation-arguments)
           (let* ((parsed-uri (e-resources-parse-uri uri))
                  (method (e-resources-method-for-uri
                           resources operation uri))
-                 (work (e-harness-capabilities--resource-method-work method)))
+                 (scheme (e-resource-method-scheme method))
+                 (mutating-p (memq (e-operation-id-of operation) '(write edit)))
+                 (guarded-p
+                  (and mutating-p
+                       (or expected-present
+                           ;; File and buffer methods own root-aware alias
+                           ;; resolution, so guarded calls use their handler.
+                           (and targets (member scheme '("file" "buffer")))
+                           (e-context-canvas-resource-targeted-p parsed-uri))))
+                 (work (and (not guarded-p)
+                            (e-harness-capabilities--resource-method-work method))))
+            (when (and guarded-p mutating-p
+                       (not (member scheme '("file" "buffer"))))
+              (signal 'e-resources-unsupported-operation
+                      (list (format
+                             "Resource scheme %s does not support guarded %s"
+                             scheme (e-operation-id-of operation)))))
             (if (e-work-spec-p work)
                 (progn
                   (setf (e-work-handle-cancel-function handle)
@@ -456,9 +481,12 @@ available through e:// resources instead of repeating it in every request.")
                          (list :uri parsed-uri
                                :operation-arguments operation-arguments
                                :resource-operation operation)
-                         :context (list :resource-uri uri
-                                        :resource-operation
-                                        (e-operation-id-of operation))
+                         :context (append
+                                   (list :resource-uri uri
+                                         :resource-operation
+                                         (e-operation-id-of operation))
+                                   (when targets
+                                     (list :attached-canvas-targets targets)))
                          :on-done (lambda (content)
                                     (condition-case err
                                         (e-work-finish
@@ -510,11 +538,39 @@ cheap resource schemes to implement an artificial asynchronous adapter."
              (tool-name (e-operation-tool-name operation))
              (cheap-runner
               (lambda (arguments)
-                (funcall dispatch
-                         (lambda (uri &rest operation-arguments)
-                           (e-harness-capabilities--resource-operation-call
-                            resources operation uri operation-arguments))
-                         arguments))))
+                (let* ((context (e-tools-current-context))
+                       (expected-present
+                        (plist-member arguments :expectedRevision))
+                       (e-resource-operation-revision-context
+                        (list :operation (e-operation-id-of operation)
+                              :expected-revision-present expected-present
+                              :expected-revision
+                              (plist-get arguments :expectedRevision)
+                              :attached-canvas-targets
+                              (copy-tree
+                               (plist-get context :attached-canvas-targets) t)))
+                       (e-resource-return-revision-on-read
+                        (eq (e-operation-id-of operation) 'read)))
+                  (funcall dispatch
+                           (lambda (uri &rest operation-arguments)
+                             (let ((method
+                                    (e-resources-method-for-uri
+                                     resources operation uri)))
+                               (when (and expected-present
+                                          (memq (e-operation-id-of operation)
+                                                '(write edit))
+                                          (not (member
+                                                (e-resource-method-scheme method)
+                                                '("file" "buffer"))))
+                                 (signal
+                                  'e-resources-unsupported-operation
+                                  (list
+                                   (format "Resource scheme %s does not support revision-checked %s"
+                                           (e-resource-method-scheme method)
+                                           (e-operation-id-of operation)))))
+                               (e-harness-capabilities--resource-operation-call
+                                resources operation uri operation-arguments)))
+                           arguments)))))
         (e-tools-register
          registry
          :name tool-name

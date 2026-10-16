@@ -15,6 +15,11 @@
 (require 'e-operations)
 (require 'seq)
 
+(defvar e-resource-operation-revision-context nil
+  "Trusted request-local revision context for a resource operation.")
+(defvar e-resource-return-revision-on-read nil
+  "Non-nil when the model-facing read result should include a full revision.")
+
 (define-error 'e-resources-invalid-uri "Resource URI is invalid")
 (define-error 'e-resources-unknown-scheme "Resource URI scheme is not registered")
 (define-error 'e-resources-unsupported-operation "Resource operation is not supported")
@@ -122,17 +127,31 @@ registers one or more methods in REGISTRY."
 
 (defun e-resources--compatible-arguments (method operation handler arguments)
   "Return ARGUMENTS adjusted for source-compatible older METHOD handlers."
-  (if (not (eq (e-operation-id-of operation) 'glob))
-      arguments
-    (let ((extra (nthcdr 3 arguments))
-          (max-args (e-resources--function-max-args handler)))
-      (cond
-       ((or (eq max-args t) (>= max-args 10)) arguments)
-       ((seq-some #'identity extra)
-        (signal 'e-resources-unsupported-operation
-                (list (format "Resource scheme %s does not support advanced glob query controls"
-                              (e-resource-method-scheme method)))))
-       (t (seq-take arguments 3))))))
+  (let ((max-args (e-resources--function-max-args handler)))
+    (cond
+     ((memq (e-operation-id-of operation) '(write edit))
+      (let ((operation-max-args (and (integerp max-args)
+                                     (max 0 (1- max-args)))))
+       (if (or (eq max-args t)
+               (null operation-max-args)
+               (>= operation-max-args (length arguments)))
+          arguments
+        (when (seq-some #'identity (nthcdr operation-max-args arguments))
+          (signal 'e-resources-unsupported-operation
+                  (list (format "Resource scheme %s does not support revision-checked %s"
+                                (e-resource-method-scheme method)
+                                (e-operation-id-of operation)))))
+        (seq-take arguments operation-max-args))))
+     ((eq (e-operation-id-of operation) 'glob)
+      (let ((extra (nthcdr 3 arguments)))
+        (cond
+         ((or (eq max-args t) (>= max-args 10)) arguments)
+         ((seq-some #'identity extra)
+          (signal 'e-resources-unsupported-operation
+                  (list (format "Resource scheme %s does not support advanced glob query controls"
+                                (e-resource-method-scheme method)))))
+         (t (seq-take arguments 3)))))
+     (t arguments))))
 
 (defun e-resources-call (registry operation uri &rest arguments)
   "Call OPERATION for URI in REGISTRY with ARGUMENTS."

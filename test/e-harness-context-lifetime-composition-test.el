@@ -2619,6 +2619,388 @@
                   :output)
                  '((:type "opaque" :marker "RESULT-B"))))))))
 
+(ert-deftest e-harness-test-canvas-chronology-composes-accepted-turns ()
+  "Canvas snapshots and exact edits stay at their accepted path anchors."
+  (let* ((requests nil)
+         (request-count 0)
+         (backend
+          (e-backend-create
+           :name "canvas-chronology"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (push (list :messages (copy-tree messages t)
+                          :options (copy-tree options t))
+                    requests)
+              (setq request-count (1+ request-count))
+              (if (= request-count 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call :id "canvas-read-1"
+                               :name "canvas-inspect" :arguments nil))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (funcall on-item
+                         '(:type assistant-message
+                           :content "Canvas response"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tool-capability
+          (e-capability-create
+           :id 'canvas-chronology-tool
+           :tools
+           (list
+            (lambda (registry)
+              (e-tools-test-register
+               registry :name "canvas-inspect"
+               :description "Inspect the attached canvas."
+               :handler (lambda (_arguments) "Canvas inspected."))))))
+         (policy-capability
+          (e-capability-create
+           :id 'canvas-chronology-policy
+           :instructions "STABLE-CANVAS-POLICY"))
+         (harness
+          (e-harness-create
+           :backend backend
+           :default-options '(:model "canvas-chronology-model")
+           :intrinsic-capabilities
+           (list policy-capability
+                 (e-chat-session-capability-create)
+                 tool-capability)))
+         (session-id "canvas-chronology-session")
+         (initial-text (make-string 10000 ?a))
+         (first-edit (concat (substring initial-text 0 9999) "x"))
+         (second-edit (concat "z" (substring first-edit 1))))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id session-id)
+      (with-temp-buffer
+        (rename-buffer "e-canvas-chronology-test" t)
+        (insert initial-text)
+        (cl-letf (((symbol-function 'e-chat-session-attachments)
+                   (lambda (_harness _session-id)
+                     (list (list :uri (concat "buffer://" (buffer-name))
+                                 :label "canvas"
+                                 :buffer-name (buffer-name)
+                                 :canvas t)))))
+          (cl-labels
+            ((ordered-requests () (nreverse (copy-sequence requests)))
+             (request-at (index) (nth index (ordered-requests)))
+             (messages-at (index) (plist-get (request-at index) :messages))
+             (content-of (message) (plist-get message :content))
+             (canvas-messages (messages)
+              (seq-filter
+               (lambda (message)
+                 (let ((content (content-of message)))
+                   (and (stringp content)
+                        (string-match-p "\\`<canvas\\(?:-change\\)? "
+                                        content))))
+               messages))
+             (snapshot-messages (messages)
+              (seq-filter (lambda (message)
+                           (string-prefix-p "<canvas "
+                                            (content-of message)))
+                         (canvas-messages messages)))
+             (patch-messages (messages)
+              (seq-filter (lambda (message)
+                           (string-prefix-p "<canvas-change "
+                                            (content-of message)))
+                         (canvas-messages messages)))
+             (position-containing (messages text)
+              (cl-position-if
+               (lambda (message)
+                 (and (stringp (content-of message))
+                      (string-match-p (regexp-quote text)
+                                      (content-of message))))
+               messages))
+             (role-position (messages role)
+              (cl-position role messages :key (lambda (message)
+                                                (plist-get message :role)))))
+          (e-harness-test-prompt-batch harness session-id "Inspect canvas")
+          (should (= request-count 2))
+          (let* ((initial (messages-at 0))
+                 (tool-followup (messages-at 1))
+                 (snapshot (car (snapshot-messages initial)))
+                 (policy (car (seq-filter
+                               (lambda (message)
+                                 (and (stringp (content-of message))
+                                      (string-match-p "STABLE-CANVAS-POLICY"
+                                                      (content-of message))))
+                               initial)))
+                 (call-position (role-position tool-followup 'tool-call))
+                 (result-position (role-position tool-followup 'tool)))
+            (should policy)
+            (should (eq (plist-get policy :role) 'system))
+            (should (equal policy (car (messages-at 1))))
+            (should (= (length (snapshot-messages initial)) 1))
+            (should (null (patch-messages initial)))
+            (should (= (length (snapshot-messages tool-followup)) 1))
+            (should (equal (content-of snapshot)
+                           (content-of (car (snapshot-messages tool-followup)))))
+            (should call-position)
+            (should result-position)
+            (should (= result-position (1+ call-position)))
+            (should (equal
+                     (plist-get (plist-get (nth call-position tool-followup)
+                                          :content)
+                                :id)
+                     (plist-get (plist-get (nth result-position tool-followup)
+                                          :content)
+                                :tool-call-id))))
+          (e-harness-test-prompt-batch harness session-id "Unchanged request")
+          (let* ((unchanged (messages-at 2))
+                 (snapshot-position
+                  (position-containing unchanged "<canvas "))
+                 (answer-position (position-containing unchanged
+                                                       "Canvas response"))
+                 (unchanged-user-position
+                  (position-containing unchanged "Unchanged request")))
+            (should (= (length (snapshot-messages unchanged)) 1))
+            (should (null (patch-messages unchanged)))
+            (should (< snapshot-position answer-position))
+            (should (< answer-position unchanged-user-position))
+            (should (equal (car unchanged) (car (messages-at 0))))
+            (should (= 1 (cl-count-if
+                          (lambda (message)
+                            (and (stringp (content-of message))
+                                 (string-match-p
+                                  "Always write to the exact uri"
+                                  (content-of message))))
+                          unchanged))))
+          (erase-buffer)
+          (insert first-edit)
+          (e-harness-test-prompt-batch harness session-id "Change one checkbox")
+          (let* ((changed-once (messages-at 3))
+                 (snapshots (snapshot-messages changed-once))
+                 (patches (patch-messages changed-once))
+                 (user-position (position-containing changed-once
+                                                     "Change one checkbox"))
+                 (patch-position (position-containing changed-once
+                                                      "<canvas-change "))
+                 (patch-content (content-of (car patches))))
+            (should (= (length snapshots) 1))
+            (should (= (length patches) 1))
+            (should (equal (car changed-once) (car (messages-at 0))))
+            (should (< (position-containing changed-once "Inspect canvas")
+                       (position-containing changed-once "<canvas ")))
+            (should (< user-position patch-position))
+            (should (string-match
+                     (concat "baseRevision=\""
+                             (e-context-canvas-revision initial-text) "\"")
+                     patch-content))
+            (should (string-match
+                     (concat "revision=\""
+                             (e-context-canvas-revision first-edit) "\"")
+                     patch-content)))
+          (erase-buffer)
+          (insert second-edit)
+          (e-harness-test-prompt-batch harness session-id "Change two checkbox")
+          (let* ((changed-twice (messages-at 4))
+                 (snapshots (snapshot-messages changed-twice))
+                 (patches (patch-messages changed-twice))
+                 (first-patch-position
+                  (position-containing changed-twice "<canvas-change "))
+                 (second-patch-position
+                  (cl-position-if
+                   (lambda (message)
+                     (and (stringp (content-of message))
+                          (string-match-p
+                           (concat "baseRevision=\""
+                                   (e-context-canvas-revision first-edit) "\"")
+                           (content-of message))))
+                   changed-twice))
+                 (second-user-position
+                  (position-containing changed-twice "Change two checkbox"))
+                 (context
+                  (e-harness-turn-context harness session-id "canvas-probe")))
+            (should (= (length snapshots) 1))
+            (should (= (length patches) 2))
+            (should (equal (car changed-twice) (car (messages-at 0))))
+            (should (< first-patch-position second-user-position))
+            (should (< second-user-position second-patch-position))
+            (should (equal (plist-get context :messages)
+                           (cl-loop for segment in (plist-get context :segments)
+                                    append (copy-tree
+                                            (plist-get segment :messages)))))
+            (should (= (length (plist-get context :messages))
+                       (length (plist-get context :message-entry-ids))))
+            (let* ((third-text (concat second-edit "B"))
+                   (fourth-text (concat second-edit "C"))
+                   (retry-text (concat second-edit "D")))
+              (erase-buffer)
+              (insert third-text)
+              (let* ((candidate-b
+                      (e-harness-turn-context harness session-id "candidate-b"))
+                     (pending-b
+                      (plist-get (plist-get candidate-b :options)
+                                 :canvas-pending-observations)))
+                (erase-buffer)
+                (insert fourth-text)
+                (let* ((candidate-c
+                        (e-harness-turn-context harness session-id "candidate-c"))
+                       (pending-c
+                        (plist-get (plist-get candidate-c :options)
+                                   :canvas-pending-observations)))
+                  (should (= (length pending-b) 1))
+                  (should (= (length pending-c) 1))
+                  (e-harness-context-runtime-commit-canvas-response
+                   harness session-id
+                   (list :canvas-pending-observations pending-b))
+                  (e-harness-context-runtime-commit-canvas-response
+                   harness session-id
+                   (list :canvas-pending-observations pending-c))
+                  (let* ((recovered
+                          (e-harness-turn-context harness session-id
+                                                  "recover-stale-c"))
+                         (recovered-patches
+                          (patch-messages (plist-get recovered :messages)))
+                         (latest-patch (car (last recovered-patches)))
+                         (latest-content (content-of latest-patch)))
+                    (should (string-match
+                             (concat "baseRevision=\""
+                                     (e-context-canvas-revision third-text)
+                                     "\"")
+                             latest-content))
+                    (should (string-match
+                             (concat "revision=\""
+                                     (e-context-canvas-revision fourth-text)
+                                     "\"")
+                             latest-content))
+                    (e-harness-context-runtime-commit-canvas-response
+                     harness session-id
+                     (list :canvas-pending-observations
+                           (plist-get (plist-get recovered :options)
+                                      :canvas-pending-observations)))))
+              (erase-buffer)
+              (insert retry-text)
+              (let* ((failed-candidate
+                      (e-harness-turn-context harness session-id "failed-attempt"))
+                     (failed-pending
+                      (plist-get (plist-get failed-candidate :options)
+                                 :canvas-pending-observations)))
+                ;; No response-complete callback means no accepted base change.
+                (should (= (length failed-pending) 1))
+                (let* ((retry-candidate
+                        (e-harness-turn-context harness session-id "retry-attempt"))
+                       (retry-pending
+                        (plist-get (plist-get retry-candidate :options)
+                                   :canvas-pending-observations))
+                       (retry-message
+                        (car (last (patch-messages
+                                   (plist-get retry-candidate :messages))))))
+                  (should (= (length retry-pending) 1))
+                  (should (string-match
+                           (concat "baseRevision=\""
+                                   (e-context-canvas-revision fourth-text) "\"")
+                           (content-of retry-message)))
+                  (e-harness-context-runtime-commit-canvas-response
+                   harness session-id
+                   (list :canvas-pending-observations retry-pending))))
+              (let* ((store (e-harness-sessions harness))
+                     (head (plist-get (e-session-local-state store session-id)
+                                      :current-head-id))
+                     (generation
+                      (e-context-lifetime-generation-create
+                       :id "generation:canvas-chronology-reset"
+                       :checkpoint nil
+                       :covered-session-boundary head)))
+                (e-session-append-context-generation store session-id
+                                                     generation)
+                (let* ((reset
+                        (e-harness-turn-context harness session-id
+                                                "generation-reset"))
+                       (reset-messages (plist-get reset :messages))
+                       (snapshots (snapshot-messages reset-messages)))
+                  (should (= (length snapshots) 1))
+                  (should (null (patch-messages reset-messages)))
+                  (should (string-match
+                           (e-context-canvas-revision retry-text)
+                           (content-of (car snapshots))))))
+              (e-harness-context-runtime-commit-canvas-response
+               harness session-id '(:curation-effects t))
+              (let* ((after-curation
+                      (e-harness-turn-context harness session-id
+                                              "curation-reset"))
+                     (messages (plist-get after-curation :messages)))
+                (should (= (length (snapshot-messages messages)) 1))
+                (should (null (patch-messages messages)))
+                (let* ((table (e-harness-canvas-chronologies harness))
+                       (key (list session-id
+                                  (concat "buffer://" (buffer-name))))
+                       (before-preview
+                        (plist-get (gethash key table) :version))
+                       (preview (e-harness-context harness session-id nil
+                                                   'preview)))
+                  (should (null (plist-get (plist-get preview :options)
+                                           :canvas-pending-observations)))
+                  (should (= before-preview
+                             (plist-get (gethash key table) :version))))))))))))))
+
+(ert-deftest e-harness-test-canvas-patches-fall-back-to-bounded-snapshots ()
+  "Serialized payload cost and the patch cap bound retained chronology."
+  (let* ((old (make-string 1000 ?a))
+         (old-source (e-context-canvas-capture-create
+                      :uri "file:///tmp/bounded-canvas.org"
+                      :label "Daily" :id "daily" :content old))
+         (small-source (e-context-canvas-capture-create
+                        :uri "file:///tmp/bounded-canvas.org"
+                        :label "Daily" :id "daily"
+                        :content (concat old "x")))
+         (large-source (e-context-canvas-capture-create
+                        :uri "file:///tmp/bounded-canvas.org"
+                        :label "Daily" :id "daily"
+                        :content (concat (make-string 600 ?a)
+                                         (make-string 400 ?b))))
+         (snapshot-bytes
+          (e-context-canvas-utf8-bytes
+           (e-context-canvas-snapshot-payload old-source)))
+         (small-snapshot-bytes
+          (e-context-canvas-utf8-bytes
+           (e-context-canvas-snapshot-payload small-source)))
+         (base (list :text old
+                     :revision (plist-get old-source :canvas-revision)
+                     :operations
+                     (list (list :representation 'snapshot
+                                 :payload-bytes snapshot-bytes))))
+         (small-candidate
+          (e-harness-context-runtime--canvas-candidate
+           small-source base "anchor:small" 1))
+         (small-operation (plist-get small-candidate :operation))
+         (large-candidate
+          (e-harness-context-runtime--canvas-candidate
+           large-source base "anchor:large" 1))
+         (cumulative-base
+          (list :text old
+                :revision (plist-get old-source :canvas-revision)
+                :operations
+                (list (list :representation 'snapshot
+                            :payload-bytes snapshot-bytes)
+                      (list :representation 'patch
+                            :payload-bytes
+                            (- small-snapshot-bytes
+                               (plist-get small-operation :payload-bytes))))))
+         (cumulative-candidate
+          (e-harness-context-runtime--canvas-candidate
+           small-source cumulative-base "anchor:cumulative" 1))
+         (patches
+          (make-list 16 (list :representation 'patch :payload-bytes 1)))
+         (patch-cap-base
+          (list :text old
+                :revision (plist-get old-source :canvas-revision)
+                :operations (cons (list :representation 'snapshot
+                                        :payload-bytes snapshot-bytes)
+                                  patches)))
+         (patch-cap-candidate
+          (e-harness-context-runtime--canvas-candidate
+           small-source patch-cap-base "anchor:cap" 1)))
+    (should (eq (plist-get small-operation :representation) 'patch))
+    (should (eq (plist-get (plist-get large-candidate :operation)
+                           :representation)
+                'snapshot))
+    (should (eq (plist-get (plist-get cumulative-candidate :operation)
+                           :representation)
+                'snapshot))
+    (should (eq (plist-get (plist-get patch-cap-candidate :operation)
+                           :representation)
+                'snapshot))))
+
 (provide 'e-harness-context-lifetime-composition-test)
 
 ;;; e-harness-context-lifetime-composition-test.el ends here

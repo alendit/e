@@ -74,12 +74,15 @@
                  :properties (:uri (:type "string"
                                     :description "Resource URI to write, such as file://README.md or buffer://*scratch*.")
                               :content (:type "string"
-                                        :description "Complete replacement content."))
+                                        :description "Complete replacement content.")
+                              :expectedRevision (:type "string"
+                                                 :description "Optional complete resource revision shown by canvas context or a prior read."))
                  :required ["uri" "content"])
    :dispatch (lambda (call arguments)
                (funcall call
                         (e-operations--argument-string arguments :uri)
-                        (e-operations--argument-string arguments :content)))))
+                        (e-operations--argument-string arguments :content)
+                        (plist-get arguments :expectedRevision)))))
 
 (defconst e-operation-edit
   (e-operation-create
@@ -101,12 +104,15 @@
                                                                    :description "Exact current text to replace. Must match exactly once.")
                                                            :newText (:type "string"
                                                                    :description "Replacement text."))
-                                              :required ["oldText" "newText"])))
+                                              :required ["oldText" "newText"]))
+                              :expectedRevision (:type "string"
+                                                 :description "Optional complete resource revision shown by canvas context or a prior read."))
                  :required ["uri" "edits"])
    :dispatch (lambda (call arguments)
                (funcall call
                         (e-operations--argument-string arguments :uri)
-                        (plist-get arguments :edits)))))
+                        (plist-get arguments :edits)
+                        (plist-get arguments :expectedRevision)))))
 
 (defconst e-operation-glob
   (e-operation-create

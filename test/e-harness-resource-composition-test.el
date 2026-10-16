@@ -227,6 +227,106 @@
                               "needle"
                               (:glob "*.el" :limit 6)))))))
 
+(ert-deftest e-harness-test-async-resource-writes-cannot-bypass-canvas-guard ()
+  "Guarded writes use the synchronous supported handler or fail closed."
+  (let* ((directory (make-temp-file "e-async-canvas-write-" t))
+         (file-uri (concat "file://" (expand-file-name "canvas.txt" directory)))
+         (opaque-uri "opaque://canvas")
+         (revision (e-context-canvas-revision "before"))
+         (file-writes 0)
+         (opaque-writes 0)
+         (work-starts 0)
+         (work (e-work-spec-create
+                :id "resource.test-write"
+                :description "Test asynchronous resource write."
+                :execution 'cheap
+                :interactive-policy 'async
+                :runner (lambda (_arguments _context)
+                          (cl-incf work-starts)
+                          "async-written")))
+         (capability
+          (e-capability-create
+           :id 'async-resource-capability
+           :resource-methods
+           (list
+            (lambda (registry)
+              (dolist (method
+                       (list
+                        (e-resource-method-create
+                         :scheme "file"
+                         :operation e-operation-write
+                         :description "Guardable file writes."
+                         :handler
+                         (lambda (uri content &optional expected)
+                           (cl-incf file-writes)
+                           (or (e-context-canvas-revision-check
+                                uri "before" expected directory)
+                               (list :status "ok"
+                                     :revision
+                                     (e-context-canvas-revision content))))
+                         :work work)
+                        (e-resource-method-create
+                         :scheme "opaque"
+                         :operation e-operation-write
+                         :description "Opaque writes."
+                         :handler (lambda (_uri _content)
+                                    (cl-incf opaque-writes)
+                                    "opaque-written")
+                         :work work)))
+                (e-resources-register registry method))))))
+         (harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)
+                   :intrinsic-capabilities (list capability)))
+         (tools (e-harness-tools harness))
+         (file-target
+          (list :uri file-uri
+                :revision revision
+                :target-identities
+                (e-context-canvas-resource-identities file-uri directory)))
+         (opaque-target
+          (list :uri opaque-uri
+                :revision revision
+                :target-identities
+                (e-context-canvas-resource-identities opaque-uri)))
+         result)
+    (unwind-protect
+        (progn
+          (e-tools-start
+           tools
+           (list :id "call-attached-file" :name "write"
+                 :arguments (list :uri file-uri :content "after"))
+           :context (list :attached-canvas-targets (list file-target))
+           :on-done (lambda (value) (setq result value)))
+          (while (not result) (accept-process-output nil 0.01))
+          (should (eq (plist-get result :status) 'ok))
+          (should (equal (plist-get (plist-get result :content) :status)
+                         "conflict"))
+          (should (= file-writes 1))
+          (should (= work-starts 0))
+          (setq result nil)
+          (e-tools-start
+           tools
+           (list :id "call-attached-opaque" :name "write"
+                 :arguments (list :uri opaque-uri :content "after"))
+           :context (list :attached-canvas-targets (list opaque-target))
+           :on-done (lambda (value) (setq result value)))
+          (while (not result) (accept-process-output nil 0.01))
+          (should (eq (plist-get result :status) 'error))
+          (should (= opaque-writes 0))
+          (should (= work-starts 0))
+          (setq result nil)
+          (e-tools-start
+           tools
+           '(:id "call-unattached-opaque" :name "write"
+             :arguments (:uri "opaque://other" :content "after"))
+           :on-done (lambda (value) (setq result value)))
+          (while (not result) (accept-process-output nil 0.01))
+          (should (eq (plist-get result :status) 'ok))
+          (should (equal (plist-get result :content) "async-written"))
+          (should (= opaque-writes 0))
+          (should (= work-starts 1)))
+      (delete-directory directory t))))
+
 (ert-deftest e-harness-test-resource-tool-descriptions-include-active-methods ()
   "Generated operation tool descriptions include active URI scheme metadata."
   (let* ((capability

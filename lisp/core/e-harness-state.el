@@ -40,7 +40,8 @@
 (cl-defstruct (e-harness-context-state
                (:constructor e-harness-state--create-context-state))
   "State owned by context/compaction/provider-anchor policy."
-  provider-compaction-candidates)
+  provider-compaction-candidates
+  canvas-chronologies)
 
 (cl-defstruct (e-harness (:constructor e-harness-state--create))
   "A live harness identity with explicitly owned runtime substates.
@@ -112,7 +113,9 @@ change."
            (plist-get args :unsettled-change-function)))
          (context-state
           (e-harness-state--create-context-state
-           :provider-compaction-candidates provider-candidates)))
+           :provider-compaction-candidates provider-candidates
+           :canvas-chronologies (or (plist-get args :canvas-chronologies)
+                                    (make-hash-table :test 'equal)))))
     (e-harness-state--create
      :backend backend
      :context-strategy context-strategy
@@ -224,6 +227,11 @@ change."
          (e-harness-context-state harness)) value))
 (gv-define-simple-setter e-harness-provider-compaction-candidates
                          e-harness-state--set-provider-compaction-candidates)
+
+(defun e-harness-canvas-chronologies (harness)
+  "Return process-local canvas chronology state owned by HARNESS."
+  (e-harness-context-state-canvas-chronologies
+   (e-harness-context-state harness)))
 
 (defun e-harness-executing-session-state (harness session-id)
   "Return detached state retained only by SESSION-ID's executing turn.

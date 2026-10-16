@@ -447,7 +447,7 @@ eligible items, but records already covered by the boundary can be ignored."
           (signal 'e-context-lifetime-invalid-record
                   (list 'retained-context :record-position entry)))
         (cond
-         ((and (integerp anchor-index) (>= anchor-index 0))
+         ((and (integerp anchor-index) (>= anchor-index -1))
           (unless (or (<= anchor-index record-index)
                       (eq (plist-get entry :anchor-position-kind)
                           'response-completion))

@@ -25,6 +25,7 @@
 (require 'e-json)
 (require 'e-resources)
 (require 'e-tools)
+(require 'e-context-canvas)
 
 (defun e-emacs-tools-test--resource-tools (&optional read-only)
   "Return resource-backed buffer tools.
@@ -811,6 +812,100 @@ returns a normal tool error instead."
       (should (string-match-p "boom" (format "%s" (plist-get result :content)))))
     ;; The flags are restored after the call (not leaked globally).
     (should-not debug-on-error)))
+
+(ert-deftest e-emacs-tools-test-attached-file-alias-guards-buffer-write ()
+  "A file canvas and its visiting buffer share the expected revision guard."
+  (let* ((directory (make-temp-file "e-buffer-canvas-alias-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (file-uri "file://sample.txt")
+         (revision (e-context-canvas-revision "original"))
+         buffer
+         (registry (e-emacs-tools-test--resource-tools))
+         (context nil))
+    (unwind-protect
+        (progn
+          (write-region "original" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil))
+          (setq context
+                (list :attached-canvas-targets
+                      (list (list :uri file-uri :revision revision
+                                  :target-identities
+                                  (e-context-canvas-resource-identities
+                                   file-uri directory)))))
+          (let ((missing
+                 (e-tools--execute-batch-with-context
+                  registry
+                  (list :id "call-missing" :name "write"
+                        :arguments (list :uri (concat "buffer://" (buffer-name buffer))
+                                         :content "changed"))
+                  context)))
+            (should (equal (plist-get (plist-get missing :content) :status)
+                           "conflict"))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "original")))
+          (let ((written
+                 (e-tools--execute-batch-with-context
+                  registry
+                  (list :id "call-current" :name "write"
+                        :arguments (list :uri (concat "buffer://" (buffer-name buffer))
+                                         :content "changed"
+                                         :expectedRevision revision))
+                  context)))
+            (should (equal (plist-get written :status) 'ok))
+            (should (equal (plist-get (plist-get written :content) :revision)
+                           (e-context-canvas-revision "changed")))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "changed"))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "original"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-emacs-tools-test-nested-buffer-write-keeps-canvas-guard ()
+  "A nested resource write inherits the immutable attached-target scope."
+  (let* ((buffer (generate-new-buffer " *e-nested-canvas*"))
+         (uri (concat "buffer://" (buffer-name buffer)))
+         (revision (e-context-canvas-revision "original"))
+         (registry (e-emacs-tools-test--resource-tools))
+         result)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert "original"))
+          (e-tools-register
+           registry
+           :name "nested_write"
+           :description "Exercise a nested resource write."
+           :work
+           (e-tools-cheap-work
+            "test.nested-write"
+            (lambda (_arguments)
+              (plist-get
+               (e-tools-call "write" (list :uri uri :content "changed"))
+               :content))))
+          (e-tools-start
+           registry
+           '(:id "outer-call" :name "nested_write" :arguments nil)
+           :context
+           (list :attached-canvas-targets
+                 (list (list :uri uri
+                             :revision revision
+                             :target-identities
+                             (e-context-canvas-resource-identities uri))))
+           :on-done (lambda (value) (setq result value)))
+          (while (not result) (accept-process-output nil 0.01))
+          (should (eq (plist-get result :status) 'ok))
+          (should (equal (plist-get (plist-get result :content) :status)
+                         "conflict"))
+          (should (equal (with-current-buffer buffer (buffer-string))
+                         "original")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (provide 'e-emacs-tools-test)
 

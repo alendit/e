@@ -661,14 +661,27 @@ schedules it behind the owning session's active commit barrier."
                   (provider-request-started-at nil)
                   (provider-request-finished nil)
                   (provider-request-lifetime-frame active-lifetime-frame)
+                  (provider-request-canvas-pending nil)
+                  (provider-request-attached-canvas-targets nil)
                   (provider-request-base-options
                    (copy-sequence turn-options))
                   (provider-request-context-capabilities
                    (e-backend-context-capabilities
                     backend provider-request-base-options))
                   (provider-request-options
+                   (progn
+                     (setq provider-request-canvas-pending
+                           (copy-tree
+                            (plist-get provider-request-base-options
+                                       :canvas-pending-observations) t))
+                     (setq provider-request-attached-canvas-targets
+                           (copy-tree
+                            (plist-get provider-request-base-options
+                                       :attached-canvas-targets) t))
                    (let ((request-options
                           (copy-sequence provider-request-base-options)))
+                     (cl-remf request-options :canvas-pending-observations)
+                     (cl-remf request-options :attached-canvas-targets)
                      ;; Re-derive the request-scoped carrier from the backend
                      ;; after removing any copied metadata; only a live frame
                      ;; can publish the supported carrier.
@@ -707,7 +720,7 @@ schedules it behind the owning session's active commit barrier."
                               (copy-tree
                                next-request-provider-skipped-calls)))
                        (setq next-request-provider-skipped-calls nil))
-                     request-options))
+                     request-options)))
                   (response-complete-notified nil)
                   (response-preflight-run nil)
                   (response-preflight-result nil)
@@ -878,6 +891,8 @@ schedules it behind the owning session's active commit barrier."
                     (list :frame provider-request-lifetime-frame
                           :provider-request-options
                           (copy-sequence provider-request-options)
+                          :canvas-pending-observations
+                          (copy-tree provider-request-canvas-pending t)
                           :provider-request-id provider-request-id
                           :provider-request-ordinal provider-request-ordinal
                           :curation-effects
@@ -1674,6 +1689,10 @@ schedules it behind the owning session's active commit barrier."
                                         :archival-rejected-p archival-rejected-p
                                         :archival-received-arguments
                                         archival-received-arguments
+                                        :attached-canvas-targets
+                                        (copy-tree
+                                         provider-request-attached-canvas-targets
+                                         t)
                                         :on-request-start
                                         (lambda (request)
                                           (dispatch-callback
@@ -1718,6 +1737,10 @@ schedules it behind the owning session's active commit barrier."
                                               (and (e-work-handle-p turn-work-handle)
                                                    (e-work-handle-id turn-work-handle))
                                               :board-enroll-work board-enroll-work
+                                              :attached-canvas-targets
+                                              (copy-tree
+                                               provider-request-attached-canvas-targets
+                                               t)
                                               :deadline
                                               (plist-get turn-options :deadline))
                                       :on-request-start

@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'e-capabilities)
 (require 'e-operations)
+(require 'e-context-canvas)
 (require 'e-resource-coherence)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
@@ -436,9 +437,9 @@ through file:// reads."
           (buffer-substring-no-properties (point-min) (point-max)))
       (e-base-tools-file-disk-text absolute-path))))
 
-(defun e-base-tools-file--read-text (path offset limit)
+(defun e-base-tools-file--read-text (path offset limit &optional captured-content)
   "Read text PATH with 1-based OFFSET and optional LIMIT."
-  (let* ((content (e-base-tools-file--file-text path))
+  (let* ((content (or captured-content (e-base-tools-file--file-text path)))
          (lines (e-base-tools-file--lines content))
          (total-lines (length lines))
          (start-line (or offset 1))
@@ -1114,41 +1115,73 @@ result plist; otherwise return nil so the caller runs the default backend."
                     (e-base-tools-file--file-search-work-result
                      directory raw work-arguments context))))
 
-(defun e-base-tools-file--write-file-resource (uri content directory)
+(defun e-base-tools-file--write-file-resource
+    (uri content directory &optional expected-revision)
   "Write CONTENT to parsed file URI in DIRECTORY."
-  (let* ((path (plist-get uri :address))
+  (let* ((guarded-p
+          (or (stringp expected-revision)
+              (e-context-canvas-resource-targeted-p uri directory)))
+         (current-content (and guarded-p
+                               (if (file-exists-p
+                                    (e-base-tools-file-resource-path uri directory))
+                                   (e-base-tools-file--file-text
+                                    (e-base-tools-file-resource-path uri directory))
+                                 "")))
+         (revision-check (and guarded-p
+                              (e-context-canvas-revision-check
+                               uri current-content expected-revision directory))))
+    (if (equal (plist-get revision-check :status) "conflict")
+        revision-check
+      (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools-file-resource-path uri directory))
          (file-uri (e-base-tools-file--file-uri absolute-path))
          (group (e-base-tools-file-buffer-coherence-group
                  absolute-path
                  (plist-get uri :uri))))
-    (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
-    (make-directory (file-name-directory absolute-path) t)
-    (if-let* ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
-        (let* ((saved (e-base-tools-file--save-buffer-content-to-file buffer content))
-               (synced (e-base-tools-file--sync-other-live-buffers
-                        buffer
-                        (e-base-tools-file-live-buffers absolute-path))))
-          (format "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
-                  (string-bytes content)
-                  path
-                  (plist-get saved :name)
-                  (length synced)))
-      (let ((coding-system-for-write 'utf-8-unix))
-        (write-region content nil absolute-path nil 'silent))
-      (format "Successfully wrote %d bytes to %s"
-              (string-bytes content)
-              path))))
+        (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
+        (make-directory (file-name-directory absolute-path) t)
+        (let ((result
+               (if-let* ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
+                   (let* ((saved (e-base-tools-file--save-buffer-content-to-file buffer content))
+                          (synced (e-base-tools-file--sync-other-live-buffers
+                                   buffer
+                                   (e-base-tools-file-live-buffers absolute-path))))
+                     (format "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
+                             (string-bytes content)
+                             path
+                             (plist-get saved :name)
+                             (length synced)))
+                 (let ((coding-system-for-write 'utf-8-unix))
+                   (write-region content nil absolute-path nil 'silent))
+                 (format "Successfully wrote %d bytes to %s"
+                         (string-bytes content)
+                         path))))
+          (if guarded-p
+              (list :status "ok"
+                    :revision (e-context-canvas-revision content)
+                    :result result)
+            result))))))
 
-(defun e-base-tools-file--edit-file-resource (uri edits directory)
+(defun e-base-tools-file--edit-file-resource
+    (uri edits directory &optional expected-revision)
   "Apply exact EDITS to parsed file URI in DIRECTORY."
   (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools-file-resource-path uri directory))
          (file-uri (e-base-tools-file--file-uri absolute-path))
          (group (e-base-tools-file-buffer-coherence-group
                  absolute-path
-                 (plist-get uri :uri))))
-    (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
+                 (plist-get uri :uri)))
+         (guarded-p
+          (or (stringp expected-revision)
+              (e-context-canvas-resource-targeted-p uri directory)))
+         (content-now (and guarded-p
+                           (e-base-tools-file--file-text absolute-path)))
+         (revision-check (and guarded-p
+                              (e-context-canvas-revision-check
+                               uri content-now expected-revision directory))))
+    (if (equal (plist-get revision-check :status) "conflict")
+        revision-check
+      (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
     (let* ((buffer (e-base-tools-file-preferred-buffer-for-group group))
            (raw-content (e-base-tools-file--file-text absolute-path))
            (line-ending (e-base-tools-file--line-ending raw-content))
@@ -1169,7 +1202,7 @@ result plist; otherwise return nil so the caller runs the default backend."
                           (e-base-tools-file-live-buffers absolute-path))))
         (let ((coding-system-for-write 'utf-8-unix))
           (write-region final-content nil absolute-path nil 'silent)))
-      (list :message (if buffer
+      (let ((result (list :message (if buffer
                          (format "Successfully replaced %d block(s) in %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
                                  (length normalized-edits)
                                  path
@@ -1181,7 +1214,12 @@ result plist; otherwise return nil so the caller runs the default backend."
             :replacements (length normalized-edits)
             :linked-buffers (when buffer
                               (list :saved saved :synced synced))
-            :diff (e-base-tools-file--simple-diff content new-content)))))
+                         :diff (e-base-tools-file--simple-diff content new-content))))
+        (if guarded-p
+            (list :status "ok"
+                  :revision (e-context-canvas-revision final-content)
+                  :result result)
+          result))))))
 
 (defun e-base-tools-file--buffer-content (buffer)
   "Return BUFFER contents without text properties."
@@ -1320,12 +1358,16 @@ result plist; otherwise return nil so the caller runs the default backend."
    :uri-patterns '("file://<path>")
    :range-modes '("line" "offset")
    :handler (lambda (uri range)
-              (pcase-let ((`(,offset ,limit)
-                           (e-base-tools-file--range-offset-limit range)))
-                (e-base-tools-file--read-text
-                 (e-base-tools-file-resource-path uri directory)
-                 offset
-                 limit)))))
+              (pcase-let* ((`(,offset ,limit)
+                            (e-base-tools-file--range-offset-limit range))
+                           (path (e-base-tools-file-resource-path uri directory))
+                           (full-content (e-base-tools-file--file-text path))
+                           (content (e-base-tools-file--read-text
+                                     path offset limit full-content)))
+                (if e-resource-return-revision-on-read
+                    (list :content content
+                          :revision (e-context-canvas-revision full-content))
+                  content)))))
 
 (defun e-base-tools-file--file-write-method (directory)
   "Return a file write resource method rooted at DIRECTORY."
@@ -1334,8 +1376,9 @@ result plist; otherwise return nil so the caller runs the default backend."
    :operation e-operation-write
    :description "Workspace text files."
    :uri-patterns '("file://<path>")
-   :handler (lambda (uri content)
-              (e-base-tools-file--write-file-resource uri content directory))))
+   :handler (lambda (uri content &optional expected-revision)
+              (e-base-tools-file--write-file-resource
+               uri content directory expected-revision))))
 
 (defun e-base-tools-file--file-edit-method (directory)
   "Return a file edit resource method rooted at DIRECTORY."
@@ -1344,8 +1387,9 @@ result plist; otherwise return nil so the caller runs the default backend."
    :operation e-operation-edit
    :description "Workspace text files. Preserves CRLF line endings when possible."
    :uri-patterns '("file://<path>")
-   :handler (lambda (uri edits)
-              (e-base-tools-file--edit-file-resource uri edits directory))))
+   :handler (lambda (uri edits &optional expected-revision)
+              (e-base-tools-file--edit-file-resource
+               uri edits directory expected-revision))))
 
 (defun e-base-tools-file--file-glob-method (directory)
   "Return a file glob resource method rooted at DIRECTORY."

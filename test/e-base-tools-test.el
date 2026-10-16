@@ -24,6 +24,7 @@
 (require 'e-tool-invocation-details)
 (require 'e-tools)
 (require 'e-work)
+(require 'e-context-canvas)
 (require 'seq)
 
 (defun e-base-tools-test--fake-executable (directory name body)
@@ -1626,6 +1627,83 @@ picker."
           (when-let* ((process (plist-get (e-tools-request-metadata request)
                                          :process)))
             (should-not (process-live-p process))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-file-read-reports-full-revision-for-range ()
+  "Partial file reads expose the revision of the complete resource."
+  (let* ((directory (make-temp-file "e-file-revision-read-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory)))
+    (unwind-protect
+        (progn
+          (write-region "alpha\nbeta\n" nil file nil 'silent)
+          (let* ((result
+                  (e-base-tools-test--execute
+                   registry "read"
+                   '(:uri "file://sample.txt"
+                     :range (:unit "line" :start 1 :end 1))))
+                 (content (plist-get result :content)))
+            (should (equal (plist-get result :status) 'ok))
+            (should (equal (plist-get content :content)
+                           "alpha\n\n[2 more lines in file. Use offset=2 to continue.]"))
+            (should (equal (plist-get content :revision)
+                           (e-context-canvas-revision "alpha\nbeta\n")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-attached-file-mutation-requires-current-revision ()
+  "Attached file writes reject missing and stale revisions before mutation."
+  (let* ((directory (make-temp-file "e-file-revision-write-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (uri "file://sample.txt")
+         (registry (e-base-tools-test--resource-tools directory))
+         (revision (e-context-canvas-revision "original"))
+         (context
+          (list :attached-canvas-targets
+                (list (list :uri uri :revision revision
+                            :target-identities
+                            (e-context-canvas-resource-identities
+                             uri directory)))))
+         (call-id 0))
+    (unwind-protect
+        (progn
+          (write-region "original" nil file nil 'silent)
+          (cl-labels ((write-call (arguments)
+                        (setq call-id (1+ call-id))
+                        (e-tools--execute-batch-with-context
+                         registry
+                         (list :id (format "call-%d" call-id)
+                               :name "write" :arguments arguments)
+                         context)))
+            (let* ((missing (write-call '(:uri "file://sample.txt"
+                                          :content "changed")))
+                   (conflict (plist-get missing :content)))
+              (should (equal (plist-get conflict :status) "conflict"))
+              (should (equal (plist-get conflict :currentRevision) revision))
+              (should (equal (with-temp-buffer
+                               (insert-file-contents file)
+                               (buffer-string))
+                             "original")))
+            (let* ((stale (write-call '(:uri "file://sample.txt"
+                                        :content "changed"
+                                        :expectedRevision "stale")))
+                   (conflict (plist-get stale :content)))
+              (should (equal (plist-get conflict :status) "conflict"))
+              (should (equal (plist-get conflict :currentRevision) revision))
+              (should (equal (with-temp-buffer
+                               (insert-file-contents file)
+                               (buffer-string))
+                             "original")))
+            (let ((written (write-call (list :uri uri :content "changed"
+                                             :expectedRevision revision))))
+              (should (equal (plist-get written :status) 'ok))
+              (should (equal (plist-get (plist-get written :content) :status)
+                             "ok"))
+              (should (equal (plist-get (plist-get written :content) :revision)
+                             (e-context-canvas-revision "changed")))))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         "changed")))
       (delete-directory directory t))))
 
 (provide 'e-base-tools-test)

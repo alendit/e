@@ -1676,12 +1676,27 @@ The session transcript/current branch is the sole durable body source.  The
             (push (e-context-lifetime-promotion-from-record
                    (plist-get candidate :record)) promotions))))
       (list :generation generation
+            :current-branch
+            (plist-get (e-session-aggregate-get-live store session-id)
+                       :current-branch)
+            :current-head-id
+            (and selected-path (plist-get (car (last selected-path)) :id))
+            :current-head-path-index (and selected-path
+                                          (1- (length selected-path)))
+            :path-entry-positions
+            (cl-loop for entry in selected-path for index from 0
+                     for entry-id = (plist-get entry :id)
+                     when entry-id collect (cons entry-id index))
+            :covered-boundary-index covered-boundary-index
             :durable-tail (mapcar (lambda (entry)
                                     (plist-get entry :message))
                                   durable-entries)
             :durable-tail-entry-ids (mapcar (lambda (entry)
                                               (plist-get entry :entry-id))
                                             durable-entries)
+            :durable-tail-path-indexes
+            (mapcar (lambda (entry) (plist-get entry :path-index))
+                    durable-entries)
             :ordered-context-tail (plist-get weave :messages)
             :ordered-context-tail-entry-ids (plist-get weave :entry-ids)
             :promotions (nreverse promotions)

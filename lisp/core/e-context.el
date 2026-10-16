@@ -44,7 +44,8 @@ assembly removes the key from backend-facing messages and retains the
 descriptors on the corresponding context segment.")
 
 (cl-defun e-context-source-create
-    (&key uri label content (source-kind 'current-state) provider)
+    (&key uri label content content-sha256
+          (source-kind 'current-state) provider)
   "Create an immutable request-time source descriptor for CONTENT at URI.
 
 The short `src:' handle is derived from URI and CONTENT.  The descriptor keeps
@@ -56,7 +57,8 @@ contributing adapter without becoming part of claim policy."
     (signal 'wrong-type-argument (list 'stringp content)))
   (let* ((identity-digest
           (upcase (secure-hash 'sha256 (concat uri "\0" content))))
-         (content-digest (upcase (secure-hash 'sha256 content)))
+         (content-digest (or content-sha256
+                             (upcase (secure-hash 'sha256 content))))
          (id (substring identity-digest 0 16)))
     (list :id id
           :handle (concat "src:" id)

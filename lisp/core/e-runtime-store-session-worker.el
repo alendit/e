@@ -2038,7 +2038,8 @@ unselected branch rows and unrelated journal families are never returned."
                (base64-decode-string
                 (e-runtime-store-session-worker--column row 4)))))
         (when record-id (puthash record-id path-index path-ids))
-        (push (list :path-index path-index :record-type record-type
+        (push (list :path-index path-index :entry-id record-id
+                    :record-type record-type
                     :record record
                     :display-payload
                     (e-runtime-store-session-worker--column row 6))
@@ -2233,6 +2234,12 @@ unselected branch rows and unrelated journal families are never returned."
     (list :session-id session-id :current-branch branch
           :current-head-id head-id
           :current-head-path-index (and entries (1- (length entries)))
+          :path-entry-positions
+          (mapcar (lambda (entry)
+                    (cons (plist-get entry :entry-id)
+                          (plist-get entry :path-index)))
+                  entries)
+          :covered-boundary-index portable-boundary-index
           :metadata (e-session-query--copy-value metadata)
           :turn-options (e-session-query--copy-value turn-options)
           :compaction

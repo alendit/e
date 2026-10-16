@@ -17,6 +17,7 @@
 (require 'subr-x)
 (require 'e-json)
 (require 'e-operations)
+(require 'e-context-canvas)
 (require 'e-resource-patterns)
 (require 'e-resource-query)
 (require 'e-resources)
@@ -409,37 +410,83 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   "Read parsed buffer URI with structured RANGE."
   (let ((name (e-emacs-tools--buffer-resource-name uri)))
     (with-current-buffer (e-emacs-tools--buffer name)
-      (let* ((bounds (e-emacs-tools--resource-read-range range))
+      (let* ((full-content
+              (buffer-substring-no-properties (point-min) (point-max)))
+             (bounds (e-emacs-tools--resource-read-range range))
              (start (plist-get bounds :start))
              (exclusive-end (plist-get bounds :exclusive-end))
              (reported-end (plist-get bounds :reported-end)))
-        (list :name name
-              :content (buffer-substring-no-properties start exclusive-end)
-              :start start
-              :end reported-end)))))
+        (append
+         (list :name name
+               :content (buffer-substring-no-properties start exclusive-end)
+               :start start
+               :end reported-end)
+         (when e-resource-return-revision-on-read
+           (list :revision (e-context-canvas-revision full-content))))))))
 
-(defun e-emacs-tools--write-buffer-resource (uri content)
+(defun e-emacs-tools--write-buffer-resource (uri content &optional expected-revision)
   "Replace parsed buffer URI contents with CONTENT."
-  (let ((name (e-emacs-tools--buffer-resource-name uri)))
-    (with-current-buffer (get-buffer-create name)
-      (erase-buffer)
-      (insert content)
-       (append
-       (list :chars (length content)
-             :saved e-json-false)
-       (e-emacs-tools--buffer-metadata (current-buffer))))))
+  (let* ((name (e-emacs-tools--buffer-resource-name uri))
+         (existing (get-buffer name))
+         (guarded-p
+          (or (stringp expected-revision)
+              (e-context-canvas-resource-targeted-p uri)))
+         (current-content
+          (if (buffer-live-p existing)
+              (with-current-buffer existing
+                (buffer-substring-no-properties (point-min) (point-max)))
+            ""))
+         (revision-check (and guarded-p
+                              (e-context-canvas-revision-check
+                               uri current-content expected-revision))))
+    (if (equal (plist-get revision-check :status) "conflict")
+        revision-check
+      (with-current-buffer (get-buffer-create name)
+        (erase-buffer)
+        (insert content)
+        (let ((result
+               (append
+                (list :chars (length content)
+                      :saved e-json-false)
+                (e-emacs-tools--buffer-metadata (current-buffer)))))
+          (if guarded-p
+              (list :status "ok"
+                    :revision (e-context-canvas-revision content)
+                    :result result)
+            result))))))
 
-(defun e-emacs-tools--edit-buffer-resource (uri edits)
+(defun e-emacs-tools--edit-buffer-resource (uri edits &optional expected-revision)
   "Apply exact resource EDITS to parsed buffer URI."
   (let* ((name (e-emacs-tools--buffer-resource-name uri))
+         (existing (get-buffer name))
+         (guarded-p
+          (or (stringp expected-revision)
+              (e-context-canvas-resource-targeted-p uri)))
+         (current-content
+          (if (buffer-live-p existing)
+              (with-current-buffer existing
+                (buffer-substring-no-properties (point-min) (point-max)))
+            ""))
+         (revision-check (and guarded-p
+                              (e-context-canvas-revision-check
+                               uri current-content expected-revision)))
          (normalized-edits (e-emacs-tools--normalize-edits edits)))
-    (with-current-buffer (e-emacs-tools--buffer name)
-      (let ((replacements (e-emacs-tools--apply-edits-to-current-buffer
-                           normalized-edits)))
-         (append
-         (list :replacements replacements
-               :saved e-json-false)
-         (e-emacs-tools--buffer-metadata (current-buffer)))))))
+    (if (equal (plist-get revision-check :status) "conflict")
+        revision-check
+      (with-current-buffer (get-buffer-create name)
+        (let* ((replacements (e-emacs-tools--apply-edits-to-current-buffer
+                              normalized-edits))
+               (content (buffer-substring-no-properties (point-min) (point-max)))
+               (result
+                (append
+                 (list :replacements replacements
+                       :saved e-json-false)
+                 (e-emacs-tools--buffer-metadata (current-buffer)))))
+          (if guarded-p
+              (list :status "ok"
+                    :revision (e-context-canvas-revision content)
+                    :result result)
+            result))))))
 
 (defun e-emacs-tools--buffer-read-method ()
   "Return a buffer read resource method."

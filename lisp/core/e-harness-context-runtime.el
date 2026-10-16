@@ -27,6 +27,7 @@
 (require 'e-request)
 (require 'e-session)
 (require 'e-session-async)
+(require 'e-context-canvas)
 (require 'e-telemetry)
 (require 'e-tools)
 (require 'e-work)
@@ -404,13 +405,22 @@ This pure projection never consults or installs a session aggregate."
                    (plist-get candidate :record)) promotions))
           (push (plist-get candidate :id) frontier)))
       (list :generation generation
+            :current-branch (plist-get path :current-branch)
             :current-head-id (plist-get path :current-head-id)
+            :current-head-path-index
+            (plist-get path :current-head-path-index)
+            :path-entry-positions
+            (copy-tree (plist-get path :path-entry-positions) t)
+            :covered-boundary-index boundary-index
             :durable-tail (mapcar (lambda (entry)
                                     (plist-get entry :message))
                                   durable-entries)
             :durable-tail-entry-ids (mapcar (lambda (entry)
                                               (plist-get entry :entry-id))
                                             durable-entries)
+            :durable-tail-path-indexes
+            (mapcar (lambda (entry) (plist-get entry :path-index))
+                    durable-entries)
             :ordered-context-tail (plist-get weave :messages)
             :ordered-context-tail-entry-ids (plist-get weave :entry-ids)
             :promotions (nreverse promotions)
@@ -421,6 +431,273 @@ This pure projection never consults or installs a session aggregate."
             :promotion-message-entries
             (copy-tree promotion-message-entries t)
             :promotion-frontier (nreverse frontier)))))
+
+(defun e-harness-context-runtime--canvas-captures (segments)
+  "Return private canvas capture descriptors from provider SEGMENTS."
+  (let (captures)
+    (dolist (segment segments)
+      (dolist (source (plist-get segment e-context-evidence-sources-key))
+        (when (stringp (plist-get source :canvas-text))
+          (push source captures))))
+    (nreverse captures)))
+
+(defun e-harness-context-runtime--canvas-capture-message (source payload)
+  "Return a marked context message for SOURCE and PAYLOAD."
+  (list :role 'context
+        :metadata (list e-context-canvas-reference-metadata-key t
+                        e-context-canvas-chronology-metadata-key t)
+        :content payload))
+
+(defun e-harness-context-runtime--canvas-path-position (projection entry-id)
+  "Return selected-path position for ENTRY-ID in PROJECTION."
+  (when entry-id
+    (cdr (assoc entry-id (plist-get projection :path-entry-positions)))))
+
+(defun e-harness-context-runtime--canvas-state-valid-p
+    (state scope projection)
+  "Return non-nil when accepted canvas STATE is exact for SCOPE and PATH."
+  (and state
+       (plist-get state :operations)
+       (equal (plist-get state :scope) scope)
+       (cl-every
+        (lambda (operation)
+          (let* ((anchor-id (plist-get operation :anchor-id))
+                 (saved-index (plist-get operation :anchor-index))
+                 (current-index
+                  (if anchor-id
+                      (e-harness-context-runtime--canvas-path-position
+                       projection anchor-id)
+                    -1))
+                 (covered (plist-get projection :covered-boundary-index)))
+            (and (integerp current-index)
+                 (= saved-index current-index)
+                 (or (null covered) (> current-index covered)))))
+        (plist-get state :operations))))
+
+(defun e-harness-context-runtime--canvas-candidate
+    (source prior anchor-id anchor-index)
+  "Return a candidate canvas state/operation for SOURCE over PRIOR."
+  (let* ((snapshot (e-context-canvas-snapshot-payload source))
+         (snapshot-bytes (e-context-canvas-utf8-bytes snapshot))
+         (text (plist-get source :canvas-text))
+         (revision (plist-get source :canvas-revision))
+         (old-text (and prior (plist-get prior :text)))
+         (old-revision (and prior (plist-get prior :revision))))
+    (if (and prior (equal old-revision revision))
+        (list :unchanged t :state prior)
+      (let* ((patch (and prior
+                         (e-context-canvas-exact-patch old-text text)))
+             (patch-payload
+              (and patch
+                   (e-context-canvas-patch-payload source old-revision patch)))
+             (patch-bytes
+              (and patch-payload
+                   (e-context-canvas-utf8-bytes patch-payload)))
+             (previous-operations (and prior (plist-get prior :operations)))
+             (previous-patch-count
+              (cl-count 'patch previous-operations
+                        :key (lambda (operation)
+                               (plist-get operation :representation))))
+             (previous-patch-bytes
+              (cl-loop for operation in previous-operations
+                       when (eq (plist-get operation :representation) 'patch)
+                       sum (plist-get operation :payload-bytes)))
+             (snapshot-p
+              (or (null prior)
+                  (>= (* 100 patch-bytes) (* 30 snapshot-bytes))
+                  (>= (+ previous-patch-bytes patch-bytes) snapshot-bytes)
+                  (> (1+ previous-patch-count)
+                     e-context-canvas-patch-limit)))
+             (representation (if snapshot-p 'snapshot 'patch))
+             (payload (if snapshot-p snapshot patch-payload))
+             (operation
+              (list :representation representation
+                    :anchor-id anchor-id
+                    :anchor-index anchor-index
+                    :revision revision
+                    :payload-bytes
+                    (if snapshot-p snapshot-bytes patch-bytes)
+                    :message
+                    (e-harness-context-runtime--canvas-capture-message
+                     source payload)))
+             (operations (if snapshot-p
+                             (list operation)
+                           (append previous-operations (list operation))))
+             (applied (if patch
+                          (e-context-canvas-apply-patch old-text patch)
+                        text)))
+        (unless (and (equal applied text)
+                     (equal (upcase (secure-hash 'sha256 applied)) revision))
+          (error "Canvas change did not reproduce its captured revision"))
+        (list :state (list :scope nil :text text :revision revision
+                           :operations operations)
+              :operation operation
+              :reset-p snapshot-p)))))
+
+(defun e-harness-context-runtime--canvas-weave
+    (projection operations)
+  "Return PROJECTION with canvas OPERATIONS woven at selected path anchors."
+  (let* ((durable-ids (plist-get projection :durable-tail-entry-ids))
+         (durable-messages (plist-get projection :durable-tail))
+         (durable-indexes (plist-get projection :durable-tail-path-indexes))
+         (retained (append
+                    (copy-tree
+                     (plist-get projection :promotion-message-entries) t)
+                    (mapcar
+                     (lambda (operation)
+                       (list :kind 'canvas
+                             :record-path-index
+                             (max 0 (plist-get operation :anchor-index))
+                             :anchor-path-index
+                             (plist-get operation :anchor-index)
+                             :item-index (or (plist-get operation :item-index) 0)
+                             :message (copy-tree
+                                       (plist-get operation :message) t)))
+                     operations)))
+         (durable-entries nil))
+    (unless (and (= (length durable-ids) (length durable-messages))
+                 (= (length durable-ids) (length durable-indexes)))
+      (error "Canvas chronology durable path identities are misaligned"))
+    (cl-mapc
+     (lambda (entry-id path-index message)
+       (push (list :entry-id entry-id :path-index path-index
+                   :message message)
+             durable-entries))
+     durable-ids durable-indexes durable-messages)
+    (let* ((weave
+            (e-context-lifetime-weave-retained-context
+             (nreverse durable-entries)
+             retained
+             (plist-get projection :covered-boundary-index)))
+           (result (copy-tree projection t)))
+      (plist-put result :ordered-context-tail
+                 (plist-get weave :messages))
+      (plist-put result :ordered-context-tail-entry-ids
+                 (plist-get weave :entry-ids))
+      result)))
+
+(defun e-harness-context-runtime--canvas-project-context
+    (harness session-id context projection)
+  "Prepare current canvas representations and request-local pending state."
+  (let* ((sources
+          (e-harness-context-runtime--canvas-captures
+           (plist-get context :segments)))
+         (path-positions (plist-get projection :path-entry-positions))
+         (head-id (plist-get projection :current-head-id))
+         (head-index (or (plist-get projection :current-head-path-index) -1))
+         (generation (plist-get projection :generation))
+         (scope (list :branch (plist-get projection :current-branch)
+                      :generation (and generation
+                                       (e-context-lifetime-generation-id
+                                        generation))
+                      :layout e-context-canvas-reference-layout-revision
+                      :promotion-frontier
+                      (copy-tree (plist-get projection :promotion-frontier) t)))
+         (table (e-harness-canvas-chronologies harness))
+         (seen (make-hash-table :test 'equal))
+         operations pending targets
+         (context (copy-tree context t))
+         (segments nil))
+    (dolist (source sources)
+      (let* ((uri (plist-get source :uri))
+             (key (list session-id uri))
+             (old (gethash key table)))
+        (unless (gethash key seen)
+          (puthash key t seen)
+          (let* ((valid (e-harness-context-runtime--canvas-state-valid-p
+                         old scope projection))
+                 (prior (and valid old))
+                 (candidate
+                  (e-harness-context-runtime--canvas-candidate
+                   source prior head-id head-index))
+                 (next-state
+                  (copy-tree (plist-get candidate :state) t))
+                 (base-version (and old (plist-get old :version)))
+                 (candidate-operations
+                  (plist-get next-state :operations)))
+            (plist-put next-state :scope (copy-tree scope t))
+            (when (and (not (plist-get candidate :unchanged))
+                       (plist-get candidate :operation))
+              (push (list :key key
+                          :base-version base-version
+                          :state next-state)
+                    pending))
+            (dolist (operation candidate-operations)
+              (let ((position
+                     (if (plist-get operation :anchor-id)
+                         (e-harness-context-runtime--canvas-path-position
+                          projection (plist-get operation :anchor-id))
+                       -1)))
+                (unless (integerp position)
+                  (error "Accepted canvas anchor is absent from selected path"))
+                (let ((copy (copy-tree operation t)))
+                  (plist-put copy :anchor-index position)
+                  (plist-put copy :item-index (length operations))
+                  (push copy operations))))
+            (push (list :uri uri
+                        :revision (plist-get source :canvas-revision)
+                        :target-identities
+                        (copy-tree
+                         (plist-get source :canvas-target-identities) t))
+                  targets)))))
+    (setq operations (nreverse operations)
+          pending (nreverse pending)
+          targets (nreverse targets))
+    (dolist (segment (plist-get context :segments))
+      (let* ((copy (copy-tree segment t))
+             (sources (plist-get copy e-context-evidence-sources-key))
+             (kept-sources
+              (seq-remove (lambda (source)
+                            (plist-get source :canvas-text))
+                          sources))
+             (messages
+              (seq-remove
+               (lambda (message)
+                 (and (e-context-canvas-reference-message-p message)
+                      (seq-some (lambda (source)
+                                  (plist-get source :canvas-text))
+                                sources)))
+               (plist-get copy :messages))))
+        (when messages
+          (plist-put copy :messages messages)
+          (plist-put copy :fingerprint
+                     (e-context-segment-fingerprint messages))
+          (if kept-sources
+              (plist-put copy e-context-evidence-sources-key kept-sources)
+            (cl-remf copy e-context-evidence-sources-key))
+          (push copy segments))))
+    (plist-put context :segments (nreverse segments))
+    (plist-put context :messages
+               (cl-loop for segment in (plist-get context :segments)
+                        append (copy-tree (plist-get segment :messages) t)))
+    (when targets
+      (plist-put context :attached-canvas-targets targets))
+    (when pending
+      (plist-put context :canvas-pending-observations pending))
+    (list :context context
+          :projection (e-harness-context-runtime--canvas-weave
+                       projection operations))))
+
+(defun e-harness-context-runtime-commit-canvas-response
+    (harness session-id payload)
+  "Commit canvas observations only for an accepted response PAYLOAD."
+  (let* ((pending (plist-get payload :canvas-pending-observations))
+         (table (e-harness-canvas-chronologies harness)))
+    (if (plist-get payload :curation-effects)
+        (maphash
+         (lambda (key value)
+           (when (equal (car key) session-id)
+             (puthash key (list :version (1+ (or (plist-get value :version) 0)))
+                      table)))
+         table)
+      (dolist (candidate pending)
+        (let* ((key (plist-get candidate :key))
+               (current (gethash key table))
+               (current-version (and current (plist-get current :version))))
+          (when (equal current-version (plist-get candidate :base-version))
+            (let ((state (copy-tree (plist-get candidate :state) t)))
+              (plist-put state :version (1+ (or current-version 0)))
+              (puthash key state table))))))))
 
 (defun e-harness-context-runtime--detached-context
     (harness session-id turn-id path &optional context-purpose)
@@ -850,6 +1127,11 @@ installed in the session store."
            (detached-projection
             (plist-put (copy-tree projection t) :generation generation))
            (t (e-session-local-context-lifetime-projection store session-id))))
+         (canvas-result
+          (e-harness-context-runtime--canvas-project-context
+           harness session-id context projection))
+         (context (plist-get canvas-result :context))
+         (projection (plist-get canvas-result :projection))
          (promotions (plist-get projection :promotions))
          ;; Session projection is the semantic authority for both the
          ;; temporary v2 compatibility projection and the literal v3 curation
@@ -1252,6 +1534,8 @@ append precedes frame consumption and the next provider request."
     :replaceable-current-state-partitioned
     :context-lifetime-enabled
     :canvas-reference-layout-revision
+    :attached-canvas-targets
+    :canvas-pending-observations
     :provider-anchor
     :provider-anchor-delta-messages
     :provider-anchor-source-message-count
@@ -1371,6 +1655,15 @@ ambiguous and is rejected by the provider adapter."
     ;; runtime state rather than allowed to disappear before adapter build.
     (when (plist-get context :context-lifetime-enabled)
       (setq options (plist-put options :context-lifetime-enabled t)))
+    (when (plist-member context :attached-canvas-targets)
+      (setq options
+            (plist-put options :attached-canvas-targets
+                       (copy-tree (plist-get context :attached-canvas-targets) t))))
+    (when (plist-member context :canvas-pending-observations)
+      (setq options
+            (plist-put options :canvas-pending-observations
+                       (copy-tree
+                        (plist-get context :canvas-pending-observations) t))))
     (when-let* ((revision
                  (e-context-canvas-reference-layout-for-messages messages)))
       (setq options
@@ -1469,6 +1762,13 @@ on a caller request is not authority."
            (and delivery (symbol-name delivery))
            :observation-delivery-map
            (copy-tree delivery-map)
+           :canvas-chronology-fingerprint
+           (let ((canvas-messages
+                  (seq-filter #'e-context-canvas-chronology-message-p
+                              (plist-get context :messages))))
+             (and canvas-messages
+                  (secure-hash 'sha256
+                               (prin1-to-string canvas-messages))))
            :reserved-effect-carrier
            (plist-get capabilities :reserved-effect-carrier)
            :prefix-cache (plist-get capabilities :prefix-cache)

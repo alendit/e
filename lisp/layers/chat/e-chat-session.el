@@ -15,6 +15,7 @@
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-chat-service)
+(require 'e-context-canvas)
 (require 'e-context-reference)
 (require 'e-context)
 (require 'e-harness)
@@ -362,10 +363,11 @@ representation."
                         (plist-get attachment :uri))))
         (find-buffer-visiting file))))
 
-(defun e-chat-session--attachment-content (attachment)
+(defun e-chat-session--attachment-content (attachment &optional require-source)
   "Return ATTACHMENT current content.
 Open Emacs buffers win over disk contents so unsaved canvas edits are included
-in the next turn's context."
+in the next turn's context.  REQUIRE-SOURCE makes an unavailable canvas fail
+instead of presenting an error placeholder as document content."
   (let ((uri (plist-get attachment :uri)))
     (cond
      ((when-let* ((buffer (e-chat-session-attachment-live-buffer attachment)))
@@ -377,9 +379,14 @@ in the next turn's context."
               (let ((coding-system-for-read 'utf-8))
                 (insert-file-contents file))
               (buffer-string))
-          (format "[Attachment file is not readable: %s]" file))))
+          (if require-source
+              (signal 'file-error (list "Canvas file is not readable" file))
+            (format "[Attachment file is not readable: %s]" file)))))
      (t
-      (format "[Attachment is not available: %s]" uri)))))
+      (if require-source
+          (signal 'user-error
+                  (list (format "Canvas source is not available: %s" uri)))
+        (format "[Attachment is not available: %s]" uri))))))
 
 (defun e-chat-session--xml-attribute-escape (value)
   "Return VALUE escaped for a compact XML-like attribute."
@@ -389,14 +396,22 @@ in the next turn's context."
     (setq text (replace-regexp-in-string "<" "&lt;" text t t))
     (replace-regexp-in-string ">" "&gt;" text t t)))
 
-(defun e-chat-session--attachment-source (attachment content)
+(defun e-chat-session--attachment-source (attachment content &optional root)
   "Return request-time source provenance for ATTACHMENT CONTENT."
-  (e-context-source-create
-   :uri (e-chat-session--attachment-uri attachment)
-   :label (plist-get attachment :label)
-   :content content
-   :source-kind 'current-state-attachment
-   :provider 'chat-session))
+  (let ((uri (e-chat-session--attachment-uri attachment))
+        (label (plist-get attachment :label)))
+    (if (plist-get attachment :canvas)
+        (e-context-canvas-capture-create
+         :uri uri :label label :content content
+         :id (plist-get attachment :id)
+         :target-identities
+         (e-context-canvas-resource-identities uri root))
+      (e-context-source-create
+       :uri uri
+       :label label
+       :content content
+       :source-kind 'current-state-attachment
+       :provider 'chat-session))))
 
 (defun e-chat-session--attachment-section
     (attachment &optional content source)
@@ -410,18 +425,20 @@ request-time source descriptor."
                       (e-chat-session--attachment-content attachment)))
          (source (or source
                      (e-chat-session--attachment-source attachment content))))
-    (format "<%s id=\"%s\" uri=\"%s\" label=\"%s\" evidence=\"%s\">\n%s\n</%s>"
-            tag
-            (e-chat-session--xml-attribute-escape
-             (plist-get attachment :id))
-            (e-chat-session--xml-attribute-escape
-             (plist-get attachment :uri))
-            (e-chat-session--xml-attribute-escape
-             (plist-get attachment :label))
-            (e-chat-session--xml-attribute-escape
-             (e-context-source-handle source))
-            content
-            tag)))
+    (if canvas
+        (e-context-canvas-snapshot-payload source)
+      (format "<%s id=\"%s\" uri=\"%s\" label=\"%s\" evidence=\"%s\">\n%s\n</%s>"
+              tag
+              (e-chat-session--xml-attribute-escape
+               (plist-get attachment :id))
+              (e-chat-session--xml-attribute-escape
+               (plist-get attachment :uri))
+              (e-chat-session--xml-attribute-escape
+               (plist-get attachment :label))
+              (e-chat-session--xml-attribute-escape
+               (e-context-source-handle source))
+              content
+              tag))))
 
 (cl-defun e-chat-session-context-attachments-provider
     (&key harness session-id _turn-id _context-purpose)
@@ -443,10 +460,14 @@ request-time source descriptor."
               (mapcar
                (lambda (attachment)
                  (let* ((content
-                         (e-chat-session--attachment-content attachment))
+                         (if (plist-get attachment :canvas)
+                             (e-chat-session--attachment-content attachment t)
+                           (e-chat-session--attachment-content attachment)))
                         (source
                          (e-chat-session--attachment-source
-                          attachment content)))
+                          attachment content
+                          (and harness
+                               (e-harness-project-root harness session-id)))) )
                    (list :canvas (plist-get attachment :canvas)
                          :source source
                          :section
@@ -483,6 +504,13 @@ request-time source descriptor."
                      "communicate things about the edit that do not belong "
                      "in the document itself (for example, brief notes, "
                      "questions, or a short summary of what you changed)."
+                     " Each canvas has a complete `revision'. Apply each "
+                     "`<canvas-change>' in order to its `baseRevision' using "
+                     "the zero-based, half-open character range `start' to "
+                     "`end'; `revision' identifies the exact resulting "
+                     "document. For canvas `write' or `edit', pass the latest "
+                     "shown revision as `expectedRevision'. After a revision "
+                     "conflict, read the current document and reconsider."
                      "\n\nAlways write to the exact uri given in the <canvas> "
                      "tag's uri attribute (the authoritative write target). "
                      "Do not write to other buffers just because they are "

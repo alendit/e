@@ -655,7 +655,12 @@ activity persistence."
        (cl-function
          (lambda (tool-call &key on-request-start on-done on-error on-event
                             on-work-prepared archival-call
-                            archival-rejected-p archival-received-arguments)
+                            archival-rejected-p archival-received-arguments
+                            attached-canvas-targets)
+          (let ((request-context (copy-tree (context) t)))
+            (when attached-canvas-targets
+              (plist-put request-context :attached-canvas-targets
+                         (copy-tree attached-canvas-targets t)))
           (e-harness-turn--profile-call
            'harness.tool-start
            (list :session-id session-id
@@ -665,7 +670,7 @@ activity persistence."
              (e-tools-start
               tools
               tool-call
-              :context (context)
+              :context request-context
               :on-request-start on-request-start
               :on-work-prepared on-work-prepared
               :on-event on-event
@@ -677,7 +682,7 @@ activity persistence."
                                (e-harness-turn--tool-result-through-stages
                                 harness session-id turn-id tool-call result
                                 archival-call archival-rejected-p
-                                archival-received-arguments (context)
+                                archival-received-arguments request-context
                                 details-holder)))
                           (let ((e-harness-activity-trusted-tool-details-uri
                                  (car details-holder)))
@@ -687,7 +692,7 @@ activity persistence."
                      (if on-error
                          (funcall on-error err)
                        (signal (car err) (cdr err))))))
-              :on-error on-error)))))))))
+              :on-error on-error))))))))))
 (cl-defun e-harness-compact-session-batch
     (harness session-id &key instructions keep-recent-tokens allow-active-turn
              (allow-split-turn 'inherit-active-turn) exclude-entry-ids turn-id
@@ -2159,6 +2164,8 @@ cancellation.  SESSION-ID identifies the session."
                           (completed
                            (e-harness-context-lifetime-commit-response
                             harness session-id turn-id entry payload)))
+                      (e-harness-context-runtime-commit-canvas-response
+                       harness session-id payload)
                       ;; The context owner returns the completed immutable
                       ;; frame but does not write the active entry.  Install
                       ;; it only when the producer frame is still current;
