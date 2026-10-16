@@ -1269,20 +1269,11 @@ Provider symbols remain useful diagnostics but do not select capabilities."
      :requester messages-http-start)))
 
 (defconst e-anthropic--qualified-context-layouts
-  '((:endpoint
-     "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages"
-     :model "claude-opus-5-5"
-     :auth-mode (bearer authorization environment-token)
-     :api messages
-     :transport http
-     :requester messages-http-start
-     :canvas-reference-layout-revision "active-canvas-reference-v1"))
+  nil
   "Explicitly reviewed effective-route and material-layout identities.
 Entries are exact route identities with a
 :canvas-reference-layout-revision.  An empty list leaves changed layouts
-unqualified while preserving the base F98 route gate.  The F99 entry is
-retained only on the isolated candidate when normal-source P3 accepts its
-exact route, layout, and source revision.")
+unqualified while preserving the base F98 route gate.")
 
 (defun e-anthropic--context-capability-layout-qualified-p (identity)
   "Return non-nil when IDENTITY's exact route and material layout are listed."

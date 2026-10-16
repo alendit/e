@@ -1177,7 +1177,8 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                 'context-curate-wire))))
 
 (ert-deftest e-anthropic-test-canvas-layout-qualification-is-exact-and-opt-in ()
-  "A source-owned route/layout entry is needed for changed-layout curation."
+  "Changed-layout curation is disabled until exact route evidence is reviewed."
+  (should-not e-anthropic--qualified-context-layouts)
   (let* ((provider 'eng-ai-gateway-opus-5-5)
          (process-environment
           (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))

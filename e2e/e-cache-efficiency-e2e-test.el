@@ -5018,7 +5018,21 @@ source.  Both runs share the same prompts and evidence checks."
                  (= (cl-count "message_stop" event-types :test #'equal) 1)
                  (member (car stop-reasons) '("end_turn" "stop_sequence"))
                  (null blocks)
-                 (numberp output) (= output 0))))
+                 (numberp output) (= output 0)))
+           (native-provider-refusal
+            (and (= (or http-status 0) 200)
+                 (null decode-error)
+                 (equal event-types
+                        '("message_start" "message_delta" "message_stop"))
+                 (equal stop-reasons '("refusal"))
+                 (null blocks)
+                 (numberp output) (= output 0)
+                 (= (cl-count 'token-usage semantic-types) 1)
+                 (= (cl-count 'done semantic-types) 1)
+                 (not (memq 'assistant-delta semantic-types))
+                 (not (memq 'assistant-message semantic-types))
+                 (not (memq 'backend-error semantic-types))
+                 (null provider-error-types))))
       (list :http-status (and (numberp http-status) http-status)
             :response-bytes (string-bytes (or response ""))
             :response-kind (cond ((plist-get decoded :sse-seen) "sse")
@@ -5041,7 +5055,8 @@ source.  Both runs share the same prompts and evidence checks."
             (e-cache-efficiency-e2e--f99-count-wire-types semantic-types)
             :parser-backend-error-count (length error-items)
             :parser-errors parser-errors
-            :valid-empty-completion (and valid-empty t)))))
+            :valid-empty-completion (and valid-empty t)
+            :native-provider-refusal (and native-provider-refusal t)))))
 
 (defun e-cache-efficiency-e2e--f99-redacted-error-text (value)
   "Return bounded diagnostic text with common credentials and URLs removed."
@@ -5118,6 +5133,9 @@ source.  Both runs share the same prompts and evidence checks."
      ((and (eq condition-type 'e-loop-empty-output)
            (eq (plist-get response :valid-empty-completion) t))
       'unavailable-empty-completion)
+     ((and (eq condition-type 'e-loop-empty-output)
+           (eq (plist-get response :native-provider-refusal) t))
+      'native-provider-refusal)
      ((eq condition-type 'e-loop-empty-output) 'unresolved-empty-output)
      (t 'unresolved-failure))))
 
@@ -5129,13 +5147,17 @@ source.  Both runs share the same prompts and evidence checks."
 
 (defun e-cache-efficiency-e2e--f99-fail-unresolved
     (scenario failure-evidence)
-  "Skip only an evidenced external failure; fail local or unknown SCENARIO errors."
-  (if (e-cache-efficiency-e2e--f99-failure-external-p failure-evidence)
+  "Keep provider refusal unconfirmed; fail local or unknown SCENARIO errors."
+  (let ((classification (plist-get failure-evidence :classification)))
+    (cond
+     ((equal classification "native-provider-refusal")
+      (ert-skip (format "%s native provider refusal; capability remains unconfirmed"
+                        scenario)))
+     ((e-cache-efficiency-e2e--f99-failure-external-p failure-evidence)
       (ert-skip (format "%s external route unavailable: %s"
-                        scenario
-                        (plist-get failure-evidence :classification)))
-    (ert-fail (format "%s unresolved request failure: %S"
-                      scenario failure-evidence))))
+                        scenario classification)))
+     (t (ert-fail (format "%s unresolved request failure: %S"
+                          scenario failure-evidence))))))
 
 (defun e-cache-efficiency-e2e--f99-turn-failure-evidence (result)
   "Return bounded failure classification for non-done RESULT."
@@ -5169,10 +5191,15 @@ source.  Both runs share the same prompts and evidence checks."
           :message (or message "No bounded turn error message was available")
           :native-empty-completion
           (and (plist-get response :valid-empty-completion) t)
+          :native-provider-refusal
+          (and (plist-get response :native-provider-refusal) t)
+          :capability-disposition
+          (and (plist-get response :native-provider-refusal)
+               "unconfirmed")
           :classification (symbol-name classification))))
 
 (ert-deftest e-cache-efficiency-e2e-test-f99-failure-classifier-does-not-green-empty-errors ()
-  "Only evidenced external errors are unavailable; local empty output stays unresolved."
+  "Only evidenced external errors are unavailable; refusals stay unconfirmed."
   (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
                'e-anthropic-auth-missing nil nil)
               'unavailable-auth))
@@ -5196,6 +5223,16 @@ source.  Both runs share the same prompts and evidence checks."
                'e-loop-empty-output nil
                '(:http-status 200 :valid-empty-completion t))
               'unavailable-empty-completion))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               'e-loop-empty-output nil
+               '(:http-status 200 :native-provider-refusal t))
+              'native-provider-refusal))
+  (should-not (e-cache-efficiency-e2e--f99-failure-external-p
+               '(:classification "native-provider-refusal")))
+  (should-error
+   (e-cache-efficiency-e2e--f99-fail-unresolved
+    "E2" '(:classification "native-provider-refusal"))
+   :type 'ert-test-skipped)
   (dolist (case '((e-loop-empty-output nil unresolved-empty-output)
                   (e-anthropic-response-invalid nil unresolved-failure)
                   (error nil unresolved-failure)))
@@ -5242,6 +5279,29 @@ source.  Both runs share the same prompts and evidence checks."
     (should (= (plist-get (plist-get record :usage) :output-tokens) 0))
     (should (equal (plist-get record :valid-empty-completion) t))
     (should-not (string-match-p "PRIVATE-DOCUMENT-TEXT" (prin1-to-string record)))
+    (let* ((refusal-events
+            '((:type "message_start"
+               :message (:role "assistant" :content []
+                         :usage (:input_tokens 4 :output_tokens 0)))
+              (:type "message_delta"
+               :delta (:stop_reason "refusal")
+               :usage (:output_tokens 0))
+              (:type "message_stop")))
+           (refusal-response
+            (mapconcat (lambda (event)
+                         (concat "data: " (e-json-serialize event) "\n\n"))
+                       refusal-events ""))
+           (refusal-items (e-anthropic-parse-stream refusal-response))
+           (refusal-record
+            (e-cache-efficiency-e2e--f99-native-response-record
+             refusal-response 200 refusal-items nil)))
+      (should (equal (plist-get refusal-record :native-provider-refusal) t))
+      (should-not (plist-get refusal-record :valid-empty-completion))
+      (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+                   'e-loop-empty-output nil refusal-record)
+                  'native-provider-refusal))
+      (should-not (string-match-p "PRIVATE-DOCUMENT-TEXT"
+                                  (prin1-to-string refusal-record))))
     (let* ((bad-items (e-anthropic-parse-stream ""))
            (bad-record
             (e-cache-efficiency-e2e--f99-native-response-record
@@ -5468,6 +5528,8 @@ source.  Both runs share the same prompts and evidence checks."
                                                     :classification))))))))
                 (setq semantic-result
                       (cond (semantic-failure "semantic-failure")
+                          ((eq failure-class 'native-provider-refusal)
+                           "native-provider-refusal")
                             (failure-class
                              (if (memq failure-class
                                        '(unavailable-auth unavailable-config
@@ -5495,7 +5557,10 @@ source.  Both runs share the same prompts and evidence checks."
                          (e-cache-efficiency-e2e--f99-redacted-error-text
                           (error-message-string caught))
                          :classification (symbol-name failure-class))
-                   semantic-result "unresolved-failure")))
+                         semantic-result
+                         (if (eq failure-class 'native-provider-refusal)
+                             "native-provider-refusal"
+                           "unresolved-failure"))))
         (let* ((requests (gethash session-id requests-by-session))
                (start-payloads
                 (mapcar (lambda (event) (plist-get event :payload))
@@ -5543,6 +5608,8 @@ source.  Both runs share the same prompts and evidence checks."
                              evidence)))
              (capability-result
               (cond
+               ((eq failure-class 'native-provider-refusal)
+                "unconfirmed-native-provider-refusal")
                (failure-class (format "%s" failure-class))
                ((not cache-fields-accepted)
                 "product-failure-layout-or-cache-wire")
@@ -5673,6 +5740,8 @@ source.  Both runs share the same prompts and evidence checks."
                                                     :classification)))))))
                    (setq semantic-result
                          (cond (semantic-failure "semantic-failure")
+                               ((eq failure-class 'native-provider-refusal)
+                                "native-provider-refusal")
                                (failure-class
                                 (if (memq failure-class
                                           '(unavailable-auth unavailable-config
@@ -5700,7 +5769,10 @@ source.  Both runs share the same prompts and evidence checks."
                            (e-cache-efficiency-e2e--f99-redacted-error-text
                             (error-message-string caught))
                            :classification (symbol-name failure-class))
-                     semantic-result "unresolved-failure"))))
+                     semantic-result
+                     (if (eq failure-class 'native-provider-refusal)
+                         "native-provider-refusal"
+                       "unresolved-failure"))))
       (let* ((requests (gethash session-id requests-by-session))
              (start-payloads
               (mapcar (lambda (event) (plist-get event :payload))
@@ -5776,6 +5848,14 @@ source.  Both runs share the same prompts and evidence checks."
                            (not (plist-get request
                                            :context-curation-tool-present))))
                     joined-requests)))
+             (route-capability-result
+              (cond
+               ((eq failure-class 'native-provider-refusal)
+                "unconfirmed-native-provider-refusal")
+               (failure-class (symbol-name failure-class))
+               ((and route-stable usage-complete) "pass")
+               (route-stable "unconfirmed-provider-usage")
+               (t "unconfirmed-route-identity")))
              (snapshot-revisions
               (mapcar (lambda (operation)
                         (and (eq (plist-get operation :representation) 'snapshot)
@@ -5792,6 +5872,8 @@ source.  Both runs share the same prompts and evidence checks."
                              (last source-revisions))))
              (growing-result
               (cond
+               ((eq failure-class 'native-provider-refusal)
+                "unconfirmed-native-provider-refusal")
                (failure-class (symbol-name failure-class))
                ((not route-stable) "semantic-failure-route-identity")
                ((and usage-complete
@@ -5814,6 +5896,7 @@ source.  Both runs share the same prompts and evidence checks."
                e-context-canvas-reference-layout-revision
                :semantic-result semantic-result
                :turn-failure-evidence failure-evidence
+               :route-capability-result route-capability-result
                :native-response-evidence
                (vconcat (nreverse
                          (copy-sequence
@@ -5854,7 +5937,7 @@ source.  Both runs share the same prompts and evidence checks."
           (ert-fail (format "Valid E2 route contradicted growing reuse: %s"
                             growing-result)))
          (t (ert-skip (format "E2 growing reuse remains unconfirmed: %s"
-                              growing-result))))))))))
+                              growing-result)))))))))))
 
 (provide 'e-cache-efficiency-e2e-test)
 ;;; e-cache-efficiency-e2e-test.el ends here
