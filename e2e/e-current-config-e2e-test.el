@@ -575,7 +575,14 @@
            emacs-version e-e2e-current-config-user-init-file
            (e-source-directory))
           (let* ((standard-output e-current-config-e2e-test--output)
-                 (stats (ert-run-tests-batch selector))
+                 (stats
+                  (cl-letf (((symbol-function 'yes-or-no-p)
+                             (lambda (prompt &rest _arguments)
+                               (error "Unattended confirmation: %s" prompt)))
+                            ((symbol-function 'y-or-n-p)
+                             (lambda (prompt &rest _arguments)
+                               (error "Unattended confirmation: %s" prompt))))
+                    (ert-run-tests-batch selector)))
                  (total (ert-stats-total stats))
                  (unexpected (ert-stats-completed-unexpected stats))
                  (exit (if (and (> total 0) (zerop unexpected)) 0 1)))
