@@ -250,3 +250,144 @@ f6a1b32086f90f949b4f3e4d699e403e21df767be69293b74c297acdbeae650c  lisp/adapters/
 d68bb7a6e14c0c1ddb1fb439321d7659bd5e9736947f31331a0cbf48f247e7bc  lisp/adapters/openai/e-openai-chat-completions.el
 5f49f9e1ae4c930925541e4afba9a26bf69eccd0b5d6cd93409c94a7fe8db748  e2e/e-cache-efficiency-e2e-test.el
 #+end_example
+
+
+#+title: Feature 99 implementation-plan review 02
+#+date: 2026-10-16
+#+startup: overview
+
+* Decision and identity
+
+Result: =implementation-plan-fixed-point=.
+
+This independent incremental review clears R1--R6 from Review 01 and all dependent stable-contract and delivery-plan cells. No actionable plan defect or required plan unknown remains. This result permits the parent to perform formal implementation admission; it does not itself admit edits, accept implementation, establish deterministic-fixed-point, confirm a provider capability, or mark the feature Done.
+
+Reviewed candidate: =/private/tmp/e-f99-work/candidate=.
+Reviewed commit: =008f096f6dd616bdd01c2f93c2ae3993f0db1d1b=.
+Plan: =docs/feats/99-versioned-canvas-context/plan.org=.
+Plan SHA256: =06188c4cbe40cd77d8f9014437857a21ae40893c20dc6e7afb3dbd0f6b17e535=.
+Previous review: =/private/tmp/e-f99-work/plan-review-01.org=, SHA256 =fc355bb789bdf6ff9817827fe2b0315e7cb0f320c6257e4e0a22aecbf50799a8=.
+
+The result is bound to the complete plan-owning content at that SHA256, including the C1--C7 rows, implementation appendix, package relation/closure, evidence portfolio, and recorded dependency identities below. A material change to those fields or a dependency contract invalidates the affected plan result. A review-artifact-only change does not invalidate this identity.
+
+Behavioral status: unavailable before implementation. Mechanism status: not-started. The new plan says this explicitly at line 23. This review establishes feasibility and admission readiness, not executed behavior.
+
+* Scope and carried evidence
+
+Scope remains F99-G1, C1--C7 and DP1--DP3. Section checkouts remain deferred. Reviewed the complete plan delta from =80160b06=, all six finding dispositions, and every dependent specification/plan cell. Source and tests are unchanged between those revisions, so the current-source facts and dependency identities from Review 01 carry forward.
+
+Verified the source/test/E2E diff is empty, the candidate status is clean, and the persisted first review is byte-identical to the immutable Review 01. Inspected additional current source only to resolve the selected-path and ordinary tool-dispatch feasibility questions. No production, Git, live Emacs, Board/store, configuration, or external-service state was modified.
+
+* Prior finding dispositions
+
+| Finding | Disposition | Current evidence and reason |
+|---------+-------------+-----------------------------|
+| R1 Chronology | Resolved | Plan 114--134 selects process-local selected-path insertion boundaries, merge before every derived consumer, immutable pending/accepted settlement, non-committing preview/status, stale-completion rejection, and exact reset recovery. The H0/S0 chronology example now rules out moving the whole chain behind new history. |
+| R2 Mutation propagation | Resolved | Plan 138--151 chooses explicit optional expectedRevision on existing write/edit, required for a request-attached canvas, complete revisions on context/read/success, immutable trusted target scope, canonical aliases, synchronous resource check/apply, conflict without edit/save/sync, unsupported-method rejection, and explicit shell/Lisp exclusion. S5 covers saved/unsaved stale expectations, missing values, aliases, retry after read, and ordinary non-canvas behavior. |
+| R3 Normative authority | Resolved | Plan 12 and 40--55 make the numbered stable rows the sole normative authority, with semantic owners/public composition, lifetime/bound/recovery, deterministic/external roles, and unique establishing packages. The implementation appendix is explicitly replaceable at 57--59. Exact thresholds remain private and their checks mechanism-only at 101--110 and 205. |
+| R4 Delivery closure | Resolved | Plan 155--183 provides the complete one-to-one establishing relation, earlier acceptance dependencies, useful stopping points, owner/state/transaction/recovery/public-surface/evidence records, and causal combine/split explanation. DP2 helpers are internal checkpoints. DP3's useful behavior is enforced honest qualification disposition, not a counter report. |
+| R5 Evidence decision power | Resolved | Plan 187--212 names S1--S5 with observable invariants and localization, E1/E2/applicable P3 separately, F98-P2's static-only negative control and two-advance predicate, exact identity/freshness/failure classifications, and explicit observational measurements. External unavailability cannot negate independent deterministic correctness. |
+| R6 Work/admission bound | Resolved | Plan 85--110 chooses common-prefix/common-suffix single-span exact replacement, non-overlapping character boundaries, local application/hash verification, linear construction/application/escaping, complete attachment capture independent of read truncation, and private default tuning. It no longer assumes ordinary read limits cap attachment capture. |
+
+The ancillary workflow-copy cleanup is resolved: the former historical documentation-commit/push workflow section is removed. Current authorization and no-live-mutation/activation boundaries remain feature-specific facts; repository/skill authorities own review/commit mechanics.
+
+* Source feasibility at changed joins
+
+Chronology can remain inside the existing semantic owner. =e-session-aggregate.el:1533--1613= derives path indexes from the full selected path before semantic filtering. =e-runtime-store-session-worker.el:2015--2048,2234--2254= similarly retains path positions and returns current-head identity/index plus message-path indexes for bounded detached reads. These are real anchors, including when a selected path entry has no model-facing message. They support the plan's selected-path merge without inventing another durable document authority.
+
+The existing harness context boundary requires segment/message equality (=e-harness-context-runtime.el:1329--1363=), and the loop's atomic context refresh replaces messages, entry IDs, options, segments, frontier and frame together (=e-loop.el:563--608=). The revised plan places the chronology merge before those consumers, so it does not rely on serializer-only insertion or independently stale continuation state. Existing preflight/commit response binding remains an appropriate acceptance seam; the plan now supplies the separate request-owned state identity needed for stale completion rejection.
+
+Ordinary resource dispatch has a narrow existing integration point. =e-harness-capabilities.el:427--491,505--530= owns standard operation dispatch for cheap and cooperative paths. =e-tools.el:81--105,833--857= provides the existing trusted/nested tool context. The plan calls for carrying immutable target scope through this path and adding expectedRevision to the existing operation contract, rather than consulting live session state inside a file handler. File/buffer owners remain the owners of canonical target resolution and mutation. Extending directly affected consumers is within DP2's named owner closure.
+
+Implementation verification must exercise both cheap and cooperative/nested dispatch where present: the current cooperative runner deliberately receives a context parameter and builds a child Work context, so simply reading a dynamic variable in a final file handler would not satisfy C6. This is a localization note for S5 under the selected plan, not an unresolved design choice or a new product requirement.
+
+The appendix's prohibition on using retained-fact journals as active canvas storage is governed by C5/C7 and the unchanged F98 semantic authority. It prohibits making derived baseline/patch maintenance into durable retention. It does not authorize weakening an explicitly accepted existing keep/summary/erase disposition. The plan's S3/S4 and F98 regressions remain the evidence for that boundary.
+
+* Stable contract and package coverage
+
+| Contract | Result | Establishing package / evidence |
+|----------+--------+--------------------------------|
+| G1 | Cleared at plan level | Real Daily/user/tool/recovery composition, stable product authority, unavailable pre-implementation status; whole feature outcome |
+| C1 | Cleared | DP1; contributing semantic split, all shipped serializers, native layout identity, S1/S4 |
+| C2 | Cleared | DP2; one complete source capture, exact revision/patch application and evidence handle, S2 |
+| C3 | Cleared | DP2; selected-path chronological merge and complete stateless reconstruction, S1/S3 |
+| C4 | Cleared | DP2; exact UTF-8 payload comparison, linear constructor, bounded active chain and snapshot reset, S2/S3 |
+| C5 | Cleared | DP2; immutable pending/accepted state, success-only settlement, scoped lifetime/reset/exclusions, S3/S4 |
+| C6 | Cleared | DP2; explicit expectedRevision, trusted request target scope, atomic supported resource path, S5 |
+| C7 | Cleared | DP3; truthful exact-route capability disposition, S4/E1/E2/applicable F98-P3; actual new-layout external evidence still unconfirmed |
+
+Every C1--C7 row has exactly one establishing package; every DP establishes at least one complete contract. Regression dependencies do not create a second establishing owner. DP1 may stop with useful current full-snapshot placement and no chronology. DP2 may stop with complete repository-controlled revision behavior and explicit unconfirmed external benefit/affected curation status. DP3 closes the exact route/evidence disposition without requiring production UI/store activation.
+
+* Complete required-cell disposition
+
+| Cell | Disposition | Current proof |
+|------+-------------+---------------|
+| Single normative authority | cleared | Plan 12,40--59; appendix details are replaceable derivations |
+| Behavioral design trace | cleared | G1 table 16--23 names actor outcome, real scenario, product authority, owning contracts/status; aggregate comparison 61--71 |
+| Durable contract boundary | cleared | Stable semantic/ownership/lifetime/recovery rows versus private patch/threshold design |
+| Scenario diagnosability | cleared | S1--S5/E1/E2/P3 each carry invariant, public composition, localization and class |
+| Evidence topology | cleared | Deterministic owners/composition separated from minimal external capability and broader reuse/curation witnesses |
+| External freshness | cleared | F98 identity/material-shape/accepted-revision and 24-hour rule explicitly applied; changed layout cannot inherit old success |
+| Telemetry decision power | cleared | Observational metrics explicitly separated from F98-P2/P3's deciding predicates |
+| Exact-limit justification | cleared | No new normative numeric optimum; 30%/16 are private tuning defaults, mechanism checks; full-operand linear work is explicit |
+| Defensive actionability | cleared, carried | Stale-write durable impact, unusable missing base, and interactive superlinear-work risk remain source-backed; smallest local defenses retained |
+| Change locality | cleared | Capture, pure policy/chronology, resource mutation, adapters and shell own their meaning; source joints identified without freezing private collection layout |
+| Workflow boundary | cleared | Historical workflow-copy prose removed; repository/workflow authorities referenced |
+| Decision level and plan disposition | cleared | This is explicitly implementation-plan review; complete identity and relation assessed; no implementation result claimed |
+| Contract-to-package coverage | cleared | DP1 C1; DP2 C2--C6; DP3 C7, no reverse-unmapped or multiply established row |
+| Useful stopping point | cleared | Full placement; exact guarded chronology; enforced honest capability disposition each stand independently with explicit limits |
+| Cohesion and transaction closure | cleared | DP1 request-local snapshot; DP2 accepted chronology/settlement plus guarded resource mutation; DP3 external qualification effects and failure states |
+| Dependency order | cleared | Existing authorities -> DP1/C1 -> DP2/C2--C6 -> DP3/C7; unconfirmed capability status explicit before qualification |
+| Package-size tradeoff | cleared | Plan 179--181 explains useful separate placement, indivisible revision authority, and independent external evidence availability |
+| Acceptance-cost topology | cleared | Focused package evidence; canonical/current-config at informative completed candidate boundary; no paid dependency for deterministic correctness |
+| Checkpoint/package distinction | cleared | Policy/helpers/internal milestones are explicitly not delivery packages; package records establish complete contracts |
+
+* Design and evidence limits
+
+Aggregate decision: retain the revised small design. One process-local document chronology, linear single-span patch, and narrow existing resource-operation extension suffice for the accepted outcome. A full-snapshot-only path is useful DP1 behavior but cannot replace final C3. Durable automatic canvas retention and a dedicated checkout API add unnecessary authority/vocabulary. A multi-hunk engine is not needed until measured separated-edit behavior justifies it.
+
+The source/ownership, lifetime, dependency direction, compatibility, error and testability answers from Review 01 carry forward with the R1/R2/R6 choices now settled. The fourteen repository design questions are addressed by the revised owner/aggregate/package records and carried source facts. Performance and actual reuse remain to be measured; the plan correctly avoids turning their unthresholded observations into proof of correctness or promised savings.
+
+No current F99 external compatibility result exists for this changed material shape. Status is =capability-unconfirmed=. That is an implementation qualification obligation, not a required unknown in this implementation plan. Missing credentials/infrastructure/counters remain classified evidence states; only a valid contradictory run disproves the external contract. Implementation must preserve the affected curation gate while qualification is unconfirmed.
+
+Remaining implementation-local choices include private field/helper names, patch framing consistent with the exact byte rule, and exact evidence capture plumbing. These do not reopen settled product behavior, owner/lifetime/transaction boundaries, dependency order or package stopping points. Any change that does alter one of those boundaries returns to the corresponding plan cells.
+
+* Verification
+
+- =git rev-parse HEAD=: =008f096f6dd616bdd01c2f93c2ae3993f0db1d1b=.
+- Plan SHA256 matches the parent-supplied identity.
+- =git diff --quiet 80160b06..008f096f -- lisp test e2e=: exit 0; production and test source unchanged.
+- =git status --short=: empty.
+- =cmp docs/feats/99-versioned-canvas-context/plan-review.org /private/tmp/e-f99-work/plan-review-01.org=: exit 0.
+- Independently checked every prior source dependency SHA256 remains identical to Review 01; manifest below carries them.
+- No runtime tests/provider requests/live probes were run: there is no implementation yet, and source inspection establishes the plan feasibility/result at this review level.
+
+No required plan unknowns remain. Parent admission, implementation, exact-revision deterministic gates, independent implementation review, external qualification and repository completion policy remain separate later decisions.
+
+* Dependency identities
+
+The following SHA256 records are the unchanged Review 01 source/dependency identities plus the newly inspected chronology/dispatch owners. Their material contract changes invalidate dependent plan cells; review-artifact presentation changes alone do not.
+
+#+begin_example
+e664c563ad7ffb06be67f6bd6afe81943a108964f104b8af9b32d1697ce999f8  docs/feats/98-growing-conversation-prompt-cache/plan.org
+6f7a4fa66a4f699281f60e7e389a18b4b6002a977a6adc51748df18eb17657e1  lisp/core/e-context.el
+33135bf6f26780cdf45f1816356081c7a33cdf8b282fbaff50d09a0e9699a2d4  lisp/core/e-context-lifetime.el
+8496e3857456f196afb32cbd45a0dabe91a8de28f85e61f546f081ac077949b7  lisp/core/e-harness-context-runtime.el
+2469e236f8cecb510ba16bd0440bffda1d2fa380b1bd3ea50366df2463d383d5  lisp/core/e-harness-state.el
+7d19b2bb412169d1c3c05976197dd06b5c9bb54e7085c7d51c14ab7f0e1e9661  lisp/core/e-harness-turn.el
+419fa3f3e63c8f66fa2b91b110d9cf47f079b4a8d9b359c11a9c968703a02dcb  lisp/core/e-operations.el
+b2ab4f35846a13e910c32e7910e34cbe4a39539bd8d224370b0263c5f242cbf9  lisp/core/e-resources.el
+f0794ad975fb9323a9c224c64571ce8e3d4bcb231723bfa41078fa6fdbfb6323  lisp/layers/chat/e-chat-session.el
+b2681827339a1abfc5df6217d98c89b81d35511cf8a560c9e6c188962d1ad938  lisp/layers/org-canvas/e-org-canvas-capabilities.el
+e611b182ece4707007cdeddd8aa14209aba918419b6312a45b8d11ba0f6034c0  lisp/layers/base/e-base-tools-file.el
+a4c985dc657b17dd80a1acdb6738dd59b922b91b4c80abfb9840b9b732982687  lisp/layers/emacs/e-emacs-tools.el
+089b2bdf645c497284a2dfd1622336a33cc99855169b61d59874fd68cf92968b  lisp/adapters/anthropic/e-anthropic.el
+f6a1b32086f90f949b4f3e4d699e403e21df767be69293b74c297acdbeae650c  lisp/adapters/openai/e-openai-responses.el
+d68bb7a6e14c0c1ddb1fb439321d7659bd5e9736947f31331a0cbf48f247e7bc  lisp/adapters/openai/e-openai-chat-completions.el
+5f49f9e1ae4c930925541e4afba9a26bf69eccd0b5d6cd93409c94a7fe8db748  e2e/e-cache-efficiency-e2e-test.el
+9b1910bcad2a91207598cb863707c68d4f74ec353d49c9085605730ddc58e4bf  lisp/core/e-harness-capabilities.el
+f74a994c217c1920cc5dc9af6b09ebbc139846febbc740cf43674c6d190cc1c3  lisp/core/e-runtime-store-session-worker.el
+c2e96a2e1c5c22b763fb388ebd06362dd78fe7ce7da5e07f177895c38c0ec5e6  lisp/core/e-session-aggregate.el
+0b17728925b9ad88e5a8f52ad02a3e6ae92a36e31b5ec7b72a277ca41e39f678  lisp/core/e-loop.el
+64d9db463d100f6d8a664bc53f40f62519566256c54cb0515a64344108154601  lisp/core/e-tools.el
+#+end_example
