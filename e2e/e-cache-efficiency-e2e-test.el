@@ -4949,16 +4949,21 @@ source.  Both runs share the same prompts and evidence checks."
           (condition-case _caught
               (progn
                 (dolist (_index '(1 2))
-                  (let* ((result
-                          (e-live-e2e--prompt-batch-before-deadline
-                           harness session-id
-                           "Reply exactly E99-CANVAS-E1-OK. Do not call tools or edit the Canvas."
-                           deadline))
-                         (answer (e-live-e2e--assistant-content result)))
-                    (unless (string-match-p "E99-CANVAS-E1-OK" answer)
-                      (setq semantic-failure t))))
+                  (unless (or provider-error semantic-failure)
+                    (let* ((result
+                            (e-live-e2e--prompt-batch-before-deadline
+                             harness session-id
+                             "Reply exactly E99-CANVAS-E1-OK. Do not call tools or edit the Canvas."
+                             deadline))
+                           (answer (e-live-e2e--assistant-content result)))
+                      (if (eq (plist-get result :status) 'done)
+                          (unless (string-match-p "E99-CANVAS-E1-OK" answer)
+                            (setq semantic-failure t))
+                        (setq provider-error t)))))
                 (setq semantic-result
-                      (if semantic-failure "semantic-failure" "pass")))
+                      (cond (semantic-failure "semantic-failure")
+                            (provider-error "provider/infrastructure-failure")
+                            (t "pass"))))
             (error (_caught)
               (unless semantic-failure (setq provider-error t)))))
         (let* ((requests (gethash session-id requests-by-session))
@@ -5072,18 +5077,24 @@ source.  Both runs share the same prompts and evidence checks."
                         native requests-by-session args))))
             (condition-case _caught
                 (progn
-                  (dolist (step '(1 2 3))
+                  (cl-loop for step in '(1 2 3)
+                           while (not (or provider-error semantic-failure))
+                           do
                     (let* ((result
                             (e-live-e2e--prompt-batch-before-deadline
                              harness session-id
                              (e-cache-efficiency-e2e--f99-probe-prompt step)
                              deadline))
                            (answer (e-live-e2e--assistant-content result)))
-                      (unless (string-match-p
-                               (format "PROBE-%d-CODE=%d" step (+ 731 step))
-                               answer)
-                        (setq semantic-failure t))
-                      (when (< step 3)
+                      (if (eq (plist-get result :status) 'done)
+                          (unless (string-match-p
+                                   (format "PROBE-%d-CODE=%d" step (+ 731 step))
+                                   answer)
+                            (setq semantic-failure t))
+                        (setq provider-error t))
+                      (when (and (not provider-error)
+                                 (not semantic-failure)
+                                 (< step 3))
                         (e-cache-efficiency-e2e--f99-check-one-item
                          canvas-buffer step)))))
               (error (_caught)
@@ -5104,7 +5115,9 @@ source.  Both runs share the same prompts and evidence checks."
               (unless (or provider-error semantic-failure)
                 (setq semantic-result "pass")))
             (when semantic-failure
-              (setq semantic-result "semantic-failure"))))
+              (setq semantic-result "semantic-failure"))
+            (when provider-error
+              (setq semantic-result "provider/infrastructure-failure")))
       (let* ((requests (gethash session-id requests-by-session))
              (start-payloads
               (mapcar (lambda (event) (plist-get event :payload))
@@ -5250,7 +5263,7 @@ source.  Both runs share the same prompts and evidence checks."
           (ert-fail (format "Valid E2 route contradicted growing reuse: %s"
                             growing-result)))
          (t (ert-skip (format "E2 growing reuse remains unconfirmed: %s"
-                              growing-result)))))))))
+                              growing-result))))))))))
 
 (provide 'e-cache-efficiency-e2e-test)
 ;;; e-cache-efficiency-e2e-test.el ends here
