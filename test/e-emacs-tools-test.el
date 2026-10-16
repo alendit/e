@@ -814,7 +814,7 @@ returns a normal tool error instead."
     (should-not debug-on-error)))
 
 (ert-deftest e-emacs-tools-test-attached-file-alias-guards-buffer-write ()
-  "A file canvas and its visiting buffer share the expected revision guard."
+  "Write guards use the live unsaved revision through a file-buffer alias."
   (let* ((directory (make-temp-file "e-buffer-canvas-alias-" t))
          (file (expand-file-name "sample.txt" directory))
          (file-uri "file://sample.txt")
@@ -827,10 +827,14 @@ returns a normal tool error instead."
           (write-region "original" nil file nil 'silent)
           (setq buffer (find-file-noselect file))
           (with-current-buffer buffer
-            (set-buffer-modified-p nil))
+            (set-buffer-modified-p nil)
+            (goto-char (point-max))
+            (insert " user edit"))
           (setq context
                 (list :attached-canvas-targets
-                      (list (list :uri file-uri :revision revision
+                      (list (list :uri file-uri
+                                  :revision
+                                  (e-context-canvas-revision "original user edit")
                                   :target-identities
                                   (e-context-canvas-resource-identities
                                    file-uri directory)))))
@@ -843,15 +847,32 @@ returns a normal tool error instead."
                   context)))
             (should (equal (plist-get (plist-get missing :content) :status)
                            "conflict"))
+            (should (equal
+                     (plist-get (plist-get missing :content) :currentRevision)
+                     (e-context-canvas-revision "original user edit")))
             (should (equal (with-current-buffer buffer (buffer-string))
-                           "original")))
+                           "original user edit")))
+          (let ((stale
+                 (e-tools--execute-batch-with-context
+                  registry
+                  (list :id "call-stale" :name "write"
+                        :arguments (list :uri (concat "buffer://" (buffer-name buffer))
+                                         :content "stale write"
+                                         :expectedRevision revision))
+                  context)))
+            (should (equal (plist-get (plist-get stale :content) :status)
+                           "conflict"))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "original user edit")))
           (let ((written
                  (e-tools--execute-batch-with-context
                   registry
                   (list :id "call-current" :name "write"
                         :arguments (list :uri (concat "buffer://" (buffer-name buffer))
                                          :content "changed"
-                                         :expectedRevision revision))
+                                         :expectedRevision
+                                         (e-context-canvas-revision
+                                          "original user edit")))
                   context)))
             (should (equal (plist-get written :status) 'ok))
             (should (equal (plist-get (plist-get written :content) :revision)
@@ -862,6 +883,85 @@ returns a normal tool error instead."
                              (insert-file-contents file)
                              (buffer-string))
                            "original"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-emacs-tools-test-attached-file-alias-guards-buffer-edit ()
+  "Edit guards compare the whole unsaved live buffer through a file alias."
+  (let* ((directory (make-temp-file "e-buffer-canvas-edit-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (file-uri "file://sample.txt")
+         (saved-text "alpha beta")
+         (saved-revision (e-context-canvas-revision saved-text))
+         buffer
+         (registry (e-emacs-tools-test--resource-tools))
+         (context nil))
+    (unwind-protect
+        (progn
+          (write-region saved-text nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (set-buffer-modified-p nil)
+            (goto-char (point-max))
+            (insert " plus user edit"))
+          (setq context
+                (list :attached-canvas-targets
+                      (list (list :uri file-uri
+                                  :revision (e-context-canvas-revision
+                                             "alpha beta plus user edit")
+                                  :target-identities
+                                  (e-context-canvas-resource-identities
+                                   file-uri directory)))))
+          (let ((missing
+                 (e-tools--execute-batch-with-context
+                  registry
+                  (list :id "edit-missing" :name "edit"
+                        :arguments
+                        (list :uri (concat "buffer://" (buffer-name buffer))
+                              :edits [(:oldText "beta" :newText "delta")]))
+                  context)))
+            (should (equal (plist-get (plist-get missing :content) :status)
+                           "conflict")))
+          (let ((stale
+                 (e-tools--execute-batch-with-context
+                  registry
+                  (list :id "edit-stale" :name "edit"
+                        :arguments
+                        (list :uri (concat "buffer://" (buffer-name buffer))
+                              :edits [(:oldText "beta" :newText "delta")]
+                              :expectedRevision saved-revision))
+                  context)))
+            (should (equal (plist-get (plist-get stale :content) :status)
+                           "conflict"))
+            (should (equal
+                     (plist-get (plist-get stale :content) :currentRevision)
+                     (e-context-canvas-revision "alpha beta plus user edit"))))
+          (should (equal (with-current-buffer buffer (buffer-string))
+                         "alpha beta plus user edit"))
+          (let ((edited
+                 (e-tools--execute-batch-with-context
+                  registry
+                  (list :id "edit-current" :name "edit"
+                        :arguments
+                        (list :uri (concat "buffer://" (buffer-name buffer))
+                              :edits [(:oldText "beta" :newText "delta")]
+                              :expectedRevision
+                              (e-context-canvas-revision
+                               "alpha beta plus user edit")))
+                  context)))
+            (should (equal (plist-get edited :status) 'ok))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "alpha delta plus user edit"))
+            (should (equal
+                     (plist-get (plist-get edited :content) :revision)
+                     (e-context-canvas-revision
+                      "alpha delta plus user edit")))
+            (should (buffer-modified-p buffer)))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         saved-text)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (delete-directory directory t))))

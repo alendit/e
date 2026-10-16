@@ -17,16 +17,6 @@
 (defconst e-context-canvas-patch-limit 16
   "Maximum number of exact patches retained after one full snapshot.")
 
-(defconst e-context-canvas-chronology-metadata-key :e-canvas-chronology
-  "Message metadata key for process-local accepted canvas chronology.")
-
-(defun e-context-canvas-chronology-message-p (message)
-  "Return non-nil when MESSAGE is an accepted canvas chronology item."
-  (and (e-context-canvas-reference-message-p message)
-       (eq (plist-get (plist-get message :metadata)
-                      e-context-canvas-chronology-metadata-key)
-           t)))
-
 (defun e-context-canvas-utf8-bytes (text)
   "Return the UTF-8 payload byte count for TEXT."
   (string-bytes (encode-coding-string (substring-no-properties text)

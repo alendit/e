@@ -11,6 +11,7 @@
 
 (require 'ert)
 (require 'e-anthropic)
+(require 'e-bayesian-reasoning)
 (require 'e-json)
 (require 'e-openai-decoder)
 (require 'e-openai-chat-completions)
@@ -23,6 +24,160 @@
 (load (expand-file-name "e-harness-composition-test-support.el"
                        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
+
+(defun e-harness-context-lifetime-composition-test--native-bodies
+    (messages options)
+  "Serialize semantic MESSAGES with each native adapter using OPTIONS."
+  (list (e-anthropic-request-body :messages messages :options options)
+        (e-openai-chat-completion-request-body
+         :messages messages :options options)
+        (e-openai-codex-request-body :messages messages :options options)))
+
+(defun e-harness-context-lifetime-composition-test--strings-in-tree (tree)
+  "Return strings in TREE in the order they occur in its data structure."
+  (cond
+   ((stringp tree) (list tree))
+   ((vectorp tree)
+    (cl-loop for item across tree
+             append
+             (e-harness-context-lifetime-composition-test--strings-in-tree
+              item)))
+   ((consp tree)
+    (cl-loop for item in tree
+             append
+             (e-harness-context-lifetime-composition-test--strings-in-tree
+              item)))
+   (t nil)))
+
+(defun e-harness-context-lifetime-composition-test--plists-in-tree (tree)
+  "Return nested property lists in TREE in their serialization order."
+  (cond
+   ((stringp tree) nil)
+   ((vectorp tree)
+    (cl-loop for item across tree
+             append
+             (e-harness-context-lifetime-composition-test--plists-in-tree
+              item)))
+   ((consp tree)
+    (append
+     (when (keywordp (car tree)) (list tree))
+     (cl-loop for item in tree
+              append
+              (e-harness-context-lifetime-composition-test--plists-in-tree
+               item))))
+   (t nil)))
+
+(defun e-harness-context-lifetime-composition-test--assert-native-order
+    (messages options needles)
+  "Assert every native body preserves the ordered text NEEDLES in MESSAGES."
+  (dolist (body
+           (e-harness-context-lifetime-composition-test--native-bodies
+            messages options))
+    (let* ((text (string-join
+                  (e-harness-context-lifetime-composition-test--strings-in-tree
+                   body)
+                  "\n"))
+           (positions (mapcar (lambda (needle)
+                                (string-match (regexp-quote needle) text))
+                              needles)))
+      (should (cl-every #'integerp positions))
+      (should (cl-loop for left in positions
+                       for right in (cdr positions)
+                       always (< left right))))))
+
+(defun e-harness-context-lifetime-composition-test--assert-native-tool-pair
+    (messages options)
+  "Assert every native serialization pairs the canvas tool call and result."
+  (dolist (body
+           (e-harness-context-lifetime-composition-test--native-bodies
+            messages options))
+    (let* ((nodes
+            (e-harness-context-lifetime-composition-test--plists-in-tree body))
+           (responses-p (plist-member body :input))
+           (messages-p (and (plist-member body :messages)
+                            (not (plist-member body :max_tokens))))
+           (call
+            (seq-find
+             (lambda (node)
+               (cond
+                (responses-p
+                 (and (equal (plist-get node :type) "function_call")
+                      (equal (plist-get node :call_id) "canvas-read-1")))
+                (messages-p
+                 (and (equal (plist-get node :id) "canvas-read-1")
+                      (equal (plist-get (plist-get node :function) :name)
+                             "canvas-inspect")))
+                (t
+                 (and (equal (plist-get node :type) "tool_use")
+                      (equal (plist-get node :id) "canvas-read-1")))))
+             nodes))
+           (result
+            (seq-find
+             (lambda (node)
+               (cond
+                (responses-p
+                 (and (equal (plist-get node :type) "function_call_output")
+                      (equal (plist-get node :call_id) "canvas-read-1")))
+                (messages-p
+                 (equal (plist-get node :tool_call_id) "canvas-read-1"))
+                (t
+                 (and (equal (plist-get node :type) "tool_result")
+                      (equal (plist-get node :tool_use_id) "canvas-read-1")))))
+             nodes)))
+      (should call)
+      (should result)
+      (should (< (cl-position call nodes :test #'eq)
+                 (cl-position result nodes :test #'eq))))))
+
+(defun e-harness-context-lifetime-composition-test--assert-canvas-source
+    (context expected-text)
+  "Assert the emitted Canvas source handle resolves to complete EXPECTED-TEXT."
+  (let* ((messages (plist-get context :messages))
+         (handle
+          (seq-some
+           (lambda (message)
+             (let ((content (plist-get message :content)))
+               (when (and (stringp content)
+                          (string-match
+                           "evidence=\\\"\\(src:[0-9A-F]+\\)\\\""
+                           content))
+                 (match-string 1 content))))
+           (reverse messages)))
+         (sources
+          (cl-loop for segment in (plist-get context :segments)
+                   append
+                   (seq-filter
+                    (lambda (source) (plist-get source :canvas-text))
+                    (plist-get segment e-context-evidence-sources-key))))
+         (source (seq-find
+                  (lambda (candidate)
+                    (equal (e-context-source-handle candidate) handle))
+                  sources)))
+    (should handle)
+    (should (= (length sources) 1))
+    (should source)
+    (should (equal (plist-get source :canvas-text) expected-text))
+    (should (equal (plist-get source :content-sha256)
+                   (e-context-canvas-revision expected-text)))
+    (should (equal (plist-get source :canvas-revision)
+                   (e-context-canvas-revision expected-text)))
+    (let* ((assistant-message
+            (list :role 'assistant
+                  :content
+                  (format
+                   (concat "```reasoning\nclaim: the source has its captured "
+                           "complete text\nconfidence: high\n"
+                           "alternatives: the source is stale\nevidence: %s\n```")
+                   handle)))
+           (check
+            (e-bayesian-reasoning--turn-check
+             (list :assistant-message assistant-message
+                   :model-context context))))
+      (should (eq (plist-get check :outcome) 'references-resolved))
+      (should (equal
+               (plist-get (car (plist-get (plist-get check :details) :resolved))
+                          :content-sha256)
+               (e-context-canvas-revision expected-text))))))
 
 (defun e-harness-context-lifetime-composition-test--anthropic-stream
     (blocks stop-reason)
@@ -2717,6 +2872,8 @@
           (should (= request-count 2))
           (let* ((initial (messages-at 0))
                  (tool-followup (messages-at 1))
+                 (initial-options (plist-get (request-at 0) :options))
+                 (tool-followup-options (plist-get (request-at 1) :options))
                  (snapshot (car (snapshot-messages initial)))
                  (policy (car (seq-filter
                                (lambda (message)
@@ -2743,9 +2900,17 @@
                                 :id)
                      (plist-get (plist-get (nth result-position tool-followup)
                                           :content)
-                                :tool-call-id))))
+                                :tool-call-id)))
+            (e-harness-context-lifetime-composition-test--assert-native-order
+             initial initial-options '("Inspect canvas" "<canvas "))
+            (e-harness-context-lifetime-composition-test--assert-native-order
+             tool-followup tool-followup-options
+             '("Inspect canvas" "<canvas " "canvas-read-1"))
+            (e-harness-context-lifetime-composition-test--assert-native-tool-pair
+             tool-followup tool-followup-options))
           (e-harness-test-prompt-batch harness session-id "Unchanged request")
           (let* ((unchanged (messages-at 2))
+                 (options (plist-get (request-at 2) :options))
                  (snapshot-position
                   (position-containing unchanged "<canvas "))
                  (answer-position (position-containing unchanged
@@ -2763,11 +2928,19 @@
                                  (string-match-p
                                   "Always write to the exact uri"
                                   (content-of message))))
-                          unchanged))))
+                          unchanged)))
+            (e-harness-context-lifetime-composition-test--assert-native-order
+             unchanged options
+             '("Inspect canvas" "<canvas " "Canvas response"
+               "Unchanged request")))
+          (e-harness-context-lifetime-composition-test--assert-canvas-source
+           (e-harness-turn-context harness session-id "canvas-unchanged-probe")
+           initial-text)
           (erase-buffer)
           (insert first-edit)
           (e-harness-test-prompt-batch harness session-id "Change one checkbox")
           (let* ((changed-once (messages-at 3))
+                 (options (plist-get (request-at 3) :options))
                  (snapshots (snapshot-messages changed-once))
                  (patches (patch-messages changed-once))
                  (user-position (position-containing changed-once
@@ -2788,11 +2961,18 @@
             (should (string-match
                      (concat "revision=\""
                              (e-context-canvas-revision first-edit) "\"")
-                     patch-content)))
+                     patch-content))
+            (e-harness-context-lifetime-composition-test--assert-native-order
+             changed-once options
+             (list "Inspect canvas" "<canvas " "Canvas response"
+                   "Change one checkbox"
+                   (concat "baseRevision=\""
+                           (e-context-canvas-revision initial-text) "\""))))
           (erase-buffer)
           (insert second-edit)
           (e-harness-test-prompt-batch harness session-id "Change two checkbox")
           (let* ((changed-twice (messages-at 4))
+                 (options (plist-get (request-at 4) :options))
                  (snapshots (snapshot-messages changed-twice))
                  (patches (patch-messages changed-twice))
                  (first-patch-position
@@ -2821,6 +3001,17 @@
                                             (plist-get segment :messages)))))
             (should (= (length (plist-get context :messages))
                        (length (plist-get context :message-entry-ids))))
+            (e-harness-context-lifetime-composition-test--assert-native-order
+             changed-twice options
+             (list "Inspect canvas" "<canvas " "Canvas response"
+                   "Change one checkbox"
+                   (concat "baseRevision=\""
+                           (e-context-canvas-revision initial-text) "\"")
+                   "Change two checkbox"
+                   (concat "baseRevision=\""
+                           (e-context-canvas-revision first-edit) "\"")))
+            (e-harness-context-lifetime-composition-test--assert-canvas-source
+             context second-edit)
             (let* ((third-text (concat second-edit "B"))
                    (fourth-text (concat second-edit "C"))
                    (retry-text (concat second-edit "D")))
@@ -2932,6 +3123,176 @@
                                            :canvas-pending-observations)))
                   (should (= before-preview
                              (plist-get (gethash key table) :version))))))))))))))
+
+(ert-deftest e-harness-test-canvas-branch-switch-and-state-loss-reset-chain ()
+  "A selected branch change or process-local state loss rebuilds a snapshot."
+  (let* ((backend
+          (e-backend-create
+           :name "canvas-branch-reset"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore messages options)
+              (funcall on-item '(:type assistant-message :content "accepted"))
+              (funcall on-item '(:type done :reason stop))))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :intrinsic-capabilities (list (e-chat-session-capability-create))))
+         (session-id "canvas-branch-reset-session")
+         (initial (make-string 5000 ?a))
+         (changed (concat (substring initial 0 4999) "b"))
+         (table (e-harness-canvas-chronologies harness)))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id session-id)
+      (with-temp-buffer
+        (rename-buffer "e-canvas-branch-reset" t)
+        (insert initial)
+        (cl-letf (((symbol-function 'e-chat-session-attachments)
+                   (lambda (_harness _session-id)
+                     (list (list :uri (concat "buffer://" (buffer-name))
+                                 :label "canvas"
+                                 :buffer-name (buffer-name)
+                                 :canvas t)))))
+          (e-harness-test-prompt-batch harness session-id "Capture baseline")
+          (erase-buffer)
+          (insert changed)
+          (e-harness-test-prompt-batch harness session-id "Accept a change")
+          (let* ((chained
+                  (e-harness-turn-context harness session-id "chain-probe"))
+                 (chain-messages (plist-get chained :messages)))
+            (should (= 1 (cl-count-if
+                          (lambda (message)
+                            (and (stringp (plist-get message :content))
+                                 (string-prefix-p "<canvas "
+                                                  (plist-get message :content))))
+                          chain-messages)))
+            (should (= 1 (cl-count-if
+                          (lambda (message)
+                            (and (stringp (plist-get message :content))
+                                 (string-prefix-p "<canvas-change "
+                                                  (plist-get message :content))))
+                          chain-messages))))
+          (e-session-set-current-branch (e-harness-sessions harness)
+                                        session-id "branch-canvas-reset")
+          (let* ((branched
+                  (e-harness-turn-context harness session-id "branch-probe"))
+                 (messages (plist-get branched :messages))
+                 (snapshot
+                  (seq-find
+                   (lambda (message)
+                     (and (stringp (plist-get message :content))
+                          (string-prefix-p "<canvas "
+                                           (plist-get message :content))))
+                   messages)))
+            (should snapshot)
+            (should-not (seq-some
+                         (lambda (message)
+                           (and (stringp (plist-get message :content))
+                                (string-prefix-p "<canvas-change "
+                                                 (plist-get message :content))))
+                         messages))
+            (should (string-match-p
+                     (e-context-canvas-revision changed)
+                     (plist-get snapshot :content))))
+          ;; Clearing the harness-owned table models loss of all process-local
+          ;; accepted cursors at restart; the next public context is complete.
+          (clrhash table)
+          (let* ((restarted
+                  (e-harness-turn-context harness session-id "restart-probe"))
+                 (messages (plist-get restarted :messages))
+                 (snapshots
+                  (seq-filter
+                   (lambda (message)
+                     (and (stringp (plist-get message :content))
+                          (string-prefix-p "<canvas "
+                                           (plist-get message :content))))
+                   messages)))
+            (should (= (length snapshots) 1))
+            (should-not (seq-some
+                         (lambda (message)
+                           (and (stringp (plist-get message :content))
+                                (string-prefix-p "<canvas-change "
+                                                 (plist-get message :content))))
+                         messages))
+            (should (string-match-p
+                     (e-context-canvas-revision changed)
+                     (plist-get (car snapshots) :content)))))))))
+
+(ert-deftest e-harness-test-cancelled-canvas-request-does-not-advance-state ()
+  "An aborted public request leaves no accepted Canvas baseline behind."
+  (let* ((callbacks nil)
+         (cancelled nil)
+         (backend
+          (e-backend-create
+           :name "cancelled-canvas-request"
+           :start
+           (cl-function
+            (lambda (&key messages options on-item on-done on-error
+                           on-request-start)
+              (ignore on-error)
+              (setq callbacks (list :messages (copy-tree messages t)
+                                    :on-item on-item :on-done on-done
+                                    :options (copy-tree options t)))
+              (let ((request
+                     (e-backend-request-create
+                      :cancel (lambda () (setq cancelled t) t))))
+                (funcall on-request-start request)
+                request)))))
+         (harness
+          (e-harness-create
+           :backend backend
+           :intrinsic-capabilities (list (e-chat-session-capability-create))))
+         (session-id "cancelled-canvas-request-session")
+         (table (e-harness-canvas-chronologies harness)))
+    (let ((e-context-lifetime-shadow-projection-enabled t))
+      (e-harness-create-session harness :id session-id)
+      (with-temp-buffer
+        (rename-buffer "e-cancelled-canvas-request" t)
+        (insert "* TODO unaccepted\n")
+        (cl-letf (((symbol-function 'e-chat-session-attachments)
+                   (lambda (_harness _session-id)
+                     (list (list :uri (concat "buffer://" (buffer-name))
+                                 :label "canvas"
+                                 :buffer-name (buffer-name)
+                                 :canvas t)))))
+          (e-harness-test-prompt-async harness session-id "Cancel this turn")
+          (should callbacks)
+          (should (seq-some
+                   (lambda (message)
+                     (and (stringp (plist-get message :content))
+                          (string-prefix-p "<canvas "
+                                           (plist-get message :content))))
+                   (plist-get callbacks :messages)))
+          (should (e-harness-test-abort harness session-id))
+          (should cancelled)
+          (funcall (plist-get callbacks :on-item)
+                   '(:type assistant-message :content "late response"))
+          (funcall (plist-get callbacks :on-item)
+                   '(:type done :reason stop))
+          (funcall (plist-get callbacks :on-done) '(:status done))
+          (should (eq (plist-get
+                       (e-harness-wait-batch harness session-id 0.1)
+                       :status)
+                      'cancelled))
+          (should-not (gethash (list session-id
+                                     (concat "buffer://" (buffer-name)))
+                               table))
+          (let* ((retry
+                  (e-harness-turn-context harness session-id "after-cancel"))
+                 (messages (plist-get retry :messages)))
+            (should (= 1 (cl-count-if
+                          (lambda (message)
+                            (and (stringp (plist-get message :content))
+                                 (string-prefix-p "<canvas "
+                                                  (plist-get message :content))))
+                          messages)))
+            (should-not (seq-some
+                         (lambda (message)
+                           (and (stringp (plist-get message :content))
+                                (string-prefix-p "<canvas-change "
+                                                 (plist-get message :content))))
+                         messages))))))))
 
 (ert-deftest e-harness-test-canvas-patches-fall-back-to-bounded-snapshots ()
   "Serialized payload cost and the patch cap bound retained chronology."

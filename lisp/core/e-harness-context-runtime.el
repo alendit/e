@@ -441,6 +441,18 @@ This pure projection never consults or installs a session aggregate."
           (push source captures))))
     (nreverse captures)))
 
+(defun e-harness-context-runtime--canvas-effective-sources (sources)
+  "Return one current complete source descriptor per canvas URI in SOURCES."
+  (let ((seen (make-hash-table :test 'equal))
+        result)
+    (dolist (source sources)
+      (let ((uri (plist-get source :uri)))
+        (when (and (stringp (plist-get source :canvas-text))
+                   (not (gethash uri seen)))
+          (puthash uri t seen)
+          (push source result))))
+    (nreverse result)))
+
 (defun e-harness-context-runtime--canvas-capture-message (source payload)
   "Return a marked context message for SOURCE and PAYLOAD."
   (list :role 'context
@@ -579,9 +591,11 @@ This pure projection never consults or installs a session aggregate."
 (defun e-harness-context-runtime--canvas-project-context
     (harness session-id context projection)
   "Prepare current canvas representations and request-local pending state."
-  (let* ((sources
+  (let* ((captures
           (e-harness-context-runtime--canvas-captures
            (plist-get context :segments)))
+         (current-canvas-sources
+          (e-harness-context-runtime--canvas-effective-sources captures))
          (path-positions (plist-get projection :path-entry-positions))
          (head-id (plist-get projection :current-head-id))
          (head-index (or (plist-get projection :current-head-path-index) -1))
@@ -598,7 +612,7 @@ This pure projection never consults or installs a session aggregate."
          operations pending targets
          (context (copy-tree context t))
          (segments nil))
-    (dolist (source sources)
+    (dolist (source captures)
       (let* ((uri (plist-get source :uri))
              (key (list session-id uri))
              (old (gethash key table)))
@@ -645,18 +659,19 @@ This pure projection never consults or installs a session aggregate."
           targets (nreverse targets))
     (dolist (segment (plist-get context :segments))
       (let* ((copy (copy-tree segment t))
-             (sources (plist-get copy e-context-evidence-sources-key))
+             (segment-sources
+              (plist-get copy e-context-evidence-sources-key))
              (kept-sources
               (seq-remove (lambda (source)
                             (plist-get source :canvas-text))
-                          sources))
+                          segment-sources))
              (messages
               (seq-remove
                (lambda (message)
                  (and (e-context-canvas-reference-message-p message)
                       (seq-some (lambda (source)
                                   (plist-get source :canvas-text))
-                                sources)))
+                                segment-sources)))
                (plist-get copy :messages))))
         (when messages
           (plist-put copy :messages messages)
@@ -666,7 +681,28 @@ This pure projection never consults or installs a session aggregate."
               (plist-put copy e-context-evidence-sources-key kept-sources)
             (cl-remf copy e-context-evidence-sources-key))
           (push copy segments))))
-    (plist-put context :segments (nreverse segments))
+    (setq segments (nreverse segments))
+    (when current-canvas-sources
+      (let ((owner (or (seq-find
+                        (lambda (segment)
+                          (equal (plist-get segment :public-origin)
+                                 "chat attachments"))
+                        segments)
+                       (car segments))))
+        (if owner
+            (plist-put owner e-context-evidence-sources-key
+                       (append
+                        (plist-get owner e-context-evidence-sources-key)
+                        current-canvas-sources))
+          (let ((source-segment
+                 (e-context-segment-create
+                  :kind 'current-state
+                  :id '(chat-session canvas-current-source)
+                  :messages nil)))
+            (plist-put source-segment e-context-evidence-sources-key
+                       current-canvas-sources)
+            (setq segments (append segments (list source-segment)))))))
+    (plist-put context :segments segments)
     (plist-put context :messages
                (cl-loop for segment in (plist-get context :segments)
                         append (copy-tree (plist-get segment :messages) t)))
