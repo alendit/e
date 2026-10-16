@@ -952,6 +952,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
          (alias 'unreviewed-provider-alias)
          (process-environment
           (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (e-anthropic--qualified-context-layouts nil)
          (base-url
           "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
          (model "claude-opus-5-5")
@@ -1115,6 +1116,7 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
   (let* ((provider 'eng-ai-gateway-opus-5-5)
          (process-environment
           (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (e-anthropic--qualified-context-layouts nil)
          (base-url
           "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
          (model "claude-opus-5-5")
@@ -1173,6 +1175,91 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
                   :requester 'messages-http-start)
                  :reserved-effect-carrier)
                 'context-curate-wire))))
+
+(ert-deftest e-anthropic-test-canvas-layout-qualification-is-exact-and-opt-in ()
+  "A source-owned route/layout entry is needed for changed-layout curation."
+  (let* ((provider 'eng-ai-gateway-opus-5-5)
+         (process-environment
+          (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (e-anthropic--qualified-context-layouts nil)
+         (base-url
+          "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
+         (model "claude-opus-5-5")
+         (profile `(:name "P3 exact qualification fixture"
+                    :base-url ,base-url :auth bearer
+                    :auth-header authorization :env-key "ENG_AI_MODEL_GW_KEY"
+                    :model-prefix "" :default-model ,model))
+         (e-anthropic-model-providers (list (cons provider profile)))
+         (layout e-context-canvas-reference-layout-revision)
+         (options `(:model ,model :context-lifetime-enabled t
+                    :canvas-reference-layout-revision ,layout))
+         (identity
+          (e-anthropic--context-capability-identity
+           provider options :base-url base-url :model model
+           :requester 'messages-http-start))
+         (qualification
+          (append (e-anthropic--context-capability-route-identity identity)
+                  (list :canvas-reference-layout-revision layout))))
+    (should-not e-anthropic--qualified-context-layouts)
+    (should (eq (plist-get
+                 (e-anthropic-context-capabilities
+                  provider options :base-url base-url :model model
+                  :requester 'messages-http-start)
+                 :reserved-effect-carrier)
+                'none))
+    (let ((e-anthropic--qualified-context-layouts (list qualification)))
+      (should (eq (plist-get
+                   (e-anthropic-context-capabilities
+                    provider options :base-url base-url :model model
+                    :requester 'messages-http-start)
+                   :reserved-effect-carrier)
+                  'context-curate-wire))
+      (dolist (changed-options
+               (list (plist-put (copy-sequence options) :model "claude-sonnet-5-5")
+                     (plist-put (copy-sequence options)
+                                :canvas-reference-layout-revision "future-layout-v2")))
+        (should (eq (plist-get
+                     (e-anthropic-context-capabilities
+                      provider changed-options :base-url base-url
+                      :model (plist-get changed-options :model)
+                      :requester 'messages-http-start)
+                     :reserved-effect-carrier)
+                    'none)))
+      (let ((original-identity
+             (symbol-function 'e-anthropic--context-capability-identity))
+            captured-identities)
+        (cl-letf (((symbol-function 'e-anthropic--context-capability-identity)
+                   (lambda (&rest arguments)
+                     (let ((identity (apply original-identity arguments)))
+                       (push identity captured-identities)
+                       identity))))
+          (let* ((unmarked
+                  (e-anthropic--request-context
+                   :provider provider :base-url base-url :model model
+                   :requester 'messages-http-start
+                   :messages '((:role user :content "no Canvas marker"))
+                   :options options))
+                 (unmarked-body (e-json-parse-string (plist-get unmarked :body)))
+                 (marked
+                  (e-anthropic--request-context
+                   :provider provider :base-url base-url :model model
+                   :requester 'messages-http-start
+                   :messages '((:role context
+                                :metadata (:e-canvas-reference t)
+                                :content "marked current Canvas"))
+                   :options options))
+                 (marked-body (e-json-parse-string (plist-get marked :body))))
+            (should (equal (plist-get (car captured-identities)
+                                      :canvas-reference-layout-revision)
+                           layout))
+            (should-not (plist-get (cadr captured-identities)
+                                   :canvas-reference-layout-revision))
+            (should (seq-some (lambda (tool)
+                                (equal (plist-get tool :name) "context-curate"))
+                              (append (plist-get unmarked-body :tools) nil)))
+            (should (seq-some (lambda (tool)
+                                (equal (plist-get tool :name) "context-curate"))
+                              (append (plist-get marked-body :tools) nil)))))))))
 
 (ert-deftest e-anthropic-test-request-body-retains-native-tool-schema ()
   "Messages carries the native operation schema without reinterpretation."

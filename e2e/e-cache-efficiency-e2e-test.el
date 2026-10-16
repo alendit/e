@@ -2468,6 +2468,9 @@ STEPS defaults to the original three-step public-API scenario."
            (lambda (registry)
              (e-cache-efficiency-e2e--p3-register-cache-probe registry)))))))
 
+(defvar e-cache-efficiency-e2e--p3-f99-canvas-layout nil
+  "When non-nil, run the existing normal-source P3 scenario with a real F99 Canvas.")
+
 (defun e-cache-efficiency-e2e--p3-register-cache-probe (registry)
   "Register two bounded synthetic cache probes in REGISTRY."
   (e-tools-register
@@ -3230,6 +3233,10 @@ STEPS defaults to the original three-step public-API scenario."
              (base-url (e-anthropic--provider-base-url profile))
              (model (e-anthropic--provider-model profile nil))
              (options (list :model model :context-lifetime-enabled t))
+             (_ (when e-cache-efficiency-e2e--p3-f99-canvas-layout
+                  (setq options
+                        (plist-put options :canvas-reference-layout-revision
+                                   e-context-canvas-reference-layout-revision))))
              (route (list :base-url base-url :model model
                           :requester 'messages-http-start))
              (identity
@@ -3783,8 +3790,20 @@ source.  Both runs share the same prompts and evidence checks."
          (e-cache-efficiency-e2e--p3-candidate-grant-count 0)
          (e-cache-efficiency-e2e--p3-response-bindings nil)
          (semantic-result "unavailable")
+         (canvas-buffer
+          (and e-cache-efficiency-e2e--p3-f99-canvas-layout
+               (generate-new-buffer "e99-p3-canvas")))
+         (e-cache-efficiency-e2e--f99-private-canvas-lines nil)
          (condition nil))
-    (e-live-e2e--with-harness (harness session-id :layers (list layer))
+    (when canvas-buffer
+      (with-current-buffer canvas-buffer
+        (insert (e-cache-efficiency-e2e--f99-canvas-text "P3"))))
+    (unwind-protect
+        (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (when canvas-buffer
+        (e-cache-efficiency-e2e--f99-ensure-chat-session-provider harness)
+        (e-cache-efficiency-e2e--f99-attach-canvas
+         harness session-id canvas-buffer))
       (let ((e-context-lifetime-shadow-projection-enabled t)
             (native (if (eq adapter 'anthropic)
                         (symbol-function 'e-anthropic--request-context)
@@ -3964,6 +3983,34 @@ source.  Both runs share the same prompts and evidence checks."
                 (should (= (length captured) (length finishes)))
                 (should (= (length captured) (length usage-events)))
                 (should (e-cache-efficiency-e2e--usage-join-complete-p joined))
+                (when e-cache-efficiency-e2e--p3-f99-canvas-layout
+                  (should (equal
+                           (plist-get identity :canvas-reference-layout-revision)
+                           e-context-canvas-reference-layout-revision))
+                  (should
+                   (cl-every
+                    (lambda (request)
+                      (let ((source (plist-get request :canvas-source-evidence)))
+                        (and (equal
+                              (plist-get request :canvas-reference-layout-revision)
+                              e-context-canvas-reference-layout-revision)
+                             (= (plist-get source :canvas-source-count) 1)
+                             (plist-get source :canvas-source-present)
+                             (plist-get source
+                                        :canvas-source-revision-matches-content))))
+                    captured))
+                  (should
+                   (cl-some
+                    (lambda (request)
+                      (seq-some
+                       (lambda (operation)
+                         (memq (plist-get operation :representation)
+                               '(snapshot patch)))
+                       (append (plist-get request :canvas-operations) nil)))
+                    captured))
+                  (when (eq authority 'normal-source)
+                    (should (= e-cache-efficiency-e2e--p3-candidate-grant-count
+                               0))))
                 (setq semantic-result (if semantic-error "failure" "pass")))
             (error (setq semantic-error (or semantic-error caught)
                          semantic-result "failure")))
@@ -3984,6 +4031,13 @@ source.  Both runs share the same prompts and evidence checks."
                  :api (plist-get identity :api)
                  :transport (plist-get identity :transport)
                  :requester (plist-get identity :requester)
+                 :accepted-source-revision (e-live-e2e--repository-revision)
+                 :canvas-reference-layout-revision
+                 (plist-get identity :canvas-reference-layout-revision)
+                 :canvas-scenario
+                 (if e-cache-efficiency-e2e--p3-f99-canvas-layout
+                     "attached-f99-canvas"
+                   "none")
                  :candidate-authority
                  (if (eq authority 'normal-source)
                      "normal-source-candidate"
@@ -4027,7 +4081,9 @@ source.  Both runs share the same prompts and evidence checks."
           (when semantic-error
             (signal (car semantic-error) (cdr semantic-error)))
           (when condition
-            (signal (car condition) (cdr condition))))))))
+            (signal (car condition) (cdr condition))))))
+      (when (buffer-live-p canvas-buffer)
+        (kill-buffer canvas-buffer)))))
 
 (ert-deftest e-cache-efficiency-e2e-test-p3-live-native-candidate ()
   "Run diagnostic P3 through the private exact-route wrapper."
@@ -4036,6 +4092,11 @@ source.  Both runs share the same prompts and evidence checks."
 (ert-deftest e-cache-efficiency-e2e-test-p3-live-native-normal-source ()
   "Run the same P3 scenario through the isolated normal-source candidate."
   (e-cache-efficiency-e2e--run-p3-live-native 'normal-source))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-canvas-layout-p3-normal-source ()
+  "Run existing P3 on the exact F99 route/layout with an attached Canvas."
+  (let ((e-cache-efficiency-e2e--p3-f99-canvas-layout t))
+    (e-cache-efficiency-e2e--run-p3-live-native 'normal-source)))
 
 (ert-deftest e-cache-efficiency-e2e-test-p3-live-runner-no-provider-smoke ()
   "Exercise both shared-runner authorities through cleanup without a request."
@@ -4809,12 +4870,21 @@ source.  Both runs share the same prompts and evidence checks."
 (defun e-cache-efficiency-e2e--f99-attach-canvas
     (harness session-id buffer)
   "Attach live BUFFER as the private session's primary Canvas."
+  (e-cache-efficiency-e2e--f99-remember-canvas-lines buffer)
   (e-chat-session-attach-context
    harness session-id
    (list :uri (concat "buffer://" (buffer-name buffer))
          :label "F99 qualification canvas"
          :buffer-name (buffer-name buffer))
    :canvas t :current-attachments nil))
+
+(defun e-cache-efficiency-e2e--f99-remember-canvas-lines (buffer)
+  "Remember BUFFER's synthetic lines so diagnostics can redact them."
+  (with-current-buffer buffer
+    (dolist (line (split-string (buffer-substring-no-properties
+                                 (point-min) (point-max)) "\n" t))
+      (cl-pushnew line e-cache-efficiency-e2e--f99-private-canvas-lines
+                  :test #'equal))))
 
 (defun e-cache-efficiency-e2e--f99-canvas-text (prefix)
   "Build a substantial synthetic checklist beginning with PREFIX."
@@ -4831,7 +4901,8 @@ source.  Both runs share the same prompts and evidence checks."
       (unless (search-forward "[ ]" nil t)
         (error "F99 Canvas fixture has no unchecked item %d" item-number))
       (when (= index (1- item-number))
-        (replace-match "[x]" t t)))))
+        (replace-match "[x]" t t)))
+    (e-cache-efficiency-e2e--f99-remember-canvas-lines buffer)))
 
 (defun e-cache-efficiency-e2e--f99-cache-control-count (value)
   "Count native cache-control fields recursively in VALUE."
@@ -4847,6 +4918,414 @@ source.  Both runs share the same prompts and evidence checks."
     (cl-loop for item in value
              sum (e-cache-efficiency-e2e--f99-cache-control-count item)))
    (t 0)))
+
+(defvar e-cache-efficiency-e2e--f99-native-responses nil
+  "Bounded native response diagnostics for one isolated F99 probe.")
+(defvar e-cache-efficiency-e2e--f99-current-http-status nil
+  "Most recent numeric HTTP status in one isolated F99 probe.")
+(defvar e-cache-efficiency-e2e--f99-turn-errors nil
+  "Bounded turn error facts captured while one isolated F99 probe runs.")
+(defvar e-cache-efficiency-e2e--f99-private-canvas-lines nil
+  "Private synthetic Canvas lines that must never appear in probe diagnostics.")
+
+(defun e-cache-efficiency-e2e--f99-safe-wire-type (value)
+  "Return a small safe label for a provider or parser type VALUE."
+  (let ((text (cond ((symbolp value) (symbol-name value))
+                    ((stringp value) value)
+                    (t ""))))
+    (if (string-match-p "\\`[A-Za-z0-9_-]+\\'" text)
+        (substring text 0 (min 64 (length text)))
+      "other")))
+
+(defun e-cache-efficiency-e2e--f99-count-wire-types (values)
+  "Return bounded type/count pairs for VALUES."
+  (let ((values (mapcar #'e-cache-efficiency-e2e--f99-safe-wire-type values)))
+    (vconcat
+     (mapcar (lambda (value)
+               (list :type value :count (cl-count value values :test #'equal)))
+             (delete-dups (copy-sequence values))))))
+
+(defun e-cache-efficiency-e2e--f99-native-response-record
+    (response http-status items decode-error)
+  "Return metadata-only native response facts without retaining RESPONSE."
+  (let* ((decoded (or (and (not decode-error)
+                           (e-anthropic--sse-decode response))
+                      nil))
+         (events (plist-get decoded :events))
+         (event-types (mapcar (lambda (event) (plist-get event :type)) events))
+         (blocks (mapcar (lambda (event)
+                           (plist-get (plist-get event :content_block) :type))
+                         (seq-filter (lambda (event)
+                                       (equal (plist-get event :type)
+                                              "content_block_start"))
+                                     events)))
+         (stop-reasons
+          (delq nil (mapcar (lambda (event)
+                              (plist-get (plist-get event :delta) :stop_reason))
+                            events)))
+         (usage nil)
+         (semantic-types (mapcar (lambda (item) (plist-get item :type)) items))
+         (error-items
+          (seq-filter (lambda (item) (eq (plist-get item :type) 'backend-error))
+                      items))
+         (parser-errors
+          (vconcat
+           (mapcar (lambda (item)
+                     (let* ((payload (plist-get item :payload))
+                            (error-type (or (plist-get payload :error-type)
+                                            (plist-get payload
+                                                       :provider-error-type)
+                                            (and (plist-get payload
+                                                            :response-kind)
+                                                 (format "non-stream-%s"
+                                                         (plist-get payload
+                                                                    :response-kind)))))
+                            (status (or (plist-get payload :http-status)
+                                        (plist-get payload :status))))
+                       (list :type "backend-error"
+                             :error-type
+                             (and error-type
+                                  (e-cache-efficiency-e2e--f99-safe-wire-type
+                                   error-type))
+                             :http-status (and (numberp status) status)
+                             :message
+                             (e-cache-efficiency-e2e--f99-redacted-error-text
+                              (plist-get item :content)))))
+                   error-items)))
+         (provider-error-types
+          (delq nil
+                (mapcar (lambda (event)
+                          (and (equal (plist-get event :type) "error")
+                               (plist-get (plist-get event :error) :type)))
+                        events)))
+         (content-types (e-cache-efficiency-e2e--f99-count-wire-types blocks))
+         (safe-stops (e-cache-efficiency-e2e--f99-count-wire-types stop-reasons))
+         (types (e-cache-efficiency-e2e--f99-count-wire-types event-types)))
+    (dolist (event events)
+      (let ((event-usage (or (plist-get event :usage)
+                             (plist-get (plist-get event :message) :usage))))
+        (when event-usage (setq usage event-usage))))
+    (let* ((input (plist-get usage :input_tokens))
+           (output (plist-get usage :output_tokens))
+           (cached (plist-get usage :cache_read_input_tokens))
+           (created (plist-get usage :cache_creation_input_tokens))
+           (valid-empty
+            (and (null decode-error)
+                 (memq 'done semantic-types)
+                 (not (memq 'backend-error semantic-types))
+                 (= (cl-count "message_start" event-types :test #'equal) 1)
+                 (= (cl-count "message_delta" event-types :test #'equal) 1)
+                 (= (cl-count "message_stop" event-types :test #'equal) 1)
+                 (member (car stop-reasons) '("end_turn" "stop_sequence"))
+                 (null blocks)
+                 (numberp output) (= output 0))))
+      (list :http-status (and (numberp http-status) http-status)
+            :response-bytes (string-bytes (or response ""))
+            :response-kind (cond ((plist-get decoded :sse-seen) "sse")
+                                 ((string-empty-p (string-trim (or response "")))
+                                  "empty")
+                                 (t "non-sse"))
+            :sse-decode-result (if decode-error "invalid" "decoded")
+            :sse-seen (and (plist-get decoded :sse-seen) t)
+            :sse-event-count (length events)
+            :sse-event-types types
+            :native-content-block-types content-types
+            :stop-reasons safe-stops
+            :usage (list :input-tokens (and (numberp input) input)
+                         :output-tokens (and (numberp output) output)
+                         :cache-read-input-tokens (and (numberp cached) cached)
+                         :cache-creation-input-tokens (and (numberp created) created))
+            :provider-error-types
+            (e-cache-efficiency-e2e--f99-count-wire-types provider-error-types)
+            :parser-semantic-types
+            (e-cache-efficiency-e2e--f99-count-wire-types semantic-types)
+            :parser-backend-error-count (length error-items)
+            :parser-errors parser-errors
+            :valid-empty-completion (and valid-empty t)))))
+
+(defun e-cache-efficiency-e2e--f99-redacted-error-text (value)
+  "Return bounded diagnostic text with common credentials and URLs removed."
+  (let ((text (format "%s" (or value "")))
+        (case-fold-search t))
+    (dolist (line e-cache-efficiency-e2e--f99-private-canvas-lines)
+      (when (and (stringp line) (not (string-empty-p line)))
+        (setq text
+              (replace-regexp-in-string (regexp-quote line)
+                                        "[CANVAS-REDACTED]" text t t))))
+    (setq text (replace-regexp-in-string
+                "\\(bearer[ \t]+\\)[^ \t,;\"']+" "\\1[REDACTED]" text))
+    (setq text (replace-regexp-in-string
+                "\\(\\(?:x-api-key\\|api[-_]?key\\|authorization\\|token\\|secret\\|password\\)[ \t:=]+\\)[^ \t,;\"']+"
+                "\\1[REDACTED]" text))
+    (setq text (replace-regexp-in-string
+                "https?://[^ \t\"']*\\?[^ \t\"']*" "[REDACTED-URL]" text))
+    (setq text (string-trim (replace-regexp-in-string "[\r\n\t ]+" " " text)))
+    (if (> (length text) 240) (substring text 0 240) text)))
+
+(defun e-cache-efficiency-e2e--f99-safe-turn-details (details)
+  "Keep only bounded retry, status, and provider type facts from DETAILS."
+  (let ((result nil))
+    (when (listp details)
+      (dolist (key '(:status :status-code :http-status))
+        (when (numberp (plist-get details key))
+          (setq result (plist-put result :http-status (plist-get details key)))))
+      (when-let* ((type (or (plist-get details :error-type)
+                            (let ((error (plist-get details :error)))
+                              (and (listp error)
+                                   (or (plist-get error :type)
+                                       (plist-get error :code)))))))
+        (setq result
+              (plist-put result :provider-error-type
+                         (e-cache-efficiency-e2e--f99-safe-wire-type type))))
+      (when (memq (plist-get details :retryable) '(t nil))
+        (setq result (plist-put result :retryable
+                                (plist-get details :retryable))))
+      (when (plist-get details :retry-reason)
+        (setq result
+              (plist-put result :retry-reason
+                         (e-cache-efficiency-e2e--f99-safe-wire-type
+                          (plist-get details :retry-reason))))))
+    result))
+
+(defun e-cache-efficiency-e2e--f99-classify-turn-failure
+    (condition-type details response)
+  "Classify only evidenced external failures; leave local failures unresolved."
+  (let* ((status (or (plist-get details :http-status)
+                     (plist-get response :http-status)))
+         (reason (plist-get details :retry-reason)))
+    (cond
+     ((or (memq condition-type '(e-anthropic-auth-missing e-anthropic-auth-invalid))
+          (memq status '(401 403)))
+      'unavailable-auth)
+     ((or (memq condition-type '(e-anthropic-request-timeout
+                                e-live-e2e-scenario-timeout))
+          (= (or status 0) 408)
+          (equal reason "timeout"))
+      'unavailable-timeout)
+     ((equal status 404)
+      'unavailable-config)
+     ((or (memq status '(409 429))
+          (and (numberp status) (>= status 500))
+          (member reason '("transport" "provider-unavailable" "rate-limit")))
+      'unavailable-transport)
+     ((and (eq condition-type 'e-loop-empty-output)
+           (eq (plist-get response :valid-empty-completion) t))
+      'unavailable-empty-completion)
+     ((eq condition-type 'e-loop-empty-output) 'unresolved-empty-output)
+     (t 'unresolved-failure))))
+
+(defun e-cache-efficiency-e2e--f99-failure-external-p (failure-evidence)
+  "Return non-nil only for evidenced external FAILURE-EVIDENCE."
+  (member (plist-get failure-evidence :classification)
+          '("unavailable-auth" "unavailable-config" "unavailable-timeout"
+            "unavailable-transport" "unavailable-empty-completion")))
+
+(defun e-cache-efficiency-e2e--f99-fail-unresolved
+    (scenario failure-evidence)
+  "Skip only an evidenced external failure; fail local or unknown SCENARIO errors."
+  (if (e-cache-efficiency-e2e--f99-failure-external-p failure-evidence)
+      (ert-skip (format "%s external route unavailable: %s"
+                        scenario
+                        (plist-get failure-evidence :classification)))
+    (ert-fail (format "%s unresolved request failure: %S"
+                      scenario failure-evidence))))
+
+(defun e-cache-efficiency-e2e--f99-turn-failure-evidence (result)
+  "Return bounded failure classification for non-done RESULT."
+  (let* ((captured (car e-cache-efficiency-e2e--f99-turn-errors))
+         (details (plist-get captured :details))
+         (response (car e-cache-efficiency-e2e--f99-native-responses))
+         (condition-type (and (stringp (plist-get captured :condition-type))
+                              (intern (plist-get captured :condition-type))))
+         (message
+          (let ((raw (or (plist-get result :error)
+                         (plist-get captured :message))))
+            (and raw (e-cache-efficiency-e2e--f99-redacted-error-text raw))))
+         (classification
+          (e-cache-efficiency-e2e--f99-classify-turn-failure
+           condition-type details response)))
+    (list :result-status (e-cache-efficiency-e2e--f99-safe-wire-type
+                         (plist-get result :status))
+          :condition-type (or (plist-get captured :condition-type) "unknown")
+          :provider-error-type (or (plist-get details :provider-error-type)
+                                   (and response
+                                        (plist-get
+                                         (car (append
+                                               (plist-get response
+                                                          :provider-error-types)
+                                               nil))
+                                         :type)))
+          :http-status (or (plist-get details :http-status)
+                           (plist-get response :http-status))
+          :retryable (plist-get details :retryable)
+          :retry-reason (plist-get details :retry-reason)
+          :message (or message "No bounded turn error message was available")
+          :native-empty-completion
+          (and (plist-get response :valid-empty-completion) t)
+          :classification (symbol-name classification))))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-failure-classifier-does-not-green-empty-errors ()
+  "Only evidenced external errors are unavailable; local empty output stays unresolved."
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               'e-anthropic-auth-missing nil nil)
+              'unavailable-auth))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               'e-anthropic-request-timeout nil nil)
+              'unavailable-timeout))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               nil '(:http-status 503) nil)
+              'unavailable-transport))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               nil '(:http-status 404) nil)
+              'unavailable-config))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               'e-loop-empty-output nil
+               '(:http-status 200 :valid-empty-completion t))
+              'unavailable-empty-completion))
+  (dolist (case '((e-loop-empty-output nil unresolved-empty-output)
+                  (e-anthropic-response-invalid nil unresolved-failure)
+                  (error nil unresolved-failure)))
+    (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+                 (nth 0 case) (nth 1 case) nil)
+                (nth 2 case))))
+  (let ((e-cache-efficiency-e2e--f99-turn-errors
+         '((:condition-type "e-loop-empty-output"
+            :message "Backend returned no assistant output")))
+        (e-cache-efficiency-e2e--f99-native-responses nil))
+    (let ((failure
+           (e-cache-efficiency-e2e--f99-turn-failure-evidence
+            '(:status error :error "Backend returned no assistant output"))))
+      (should (equal (plist-get failure :classification)
+                     "unresolved-empty-output"))
+      (should-not (e-cache-efficiency-e2e--f99-failure-external-p failure))
+      (should-error
+       (e-cache-efficiency-e2e--f99-fail-unresolved "E2" failure)
+       :type 'ert-test-failed))))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-native-empty-response-diagnostic ()
+  "A valid empty native completion is distinct from a local parser failure."
+  (let* ((events
+          '((:type "message_start"
+             :message (:role "assistant" :content []
+                       :usage (:input_tokens 42 :output_tokens 0)))
+            (:type "message_delta"
+             :delta (:stop_reason "end_turn")
+             :usage (:output_tokens 0))
+            (:type "message_stop")))
+         (response
+          (mapconcat (lambda (event)
+                       (concat "data: " (e-json-serialize event) "\n\n"))
+                     events ""))
+         (items (e-anthropic-parse-stream response))
+         (record
+          (e-cache-efficiency-e2e--f99-native-response-record
+           response 200 items nil)))
+    (should (equal (plist-get record :response-kind) "sse"))
+    (should (equal (plist-get record :http-status) 200))
+    (should (= (plist-get record :sse-event-count) 3))
+    (should (equal (plist-get record :stop-reasons)
+                   [(:type "end_turn" :count 1)]))
+    (should (= (plist-get (plist-get record :usage) :output-tokens) 0))
+    (should (equal (plist-get record :valid-empty-completion) t))
+    (should-not (string-match-p "PRIVATE-DOCUMENT-TEXT" (prin1-to-string record)))
+    (let* ((bad-items (e-anthropic-parse-stream ""))
+           (bad-record
+            (e-cache-efficiency-e2e--f99-native-response-record
+             "" 200 bad-items nil)))
+      (should-not (plist-get bad-record :valid-empty-completion))
+      (should (> (plist-get bad-record :parser-backend-error-count) 0)))
+    (let* ((e-cache-efficiency-e2e--f99-private-canvas-lines
+            '("PRIVATE-DOCUMENT-TEXT"))
+           (response "PRIVATE-DOCUMENT-TEXT")
+           (items (e-anthropic-parse-stream response))
+           (record
+            (e-cache-efficiency-e2e--f99-native-response-record
+             response 200 items nil)))
+      (should-not (string-match-p "PRIVATE-DOCUMENT-TEXT"
+                                  (prin1-to-string record)))
+      (should (string-match-p "CANVAS-REDACTED"
+                               (prin1-to-string record))))
+    (let ((e-cache-efficiency-e2e--f99-native-responses nil)
+          (e-cache-efficiency-e2e--f99-current-http-status 200)
+          (e-cache-efficiency-e2e--f99-turn-errors nil)
+          (e-cache-efficiency-e2e--f99-private-canvas-lines
+           '("PRIVATE-DOCUMENT-TEXT")))
+      (e-cache-efficiency-e2e--f99-call-with-response-diagnostics
+       (lambda () (e-anthropic-parse-stream "PRIVATE-DOCUMENT-TEXT")))
+      (let* ((record (car e-cache-efficiency-e2e--f99-native-responses))
+             (error-record (aref (plist-get record :parser-errors) 0)))
+        (should (= (plist-get record :http-status) 200))
+        (should (= (plist-get record :parser-backend-error-count) 1))
+        (should (equal (plist-get error-record :error-type) "non-stream-text"))
+        (should (string-match-p "CANVAS-REDACTED"
+                                (plist-get error-record :message)))
+        (should-not (string-match-p "PRIVATE-DOCUMENT-TEXT"
+                                    (prin1-to-string record)))))))
+
+(defun e-cache-efficiency-e2e--f99-call-with-response-diagnostics (thunk)
+  "Call THUNK while collecting bounded native response and turn error facts."
+  (let ((http-start (symbol-function 'e-anthropic--http-request-start))
+        (http-status (symbol-function 'e-anthropic--http-response-status))
+        (parse-stream (symbol-function 'e-anthropic-parse-stream))
+        (error-message (symbol-function 'e-harness-turn--backend-error-message)))
+    (cl-letf (((symbol-function 'e-anthropic--http-request-start)
+               (lambda (&rest arguments)
+                 (setq e-cache-efficiency-e2e--f99-current-http-status nil)
+                 (apply http-start arguments)))
+              ((symbol-function 'e-anthropic--http-response-status)
+               (lambda (&optional callback-status)
+                 (let ((status (funcall http-status callback-status)))
+                   (when (numberp status)
+                     (setq e-cache-efficiency-e2e--f99-current-http-status status))
+                   status)))
+              ((symbol-function 'e-anthropic-parse-stream)
+               (lambda (response)
+                 (let* ((parse-error nil)
+                        (items
+                         (condition-case caught
+                             (funcall parse-stream response)
+                           (error
+                            (setq parse-error caught)
+                            nil)))
+                        (diagnostic
+                         (condition-case caught
+                             (e-cache-efficiency-e2e--f99-native-response-record
+                              response e-cache-efficiency-e2e--f99-current-http-status
+                              items nil)
+                           (error
+                            (e-cache-efficiency-e2e--f99-native-response-record
+                             response e-cache-efficiency-e2e--f99-current-http-status
+                             items t)))))
+                   (when parse-error
+                     (setq diagnostic
+                           (plist-put diagnostic :parser-error-type
+                                      (e-cache-efficiency-e2e--f99-safe-wire-type
+                                       (car-safe parse-error))))
+                     (setq diagnostic
+                           (plist-put diagnostic :parser-error-message
+                                      (e-cache-efficiency-e2e--f99-redacted-error-text
+                                       (error-message-string parse-error)))))
+                   (push diagnostic e-cache-efficiency-e2e--f99-native-responses)
+                   (when parse-error
+                     (signal (car parse-error) (cdr parse-error)))
+                   items)))
+              ((symbol-function 'e-harness-turn--backend-error-message)
+               (lambda (condition)
+                 (let ((message
+                        (e-cache-efficiency-e2e--f99-redacted-error-text
+                         (funcall error-message condition))))
+                   (push (list :condition-type
+                               (and (symbolp (car-safe condition))
+                                    (symbol-name (car-safe condition)))
+                               :details
+                               (e-cache-efficiency-e2e--f99-safe-turn-details
+                                (e-harness-turn--backend-error-details condition))
+                               :message
+                               (e-cache-efficiency-e2e--f99-redacted-error-text
+                                message))
+                         e-cache-efficiency-e2e--f99-turn-errors)
+                   message))))
+      (funcall thunk))))
 
 (defun e-cache-efficiency-e2e--f99-capture-request
     (native requests-by-session args)
@@ -4934,7 +5413,13 @@ source.  Both runs share the same prompts and evidence checks."
          (native (symbol-function 'e-anthropic--request-context))
          (semantic-result "unavailable")
          (semantic-failure nil)
-         (provider-error nil))
+         failure-evidence
+         failure-class
+         run-condition
+         (e-cache-efficiency-e2e--f99-native-responses nil)
+         (e-cache-efficiency-e2e--f99-current-http-status nil)
+         (e-cache-efficiency-e2e--f99-turn-errors nil)
+         (e-cache-efficiency-e2e--f99-private-canvas-lines nil))
     (e-live-e2e--with-harness (harness session-id :layers (list layer))
       (e-cache-efficiency-e2e--f99-ensure-chat-session-provider harness)
       (with-temp-buffer
@@ -4946,26 +5431,56 @@ source.  Both runs share the same prompts and evidence checks."
                    (lambda (&rest args)
                      (e-cache-efficiency-e2e--f99-capture-request
                       native requests-by-session args))))
-          (condition-case _caught
-              (progn
-                (dolist (_index '(1 2))
-                  (unless (or provider-error semantic-failure)
-                    (let* ((result
-                            (e-live-e2e--prompt-batch-before-deadline
-                             harness session-id
-                             "Reply exactly E99-CANVAS-E1-OK. Do not call tools or edit the Canvas."
-                             deadline))
-                           (answer (e-live-e2e--assistant-content result)))
-                      (if (eq (plist-get result :status) 'done)
-                          (unless (string-match-p "E99-CANVAS-E1-OK" answer)
-                            (setq semantic-failure t))
-                        (setq provider-error t)))))
+          (condition-case caught
+              (e-cache-efficiency-e2e--f99-call-with-response-diagnostics
+               (lambda ()
+                 (dolist (_index '(1 2))
+                   (unless (or failure-evidence semantic-failure)
+                     (let ((e-cache-efficiency-e2e--f99-turn-errors nil))
+                       (let* ((result
+                               (e-live-e2e--prompt-batch-before-deadline
+                                harness session-id
+                                "Reply exactly E99-CANVAS-E1-OK. Do not call tools or edit the Canvas."
+                                deadline))
+                              (answer (e-live-e2e--assistant-content result)))
+                         (if (eq (plist-get result :status) 'done)
+                             (unless (string-match-p "E99-CANVAS-E1-OK" answer)
+                               (setq semantic-failure t))
+                           (setq failure-evidence
+                                 (e-cache-efficiency-e2e--f99-turn-failure-evidence
+                                  result)
+                                 failure-class
+                                 (intern (plist-get failure-evidence
+                                                    :classification)))))))))
                 (setq semantic-result
                       (cond (semantic-failure "semantic-failure")
-                            (provider-error "provider/infrastructure-failure")
+                            (failure-class
+                             (if (memq failure-class
+                                       '(unavailable-auth unavailable-config
+                                         unavailable-timeout
+                                         unavailable-transport
+                                         unavailable-empty-completion))
+                                 (format "unavailable:%s" failure-class)
+                               "unresolved-failure"))
                             (t "pass"))))
-            (error (_caught)
-              (unless semantic-failure (setq provider-error t)))))
+            (error
+             (setq run-condition caught
+                   failure-class
+                   (e-cache-efficiency-e2e--f99-classify-turn-failure
+                    (car-safe caught) nil
+                    (car e-cache-efficiency-e2e--f99-native-responses))
+                   failure-evidence
+                   (list :result-status "error"
+                         :condition-type
+                         (e-cache-efficiency-e2e--f99-safe-wire-type
+                          (car-safe caught))
+                         :http-status
+                         (e-cache-efficiency-e2e--f99-current-http-status)
+                         :message
+                         (e-cache-efficiency-e2e--f99-redacted-error-text
+                          (error-message-string caught))
+                         :classification (symbol-name failure-class))
+                   semantic-result "unresolved-failure")))
         (let* ((requests (gethash session-id requests-by-session))
                (start-payloads
                 (mapcar (lambda (event) (plist-get event :payload))
@@ -5013,7 +5528,7 @@ source.  Both runs share the same prompts and evidence checks."
                              evidence)))
              (capability-result
               (cond
-               (provider-error "provider/infrastructure-failure")
+               (failure-class (format "%s" failure-class))
                ((not cache-fields-accepted)
                 "product-failure-layout-or-cache-wire")
                ((and usage-complete counters-observed) "pass")
@@ -5028,6 +5543,11 @@ source.  Both runs share the same prompts and evidence checks."
                :canvas-reference-layout-revision
                e-context-canvas-reference-layout-revision
                :semantic-result semantic-result
+               :turn-failure-evidence failure-evidence
+               :native-response-evidence
+               (vconcat (nreverse
+                         (copy-sequence
+                          e-cache-efficiency-e2e--f99-native-responses)))
                :growing-reuse-result "not-measured"
                :route-capability-result capability-result
                :curation-capability-result "unconfirmed-unavailable-no-P3"
@@ -5036,8 +5556,11 @@ source.  Both runs share the same prompts and evidence checks."
                :usage-event-count (length usage)
                :usage-join-complete usage-complete
                :requests (vconcat evidence)))
-        (when provider-error
-          (ert-skip "E1 provider request failed; evidence is unconfirmed."))
+        (when failure-evidence
+          (e-cache-efficiency-e2e--f99-fail-unresolved
+           "E1" failure-evidence))
+        (when run-condition
+          (signal (car run-condition) (cdr run-condition)))
         (when semantic-failure
           (ert-fail "E1 semantic answer contradicted its requested result."))
         (should (equal semantic-result "pass"))
@@ -5050,7 +5573,7 @@ source.  Both runs share the same prompts and evidence checks."
          ((equal capability-result "unconfirmed")
           (ert-skip "E1 provider usage counters are unavailable; qualification is unconfirmed."))
          (t (ert-fail (format "E1 request shape contradicted the reviewed layout: %s"
-                              capability-result)))))))))
+                              capability-result))))))))))
 
 (ert-deftest e-cache-efficiency-e2e-test-f99-canvas-layout-e2-growing-history ()
   "Compose ordinary Canvas revisions with the normal route E2 cache predicate."
@@ -5062,7 +5585,13 @@ source.  Both runs share the same prompts and evidence checks."
          (native (symbol-function 'e-anthropic--request-context))
          (semantic-result "unavailable")
          (semantic-failure nil)
-         (provider-error nil))
+         failure-evidence
+         failure-class
+         run-condition
+         (e-cache-efficiency-e2e--f99-native-responses nil)
+         (e-cache-efficiency-e2e--f99-current-http-status nil)
+         (e-cache-efficiency-e2e--f99-turn-errors nil)
+         (e-cache-efficiency-e2e--f99-private-canvas-lines nil))
     (e-live-e2e--with-harness (harness session-id :layers (list layer))
       (e-cache-efficiency-e2e--f99-ensure-chat-session-provider harness)
       (with-temp-buffer
@@ -5075,49 +5604,87 @@ source.  Both runs share the same prompts and evidence checks."
                      (lambda (&rest args)
                        (e-cache-efficiency-e2e--f99-capture-request
                         native requests-by-session args))))
-            (condition-case _caught
-                (progn
-                  (cl-loop for step in '(1 2 3)
-                           while (not (or provider-error semantic-failure))
-                           do
-                    (let* ((result
-                            (e-live-e2e--prompt-batch-before-deadline
-                             harness session-id
-                             (e-cache-efficiency-e2e--f99-probe-prompt step)
-                             deadline))
-                           (answer (e-live-e2e--assistant-content result)))
-                      (if (eq (plist-get result :status) 'done)
-                          (unless (string-match-p
-                                   (format "PROBE-%d-CODE=%d" step (+ 731 step))
-                                   answer)
-                            (setq semantic-failure t))
-                        (setq provider-error t))
-                      (when (and (not provider-error)
-                                 (not semantic-failure)
-                                 (< step 3))
-                        (e-cache-efficiency-e2e--f99-check-one-item
-                         canvas-buffer step)))))
-              (error (_caught)
-                (unless semantic-failure (setq provider-error t))))
-            (unless (or provider-error semantic-failure)
-              (with-current-buffer canvas-buffer
-                (erase-buffer)
-                (insert (e-cache-efficiency-e2e--f99-canvas-text
-                         "E2 large rewrite")))
-              (let* ((result
-                      (e-live-e2e--prompt-batch-before-deadline
-                       harness session-id
-                       "Reply exactly F99-CANVAS-RESET-OK. Do not call tools or edit the Canvas."
-                       deadline))
-                     (answer (e-live-e2e--assistant-content result)))
-                (unless (string-match-p "F99-CANVAS-RESET-OK" answer)
-                  (setq semantic-failure t)))
-              (unless (or provider-error semantic-failure)
-                (setq semantic-result "pass")))
-            (when semantic-failure
-              (setq semantic-result "semantic-failure"))
-            (when provider-error
-              (setq semantic-result "provider/infrastructure-failure")))
+            (condition-case caught
+                (e-cache-efficiency-e2e--f99-call-with-response-diagnostics
+                 (lambda ()
+                   (cl-loop for step in '(1 2 3)
+                            while (not (or failure-evidence semantic-failure))
+                            do
+                     (let ((e-cache-efficiency-e2e--f99-turn-errors nil))
+                       (let* ((result
+                               (e-live-e2e--prompt-batch-before-deadline
+                                harness session-id
+                                (e-cache-efficiency-e2e--f99-probe-prompt step)
+                                deadline))
+                              (answer (e-cache-efficiency-e2e--assistant-content result)))
+                         (if (eq (plist-get result :status) 'done)
+                             (unless (string-match-p
+                                      (format "PROBE-%d-CODE=%d" step (+ 731 step))
+                                      answer)
+                               (setq semantic-failure t))
+                           (setq failure-evidence
+                                 (e-cache-efficiency-e2e--f99-turn-failure-evidence
+                                  result)
+                                 failure-class
+                                 (intern (plist-get failure-evidence
+                                                    :classification)))))
+                       (when (and (not failure-evidence)
+                                  (not semantic-failure)
+                                  (< step 3))
+                         (e-cache-efficiency-e2e--f99-check-one-item
+                          canvas-buffer step))))
+                   (unless (or failure-evidence semantic-failure)
+                     (with-current-buffer canvas-buffer
+                       (erase-buffer)
+                       (insert (e-cache-efficiency-e2e--f99-canvas-text
+                                "E2 large rewrite")))
+                     (e-cache-efficiency-e2e--f99-remember-canvas-lines
+                      canvas-buffer)
+                     (let ((e-cache-efficiency-e2e--f99-turn-errors nil))
+                       (let* ((result
+                               (e-live-e2e--prompt-batch-before-deadline
+                                harness session-id
+                                "Reply exactly F99-CANVAS-RESET-OK. Do not call tools or edit the Canvas."
+                                deadline))
+                              (answer (e-live-e2e--assistant-content result)))
+                         (if (eq (plist-get result :status) 'done)
+                             (unless (string-match-p "F99-CANVAS-RESET-OK" answer)
+                               (setq semantic-failure t))
+                           (setq failure-evidence
+                                 (e-cache-efficiency-e2e--f99-turn-failure-evidence
+                                  result)
+                                 failure-class
+                                 (intern (plist-get failure-evidence
+                                                    :classification)))))))
+                   (setq semantic-result
+                         (cond (semantic-failure "semantic-failure")
+                               (failure-class
+                                (if (memq failure-class
+                                          '(unavailable-auth unavailable-config
+                                            unavailable-timeout
+                                            unavailable-transport
+                                            unavailable-empty-completion))
+                                    (format "unavailable:%s" failure-class)
+                                  "unresolved-failure"))
+                               (t "pass"))))))
+              (error
+               (setq run-condition caught
+                     failure-class
+                     (e-cache-efficiency-e2e--f99-classify-turn-failure
+                      (car-safe caught) nil
+                      (car e-cache-efficiency-e2e--f99-native-responses))
+                     failure-evidence
+                     (list :result-status "error"
+                           :condition-type
+                           (e-cache-efficiency-e2e--f99-safe-wire-type
+                            (car-safe caught))
+                           :http-status
+                           (e-cache-efficiency-e2e--f99-current-http-status)
+                           :message
+                           (e-cache-efficiency-e2e--f99-redacted-error-text
+                            (error-message-string caught))
+                           :classification (symbol-name failure-class))
+                     semantic-result "unresolved-failure")))
       (let* ((requests (gethash session-id requests-by-session))
              (start-payloads
               (mapcar (lambda (event) (plist-get event :payload))
@@ -5209,7 +5776,7 @@ source.  Both runs share the same prompts and evidence checks."
                              (last source-revisions))))
              (growing-result
               (cond
-               (provider-error "provider/infrastructure-failure")
+               (failure-class (symbol-name failure-class))
                ((not route-stable) "semantic-failure-route-identity")
                ((and usage-complete
                      (equal cache-result "growing-history-reuse"))
@@ -5230,6 +5797,11 @@ source.  Both runs share the same prompts and evidence checks."
                :canvas-reference-layout-revision
                e-context-canvas-reference-layout-revision
                :semantic-result semantic-result
+               :turn-failure-evidence failure-evidence
+               :native-response-evidence
+               (vconcat (nreverse
+                         (copy-sequence
+                          e-cache-efficiency-e2e--f99-native-responses)))
                :growing-reuse-result growing-result
                :curation-capability-result "unconfirmed-unavailable-no-P3"
                :static-only-control
@@ -5243,10 +5815,13 @@ source.  Both runs share the same prompts and evidence checks."
                :small-edit-patch-revision-count small-edit-patch-count
                :large-rewrite-reset-observed reset-observed
                :requests (vconcat evidence)))
-        (when provider-error
-          (ert-skip "E2 provider request failed; evidence is unconfirmed."))
+        (when failure-evidence
+          (e-cache-efficiency-e2e--f99-fail-unresolved
+           "E2" failure-evidence))
         (when semantic-failure
           (ert-fail "E2 Canvas/tool result contradicted its requested behavior."))
+        (when run-condition
+          (signal (car run-condition) (cdr run-condition)))
         (should (equal semantic-result "pass"))
         (should route-stable)
         (should (equal (car layouts)

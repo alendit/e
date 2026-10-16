@@ -1268,6 +1268,35 @@ Provider symbols remain useful diagnostics but do not select capabilities."
      :transport http
      :requester messages-http-start)))
 
+(defconst e-anthropic--qualified-context-layouts
+  '((:endpoint
+     "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1/messages"
+     :model "claude-opus-5-5"
+     :auth-mode (bearer authorization environment-token)
+     :api messages
+     :transport http
+     :requester messages-http-start
+     :canvas-reference-layout-revision "active-canvas-reference-v1"))
+  "Explicitly reviewed effective-route and material-layout identities.
+Entries are exact route identities with a
+:canvas-reference-layout-revision.  An empty list leaves changed layouts
+unqualified while preserving the base F98 route gate.  The F99 entry is
+retained only on the isolated candidate when normal-source P3 accepts its
+exact route, layout, and source revision.")
+
+(defun e-anthropic--context-capability-layout-qualified-p (identity)
+  "Return non-nil when IDENTITY's exact route and material layout are listed."
+  (let ((layout (plist-get identity :canvas-reference-layout-revision)))
+    (and layout
+         (seq-some
+          (lambda (qualification)
+            (and (equal layout
+                        (plist-get qualification
+                                   :canvas-reference-layout-revision))
+                 (e-anthropic--context-capability-same-route-p
+                  identity qualification)))
+          e-anthropic--qualified-context-layouts))))
+
 (cl-defun e-anthropic-context-capabilities
     (provider options &key base-url model request-function requester)
   "Return provider API capabilities for Anthropic Messages PROVIDER.
@@ -1279,10 +1308,12 @@ only for the exact reviewed effective route identity."
           :request-function request-function :requester requester)))
     (list :prefix-cache 'automatic-explicit
           :reserved-effect-carrier
-          (if (and (not (plist-get options
-                                  :canvas-reference-layout-revision))
-                   (e-anthropic--context-capability-supported-p
-                    request-identity))
+          (if (and (e-anthropic--context-capability-supported-p
+                    request-identity)
+                   (or (not (plist-get request-identity
+                                      :canvas-reference-layout-revision))
+                       (e-anthropic--context-capability-layout-qualified-p
+                        request-identity)))
               'context-curate-wire
             'none))))
 
@@ -2693,12 +2724,14 @@ BASE-URL, MODEL, REQUEST-FUNCTION, REQUESTER, MESSAGES, and OPTIONS contribute
 to the encoded Messages request and backend-neutral context."
   (let* ((profile (e-anthropic-provider-profile provider))
          (effective-options (copy-sequence options))
-         (_ (when-let* ((revision
-                         (e-context-canvas-reference-layout-for-messages
-                          messages)))
+         (message-layout
+          (e-context-canvas-reference-layout-for-messages messages))
+         (_ (cl-remf effective-options :canvas-reference-layout-revision))
+         (_ (when message-layout
               (setq effective-options
                     (plist-put effective-options
-                               :canvas-reference-layout-revision revision))))
+                               :canvas-reference-layout-revision
+                               message-layout))))
          (resolved-model (e-anthropic--provider-model
                           profile
                           (or (plist-get effective-options :model) model)))
