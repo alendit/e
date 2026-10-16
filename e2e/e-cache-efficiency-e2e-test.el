@@ -5088,11 +5088,12 @@ source.  Both runs share the same prompts and evidence checks."
     result))
 
 (defun e-cache-efficiency-e2e--f99-classify-turn-failure
-    (condition-type details response)
+    (condition-type details response &optional error-message)
   "Classify only evidenced external failures; leave local failures unresolved."
   (let* ((status (or (plist-get details :http-status)
                      (plist-get response :http-status)))
-         (reason (plist-get details :retry-reason)))
+         (reason (plist-get details :retry-reason))
+         (error-message (or error-message (plist-get details :message))))
     (cond
      ((or (memq condition-type '(e-anthropic-auth-missing e-anthropic-auth-invalid))
           (memq status '(401 403)))
@@ -5107,6 +5108,12 @@ source.  Both runs share the same prompts and evidence checks."
      ((or (memq status '(409 429))
           (and (numberp status) (>= status 500))
           (member reason '("transport" "provider-unavailable" "rate-limit")))
+      'unavailable-transport)
+     ((and (eq condition-type 'error)
+           (stringp error-message)
+           (string-match-p
+            "\\(?:nodename nor servname provided, or not known\\|Name or service not known\\|Temporary failure in name resolution\\|Could not resolve host\\)"
+            error-message))
       'unavailable-transport)
      ((and (eq condition-type 'e-loop-empty-output)
            (eq (plist-get response :valid-empty-completion) t))
@@ -5143,7 +5150,7 @@ source.  Both runs share the same prompts and evidence checks."
             (and raw (e-cache-efficiency-e2e--f99-redacted-error-text raw))))
          (classification
           (e-cache-efficiency-e2e--f99-classify-turn-failure
-           condition-type details response)))
+           condition-type details response message)))
     (list :result-status (e-cache-efficiency-e2e--f99-safe-wire-type
                          (plist-get result :status))
           :condition-type (or (plist-get captured :condition-type) "unknown")
@@ -5175,6 +5182,13 @@ source.  Both runs share the same prompts and evidence checks."
   (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
                nil '(:http-status 503) nil)
               'unavailable-transport))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               'error nil nil
+               "eng-ai-model-gateway/443 nodename nor servname provided, or not known")
+              'unavailable-transport))
+  (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
+               'error nil nil "unexpected local composition error")
+              'unresolved-failure))
   (should (eq (e-cache-efficiency-e2e--f99-classify-turn-failure
                nil '(:http-status 404) nil)
               'unavailable-config))
@@ -5468,7 +5482,8 @@ source.  Both runs share the same prompts and evidence checks."
                    failure-class
                    (e-cache-efficiency-e2e--f99-classify-turn-failure
                     (car-safe caught) nil
-                    (car e-cache-efficiency-e2e--f99-native-responses))
+                    (car e-cache-efficiency-e2e--f99-native-responses)
+                    (error-message-string caught))
                    failure-evidence
                    (list :result-status "error"
                          :condition-type
@@ -5672,7 +5687,8 @@ source.  Both runs share the same prompts and evidence checks."
                      failure-class
                      (e-cache-efficiency-e2e--f99-classify-turn-failure
                       (car-safe caught) nil
-                      (car e-cache-efficiency-e2e--f99-native-responses))
+                      (car e-cache-efficiency-e2e--f99-native-responses)
+                      (error-message-string caught))
                      failure-evidence
                      (list :result-status "error"
                            :condition-type
