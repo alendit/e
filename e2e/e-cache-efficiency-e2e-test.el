@@ -5451,7 +5451,7 @@ source.  Both runs share the same prompts and evidence checks."
                                   result)
                                  failure-class
                                  (intern (plist-get failure-evidence
-                                                    :classification)))))))))
+                                                    :classification))))))))
                 (setq semantic-result
                       (cond (semantic-failure "semantic-failure")
                             (failure-class
@@ -5462,7 +5462,7 @@ source.  Both runs share the same prompts and evidence checks."
                                          unavailable-empty-completion))
                                  (format "unavailable:%s" failure-class)
                                "unresolved-failure"))
-                            (t "pass"))))
+                            (t "pass")))))
             (error
              (setq run-condition caught
                    failure-class
