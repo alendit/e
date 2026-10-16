@@ -1,0 +1,6 @@
+#+title: Reported Daily hang after restart on 2026-10-16
+#+startup: overview
+
+The user reported that Emacs was hanging immediately after restarting and
+invoking =grimoire-daily=. Investigate the running process without restarting
+or reloading it.

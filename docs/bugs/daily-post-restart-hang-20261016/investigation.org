@@ -1,0 +1,84 @@
+#+title: Daily post-restart hang investigation, 2026-10-16
+#+startup: overview
+
+* Finding and limits
+
+The reported UI freeze was not captured. During inspection, every supported
+live probe returned promptly. A three-second native sample at 10:19:42 CEST
+showed Emacs in its ordinary input loop, mostly waiting for native events,
+with intermittent timers, garbage collection, and redisplay. This does not
+exclude an earlier or intermittent freeze.
+
+There is a confirmed earlier Daily coordinator failure. It completed provider
+output and saved the Daily, then failed in its turn-finished reasoning hook.
+The relationship between that failure and the reported freeze remains unknown.
+
+* Live evidence
+
+- Graphical Emacs PID =60896= launched at 10:04:33 CEST. Its runtime-store
+  writer and reader workers were PIDs =60919= and =60942=.
+- =scripts/e-live-probe selected= returned the Org buffer =2026-10-16.org=.
+  =windows= showed that note, the Daily coordinator transcript, and its
+  composer. The =chat= probe inspected the selected Org buffer and therefore
+  returned no session; that result says nothing about the other visible chat.
+- The main-thread sample is =/tmp/emacs-hang-60896.sample.txt=. A separate
+  two-second reader-worker sample, =/tmp/emacs-worker-60942.sample.txt=,
+  mostly waited for input and briefly executed SQLite reads. Neither sample
+  establishes a database stall.
+- Read-only SQL against =~/.config/emacs/.local/cache/e/store.sqlite3=
+  found no session updates later than 10:04:56 CEST at the time inspected.
+  The Daily owner =ses_382a320e3799c90fa7a6249885b499c6= had zero messages;
+  its coordinator is a separate session, =20261016T061104-0a0c958aaa07=.
+
+* Earlier coordinator failure
+
+Board =brd_8b8eb552ab52dae83aa88a1a34fc36fd= retains run
+=daily:2026-10-16:20261016T061104765324000=, started at 08:11:04 CEST.
+Its stored summary reports three successful and four failed required workers,
+a published continuation, failed continuation execution, and attention state.
+
+The coordinator journal records:
+
+1. A successful file edit and save at 08:33:58 CEST.
+2. Provider request 18 finishing successfully at 08:34:24 CEST, followed by
+   the final assistant reply.
+3. A =bayesian-reasoning= hook audit at the same timestamp with outcome
+   =verification-unavailable=. The evidence references were rejected as
+   malformed, and the attempted correction failed with:
+   =Live harness execution requires a current board attachment=.
+4. A =turn-failed= event with =:stage turn-finished-hooks=.
+
+At 10:04:54 CEST, after restart, the Board received a continuation-outcome
+fact for that run. This proves recovery bookkeeping occurred; it does not
+prove that recovery caused a UI freeze or started a new provider request.
+
+* Source trace
+
+=lisp/layers/harness/e-bayesian-reasoning.el= requests a corrective follow-up
+for an evidence gap in =e-bayesian-reasoning--turn-finished-hook=. If publication
+raises an error, it records =verification-unavailable= and re-signals it.
+
+=lisp/core/e-harness-turn.el= requires an authorized attached-turn port and a
+follow-up publisher in =e-harness-attached-turn-publish-follow-up=. The
+=finish-settlement-error= path converts a finished-hook error into one public
+failed turn without retrying the completed provider request. These paths
+explain the persisted failure stage. The journal does not identify which
+attachment authorization condition failed.
+
+Grimoire's =.e/layers/topic/daily-run.el= treats a non-conflicting failed
+continuation outcome as settled in =grimoire-daily-run--coordinator-settled-p=,
+allowing a later refresh. The supported symbol probe confirmed that Emacs
+loaded that function from =daily-run.elc=. The bytecode file is newer than
+the source. This checks the definition path, not the live recovery Work state.
+
+* Next evidence needed
+
+Distinguish an unresponsive whole window from a responsive note with a pending
+chat. If the freeze recurs, capture a native sample during the freeze. For a
+responsive but pending chat, capture its visible status and recent Messages
+errors before attributing the stall to a particular readiness or recovery
+operation. The fixed live probes cannot expose that operation's internal state.
+
+No runtime, provider request, canonical database, or user Daily file was
+modified. No Emacs reload, restart, signal, or raw evaluation was performed.
+There is no behavior fix or runtime-test claim in this investigation.
