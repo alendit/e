@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-context-reference)
 (require 'e)
 (require 'e-json)
 (require 'e-backend)
@@ -95,6 +96,53 @@
     (should (equal (plist-get (nth 3 messages) :content)
                    (concat e-context-lifetime-retained-reference-prefix
                            "{\"fact\":\"kept\"}")))))
+
+(ert-deftest e-openai-test-chat-completion-canvas-follows-history-and-tools ()
+  "Canvas reference data follows transcript turns without breaking tool pairs."
+  (let* ((canvas '(:role context
+                   :metadata (:e-canvas-reference t)
+                   :content "<canvas>changed checkbox</canvas>"))
+         (body
+          (e-openai-chat-completion-request-body
+           :messages (list canvas
+                           '(:role system :content "Write to the canvas URI.")
+                           '(:role user :content "Read the document.")
+                           '(:role tool-call
+                             :content (:id "call-1" :name "read"))
+                           '(:role tool
+                             :content (:tool-call-id "call-1"
+                                      :content "Read result."))
+                           '(:role user :content "Update the checkbox."))
+           :options '(:model "gpt-test" :instructions "Base instructions.")))
+         (messages (append (plist-get body :messages) nil))
+         (behavior-instructions
+          (cl-find-if
+           (lambda (message)
+             (equal (plist-get message :content)
+                    "Write to the canvas URI."))
+           messages))
+         (call-index
+          (cl-position-if
+           (lambda (message) (plist-member message :tool_calls))
+           messages))
+         (call (and call-index (nth call-index messages)))
+         (result (and call-index (nth (1+ call-index) messages)))
+         (reference (car (last messages))))
+    (should (equal (plist-get (car messages) :content) "Base instructions."))
+    (should (equal (plist-get behavior-instructions :role) "system"))
+    (should-not (string-match-p "changed checkbox"
+                                (plist-get behavior-instructions :content)))
+    (should (integerp call-index))
+    (should (equal (aref (plist-get call :tool_calls) 0)
+                   '(:id "call-1" :type "function"
+                     :function (:name "read" :arguments "{}"))))
+    (should (equal (plist-get call :role) "assistant"))
+    (should (equal (plist-get result :role) "tool"))
+    (should (equal (plist-get result :tool_call_id) "call-1"))
+    (should (equal (plist-get reference :role) "user"))
+    (should (equal (plist-get reference :content)
+                   (concat e-context-lifetime-canvas-reference-prefix
+                           "<canvas>changed checkbox</canvas>")))))
 
 (ert-deftest e-openai-test-parse-chat-completion-stream ()
   "Chat Completion SSE chunks become backend-neutral stream items."

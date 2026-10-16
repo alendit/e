@@ -15,6 +15,7 @@
 (require 'e-backend)
 (require 'e-capabilities)
 (require 'e-chat-service)
+(require 'e-context-reference)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-json)
@@ -446,29 +447,34 @@ request-time source descriptor."
                         (source
                          (e-chat-session--attachment-source
                           attachment content)))
-                   (list :source source
+                   (list :canvas (plist-get attachment :canvas)
+                         :source source
                          :section
                          (e-chat-session--attachment-section
                           attachment content source))))
                attachments))
+             (canvas-items
+              (seq-filter (lambda (item) (plist-get item :canvas)) rendered))
+             (attachment-items
+              (seq-remove (lambda (item) (plist-get item :canvas)) rendered))
              (sources (mapcar (lambda (item)
                                 (plist-get item :source))
-                              rendered))
+                              attachment-items))
              (sections (mapcar (lambda (item)
                                  (plist-get item :section))
-                               rendered)))
-        (list
+                               attachment-items)))
+        (cons
          (list :role 'system
                e-context-evidence-sources-key sources
                :content
                (string-join
                 (cons
                  (concat
-                  "Live session context attachments follow. These are "
-                  "current-state attachments rebuilt for every turn; they "
-                  "replace prior attachment state and are not transcript "
-                  "history. When a factual claim relies on an attachment, "
-                  "cite the exact `src:' handle in its `evidence' attribute."
+                  "Live session context attachments are supplied as "
+                  "current state rebuilt for every turn; they replace prior "
+                  "attachment state and are not transcript history. When a "
+                  "factual claim relies on an attachment, cite the exact "
+                  "`src:' handle in its `evidence' attribute."
                   (when has-canvas
                     (concat
                      "\n\nA <canvas> attachment is the user's working "
@@ -488,7 +494,15 @@ request-time source descriptor."
                      "re-read the <canvas> uri and write to that exact uri "
                      "rather than guessing another buffer.")))
                  sections)
-                "\n\n")))))))
+                "\n\n"))
+         (mapcar
+          (lambda (item)
+            (list :role 'context
+                  :metadata (list e-context-canvas-reference-metadata-key t)
+                  e-context-evidence-sources-key
+                  (list (plist-get item :source))
+                  :content (plist-get item :section)))
+          canvas-items))))))
 
 (defun e-chat-session-capability-create ()
   "Create the chat-session capability."

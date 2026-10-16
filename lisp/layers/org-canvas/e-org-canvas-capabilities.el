@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'e-capabilities)
 (require 'e-chat-session)
+(require 'e-context-reference)
 (require 'e-context)
 (require 'e-harness)
 (require 'e-hooks)
@@ -292,8 +293,15 @@ metadata while the corresponding SQLite write remains in flight."
              "Prefer one targeted file edit or write to document-uri. A successful file operation already saves the live canvas buffer and synchronizes its linked buffers; do not add separate save, sync, old-filename, or full-document verification calls unless the operation reports a conflict or failure. When verification is material, use one targeted read of the changed range."
              "Preserve the reader's fold state by default: the user may be mid-read, and collapsing or reflowing the buffer out from under them loses their place. Do not collapse the whole document or otherwise churn visibility as a routine post-edit step. Only change fold state when the user explicitly asks, or when you are deliberately presenting a fresh overview; when you must reveal something, reveal just the relevant subtree with org-canvas actions and leave the rest as the user left it. Editing or reverting can churn fold state as a side effect -- when it does, restore the user's prior visibility (re-reveal the section you changed) rather than collapsing everything."
              instructions
-             (format "document-uri=%s buffer=%s point=%s"
-                     (plist-get metadata :uri)
+             (format "document-uri=%s" (plist-get metadata :uri)))
+            "\n"))
+     (list :role 'context
+           :metadata (list e-context-canvas-reference-metadata-key t)
+           :content
+           (string-join
+            (list
+             "Current Org Canvas editor state for this canvas."
+             (format "buffer=%s point=%s"
                      (plist-get metadata :buffer-name)
                      (or (plist-get focus :point) "nil"))
              (format "heading-path=%s"

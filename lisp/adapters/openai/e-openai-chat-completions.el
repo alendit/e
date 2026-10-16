@@ -14,6 +14,8 @@
 (require 'e-json)
 (require 'e-tools)
 (require 'seq)
+(require 'e-context-reference)
+(require 'e-context)
 (require 'e-context-lifetime)
 (require 'e-openai-profile)
 
@@ -21,10 +23,9 @@
   "Return Chat Completions message content for CONTENT."
   (if (stringp content) content (or content "")))
 
-(defun e-openai-chat-completions--retained-context-text (content)
-  "Return framed Chat Completions text for canonical retained CONTENT."
-  (concat e-context-lifetime-retained-reference-prefix
-          (if (stringp content) content (e-json-serialize content))))
+(defun e-openai-chat-completions--retained-context-text (message)
+  "Return framed Chat Completions text for reference-data MESSAGE."
+  (e-context-lifetime-reference-data-text message))
 
 (defun e-openai-chat-completions--tool-definition (tool)
   "Map backend-neutral TOOL to a Chat Completions tool definition."
@@ -79,7 +80,7 @@
       ('context
        (list :role "user"
              :content
-             (e-openai-chat-completions--retained-context-text content)))
+             (e-openai-chat-completions--retained-context-text message)))
       (_
        (list :role (symbol-name role)
              :content (e-openai-chat-completions--message-content content))))))
@@ -93,7 +94,8 @@
       (when (and (stringp instructions)
                  (not (string-empty-p instructions)))
         (list (list :role "system" :content instructions)))
-      (mapcar #'e-openai-chat-completions--message messages)))))
+      (mapcar #'e-openai-chat-completions--message
+              (e-context-move-canvas-reference-to-end messages))))))
 
 (cl-defun e-openai-chat-completion-request-body (&key messages options tools)
   "Build a Chat Completions request body from MESSAGES, OPTIONS, and TOOLS."

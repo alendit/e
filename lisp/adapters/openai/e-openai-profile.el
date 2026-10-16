@@ -16,6 +16,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'e-context-reference)
 (require 'e-context-lifetime)
 (require 'e-json)
 (require 'e-openai-diagnostics)
@@ -594,17 +595,26 @@ wire layout."
 The retained-context layout is unconditional so adapter carrier/cache choices
 cannot accidentally reuse an anchor produced before its native role/order and
 framing changed.  The reserved curation carrier adds its own revision.
-Per-frame labels, estimates, values, and provenance are not options and
-therefore cannot enter this identity."
-  (let ((wire-revision
-         (e-openai-profile--wire-prompt-layout-revision options)))
-    (list :retained-context-layout-revision
-          e-context-lifetime-retained-context-layout-revision
-          :wire-prompt-layout-revision wire-revision
-          :context-curation-revision-identity
-          (and (eq e-openai-profile--effective-context-curation-capability
-                   'context-curate-wire)
-               (e-context-lifetime-curation-revision-identity)))))
+Active canvas reference framing adds a separate revision only when present, so
+unaffected requests retain their existing identity.  Per-frame labels,
+estimates, values, and provenance are not options and therefore cannot enter
+this identity."
+  (let* ((wire-revision
+          (e-openai-profile--wire-prompt-layout-revision options))
+         (identity
+          (list :retained-context-layout-revision
+                e-context-lifetime-retained-context-layout-revision
+                :wire-prompt-layout-revision wire-revision
+                :context-curation-revision-identity
+                (and (eq e-openai-profile--effective-context-curation-capability
+                         'context-curate-wire)
+                     (e-context-lifetime-curation-revision-identity)))))
+    (when-let* ((canvas-revision
+                 (plist-get options :canvas-reference-layout-revision)))
+      (setq identity
+            (plist-put identity :canvas-reference-layout-revision
+                       canvas-revision)))
+    identity))
 
 (defun e-openai-profile-prompt-cache-mode-label (_options)
   "Return the truthful automatic-cache diagnostic label."

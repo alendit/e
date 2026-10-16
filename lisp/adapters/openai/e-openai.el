@@ -21,6 +21,8 @@
 (require 'e-tools)
 (require 'e-work)
 (require 'e-json)
+(require 'e-context-reference)
+(require 'e-context)
 (require 'e-openai-diagnostics)
 (require 'e-openai-profile)
 (require 'e-openai-responses)
@@ -195,6 +197,12 @@ to the encoded OpenAI request and backend-neutral context."
              (when (eq responses-transport 'websocket)
                (e-openai-profile-websocket-idle-close-seconds profile)))
             (effective-options (copy-sequence options))
+            (_ (when-let* ((revision
+                            (e-context-canvas-reference-layout-for-messages
+                             messages)))
+                 (setq effective-options
+                       (plist-put effective-options
+                                  :canvas-reference-layout-revision revision))))
             (_ (dolist (key '(:prompt-cache :prompt-cache-default
                               :prompt-cache-mode
                               :prompt-cache-breakpoint-mode

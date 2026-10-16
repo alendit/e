@@ -26,6 +26,8 @@
 (require 'e-harness)
 (require 'e-request)
 (require 'e-json)
+(require 'e-context-reference)
+(require 'e-context)
 (require 'e-context-lifetime)
 (require 'e-tools)
 (require 'e-work)
@@ -479,10 +481,9 @@ Return nil when neither an instructions option nor a system message is present."
 Anthropic requires an object; canonical nil is its empty object."
   arguments)
 
-(defun e-anthropic--retained-context-text (content)
-  "Return framed Messages text for canonical retained CONTENT."
-  (concat e-context-lifetime-retained-reference-prefix
-          (if (stringp content) content (e-json-serialize content))))
+(defun e-anthropic--retained-context-text (message)
+  "Return framed Messages text for reference-data MESSAGE."
+  (e-context-lifetime-reference-data-text message))
 
 (defun e-anthropic--tool-result-block (message)
   "Return the Messages `tool_result' block for backend-neutral MESSAGE."
@@ -531,7 +532,7 @@ RESULT-MARKERS maps each marked tool result to its request-local marker."
        (list :role "user"
              :content (vector
                        (e-anthropic--text-block
-                        (e-anthropic--retained-context-text content)))))
+                        (e-anthropic--retained-context-text message)))))
       (_
        (list :role (symbol-name role)
              :content (vector (e-anthropic--text-block content)))))))
@@ -909,7 +910,8 @@ Pre-scan each immediate tool-result carrier so its native response replaces,
 rather than follows, the individual call/result entries in transcript order.
 PROVIDER-REQUEST-REPLAY-ITEMS and PROVIDER-REQUEST-SKIPPED-CALLS carry the
 immediate curation recovery transcript and its unexecuted ordinary calls."
-  (let ((positions (make-hash-table :test 'eq))
+  (let* ((messages (e-context-move-canvas-reference-to-end messages))
+         (positions (make-hash-table :test 'eq))
         (calls-by-id (make-hash-table :test 'equal))
         (results-by-id (make-hash-table :test 'equal))
         (marker-pairs (e-anthropic--tool-result-marker-indexes messages))
@@ -1275,7 +1277,10 @@ only for the exact reviewed effective route identity."
           :request-function request-function :requester requester)))
     (list :prefix-cache 'automatic-explicit
           :reserved-effect-carrier
-          (if (e-anthropic--context-capability-supported-p request-identity)
+          (if (and (not (plist-get options
+                                  :canvas-reference-layout-revision))
+                   (e-anthropic--context-capability-supported-p
+                    request-identity))
               'context-curate-wire
             'none))))
 
@@ -2686,6 +2691,12 @@ BASE-URL, MODEL, REQUEST-FUNCTION, REQUESTER, MESSAGES, and OPTIONS contribute
 to the encoded Messages request and backend-neutral context."
   (let* ((profile (e-anthropic-provider-profile provider))
          (effective-options (copy-sequence options))
+         (_ (when-let* ((revision
+                         (e-context-canvas-reference-layout-for-messages
+                          messages)))
+              (setq effective-options
+                    (plist-put effective-options
+                               :canvas-reference-layout-revision revision))))
          (resolved-model (e-anthropic--provider-model
                           profile
                           (or (plist-get effective-options :model) model)))

@@ -14,6 +14,7 @@
 
 (require 'cl-lib)
 (require 'e-compaction)
+(require 'e-context-reference)
 (require 'e-session)
 (require 'seq)
 (require 'subr-x)

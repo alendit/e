@@ -14,6 +14,8 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'e-context-reference)
+(require 'e-context)
 (require 'e-context-lifetime)
 (require 'e-json)
 (require 'e-tools)
@@ -41,10 +43,9 @@ representation or dropping their structure."
       (when cache-breakpoint-p
         (list :prompt_cache_breakpoint (list :mode "explicit")))))))
 
-(defun e-openai-responses--retained-context-text (content)
-  "Return framed Responses text for canonical retained CONTENT."
-  (concat e-context-lifetime-retained-reference-prefix
-          (if (stringp content) content (e-json-serialize content))))
+(defun e-openai-responses--retained-context-text (message)
+  "Return framed Responses text for reference-data MESSAGE."
+  (e-context-lifetime-reference-data-text message))
 
 (defun e-openai-responses--input-message
     (message &optional cache-breakpoint-p)
@@ -78,7 +79,7 @@ CACHE-BREAKPOINT-P marks this message's content as the stable-prefix end."
               :content (e-openai-responses--message-content
                         role
                         (if (eq role 'context)
-                            (e-openai-responses--retained-context-text content)
+                            (e-openai-responses--retained-context-text message)
                           content)
                         cache-breakpoint-p))
         (when (and (eq role 'assistant) phase)
@@ -178,7 +179,10 @@ replaceable channel from a raw system-message role."
 
 (defun e-openai-responses--replaceable-current-state-content (options)
   "Return complete current-state value suitable for Responses instructions."
-  (let ((messages (e-openai-responses--replaceable-current-state-messages options)))
+  (let ((messages
+         (seq-remove
+          #'e-context-canvas-reference-message-p
+          (e-openai-responses--replaceable-current-state-messages options))))
     (when messages
       (string-join
        (delq nil
@@ -263,7 +267,9 @@ escape."
                   '("Replaceable frontier segments do not cover the request prefix")))
         (cl-loop for message in messages
                  for message-index from 0
-                 unless (memq message-index frontier-indices)
+                 unless (and (memq message-index frontier-indices)
+                             (not
+                              (e-context-canvas-reference-message-p message)))
                  collect message))))))
 
 (defun e-openai-responses--instructions (messages options)
@@ -468,7 +474,8 @@ guessing from message shape."
                    (e-openai-responses--remove-replaceable-current-state
                     source options)))
          (source (e-openai-responses--move-inherited-frontier-to-end
-                  source options)))
+                  source options))
+         (source (e-context-move-canvas-reference-to-end source)))
     (if (or provider-compaction-p
             (e-openai-profile-segmented-prompt-layout-p options))
         source

@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-context-reference)
 (require 'e)
 (require 'e-json)
 (require 'e-backend)
@@ -838,6 +839,109 @@
                           0)
                     :text)
                    "same value"))))
+
+(ert-deftest e-openai-test-canvas-reference-follows-history-and-layout-fences-anchors ()
+  "Canvas snapshots stay out of instructions and old layouts replay fully."
+  (let* ((canvas '(:role context
+                   :metadata (:e-canvas-reference t)
+                   :content "<canvas>checkbox changed</canvas>"))
+         (current-state
+          (list '(:role system :content "Canvas behavior instructions.")
+                canvas))
+         (history
+          '((:role user :content "Initial question.")
+            (:role tool-call :content (:id "call-1" :name "read"))
+            (:role tool :content (:tool-call-id "call-1"
+                                    :content "Read result."))
+            (:role user :content "Update the checkbox.")))
+         (messages (append current-state history))
+         (segments `((:kind current-state :messages ,current-state)
+                     (:kind history :messages ,history)))
+         (options `(:model "gpt-5.6-sol"
+                    :instructions "Base instructions."
+                    :responses-context-layout developer-input
+                    :observation-delivery request-local-replaceable
+                    :context-capabilities
+                    (:observation-delivery request-local-replaceable)
+                    :replaceable-current-state ,current-state
+                    :context-segment-message-count ,(length messages)
+                    :segments ,segments
+                    :canvas-reference-layout-revision
+                    ,e-context-canvas-reference-layout-revision))
+         (old-layout
+          (e-openai-test--prompt-layout-revision
+           (cl-loop for (key value) on options by #'cddr
+                    unless (eq key :canvas-reference-layout-revision)
+                    append (list key value))))
+         (old-anchor
+          (list :provider-id 'openai
+                :metadata (list :response-id "old-layout"
+                                :prompt-layout-revision old-layout
+                                :reasoning-identity
+                                '(:effort "high" :summary "auto"))))
+         (full
+          (e-openai-codex-request-body :messages messages :options options))
+         (old-layout-body
+          (e-openai-codex-request-body
+           :messages messages
+           :options (append options
+                            (list :provider-continuation t
+                                  :provider-anchor old-anchor))))
+         (current-anchor
+          (list :provider-id 'openai
+                :metadata
+                (list :response-id "current-layout"
+                      :prompt-layout-revision
+                      (e-openai-test--prompt-layout-revision options)
+                      :reasoning-identity
+                      '(:effort "high" :summary "auto"))))
+         (continued
+          (e-openai-codex-request-body
+           :messages messages
+           :options
+           (append options
+                   (list :provider-continuation t
+                         :provider-anchor current-anchor
+                         :provider-anchor-delta-messages
+                         (list canvas
+                               '(:role user
+                                 :content "Update the checkbox."))
+                         :provider-anchor-source-message-count
+                         (length messages)))))
+         (full-input (append (plist-get full :input) nil))
+         (continued-input (append (plist-get continued :input) nil))
+         (call-index
+          (cl-position-if
+           (lambda (item) (equal (plist-get item :type) "function_call"))
+           full-input))
+         (call (and call-index (nth call-index full-input)))
+         (result (and call-index (nth (1+ call-index) full-input)))
+         (result-index (and result (cl-position result full-input :test #'equal))))
+    (should (equal (plist-get full :instructions)
+                   "Base instructions.\n\nCanvas behavior instructions."))
+    (should-not (string-match-p "checkbox changed"
+                                (plist-get full :instructions)))
+    (should (equal (plist-get (car (last full-input)) :role) "user"))
+    (should (equal (plist-get
+                    (aref (plist-get (car (last full-input)) :content) 0)
+                    :text)
+                   (concat e-context-lifetime-canvas-reference-prefix
+                           "<canvas>checkbox changed</canvas>")))
+    (should (integerp call-index))
+    (should (equal (plist-get call :call_id) "call-1"))
+    (should (= result-index (1+ call-index)))
+    (should (equal (plist-get result :type) "function_call_output"))
+    (should (equal (plist-get result :call_id) "call-1"))
+    (should-not (plist-member old-layout-body :previous_response_id))
+    (should (equal (plist-get continued :previous_response_id)
+                   "current-layout"))
+    (should (equal (mapcar (lambda (item) (plist-get item :role))
+                           continued-input)
+                   '("user" "user")))
+    (should (string-match-p
+             "Current canvas reference data"
+             (plist-get (aref (plist-get (car (last continued-input)) :content) 0)
+                        :text)))))
 
 (ert-deftest e-openai-test-replaceable-frontier-rejects-ambiguous-partition ()
   "A non-empty replaceable frontier cannot silently remain explicit input."

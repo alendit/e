@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'e-context-reference)
 (require 'e)
 (require 'e-actions)
 (require 'e-backend)
@@ -692,59 +693,194 @@
 (ert-deftest e-chat-session-test-attachments-are-current-state-context ()
   "Canvas attachments are rebuilt from current live buffer state per context."
   (e-chat-session-test--with-sqlite-harness
-      (harness store (e-backend-fake-create :items nil))
-    (e-harness-activate-capability harness (e-chat-session-capability-create))
-    (e-chat-session-test--create-session harness "session-1")
-    (with-temp-buffer
-      (rename-buffer "e-chat-session-canvas" t)
-      (insert "first canvas state")
-      (e-chat-session-attach-context
-       harness
-       "session-1"
-       (list :uri (concat "buffer://" (buffer-name))
-             :label "canvas"
-             :buffer-name (buffer-name))
-       :canvas t :current-attachments nil)
-      (should
-       (e-chat-session-test--wait-until
-        (lambda ()
-          (zerop (e-session-async-pending-count store "session-1")))))
-      (let* ((context
-              (e-chat-session-test--await
-               (e-chat-session-context harness "session-1")))
-             (content (plist-get (car (plist-get context :messages))
-                                 :content)))
-        (should (string-match-p "<canvas" content))
-        (should (string-match-p "evidence=\"src:[0-9A-F]\\{16\\}\""
-                                content))
-        (should (string-match-p "first canvas state" content))
-        ;; The canvas guidance must steer writes to the attachment uri and
-        ;; warn off look-alike helper buffers, so the model does not write to
-        ;; the wrong buffer.
-        (should (string-match-p "Always write to the exact uri" content))
-        (should (string-match-p "e-org-canvas-input" content)))
-      (let* ((context
-              (e-chat-session-test--await
-               (e-chat-session-context harness "session-1")))
-             (source
-              (car
-               (cl-loop
-                for segment in (plist-get context :segments)
-                append (plist-get segment e-context-evidence-sources-key)))))
-        (should (equal (plist-get source :source-kind)
-                       'current-state-attachment))
-        (should (equal (plist-get source :provider) 'chat-session))
-        (should (equal (plist-get source :uri)
-                       (concat "buffer://" (buffer-name)))))
-      (erase-buffer)
-      (insert "second canvas state")
-      (let* ((context
-              (e-chat-session-test--await
-               (e-chat-session-context harness "session-1")))
-             (content (plist-get (car (plist-get context :messages))
-                                 :content)))
-        (should-not (string-match-p "first canvas state" content))
-        (should (string-match-p "second canvas state" content))))))
+   (harness store (e-backend-fake-create :items nil))
+   (e-harness-activate-capability harness (e-chat-session-capability-create))
+   (e-chat-session-test--create-session harness "session-1")
+   (dolist (message
+            '((:role user :content "Inspect the canvas.")))
+     (e-chat-session-test--await
+      (e-chat-service-append-seed-message harness "session-1" message)))
+   (let (initial-prefix initial-content request-prefix)
+     (with-temp-buffer
+       (rename-buffer "e-chat-session-canvas" t)
+       (insert "first canvas state")
+       (e-chat-session-attach-context
+        harness
+        "session-1"
+        (list :uri (concat "buffer://" (buffer-name))
+              :label "canvas"
+              :buffer-name (buffer-name))
+        :canvas t :current-attachments nil)
+       (should
+        (e-chat-session-test--wait-until
+         (lambda ()
+           (zerop (e-session-async-pending-count store "session-1")))))
+       (let* ((context
+               (e-chat-session-test--await
+                (e-chat-session-context harness "session-1")))
+              (messages (plist-get context :messages))
+              (instructions
+               (plist-get (cl-find-if
+                           (lambda (message)
+                             (eq (plist-get message :role) 'system))
+                           messages)
+                          :content))
+              (canvas
+               (cl-find-if #'e-context-canvas-reference-message-p messages))
+              (content (plist-get canvas :content)))
+         (setq request-prefix
+               (seq-remove #'e-context-canvas-reference-message-p messages))
+         (setq initial-prefix request-prefix
+               initial-content content)
+         (should (string-match-p "<canvas" content))
+         (should (string-match-p "evidence=\"src:[0-9A-F]\\{16\\}\""
+                                 content))
+         (should (eq (car (last (e-context-move-canvas-reference-to-end
+                                 messages)))
+                     canvas))
+         (should
+          (equal
+           (mapcar (lambda (message)
+                     (list (plist-get message :role)
+                           (plist-get message :content)))
+                   (seq-remove (lambda (message)
+                                 (or (eq (plist-get message :role) 'system)
+                                     (e-context-canvas-reference-message-p
+                                      message)))
+                               messages))
+           '((user "Inspect the canvas."))))
+         (should (string-match-p "first canvas state" content))
+         (should-not (string-match-p "first canvas state" instructions))
+         (should (equal
+                  (plist-get (plist-get context :options)
+                             :canvas-reference-layout-revision)
+                  e-context-canvas-reference-layout-revision))
+         (should (equal
+                  (cl-loop for segment in (plist-get context :segments)
+                           append (copy-tree (plist-get segment :messages)))
+                  messages))
+         ;; The canvas guidance must steer writes to the attachment uri and
+         ;; warn off look-alike helper buffers, so the model does not write to
+         ;; the wrong buffer.
+         (should (string-match-p "Always write to the exact uri" instructions))
+         (should (string-match-p "e-org-canvas-input" instructions)))
+       (let* ((context
+               (e-chat-session-test--await
+                (e-chat-session-context harness "session-1")))
+              (source
+               (car
+                (cl-loop
+                 for segment in (plist-get context :segments)
+                 append (plist-get segment e-context-evidence-sources-key)))))
+         (should (equal (plist-get source :source-kind)
+                        'current-state-attachment))
+         (should (equal (plist-get source :provider) 'chat-session))
+         (should (equal (plist-get source :uri)
+                        (concat "buffer://" (buffer-name)))))
+       (dolist (message
+                '((:role tool-call
+                   :content (:id "call-1" :name "read" :arguments nil))
+                  (:role tool
+                   :content (:tool-call-id "call-1" :name "read"
+                             :status ok :content "Read the current heading."))
+                  (:role user :content "Update the checkbox after reading.")))
+         (e-chat-session-test--await
+          (e-chat-service-append-seed-message harness "session-1" message)))
+       (let* ((context
+               (e-chat-session-test--await
+                (e-chat-session-context harness "session-1")))
+              (messages (plist-get context :messages))
+              (canvas
+               (cl-find-if #'e-context-canvas-reference-message-p messages)))
+         (setq request-prefix
+               (seq-remove #'e-context-canvas-reference-message-p messages))
+         (should (equal initial-prefix
+                        (cl-subseq request-prefix 0 (length initial-prefix))))
+         (should (equal (plist-get canvas :content) initial-content))
+         (should
+          (equal
+           (mapcar (lambda (message)
+                     (list (plist-get message :role)
+                           (plist-get message :content)))
+                   (seq-remove (lambda (message)
+                                 (or (eq (plist-get message :role) 'system)
+                                     (e-context-canvas-reference-message-p
+                                      message)))
+                               messages))
+           '((user "Inspect the canvas.")
+             (tool-call (:id "call-1" :name "read" :arguments nil))
+             (tool (:tool-call-id "call-1" :name "read" :status ok
+                                  :content "Read the current heading."))
+             (user "Update the checkbox after reading."))))
+         (should (equal (cl-loop for segment in (plist-get context :segments)
+                                 append (copy-tree
+                                         (plist-get segment :messages)))
+                        messages)))
+       (let* ((context
+               (e-chat-session-test--await
+                (e-chat-session-context harness "session-1")))
+              (messages (plist-get context :messages))
+              (canvas
+               (cl-find-if #'e-context-canvas-reference-message-p messages)))
+         (should (equal (plist-get canvas :content) initial-content))
+         (should (equal request-prefix
+                        (seq-remove #'e-context-canvas-reference-message-p
+                                    messages))))
+       (erase-buffer)
+       (insert "first canvas state with checkbox checked")
+       (let* ((context
+               (e-chat-session-test--await
+                (e-chat-session-context harness "session-1")))
+              (messages (plist-get context :messages))
+              (content
+               (plist-get
+                (cl-find-if #'e-context-canvas-reference-message-p messages)
+                :content)))
+         (should (equal request-prefix
+                        (seq-remove #'e-context-canvas-reference-message-p
+                                    messages)))
+         (should
+          (string-suffix-p
+           "\nfirst canvas state with checkbox checked\n</canvas>"
+           content)))
+       (erase-buffer)
+       (insert "second canvas state")
+       (let* ((context
+               (e-chat-session-test--await
+                (e-chat-session-context harness "session-1")))
+              (messages (plist-get context :messages))
+              (content
+               (plist-get
+                (cl-find-if #'e-context-canvas-reference-message-p messages)
+                :content)))
+         (should (equal request-prefix
+                        (seq-remove #'e-context-canvas-reference-message-p
+                                    messages)))
+         (should (string-match-p "second canvas state" content)))))))
+
+(ert-deftest e-chat-session-test-noncanvas-attachment-remains-system-context ()
+  "Ordinary attachments retain their system-context semantics."
+  (let ((attachment '(:id "attachment-1"
+                      :uri "file:///report.md"
+                      :label "report.md"
+                      :canvas nil)))
+    (cl-letf (((symbol-function 'e-chat-session-attachments)
+               (lambda (_harness _session-id) (list attachment)))
+              ((symbol-function 'e-chat-session--attachment-content)
+               (lambda (_attachment) "ordinary attachment body")))
+      (let* ((messages
+              (e-chat-session-context-attachments-provider
+               :harness 'harness :session-id "session-1"))
+             (system (car messages)))
+        (should (= (length messages) 1))
+        (should (eq (plist-get system :role) 'system))
+        (should (string-match-p "<attachment "
+                                (plist-get system :content)))
+        (should (string-match-p "ordinary attachment body"
+                                (plist-get system :content)))
+        (should-not (e-context-canvas-reference-message-p system))
+        (should-not (e-context-canvas-reference-layout-for-messages
+                     messages))))))
 
 (ert-deftest e-chat-session-test-file-attachment-prefers-live-buffer ()
   "File attachments read unsaved live buffers before disk contents."
@@ -776,8 +912,11 @@
                           (e-chat-session-test--await
                            (e-chat-session-context harness "session-1")))
                          (content
-                          (plist-get (car (plist-get context :messages))
-                                     :content)))
+                          (plist-get
+                           (cl-find-if
+                            #'e-context-canvas-reference-message-p
+                            (plist-get context :messages))
+                           :content)))
                     (should (string-match-p "unsaved live state" content))
                     (should-not (string-match-p "disk state" content))))
               (when (buffer-live-p buffer)

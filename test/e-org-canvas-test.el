@@ -14,6 +14,7 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'org)
+(require 'e-context-reference)
 (require 'e)
 (require 'e-backend)
 (require 'e-chat)
@@ -1176,7 +1177,40 @@
          (string-match-p "topic under the cursor"
                          (mapconcat (lambda (message)
                                       (or (plist-get message :content) ""))
-                                    org "\n")))))))
+                                    org "\n")))
+        (let* ((canvas-messages
+                (seq-filter #'e-context-canvas-reference-message-p org))
+               (editor-state
+                (cl-find-if
+                 (lambda (message)
+                   (string-match-p "heading-path=Topic"
+                                   (or (plist-get message :content) "")))
+                 canvas-messages))
+               (instructions
+                (cl-find-if
+                 (lambda (message)
+                   (and (eq (plist-get message :role) 'system)
+                        (string-match-p
+                         "Org Canvas mode is active"
+                         (or (plist-get message :content) ""))))
+                 org)))
+          (should editor-state)
+          (should-not
+           (string-match-p "\\* Topic\\nBody"
+                           (mapconcat (lambda (message)
+                                        (or (plist-get message :content) ""))
+                                      canvas-messages "\n")))
+          (should (string-match-p "Visibility state:"
+                                  (plist-get editor-state :content)))
+          (should-not (string-match-p "heading-path="
+                                      (plist-get instructions :content)))
+          (should-not (string-match-p "Visibility state:"
+                                      (plist-get instructions :content)))
+          (should (equal
+                   (plist-get (plist-get (e-harness-context harness "org")
+                                         :options)
+                              :canvas-reference-layout-revision)
+                   e-context-canvas-reference-layout-revision)))))))
 
 (ert-deftest e-org-canvas-test-context-provider-is-dynamic-cache-placement ()
   "Org Canvas live buffer context is placed after stable cacheable context."

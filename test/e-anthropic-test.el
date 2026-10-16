@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'e-context-reference)
 (require 'e)
 (require 'e-json)
 (require 'e-backend)
@@ -687,6 +688,43 @@
                                  e-context-lifetime-retained-reference-prefix
                                  "{\"fact\":\"kept\"}")))))))
 
+(ert-deftest e-anthropic-test-canvas-reference-follows-history-and-tools ()
+  "Canvas context is the final reference turn and leaves tool pairs adjacent."
+  (let* ((canvas '(:role context
+                   :metadata (:e-canvas-reference t)
+                   :content "<canvas>changed checkbox</canvas>"))
+         (body
+          (e-anthropic-request-body
+           :messages (list '(:role system :content "Write to the canvas URI.")
+                           canvas
+                           '(:role user :content "Read the document.")
+                           '(:role tool-call
+                             :content (:id "call-1" :name "read"))
+                           '(:role tool
+                             :content (:tool-call-id "call-1"
+                                      :content "Read result."))
+                           '(:role user :content "Update the checkbox."))
+           :options '(:model "claude-test" :max-tokens 1024
+                      :instructions "Base instructions.")))
+         (messages (append (plist-get body :messages) nil))
+         (call (nth 1 messages))
+         (result (nth 2 messages))
+         (reference (car (last messages)))
+         (call-block (aref (plist-get call :content) 0))
+         (result-block (aref (plist-get result :content) 0))
+         (reference-block (aref (plist-get reference :content) 0)))
+    (should (equal (mapcar (lambda (block) (plist-get block :text))
+                           (append (plist-get body :system) nil))
+                   '("Base instructions." "Write to the canvas URI.")))
+    (should (equal (plist-get call-block :type) "tool_use"))
+    (should (equal (plist-get call-block :id) "call-1"))
+    (should (equal (plist-get result-block :type) "tool_result"))
+    (should (equal (plist-get result-block :tool_use_id) "call-1"))
+    (should (equal (plist-get reference :role) "user"))
+    (should (equal (plist-get reference-block :text)
+                   (concat e-context-lifetime-canvas-reference-prefix
+                           "<canvas>changed checkbox</canvas>")))))
+
 (ert-deftest e-anthropic-test-request-body-omits-system-when-empty ()
   "No system field is sent when there are no system messages or instructions."
   (should-not
@@ -948,6 +986,28 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
     (should (equal (plist-get context :url)
                    (concat base-url "/messages")))
     (should (member "context-curate" tool-names))
+    (let* ((canvas-message '(:role context
+                             :metadata (:e-canvas-reference t)
+                             :content "<canvas>active</canvas>"))
+           (canvas-options
+            (plist-put (copy-sequence options)
+                       :canvas-reference-layout-revision
+                       e-context-canvas-reference-layout-revision))
+           (canvas-capabilities
+            (e-anthropic-context-capabilities
+             provider canvas-options :base-url base-url :model model
+             :requester 'messages-http-start))
+           (canvas-context
+            (e-anthropic--request-context
+             :provider provider :base-url base-url :model model
+             :requester 'messages-http-start
+             :messages (list canvas-message) :options options))
+           (canvas-body (e-json-parse-string (plist-get canvas-context :body)))
+           (canvas-tools (mapcar (lambda (tool) (plist-get tool :name))
+                                 (append (plist-get canvas-body :tools) nil))))
+      (should (eq (plist-get canvas-capabilities :reserved-effect-carrier)
+                  'none))
+      (should-not (member "context-curate" canvas-tools)))
     (should
      (eq (plist-get
           (e-anthropic-context-capabilities

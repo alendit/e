@@ -19,6 +19,7 @@
 (require 'e-harness-turn-state)
 (require 'e-backend)
 (require 'e-compaction)
+(require 'e-context-reference)
 (require 'e-context)
 (require 'e-context-lifetime)
 (require 'e-events)
@@ -196,6 +197,20 @@ compaction) where exposing tools risks a tool-call instead of a reply."
   (let ((copy (copy-sequence options)))
     (setq copy (plist-put copy :tools nil))
     copy))
+
+(defun e-harness-context-runtime--options-with-canvas-layout
+    (options provider-messages)
+  "Return derived OPTIONS for PROVIDER-MESSAGES' active canvas layout."
+  (let* ((options
+          (e-harness-context-runtime--strip-reserved-derived-context-options
+           options))
+         (revision
+          (e-context-canvas-reference-layout-for-messages provider-messages)))
+    (when revision
+      (setq options
+            (plist-put options :canvas-reference-layout-revision revision)))
+    options))
+
 (defun e-harness-context
     (harness session-id &optional turn-id context-purpose)
   "Return backend-neutral context for SESSION-ID in HARNESS.
@@ -218,8 +233,9 @@ turn context work."
              :turn-id turn-id
              :context-purpose context-purpose)))
        (let* ((turn-options
-               (e-harness-context-runtime--strip-reserved-derived-context-options
-                (e-harness-turn-options harness session-id)))
+               (e-harness-context-runtime--options-with-canvas-layout
+                (e-harness-turn-options harness session-id)
+                (plist-get capability-context :messages)))
          (context-capabilities
                (e-harness-context-capabilities harness turn-options))
               (context
@@ -425,9 +441,10 @@ CONTEXT-PURPOSE defaults to `turn'."
            :harness harness :session-id session-id :turn-id turn-id
            :context-purpose context-purpose))
          (turn-options
-          (e-harness-context-runtime--strip-reserved-derived-context-options
+          (e-harness-context-runtime--options-with-canvas-layout
            (e-harness-context-runtime--detached-turn-options
-            harness session-id path)))
+            harness session-id path)
+           (plist-get capability-context :messages)))
          (context-capabilities
           (e-harness-context-capabilities harness turn-options))
          (context
@@ -1234,6 +1251,7 @@ append precedes frame consumption and the next provider request."
   '(:context-segment-message-count
     :replaceable-current-state-partitioned
     :context-lifetime-enabled
+    :canvas-reference-layout-revision
     :provider-anchor
     :provider-anchor-delta-messages
     :provider-anchor-source-message-count
@@ -1348,12 +1366,15 @@ ambiguous and is rejected by the provider adapter."
          (options
           (e-harness-context-runtime--strip-reserved-derived-context-options
            (plist-get context :options))))
-    ;; The boundary pass removes caller-supplied derived values, but the
-    ;; semantic lifetime fields are re-derived from the trusted runtime
-    ;; projection rather than allowed to disappear between frontier and
-    ;; adapter construction.
+    ;; The boundary pass removes caller-supplied derived values, but semantic
+    ;; lifetime and active canvas layout fields are re-derived from trusted
+    ;; runtime state rather than allowed to disappear before adapter build.
     (when (plist-get context :context-lifetime-enabled)
       (setq options (plist-put options :context-lifetime-enabled t)))
+    (when-let* ((revision
+                 (e-context-canvas-reference-layout-for-messages messages)))
+      (setq options
+            (plist-put options :canvas-reference-layout-revision revision)))
     (when exact-coverage-p
       (setq options
             (plist-put options
@@ -1455,6 +1476,11 @@ on a caller request is not authority."
            (if (plist-get options :lifetime-ephemerals-clean-p)
                'clean
              'contaminated))))
+    (when-let* ((revision
+                (plist-get options :canvas-reference-layout-revision)))
+      (setq fingerprints
+            (plist-put fingerprints :canvas-reference-layout-revision
+                       revision)))
     (when (e-harness-context-runtime--context-curation-carrier-active-p context)
       (setq fingerprints
             (plist-put
@@ -1495,6 +1521,10 @@ refresh changes the projection that produced it."
            (copy-tree capabilities)
            :provider-anchor-fingerprints
            (e-harness-context-runtime--provider-anchor-fingerprints context))))
+    (when-let* ((revision
+                 (plist-get options :canvas-reference-layout-revision)))
+      (setq identity
+            (plist-put identity :canvas-reference-layout-revision revision)))
     (plist-put context
                :options
                (plist-put options
@@ -1530,11 +1560,13 @@ refresh changes the projection that produced it."
       'missing-anchor)))
 
 (defun e-harness-context-runtime--provider-anchor-dynamic-context-messages (context)
-  "Return backend-neutral dynamic-context messages from CONTEXT."
-  (unless (eq (plist-get (plist-get context :options)
-                         :observation-delivery)
-              'request-local-replaceable)
-    (e-context-current-state-messages context)))
+  "Return dynamic observations required by a provider anchor from CONTEXT."
+  (let ((messages (e-context-current-state-messages context)))
+    (if (eq (plist-get (plist-get context :options)
+                       :observation-delivery)
+            'request-local-replaceable)
+        (seq-filter #'e-context-canvas-reference-message-p messages)
+      messages)))
 
 (defun e-harness-context-runtime--provider-anchor-delta-messages
     (harness session-id anchor &optional context)
