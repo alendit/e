@@ -427,7 +427,9 @@ isolated candidate wrapper can be scoped without caller authority."
           :auth-mode auth-mode
           :api wire-api
           :transport transport
-          :requester requester)))
+          :requester requester
+          :canvas-reference-layout-revision
+          (plist-get options :canvas-reference-layout-revision))))
 
 (defun e-openai-profile-reasoning-summary (profile)
   "Return the validated Responses summary mode declared by PROFILE."

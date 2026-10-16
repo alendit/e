@@ -189,6 +189,30 @@
       (should-not (equal variant expected)))))
 
 
+(ert-deftest e-openai-test-canvas-layout-identity-is-separate-from-route ()
+  "Canvas layout changes evidence identity without changing OpenAI route fields."
+  (let* ((provider 'codex)
+         (profile (e-openai-provider-profile provider))
+         (base-url (e-openai-provider-base-url profile))
+         (base-options '(:model "gpt-6-sol" :responses-transport websocket))
+         (canvas-options
+          (append base-options
+                  (list :canvas-reference-layout-revision
+                        e-context-canvas-reference-layout-revision)))
+         (base-identity
+          (e-openai-profile--context-capability-identity
+           profile base-options :provider provider :base-url base-url))
+         (canvas-identity
+          (e-openai-profile--context-capability-identity
+           profile canvas-options :provider provider :base-url base-url)))
+    (should (equal (plist-get canvas-identity
+                              :canvas-reference-layout-revision)
+                   e-context-canvas-reference-layout-revision))
+    (should-not (equal canvas-identity base-identity))
+    (dolist (key '(:endpoint :model :auth-mode :api :transport :requester))
+      (should (equal (plist-get canvas-identity key)
+                     (plist-get base-identity key))))))
+
 (ert-deftest e-openai-test-public-gpt6-release-flavors-select-cache-policy ()
   "First-party GPT-6 aliases get the documented boundary and endpoint controls remain."
   (let ((process-environment

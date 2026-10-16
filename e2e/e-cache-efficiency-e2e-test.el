@@ -664,6 +664,81 @@ Only the existing diagnostic authority uses the private wrapper."
   (message "E98_CACHE_EVIDENCE %s"
            (json-encode (e-live-e2e--json-plist record))))
 
+(defun e-cache-efficiency-e2e--report-canvas-evidence (record)
+  "Emit bounded Feature 99 canvas qualification RECORD."
+  (message "E99_CANVAS_EVIDENCE %s"
+           (json-encode (e-live-e2e--json-plist record))))
+
+(defun e-cache-efficiency-e2e--canvas-source-evidence (options)
+  "Return bounded identity/provenance for the current Canvas in OPTIONS."
+  (let* ((sources
+          (cl-loop for segment in (plist-get options :segments)
+                   append (seq-filter
+                           (lambda (source)
+                             (stringp (plist-get source :canvas-text)))
+                           (plist-get segment e-context-evidence-sources-key))))
+         (source (seq-find (lambda (item)
+                             (stringp (plist-get item :canvas-text)))
+                           sources))
+         (revision (and source (plist-get source :canvas-revision))))
+    (list :canvas-reference-layout-revision
+          (or (plist-get options :canvas-reference-layout-revision)
+              (and source e-context-canvas-reference-layout-revision))
+          :canvas-source-count (length sources)
+          :canvas-source-present (and source t)
+          :canvas-source-uri-sha256
+          (and source
+               (secure-hash 'sha256 (plist-get source :uri)))
+          :canvas-source-revision revision
+          :canvas-source-content-sha256
+          (and source (plist-get source :content-sha256))
+          :canvas-source-payload-bytes
+          (and source (plist-get source :canvas-payload-bytes))
+          :canvas-source-revision-matches-content
+          (and source
+               (equal revision (plist-get source :content-sha256))))))
+
+(defun e-cache-efficiency-e2e--canvas-operation-evidence (messages)
+  "Return ordered Canvas operation kinds, hashes, and revisions from MESSAGES."
+  (vconcat
+   (cl-loop for message in messages
+            when (e-context-canvas-reference-message-p message)
+            collect
+            (let* ((content (plist-get message :content))
+                   (revision
+                    (and (stringp content)
+                         (string-match "revision=\\\"\\([[:xdigit:]]+\\)\\\""
+                                       content)
+                         (match-string 1 content))))
+              (list :representation
+                    (if (and (stringp content)
+                             (string-prefix-p "<canvas-change " content))
+                        'patch
+                      'snapshot)
+                    :revision revision
+                    :content-sha256
+                    (and (stringp content) (secure-hash 'sha256 content)))))))
+
+(defun e-cache-efficiency-e2e--native-prefix-evidence (previous current)
+  "Return a bounded unchanged native prefix count for PREVIOUS/CURRENT hashes."
+  (let* ((previous-items
+          (append (plist-get previous :native-history-item-sha256) nil))
+         (current-items
+          (append (plist-get current :native-history-item-sha256) nil))
+         (common 0))
+    (while (and (< common (length previous-items))
+                (< common (length current-items))
+                (equal (nth common previous-items)
+                       (nth common current-items)))
+      (setq common (1+ common)))
+    (list :previous-native-history-item-count (length previous-items)
+          :current-native-history-item-count (length current-items)
+          :unchanged-previous-native-history-prefix-count common
+          :unchanged-previous-native-history-prefix-sha256
+          (and (> common 0)
+               (secure-hash 'sha256
+                            (prin1-to-string (seq-take previous-items common)))))))
+
 (defun e-cache-efficiency-e2e--codex-growing-history-prompt ()
   "Return the ordinary Codex P2 prompt used by provider and synthetic paths."
   (concat
@@ -838,6 +913,101 @@ Return its cache classification."
     (should (= (e-live-e2e--cache-total-input-tokens joined) 20566))
     (cl-remf joined :context-input-tokens)
     (should (= (e-live-e2e--cache-total-input-tokens joined) 20566))))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-canvas-evidence-is-bounded ()
+  "F99 evidence retains current source identity and omits Canvas contents."
+  (let* ((source (e-context-canvas-capture-create
+                  :uri "buffer://f99-evidence-canvas"
+                  :label "Canvas" :content "First\n[x] Item"))
+         (message
+          (list :role 'context
+                :metadata (list e-context-canvas-reference-metadata-key t
+                                e-context-canvas-chronology-metadata-key t)
+                :content (e-context-canvas-snapshot-payload source)))
+         (patch-message
+          (list :role 'context
+                :metadata (list e-context-canvas-reference-metadata-key t
+                                e-context-canvas-chronology-metadata-key t)
+                :content (e-context-canvas-patch-payload
+                          source "previous"
+                          (list :start 0 :end 0 :replacement "[x]"))))
+         (options
+          (list :canvas-reference-layout-revision
+                e-context-canvas-reference-layout-revision
+                :segments
+                (list (list e-context-evidence-sources-key (list source)))))
+         (evidence (e-cache-efficiency-e2e--canvas-source-evidence options))
+         (operations
+          (e-cache-efficiency-e2e--canvas-operation-evidence
+           (list message patch-message)))
+         (previous '(:native-history-item-sha256 ["a" "b"]))
+         (current '(:native-history-item-sha256 ["a" "b" "c"]))
+         (prefix (e-cache-efficiency-e2e--native-prefix-evidence
+                  previous current)))
+    (should (equal (plist-get evidence :canvas-reference-layout-revision)
+                   e-context-canvas-reference-layout-revision))
+    (should (equal (plist-get evidence :canvas-source-revision)
+                   (plist-get source :canvas-revision)))
+    (should (eq (plist-get evidence :canvas-source-revision-matches-content) t))
+    (should (= (plist-get evidence :canvas-source-count) 1))
+    (should (eq (plist-get evidence :canvas-source-present) t))
+    (should (equal (plist-get (aref operations 0) :representation) 'snapshot))
+    (should (equal (plist-get (aref operations 0) :revision)
+                   (plist-get source :canvas-revision)))
+    (should (equal (plist-get (aref operations 1) :representation) 'patch))
+    (should (equal (plist-get (aref operations 1) :revision)
+                   (plist-get source :canvas-revision)))
+    (should-not (string-match-p "First" (prin1-to-string operations)))
+    (should (= (plist-get prefix :unchanged-previous-native-history-prefix-count)
+               2))
+    (should-not (plist-member evidence :canvas-text))))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-producers-bind-marked-layout-identity ()
+  "Normal-source evidence producers bind identity to marked Canvas messages."
+  (let* ((provider 'f99-synthetic-layout)
+         (base-url "https://anthropic.example.test/v1")
+         (model "claude-opus-5-5")
+         (process-environment
+          (cons "E99_SYNTHETIC_TOKEN=synthetic-only" process-environment))
+         (e-anthropic-model-providers
+          `((,provider :name "synthetic F99 layout route"
+             :base-url ,base-url :auth bearer :auth-header authorization
+             :env-key "E99_SYNTHETIC_TOKEN" :default-model ,model)))
+         (source (e-context-canvas-capture-create
+                  :uri "buffer://f99-producer-canvas"
+                  :label "Canvas" :content "Synthetic current source"))
+         (message
+          (list :role 'context
+                :metadata (list e-context-canvas-reference-metadata-key t
+                                e-context-canvas-chronology-metadata-key t)
+                :content (e-context-canvas-snapshot-payload source)))
+         (options
+          (list :model model :session-id "f99-producer-canvas"
+                :segments
+                (list (list e-context-evidence-sources-key (list source)))))
+         (args (list :provider provider :base-url base-url :model model
+                     :requester 'messages-http-start :messages (list message)
+                     :options options))
+         (f99-requests (make-hash-table :test #'equal))
+         (p3-requests (make-hash-table :test #'equal)))
+    (e-cache-efficiency-e2e--f99-capture-request
+     #'e-anthropic--request-context f99-requests args)
+    (e-cache-efficiency-e2e--capture-p3-native-request
+     'anthropic #'e-anthropic--request-context p3-requests args)
+    (let* ((f99-record (car (gethash "f99-producer-canvas" f99-requests)))
+           (p3-record (car (gethash "f99-producer-canvas" p3-requests)))
+           (p3-source (plist-get p3-record :canvas-source-evidence)))
+      (should (equal (plist-get f99-record :canvas-reference-layout-revision)
+                     e-context-canvas-reference-layout-revision))
+      (should (equal (plist-get p3-record :canvas-reference-layout-revision)
+                     e-context-canvas-reference-layout-revision))
+      (should (equal (plist-get p3-source :canvas-source-revision)
+                     (plist-get source :canvas-revision)))
+      (should (eq (plist-get p3-source
+                             :canvas-source-revision-matches-content)
+                  t))
+      (should-not (plist-member p3-source :canvas-text))
+      (should-not (plist-member f99-record :canvas-text)))))
 
 (defun e-cache-efficiency-e2e--tool-register (registry &optional steps)
   "Register a sequential probe with substantial reproducible output.
@@ -2178,6 +2348,15 @@ STEPS defaults to the original three-step public-API scenario."
          (session-id (plist-get options :session-id))
          (body (e-cache-efficiency-e2e--p3-native-body adapter context))
          (messages (plist-get args :messages))
+         (layout-revision
+          (or (plist-get options :canvas-reference-layout-revision)
+              (e-context-canvas-reference-layout-for-messages messages)))
+         (effective-options (copy-sequence options))
+         (_ (when layout-revision
+              (setq effective-options
+                    (plist-put effective-options
+                               :canvas-reference-layout-revision
+                               layout-revision))))
          (user-text (e-cache-efficiency-e2e--p3-last-user-text messages))
          (records (gethash session-id requests-by-session))
          (profile (and (eq adapter 'openai)
@@ -2186,13 +2365,13 @@ STEPS defaults to the original three-step public-API scenario."
          (identity
           (if (eq adapter 'anthropic)
               (e-anthropic--context-capability-identity
-               (plist-get args :provider) options
+               (plist-get args :provider) effective-options
                :base-url (plist-get args :base-url)
                :model (plist-get body :model)
                :request-function (plist-get args :request-function)
                :requester (plist-get args :requester))
             (e-openai-profile--context-capability-identity
-             profile options :provider (plist-get args :provider)
+             profile effective-options :provider (plist-get args :provider)
              :base-url (or (plist-get args :base-url)
                            (e-openai-provider-base-url profile))
              :request-function (plist-get args :request-function))))
@@ -2209,6 +2388,12 @@ STEPS defaults to the original three-step public-API scenario."
                 :api (plist-get identity :api)
                 :transport (plist-get identity :transport)
                 :requester (plist-get identity :requester)
+                :canvas-reference-layout-revision
+                (plist-get identity :canvas-reference-layout-revision)
+                :canvas-source-evidence
+                (e-cache-efficiency-e2e--canvas-source-evidence effective-options)
+                :canvas-operations
+                (e-cache-efficiency-e2e--canvas-operation-evidence messages)
                 :user-scenario
                 (e-cache-efficiency-e2e--p3-live-scenario
                  (or user-text ""))
@@ -2781,6 +2966,8 @@ STEPS defaults to the original three-step public-API scenario."
         :api (plist-get request :api)
         :transport (plist-get request :transport)
         :requester (plist-get request :requester)
+        :canvas-reference-layout-revision
+        (plist-get request :canvas-reference-layout-revision)
         :stable-prefix-fingerprint
         (plist-get request :stable-prefix-fingerprint)
         :provider-request-id (plist-get request :provider-request-id)
@@ -4557,6 +4744,513 @@ source.  Both runs share the same prompts and evidence checks."
             ((equal cache-result "static-prefix-only")
              (ert-fail "Only static cache reads were observed as tool history grew."))
             (t (ert-skip (format "Growing cache benefit is unconfirmed: %s" cache-result)))))))
+
+(defun e-cache-efficiency-e2e--f99-anthropic-route ()
+  "Return the exact normal-source gateway route or skip without a credential."
+  (e-live-e2e--require-enabled)
+  (let ((config (e-live-e2e--config-file)))
+    (unless (and config
+                 (equal (file-truename config)
+                        (file-truename
+                         (expand-file-name "e2e/e-e2e-config-anthropic-p3.el"
+                                           default-directory))))
+      (ert-skip "Select the isolated normal-source Anthropic gateway config.")))
+  (let* ((provider e-anthropic-default-provider)
+         (profile (e-anthropic-provider-profile provider))
+         (base-url (e-anthropic--provider-base-url profile))
+         (model (e-anthropic--provider-model profile nil))
+         (env-key (plist-get profile :env-key))
+         (options (list :model model
+                        :canvas-reference-layout-revision
+                        e-context-canvas-reference-layout-revision))
+         (identity
+          (e-anthropic--context-capability-identity
+           provider options :base-url base-url :model model
+           :requester 'messages-http-start)))
+    (unless (and (equal model "claude-opus-5-5")
+                 (e-anthropic--context-capability-supported-p identity))
+      (ert-skip "Configured route is not the reviewed gateway Opus 5.5 route."))
+    (unless (and (stringp env-key)
+                 (not (string-empty-p (or (getenv env-key) ""))))
+      (ert-skip "Gateway authentication is unavailable."))
+    identity))
+
+(defun e-cache-efficiency-e2e--f99-stable-instructions ()
+  "Return a stable prefix longer than the gateway cache minimum."
+  (mapconcat (lambda (index) (format "F99 stable cache instruction %d" index))
+             (number-sequence 1 1500) "\n"))
+
+(defun e-cache-efficiency-e2e--f99-canvas-layer (&optional probe-steps)
+  "Return a private test layer with stable guidance and optional probe tool."
+  (e-layer-create
+   :id 'f99-canvas-cache-qualification
+   :name "F99 Canvas cache qualification"
+   :capabilities
+   (list
+    (e-capability-create
+     :id 'f99-canvas-cache-qualification
+     :instructions (e-cache-efficiency-e2e--f99-stable-instructions)
+     :tools (when probe-steps
+              (list (lambda (registry)
+                      (e-cache-efficiency-e2e--tool-register
+                       registry probe-steps))))))))
+
+(defun e-cache-efficiency-e2e--f99-ensure-chat-session-provider (harness)
+  "Ensure isolated HARNESS has the production current-attachment provider."
+  (unless (seq-some (lambda (capability)
+                      (eq (e-capability-id capability) 'chat-session))
+                    (e-harness-intrinsic-capabilities harness))
+    (e-harness-set-intrinsic-capabilities
+     harness
+     (append (e-harness-intrinsic-capabilities harness)
+             (list (e-chat-session-capability-create)))))
+  t)
+
+(defun e-cache-efficiency-e2e--f99-attach-canvas
+    (harness session-id buffer)
+  "Attach live BUFFER as the private session's primary Canvas."
+  (e-chat-session-attach-context
+   harness session-id
+   (list :uri (concat "buffer://" (buffer-name buffer))
+         :label "F99 qualification canvas"
+         :buffer-name (buffer-name buffer))
+   :canvas t :current-attachments nil))
+
+(defun e-cache-efficiency-e2e--f99-canvas-text (prefix)
+  "Build a substantial synthetic checklist beginning with PREFIX."
+  (mapconcat (lambda (index)
+               (format "- [ ] %s item %03d stable canvas text %s"
+                       prefix index (make-string 70 ?x)))
+             (number-sequence 1 160) "\n"))
+
+(defun e-cache-efficiency-e2e--f99-check-one-item (buffer item-number)
+  "Mark ITEM-NUMBER in BUFFER complete as a private simulated user edit."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (dotimes (index item-number)
+      (unless (search-forward "[ ]" nil t)
+        (error "F99 Canvas fixture has no unchecked item %d" item-number))
+      (when (= index (1- item-number))
+        (replace-match "[x]" t t)))))
+
+(defun e-cache-efficiency-e2e--f99-cache-control-count (value)
+  "Count native cache-control fields recursively in VALUE."
+  (cond
+   ((and (listp value) (or (null value) (keywordp (car value))))
+    (+ (if (plist-member value :cache_control) 1 0)
+       (cl-loop for (_key item) on value by #'cddr
+                sum (e-cache-efficiency-e2e--f99-cache-control-count item))))
+   ((and (vectorp value) (not (stringp value)))
+    (cl-loop for item across value
+             sum (e-cache-efficiency-e2e--f99-cache-control-count item)))
+   ((listp value)
+    (cl-loop for item in value
+             sum (e-cache-efficiency-e2e--f99-cache-control-count item)))
+   (t 0)))
+
+(defun e-cache-efficiency-e2e--f99-capture-request
+    (native requests-by-session args)
+  "Call NATIVE and retain only bounded F99 route/context evidence."
+  (let* ((context (apply native args))
+         (options (plist-get args :options))
+         (session-id (plist-get options :session-id))
+         (messages (plist-get args :messages))
+         (layout-revision
+          (or (plist-get options :canvas-reference-layout-revision)
+              (e-context-canvas-reference-layout-for-messages messages)))
+         (effective-options (copy-sequence options))
+         (_ (when layout-revision
+              (setq effective-options
+                    (plist-put effective-options
+                               :canvas-reference-layout-revision
+                               layout-revision))))
+         (body (e-json-parse-string (plist-get context :body)))
+         (identity
+          (e-anthropic--context-capability-identity
+           (plist-get args :provider) effective-options
+           :base-url (plist-get args :base-url)
+           :model (plist-get body :model)
+           :request-function (plist-get args :request-function)
+           :requester (plist-get args :requester)))
+         (source-evidence
+          (e-cache-efficiency-e2e--canvas-source-evidence effective-options))
+         (records (gethash session-id requests-by-session))
+         (wire-hashes
+          (e-cache-efficiency-e2e--p3-native-item-hashes 'anthropic body))
+         (semantic-hashes
+          (e-cache-efficiency-e2e--p3-native-semantic-item-hashes
+           'anthropic body))
+         (current-hashes (list :native-history-item-sha256 wire-hashes))
+         (prefix-evidence
+          (and records
+               (e-cache-efficiency-e2e--native-prefix-evidence
+                (car (last records)) current-hashes)))
+         (tools (append (plist-get body :tools) nil))
+         (record
+          (append
+           (list :adapter 'anthropic :provider 'anthropic
+                 :route-provider (plist-get identity :provider)
+                 :endpoint (plist-get context :url)
+                 :model (plist-get body :model)
+                 :auth-mode (plist-get identity :auth-mode)
+                 :api (plist-get identity :api)
+                 :transport (plist-get identity :transport)
+                 :requester (plist-get identity :requester)
+                 :canvas-reference-layout-revision layout-revision
+                 :request-ordinal (1+ (length records))
+                 :stable-prefix-fingerprint
+                 (e-cache-efficiency-e2e--static-fingerprint body options)
+                 :native-request-sha256
+                 (secure-hash 'sha256 (e-json-serialize body))
+                 :native-history-item-sha256 wire-hashes
+                 :native-semantic-history-item-sha256 semantic-hashes
+                 :canvas-operations
+                 (e-cache-efficiency-e2e--canvas-operation-evidence messages)
+                 :cache-control-count
+                 (e-cache-efficiency-e2e--f99-cache-control-count body)
+                 :context-curation-tool-present
+                 (and (seq-some
+                       (lambda (tool)
+                         (equal (plist-get tool :name) "context-curate"))
+                       tools)
+                      t))
+           source-evidence
+           prefix-evidence)))
+    (puthash session-id (append records (list record)) requests-by-session)
+    context))
+
+(defun e-cache-efficiency-e2e--f99-probe-prompt (step)
+  "Return a bounded Canvas cache prompt for PROBE STEP."
+  (format "Call cache_probe once with step %d and wait for its result. Return only the PROBE code. Do not edit the attached Canvas."
+          step))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-canvas-layout-e1-minimal ()
+  "Probe the changed Canvas layout on the normal gateway route (E1)."
+  (let* ((identity (e-cache-efficiency-e2e--f99-anthropic-route))
+         (layer (e-cache-efficiency-e2e--f99-canvas-layer))
+         (started-at (float-time))
+         (deadline (+ started-at (e-live-e2e--cache-scenario-timeout)))
+         (requests-by-session (make-hash-table :test #'equal))
+         (native (symbol-function 'e-anthropic--request-context))
+         (semantic-result "unavailable")
+         (semantic-failure nil)
+         (provider-error nil))
+    (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (e-cache-efficiency-e2e--f99-ensure-chat-session-provider harness)
+      (with-temp-buffer
+        (rename-buffer "e99-canvas-e1" t)
+        (insert (e-cache-efficiency-e2e--f99-canvas-text "E1"))
+        (e-cache-efficiency-e2e--f99-attach-canvas
+         harness session-id (current-buffer))
+        (cl-letf (((symbol-function 'e-anthropic--request-context)
+                   (lambda (&rest args)
+                     (e-cache-efficiency-e2e--f99-capture-request
+                      native requests-by-session args))))
+          (condition-case _caught
+              (progn
+                (dolist (_index '(1 2))
+                  (let* ((result
+                          (e-live-e2e--prompt-batch-before-deadline
+                           harness session-id
+                           "Reply exactly E99-CANVAS-E1-OK. Do not call tools or edit the Canvas."
+                           deadline))
+                         (answer (e-live-e2e--assistant-content result)))
+                    (unless (string-match-p "E99-CANVAS-E1-OK" answer)
+                      (setq semantic-failure t))))
+                (setq semantic-result
+                      (if semantic-failure "semantic-failure" "pass")))
+            (error (_caught)
+              (unless semantic-failure (setq provider-error t)))))
+        (let* ((requests (gethash session-id requests-by-session))
+               (start-payloads
+                (mapcar (lambda (event) (plist-get event :payload))
+                        (e-live-e2e--activity-of-type
+                         harness session-id 'provider-request-started)))
+               (joined-requests
+                (e-cache-efficiency-e2e--join-request-starts
+                 requests start-payloads))
+             (usage
+              (mapcar (lambda (event) (plist-get event :payload))
+                      (e-live-e2e--activity-of-type
+                       harness session-id 'token-usage)))
+             (evidence (e-cache-efficiency-e2e--join-request-usage
+                          joined-requests usage))
+             (usage-complete
+              (e-cache-efficiency-e2e--usage-join-complete-p evidence))
+             (cache-fields-accepted
+              (and (>= (length joined-requests) 2)
+                   (cl-every (lambda (request)
+                               (and (equal
+                                     (e-anthropic--context-capability-route-identity
+                                      identity)
+                                     (e-anthropic--context-capability-route-identity
+                                      request))
+                                    (> (plist-get request :cache-control-count) 0)
+                                    (equal (plist-get request
+                                                      :canvas-reference-layout-revision)
+                                           e-context-canvas-reference-layout-revision)
+                                    (= (plist-get request :canvas-source-count) 1)
+                                    (plist-get request :canvas-source-present)
+                                    (plist-get request
+                                               :canvas-source-revision-matches-content)
+                                    (not (plist-get request
+                                                    :context-curation-tool-present))))
+                             joined-requests)))
+             (counters-observed
+              (and evidence
+                   (cl-every (lambda (request)
+                               (and (numberp (plist-get request :input-tokens))
+                                    (or (numberp
+                                         (plist-get request :cached-input-tokens))
+                                        (numberp
+                                         (plist-get request
+                                                    :cache-creation-input-tokens)))))
+                             evidence)))
+             (capability-result
+              (cond
+               (provider-error "provider/infrastructure-failure")
+               ((not cache-fields-accepted)
+                "product-failure-layout-or-cache-wire")
+               ((and usage-complete counters-observed) "pass")
+               (t "unconfirmed"))))
+        (e-cache-efficiency-e2e--report-canvas-evidence
+         (list :scenario "F99-E1-canvas-layout-minimal"
+               :accepted-source-revision (e-live-e2e--repository-revision)
+               :completed-at-utc (format-time-string "%FT%TZ" nil t)
+               :elapsed-seconds (- (float-time) started-at)
+               :effective-route (e-anthropic--context-capability-route-identity
+                                 identity)
+               :canvas-reference-layout-revision
+               e-context-canvas-reference-layout-revision
+               :semantic-result semantic-result
+               :growing-reuse-result "not-measured"
+               :route-capability-result capability-result
+               :curation-capability-result "unconfirmed-unavailable-no-P3"
+               :provider-request-start-count (length start-payloads)
+               :request-count (length joined-requests)
+               :usage-event-count (length usage)
+               :usage-join-complete usage-complete
+               :requests (vconcat evidence)))
+        (when provider-error
+          (ert-skip "E1 provider request failed; evidence is unconfirmed."))
+        (when semantic-failure
+          (ert-fail "E1 semantic answer contradicted its requested result."))
+        (should (equal semantic-result "pass"))
+        (should (>= (length joined-requests) 2))
+        (should (equal (e-anthropic--context-capability-route-identity identity)
+                       (e-anthropic--context-capability-route-identity
+                        (car joined-requests))))
+        (cond
+         ((equal capability-result "pass") t)
+         ((equal capability-result "unconfirmed")
+          (ert-skip "E1 provider usage counters are unavailable; qualification is unconfirmed."))
+         (t (ert-fail (format "E1 request shape contradicted the reviewed layout: %s"
+                              capability-result)))))))))
+
+(ert-deftest e-cache-efficiency-e2e-test-f99-canvas-layout-e2-growing-history ()
+  "Compose ordinary Canvas revisions with the normal route E2 cache predicate."
+  (let* ((identity (e-cache-efficiency-e2e--f99-anthropic-route))
+         (layer (e-cache-efficiency-e2e--f99-canvas-layer 3))
+         (started-at (float-time))
+         (deadline (+ started-at (e-live-e2e--cache-scenario-timeout)))
+         (requests-by-session (make-hash-table :test #'equal))
+         (native (symbol-function 'e-anthropic--request-context))
+         (semantic-result "unavailable")
+         (semantic-failure nil)
+         (provider-error nil))
+    (e-live-e2e--with-harness (harness session-id :layers (list layer))
+      (e-cache-efficiency-e2e--f99-ensure-chat-session-provider harness)
+      (with-temp-buffer
+        (rename-buffer "e99-canvas-e2" t)
+        (insert (e-cache-efficiency-e2e--f99-canvas-text "E2 initial"))
+        (let ((canvas-buffer (current-buffer)))
+          (e-cache-efficiency-e2e--f99-attach-canvas
+           harness session-id canvas-buffer)
+          (cl-letf (((symbol-function 'e-anthropic--request-context)
+                     (lambda (&rest args)
+                       (e-cache-efficiency-e2e--f99-capture-request
+                        native requests-by-session args))))
+            (condition-case _caught
+                (progn
+                  (dolist (step '(1 2 3))
+                    (let* ((result
+                            (e-live-e2e--prompt-batch-before-deadline
+                             harness session-id
+                             (e-cache-efficiency-e2e--f99-probe-prompt step)
+                             deadline))
+                           (answer (e-live-e2e--assistant-content result)))
+                      (unless (string-match-p
+                               (format "PROBE-%d-CODE=%d" step (+ 731 step))
+                               answer)
+                        (setq semantic-failure t))
+                      (when (< step 3)
+                        (e-cache-efficiency-e2e--f99-check-one-item
+                         canvas-buffer step)))))
+              (error (_caught)
+                (unless semantic-failure (setq provider-error t))))
+            (unless (or provider-error semantic-failure)
+              (with-current-buffer canvas-buffer
+                (erase-buffer)
+                (insert (e-cache-efficiency-e2e--f99-canvas-text
+                         "E2 large rewrite")))
+              (let* ((result
+                      (e-live-e2e--prompt-batch-before-deadline
+                       harness session-id
+                       "Reply exactly F99-CANVAS-RESET-OK. Do not call tools or edit the Canvas."
+                       deadline))
+                     (answer (e-live-e2e--assistant-content result)))
+                (unless (string-match-p "F99-CANVAS-RESET-OK" answer)
+                  (setq semantic-failure t)))
+              (unless (or provider-error semantic-failure)
+                (setq semantic-result "pass")))
+            (when semantic-failure
+              (setq semantic-result "semantic-failure"))))
+      (let* ((requests (gethash session-id requests-by-session))
+             (start-payloads
+              (mapcar (lambda (event) (plist-get event :payload))
+                      (e-live-e2e--activity-of-type
+                       harness session-id 'provider-request-started)))
+             (joined-requests
+              (e-cache-efficiency-e2e--join-request-starts
+               requests start-payloads))
+             (usage
+              (mapcar (lambda (event) (plist-get event :payload))
+                      (e-live-e2e--activity-of-type
+                       harness session-id 'token-usage)))
+             (evidence (e-cache-efficiency-e2e--join-request-usage
+                        joined-requests usage))
+             (usage-complete
+              (e-cache-efficiency-e2e--usage-join-complete-p evidence))
+             (cache-result
+              (e-cache-efficiency-e2e--qualified-growing-cache-result evidence))
+             (layouts
+              (delete-dups
+               (mapcar (lambda (request)
+                         (plist-get request
+                                    :canvas-reference-layout-revision))
+                       joined-requests)))
+             (source-revisions
+              (mapcar (lambda (request)
+                        (plist-get request :canvas-source-revision))
+                      joined-requests))
+             (operations
+              (apply #'append
+                     (mapcar (lambda (request)
+                               (append (plist-get request :canvas-operations) nil))
+                             joined-requests)))
+             (source-integrity
+              (and requests
+                   (cl-every
+                    (lambda (request)
+                      (let ((revision (plist-get request :canvas-source-revision))
+                            (request-operations
+                             (append (plist-get request :canvas-operations) nil)))
+                        (and (= (plist-get request :canvas-source-count) 1)
+                             (plist-get request :canvas-source-present)
+                             (plist-get request
+                                        :canvas-source-revision-matches-content)
+                             (seq-some
+                              (lambda (operation)
+                                (equal revision (plist-get operation :revision)))
+                              request-operations))))
+                             joined-requests)))
+             (unchanged-canvas-reobserved
+              (let ((previous nil))
+                (seq-some (lambda (revision)
+                            (prog1 (and previous (equal previous revision))
+                              (setq previous revision)))
+                          source-revisions)))
+             (small-edit-patch-count
+              (length (delete-dups
+                       (cl-loop for operation in operations
+                                when (eq (plist-get operation :representation) 'patch)
+                                collect (plist-get operation :revision)))))
+             (route-stable
+              (and joined-requests source-integrity
+                   (cl-every
+                    (lambda (request)
+                      (and (equal (e-anthropic--context-capability-route-identity
+                                   identity)
+                                  (e-anthropic--context-capability-route-identity
+                                   request))
+                           (equal (plist-get request
+                                             :canvas-reference-layout-revision)
+                                  e-context-canvas-reference-layout-revision)
+                           (> (plist-get request :cache-control-count) 0)
+                           (not (plist-get request
+                                           :context-curation-tool-present))))
+                    joined-requests)))
+             (snapshot-revisions
+              (mapcar (lambda (operation)
+                        (and (eq (plist-get operation :representation) 'snapshot)
+                             (plist-get operation :revision)))
+                      operations))
+             (reset-observed
+              (and source-revisions
+                   (cl-some (lambda (revision)
+                             (and revision (not (member revision
+                                                       (butlast source-revisions)))))
+                           (last source-revisions))
+                   (seq-some (lambda (revision)
+                               (and revision (member revision snapshot-revisions)))
+                             (last source-revisions))))
+             (growing-result
+              (cond
+               (provider-error "provider/infrastructure-failure")
+               ((not route-stable) "semantic-failure-route-identity")
+               ((and usage-complete
+                     (equal cache-result "growing-history-reuse"))
+                cache-result)
+               ((and usage-complete
+                     (member cache-result
+                             '("static-prefix-only" "insufficient-history-reuse"
+                               "history-not-growing" "prefix-changed")))
+                cache-result)
+               (t (concat "unconfirmed:" cache-result)))))
+        (e-cache-efficiency-e2e--report-canvas-evidence
+         (list :scenario "F99-E2-canvas-growing-history"
+               :accepted-source-revision (e-live-e2e--repository-revision)
+               :completed-at-utc (format-time-string "%FT%TZ" nil t)
+               :elapsed-seconds (- (float-time) started-at)
+               :effective-route (e-anthropic--context-capability-route-identity
+                                 identity)
+               :canvas-reference-layout-revision
+               e-context-canvas-reference-layout-revision
+               :semantic-result semantic-result
+               :growing-reuse-result growing-result
+               :curation-capability-result "unconfirmed-unavailable-no-P3"
+               :static-only-control
+               "initial whole-request input is the conservative ceiling; the credential-free classifier has an explicit static-prefix-only negative control"
+               :usage-event-count (length usage)
+               :provider-request-start-count (length start-payloads)
+               :usage-join-complete usage-complete
+               :distinct-canvas-source-revision-count
+               (length (delete-dups (copy-sequence source-revisions)))
+               :unchanged-canvas-reobserved unchanged-canvas-reobserved
+               :small-edit-patch-revision-count small-edit-patch-count
+               :large-rewrite-reset-observed reset-observed
+               :requests (vconcat evidence)))
+        (when provider-error
+          (ert-skip "E2 provider request failed; evidence is unconfirmed."))
+        (when semantic-failure
+          (ert-fail "E2 Canvas/tool result contradicted its requested behavior."))
+        (should (equal semantic-result "pass"))
+        (should route-stable)
+        (should (equal (car layouts)
+                       e-context-canvas-reference-layout-revision))
+        (should (>= (length (delete-dups (copy-sequence source-revisions))) 4))
+        (should unchanged-canvas-reobserved)
+        (should (>= small-edit-patch-count 2))
+        (should reset-observed)
+        (cond
+         ((equal growing-result "growing-history-reuse") t)
+         ((member growing-result
+                  '("static-prefix-only" "insufficient-history-reuse"
+                    "history-not-growing" "prefix-changed"))
+          (ert-fail (format "Valid E2 route contradicted growing reuse: %s"
+                            growing-result)))
+         (t (ert-skip (format "E2 growing reuse remains unconfirmed: %s"
+                              growing-result)))))))))
 
 (provide 'e-cache-efficiency-e2e-test)
 ;;; e-cache-efficiency-e2e-test.el ends here

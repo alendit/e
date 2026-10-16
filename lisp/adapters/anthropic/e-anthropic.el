@@ -1241,7 +1241,9 @@ and are resolved here only when MODEL is absent."
           :requester (or requester
                          (if request-function
                              'injected
-                           'messages-http-start)))))
+                           'messages-http-start))
+          :canvas-reference-layout-revision
+          (plist-get options :canvas-reference-layout-revision))))
 
 (defun e-anthropic--context-capability-route-identity (identity)
   "Return only the effective route fields from capability IDENTITY."

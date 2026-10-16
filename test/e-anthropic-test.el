@@ -1110,6 +1110,70 @@ Models such as Haiku reject `adaptive' thinking; a subagent harness opts out."
        (seq-some (lambda (tool) (equal (plist-get tool :name) "context-curate"))
                  (append (plist-get wrong-body :tools) nil))))))
 
+(ert-deftest e-anthropic-test-canvas-layout-identity-is-separate-from-route ()
+  "Canvas layout changes evidence identity without changing F98 route identity."
+  (let* ((provider 'eng-ai-gateway-opus-5-5)
+         (process-environment
+          (cons "ENG_AI_MODEL_GW_KEY=synthetic-only" process-environment))
+         (base-url
+          "https://eng-ai-model-gateway.sfproxy.devx-preprod.aws-esvc1-useast2.aws.sfdc.cl/v1")
+         (model "claude-opus-5-5")
+         (profile `(:base-url ,base-url :auth bearer :auth-header authorization
+                    :env-key "ENG_AI_MODEL_GW_KEY" :model-prefix ""
+                    :default-model ,model))
+         (e-anthropic-model-providers (list (cons provider profile)))
+         (base-identity
+          (e-anthropic--context-capability-identity
+           provider `(:model ,model) :base-url base-url :model model
+           :requester 'messages-http-start))
+         (canvas-options `(:model ,model))
+         (canvas-message
+          '(:role context
+            :metadata (:e-canvas-reference t)
+            :content "<canvas active revision>"))
+         (original-identity
+          (symbol-function 'e-anthropic--context-capability-identity))
+         captured-identity)
+    (cl-letf (((symbol-function 'e-anthropic--context-capability-identity)
+               (lambda (&rest arguments)
+                 (setq captured-identity (apply original-identity arguments))
+                 captured-identity)))
+      (let ((context
+             (e-anthropic--request-context
+              :provider provider :base-url base-url :model model
+              :requester 'messages-http-start :messages (list canvas-message)
+              :options canvas-options)))
+        (should-not
+         (seq-some (lambda (tool)
+                     (equal (plist-get tool :name) "context-curate"))
+                   (append
+                    (plist-get (e-json-parse-string (plist-get context :body))
+                               :tools)
+                    nil))))
+      (should (equal (plist-get captured-identity
+                                :canvas-reference-layout-revision)
+                     e-context-canvas-reference-layout-revision))
+      (should-not (equal captured-identity base-identity))
+      (should (equal (e-anthropic--context-capability-route-identity
+                      captured-identity)
+                     (e-anthropic--context-capability-route-identity
+                      base-identity))))
+    (should (eq (plist-get
+                 (e-anthropic-context-capabilities
+                  provider `(:model ,model
+                             :canvas-reference-layout-revision
+                             ,e-context-canvas-reference-layout-revision)
+                  :base-url base-url :model model
+                  :requester 'messages-http-start)
+                 :reserved-effect-carrier)
+                'none))
+    (should (eq (plist-get
+                 (e-anthropic-context-capabilities
+                  provider `(:model ,model) :base-url base-url :model model
+                  :requester 'messages-http-start)
+                 :reserved-effect-carrier)
+                'context-curate-wire))))
+
 (ert-deftest e-anthropic-test-request-body-retains-native-tool-schema ()
   "Messages carries the native operation schema without reinterpretation."
   (let* ((body
