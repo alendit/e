@@ -1,0 +1,6 @@
+#+title: Review: Versioned Canvas Context and Cache Placement
+#+startup: overview
+
+* Status
+
+In-review. Independent implementation Tick pending on candidate8dd56b45. This placeholder makes no fixed-point claim. See implementation.org for accepted package boundaries and current validation evidence. Changed-layout external capability remains unconfirmed.

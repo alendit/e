@@ -4,7 +4,9 @@
 
 * Status and authority
 
-Planned; implementation-plan validation is in progress.
+Implemented in the isolated candidate; final independent implementation review is pending.
+Deterministic validation and actual Daily/Canvas evidence are recorded in [[file:implementation.org][implementation.org]].
+Changed-layout growing-reuse and curation qualification remain capability-unconfirmed.
 The operator authorized validation and implementation on 2026-10-16 through =my-skills:complex-work=.
 The accepted direction is canvas reference-data placement plus versioned snapshots and exact diffs, with byte-based selection rather than changed-line percentages.
 Section checkouts remain a follow-up, and existing targeted =read= operations remain available.
@@ -20,7 +22,7 @@ The numbered contract rows below are this feature's sole normative requirements;
 | Direct scenario | A Daily is open; the user changes a checkbox, the agent edits a section through ordinary resource tools, and intervening tools leave the document unchanged. Requests use the correct revision and stale agent writes preserve newer user text. Compaction or lost context establishes a valid new baseline. |
 | Product authority | The operator owns behavioral changes; the primary may resolve supporting implementation choices within the authorized two-issue scope. |
 | Owning contracts | C1–C7 below |
-| Behavioral status | Unavailable before implementation; historical cache observations do not establish F99 behavior. |
+| Behavioral status | Repository-controlled behavior is validated in private tests and actual Daily/Canvas composition; independent review is pending and external qualification remains unconfirmed. |
 
 * Current evidence
 

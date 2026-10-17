@@ -1,0 +1,64 @@
+#+title: Feature 99 implementation and validation
+#+date: 2026-10-17
+
+* Result
+
+Canvas placement, exact byte-selected changes and guarded ordinary resource edits are implemented. The isolated candidate passed the deterministic suite, current-config cold start and actual Grimoire Daily/Org Canvas composition. Independent implementation review is pending; external growing-reuse and curation qualification remain unconfirmed. The feature stays In-review.
+
+The user Emacs, actual Daily documents, Boards, store and configuration were left unchanged. Core, adapter and request-state changes require a full Emacs restart to use after integration. No push or runtime activation is part of this delivery.
+
+* Implementation boundaries
+
+| Package | Accepted implementation | Result |
+|---------+-------------------------+--------|
+| DP1/C1 | 8e2d228f | Canvas body and editor reference data follow reusable history; instructions retain authority; material layout fences native anchors. |
+| DP2/C2–C6 | f4bff4ae, corrected by 3001daf2 | One exact source capture, linear replacement span, serialized UTF-8 byte selection, selected-path chronology, success-only process-local settlement, ordinary file/buffer revision guards and aliases. Noncanvas reads/dispatch and custom contexts retain their semantics. |
+| DP3/C7 local | f4de67f9 | Exact route/layout evidence identity, source-owned reviewed-layout allowlist empty by default, explicit unconfirmed disposition. |
+| Actual Daily proof | 8dd56b45 | Two fresh graphical processes use candidate owners and worker sources, the actual Grimoire Daily API and ordinary Canvas resource tools through the real Anthropic adapter/parser with synthetic transport. |
+
+The normative C1–C7 matrix remains in plan.org. Its admission identity was plan SHA256 06188c4cbe40cd77d8f9014437857a21ae40893c20dc6e7afb3dbd0f6b17e535 at 008f096f; subsequent plan changes update status/evidence only. Plan Review02 permits implementation and does not establish implementation acceptance.
+
+* Deterministic validation
+
+The current-config cold start completed 9/9. The earlier reported 2909/2909 canonical result lacks a preserved transcript and is not credited for final acceptance. A full canonical rerun on the final committed candidate is pending, with durable output required before independent review.
+
+The current-config gate used a private copy of the current Doom/generated profile with source-path substitutions, private runtime/cache directories and a private Grimoire project copy for adjacent byte-compilation outputs. [[file:evidence/current-config-grimoire-sources.json][The manifest]] records 18/18 runtime Elisp sources byte-identical to configured Grimoire 2504efd. [[file:evidence/current-config.log][The final cold-start log]] verifies candidate owner modules, selected worker entry/session worker/codec and no foreign runtime modules. No source reloading repairs a mixed process: the passing run starts fresh.
+
+Package-focused tests covered exact Unicode/empty/deletion/single-line patches, byte-envelope selection and bounded chains; native chronology across all three serializers; exact current evidence-handle resolution; failure/cancel/stale completion, branch/generation/curation and lost-state resets; missing/stale/fresh WRITE and EDIT through file/buffer aliases, nested and async dispatch; and preservation of unrelated operations. Negative controls proved native reordering and harness-identity assertions detect the corresponding defects.
+
+* Actual Daily and Canvas E2E
+
+Run e2e/run-f99-daily-graphical-acceptance.sh with GRIMOIRE_DAILY_GRAPHICAL_TEST_FILE pointing to the configured Grimoire graphical-daily-test.el and the candidate e2e graphical runner. Both independent processes passed 1/1. Screenshots were inspected, including the final saved edit and fresh-process snapshot.
+
+[[file:evidence/daily-phase-one.el][Phase one]] records a 5076-byte initial exact snapshot, unchanged turn without a duplicate, an actual checkbox edit whose patch reconstructs the current document, successful guarded file EDIT, stale WRITE preserving both disk and newer unsaved buffer text, fresh dirty-buffer read/reconsideration and successful buffer EDIT. It made 14 native requests through fixture SSE. [[file:evidence/daily-phase-two.el][Phase two]] reopens the same Daily in a fresh process and sends a complete 5121-byte current snapshot with no old patch dependency. [[file:evidence/daily-source-provenance.el][The pre-request provenance record]] verifies candidate semantic/resource/store owners and spawned worker selection with no foreign runtime modules.
+
+The transport is synthetic. This is proof of actual Daily/Canvas/harness/resource/native/UI composition, not live gateway qualification. Earlier mixed-source graphical runs were discarded after source-provenance assertions exposed an installed checkout taking precedence.
+
+* External capability
+
+The changed-layout allowlist remains empty. Existing F98 qualification does not transfer to this material shape. A controlled gateway E2 response had HTTP 200, stop_reason=refusal, no native content blocks/output tokens and no parser error. It did not execute the semantic/tool scenario or growing-cache predicate, so it establishes neither reuse nor an outage/cache-contract contradiction. Simple E1 controls answered; that limits the refusal finding to the scripted scenario. Earlier candidates and incomplete runners are diagnostic evidence, not final qualification.
+
+Activation requires an explicitly reviewed exact route/layout source entry backed by fresh normal-source P3 evidence with zero wrapper grants, plus the existing F98 route predicate. No runtime promotion database or caller option grants capability. No growing-reuse, token-savings percentage or P3 curation qualification is claimed.
+
+* Architecture self-check
+
+| Question | Answer |
+|----------+--------|
+| Useful stopping point? | Current full reference placement, exact guarded revisions and honest gating each provide a usable package boundary. |
+| Final direction? | Stable reusable history with current exact Canvas observations. |
+| Stable versus uncertain decisions? | Exactness and ownership are stable; byte thresholds and single-span policy are private, reversible tuning. |
+| Behavior owner? | Harness owns chronology/settlement, resource owners own atomic mutations, adapters own native shape/capability, shells own editor presentation. |
+| Coupling/interfaces? | Existing context, operation and resource seams carry narrow revision metadata; no separate document service. |
+| Dependency direction? | Provider-neutral policy depends on core contracts; native adapters and resource implementations consume them. |
+| Side effects? | Capture at contributing providers and mutation at file/buffer owners; pure patch construction has no resource effects. |
+| State lifetime? | Rebuildable harness-local accepted chains, scoped by session/document/selected path/generation/layout; restart safely snapshots. |
+| Performance? | Full capture and exact span construction/application are linear in operand size; byte ratios and chain limits bound retained deltas. Whole-request usage is observational. |
+| Real abstractions? | Exact capture, replacement span and existing semantic/native boundaries; no speculative checkout or journal API. |
+| Compatibility? | Ordinary noncanvas reads/dispatch/custom contexts preserved; incompatible material native anchors are rejected. |
+| Legacy removal? | Canvas bodies leave the dynamic system prefix; no unrelated legacy migration is included. |
+| Error handling? | Expected stale revisions return conflict/current revision before effects; missing sources and unexpected protocol/encoding errors surface. |
+| Independent tests? | Pure policy, owner behavior, native composition, lifecycle and actual Daily graphical witnesses localize failures. |
+
+* Limits
+
+Section checkouts are deferred. Arbitrary shell or unrestricted Lisp mutation is outside ordinary resource revision protection. Byte defaults do not assert an optimal savings percentage. Whole-request cache counters do not isolate Canvas cost.

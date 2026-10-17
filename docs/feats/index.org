@@ -424,4 +424,4 @@ running Emacs and Board were unchanged; the core/adapter change needs a restart.
 | 96 | Done        | 96-reliable-tool-continuations-and-daily-completion/    | Reliable Tool Continuations and Daily Completion   |
 | 97 | In-review   | 97-anthropic-messages-parity-and-claude-55/              | Anthropic Messages Parity and Claude 5.5 Gateway Models |
 | 98 | In-review | 98-growing-conversation-prompt-cache/                   | Growing Conversation Prompt Cache Remediation       |
-| 99 | In-progress | 99-versioned-canvas-context/                            | Versioned Canvas Context and Cache Placement        |
+| 99 | In-review | 99-versioned-canvas-context/                            | Versioned Canvas Context and Cache Placement        |
