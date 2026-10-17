@@ -3,7 +3,7 @@
 
 * Result
 
-Canvas placement, exact byte-selected changes and guarded ordinary resource edits are implemented. The isolated candidate passed the deterministic suite, current-config cold start and actual Grimoire Daily/Org Canvas composition. Independent implementation review is pending; external growing-reuse and curation qualification remain unconfirmed. The feature stays In-review.
+Canvas placement, exact byte-selected changes and guarded ordinary resource edits are implemented. The isolated candidate passed the deterministic suite, current-config cold start and actual Grimoire Daily/Org Canvas composition. Independent Review 01 found four resource-authority/lifetime defects; remediation is pending. External growing-reuse and curation qualification remain unconfirmed. The feature stays In-review.
 
 The user Emacs, actual Daily documents, Boards, store and configuration were left unchanged. Core, adapter and request-state changes require a full Emacs restart to use after integration. No push or runtime activation is part of this delivery.
 
@@ -18,7 +18,9 @@ The user Emacs, actual Daily documents, Boards, store and configuration were lef
 
 The normative C1–C7 matrix remains in plan.org. Its admission identity was plan SHA256 06188c4cbe40cd77d8f9014437857a21ae40893c20dc6e7afb3dbd0f6b17e535 at 008f096f; subsequent plan changes update status/evidence only. Plan Review02 permits implementation and does not establish implementation acceptance.
 
-* Deterministic validation
+* Deterministic validation before Review 01
+
+These gates validate the exercised scenarios; they do not close Review 01 I1–I4.
 
 The final canonical Eldev rerun passed 2909/2909, zero unexpected and zero skipped, at committed candidate 2ef06b3e (runtime/native/UI source 8dd56b45). The full run took 412 seconds. [[file:evidence/canonical.json][The gate record]] contains the source revision, command, private dependency setup, exact counts and raw/compressed transcript hashes; [[file:evidence/canonical.log.gz][the complete transcript]] is preserved. The current-config cold start passed 9/9 on the same runtime source. Later evidence-only documentation commits do not alter lisp/, test/ or e2e/ source.
 

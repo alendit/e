@@ -1,6 +1,212 @@
-#+title: Review: Versioned Canvas Context and Cache Placement
+#+title: Feature 99 independent implementation review 01
+#+date: 2026-10-17
 #+startup: overview
 
-* Status
+* Decision
 
-In-review. Independent implementation Tick pending on candidate8dd56b45. This placeholder makes no fixed-point claim. See implementation.org for accepted package boundaries and current validation evidence. Changed-layout external capability remains unconfirmed.
+In-review. =deterministic-fixed-point= is not established. Four actionable findings remain: one High/P1 guard bypass and three Medium/P2 authoritative-resource/lifetime defects. There are no additional required unknowns hidden as follow-ups.
+
+The ordinary unnarrowed Daily/Canvas scenario is implemented and has credible isolated composition evidence. The full accepted contract is not satisfied across indirect buffers, narrowed buffers, file save/create behavior and detached canvas lifetime. Mechanism completion and green gates do not close these partitions.
+
+External changed-layout status remains =capability-unconfirmed=. No valid current external growing-reuse or P3 success is claimed. The supplied earlier refusal does not establish a cache predicate failure or an outage, and it is not final-source qualification. The external result does not independently block this deterministic review; the repository findings do.
+
+* Scope, authority and identity
+
+Reviewed exact candidate =bb4a81e9ada153a8e9b43009b9b9d9c4b3e1f4f5= at =/private/tmp/e-f99-work/candidate=.
+Source comparison base =135d3f3fcdd81a44d6b138d2eed59878dce0aedd=.
+Scope: F99-G1/C1--C7, DP1--DP3, S1--S5, all shipped serializers, ordinary resource dispatch including nested/cooperative consumers, selected-path/response lifecycle, exact capture/patch policy, route/evidence disposition, current-config cold start, and actual Daily/Org Canvas composition.
+
+Plan Review02 established implementation-plan-fixed-point at =008f096f6dd616bdd01c2f93c2ae3993f0db1d1b=, plan SHA256 =06188c4cbe40cd77d8f9014437857a21ae40893c20dc6e7afb3dbd0f6b17e535=. The subsequent plan diff changes only status/evidence prose; C1--C7 and the delivery relation are unchanged. Plan findings R1--R6 remain resolved as plan decisions; this review evaluates their actual realization.
+
+Architecture and terminology authority: AGENTS.md, docs/agents/review.org, docs/references/runtime_concepts.org and the unchanged Feature 98 contracts. Existing harness, session, turn, context provider, resource operation, action and tool distinctions are preserved; expectedRevision is the selected narrow operation addition. Section checkout remains deferred.
+
+Git subtree identities at the reviewed commit:
+#+begin_example
+lisp  4ec42b552c390fdcca0f9c1f12794356117ae30d
+test  6458899edb6e5540b08309d8f958e813710fffca
+e2e   30a5c58e6406512ada9e0698de72a7c5b1bd588a
+#+end_example
+
+The only untracked candidate path is =target/=, pre-existing generated validation residue outside delivery. This reviewer changed only temporary probes/reports/logs under =/private/tmp/e-f99-work=. No candidate source, Git, user Emacs, Daily, Board/store, configuration or external service was changed.
+
+* Findings
+
+** TODO High I1: Indirect buffer aliases bypass the canvas revision guard
+
+Contracts: C6; S5. Owner: canonical resource identity at =e-context-canvas-resource-identities= and file/buffer resource consumers.
+
+The guard recognizes a buffer name and, only when that buffer has buffer-file-name, its visiting file (=lisp/core/e-context-canvas.el:170--202=). It never follows buffer-base-buffer. An indirect buffer shares the attached canvas's actual text but has buffer-file-name=nil. Its buffer:// URI therefore fails target intersection and is treated as an ordinary noncanvas resource.
+
+=e-emacs-tools--write-buffer-resource= decides guarded-p from an explicit expectation or that target check (=lisp/layers/emacs/e-emacs-tools.el:428--449=). A missing expectedRevision through the indirect alias consequently reaches erase-buffer/insert and overwrites newer attached canvas text. Cheap ordinary operation dispatch does not acquire an alternative guard; the cooperative path also ultimately relies on the same file/buffer owner resolution.
+
+Independent proof: =reviewer-risk-probes.el= creates an attached base buffer with newer user text and an indirect alias, registers the shipped buffer resource methods and ordinary resource tools, and calls the ordinary write tool through =e-tools-execute-nested-cheap-with-context= with the trusted attached-target scope and no expectation. Output:
+#+begin_example
+INDIRECT targeted=nil file-name=nil conflict=nil base-changed=t
+ORDINARY-INDIRECT tool-status=ok conflict=nil base-changed=t
+#+end_example
+
+This is a standard Emacs view alias of the same mutable document, not an arbitrary Lisp/shell mutation excluded by C6. Current direct/file/visiting-buffer alias tests do not exercise this identity partition.
+
+Smallest correction: resolve buffer aliases through their ultimate base buffer before deciding canonical text/file identity, in both directions when an attachment itself names an indirect buffer. Keep authorization and ordinary noncanvas semantics unchanged. A local tool-description warning or adding expectedRevision only in a fixture would leave the owning bypass intact.
+
+Resolution evidence: attach through the base/file and mutate through an indirect buffer, and attach through an indirect buffer and mutate through the base/file. Missing/stale expectations must return conflict without changing any shared text; a current expectation must apply once. Exercise the ordinary shipped operation path, including inherited nested context, and retain a noncanvas control.
+
+** TODO Medium I2: Narrowing turns a complete document revision into a partial-view revision
+
+Contracts: C2/C6; S2/S5. Owners: attachment source capture plus complete resource capture/read/mutation.
+
+=e-chat-session--attachment-content= uses point-min/point-max without widening (=lisp/layers/chat/e-chat-session.el:366--381=). If an Org user narrows to a subtree, the supposed complete snapshot contains only that accessible region. The new buffer read path labels the same restricted text full-content and hashes it as the complete resource revision (=lisp/layers/emacs/e-emacs-tools.el:409--426=). Guarded buffer precondition reads and file live-buffer reads likewise use the current restriction; file save replacement and buffer erase/insert also operate against that restriction.
+
+Independent proof creates a 21-character buffer, narrows to 8 characters and captures it through the attachment boundary. A supported partial buffer read then reports the 8-character hash as its full revision:
+#+begin_example
+NARROW full-chars=21 captured-chars=8
+full-revision=CC22FC02FB5ACE1BCA0D010BB36E6ED8A6207118B384C7616304FB80469DC713
+read-revision=B70F8F776F6BD11B9A0049B533E2A9EFE061C704CC93CEB3988541524FBA5E48
+equal=nil
+#+end_example
+
+A default full buffer read while narrowed also fails its range validation because its default absolute start is 1 below point-min; the reported successful probe uses a valid explicit range to isolate the incorrect complete-revision claim. The capture restriction predates this patch, but F99 explicitly establishes complete exact revisions rather than section checkouts; the inherited boundary is now in the selected contract and the new revision consumers rely on it.
+
+Smallest correction: capture/hash the entire authoritative buffer under save-restriction/widen, consistently for canvas snapshots, full revisions on partial reads, guarded preconditions and complete-resource mutations. Restore the user's narrowing, point and presentation state afterwards. Retain ordinary range semantics explicitly; do not silently redefine a full resource as the current narrowed subtree.
+
+Resolution evidence: narrow a real attached buffer, check its snapshot/full hash against a widened capture, read a valid range and default full range, then make a change outside the restriction and reject the old expected revision. A fresh guarded edit/write must produce the intended whole-resource result while restoring narrowing. Cover file and buffer aliases, including I1's shared base views.
+
+** TODO Medium I3: Detached/replaced canvases keep exact accepted content for the harness lifetime
+
+Contract: C5; S3. Owner: harness context chronology lifecycle.
+
+The new canvas-chronologies hash table is strongly held by harness context state (=lisp/core/e-harness-state.el:40--45,113--119=). Source contains no remhash/clrhash cleanup for this table. =e-harness-context-runtime--canvas-project-context= immediately returns when captures are absent (=e-harness-context-runtime.el:591--600=); when captures exist, it processes current URIs without removing old session/URI keys. Commit installs full :text and operation payloads, and curation only replaces existing entries with version-only values (=725--744=).
+
+Independent proof accepts a synthetic canvas through the projection/commit owner, then projects the same session without any canvas captures:
+#+begin_example
+DETACH table-count=1 retained-text="PRIVATE-DOCUMENT-A"
+#+end_example
+
+Replacing canvases or abandoning/deleting sessions can therefore accumulate exact document bodies under one long-lived harness. Per-chain patch limits do not bound the number of obsolete document entries. This violates the accepted smallest active-context lifetime and leaves removed content resident after it serves no active canvas projection.
+
+The proof establishes retention and missing cleanup. It does not claim that later reattachment necessarily sends an unusable diff or yields stale answers: full projection can reconstruct the retained chain. Those are separate semantics, and this finding does not rely on them.
+
+Smallest correction: give detach/replacement/session or context invalidation an explicit release path owned by chronology lifecycle, including sessions with zero captures. Prevent a pending stale completion from repopulating released content; merely deleting a hash key while an older nil-version candidate can still commit is insufficient. Preserve preview/status non-commit behavior and legitimate concurrent request ownership.
+
+Resolution evidence: accept A, replace it with B, detach the last canvas and close/delete the session as supported. Verify exact text and payload state becomes unreachable at the corresponding accepted lifecycle boundary. Deliver an older pending completion after removal and verify it cannot restore released state. Reattachment after loss should establish a fresh snapshot. No new persistent authority is needed.
+
+** TODO Medium I4: File guards use disk/input shortcuts instead of the authoritative pre/post-mutation text
+
+Contract: C6's successful revision propagation, with C2's source-authority boundary. Owner: guarded file write/edit.
+
+Two independently reproduced partitions violate the same authoritative file-result boundary:
+
+- Before a write, =e-base-tools-file--write-file-resource= uses file-exists-p to decide whether current text exists (=lisp/layers/base/e-base-tools-file.el:1120--1133=). A new unsaved visiting buffer is authoritative even before its file exists. The current implementation substitutes empty text and rejects the valid revision captured from that live buffer.
+- After successful save-buffer processing, guarded write returns the hash of requested content (=1160--1162=), and edit returns the hash of pre-save final-content (=1218--1221=). =e-base-tools-file--save-buffer-content-to-file= runs save-buffer (=274--303=), so before-save hooks can change the actual saved/live text. The success revision then identifies text that is no longer the resource.
+
+Independent outputs:
+#+begin_example
+NEW-UNSAVED status="conflict"
+expected=C2572E5F998A1B32A4577086765331487FBA85BDEA1FD49645F6911C80697F19
+current=E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+disk-created=nil
+
+SAVE-HOOK status="ok"
+reported=7AA7A5359173D05B63CFD682E3C38487F3CB4F7F1D60659FE59FAB1505977D4C
+actual=CED2526BD3B34302167645DB8D4D74052035D07D2D571CA66B5FD741970A0295
+equal=nil
+#+end_example
+
+The save-hook probe adds a fixture-local before-save hook that appends text; it touches no user hook/configuration. These cases cause spurious conflicts or make the next call stale immediately after a reported successful edit. Existing coherence checks do not correct either revision value.
+
+Smallest correction: use the existing authoritative live-buffer preference even when the visited path has not yet been created; use empty text only when neither live content nor disk resource exists. Derive success revisions from the final authoritative text after save hooks and synchronization, with the same complete capture semantics as I2. Do not disable normal save hooks or hash only the requested replacement.
+
+Resolution evidence: guarded write through a newly created unsaved visiting buffer with its captured revision must succeed without losing text. Guarded write and edit with a local save hook must return the exact post-save complete hash, and a following guarded operation using that returned value must succeed once. Keep the file:// no-live-buffer and noncanvas controls.
+
+* Coverage and prior realization
+
+Plan R1--R6 remain closed at the plan level. Their actual realization is independently dispositioned below; the four findings do not imply a new general version-control service or section API.
+
+| Contract / scenario | Current disposition | Source and deciding evidence |
+|---------------------+---------------------+------------------------------|
+| G1 direct scenario | Partial | Actual unnarrowed Daily user checkbox/ordinary agent edit/conflict/read/reconsideration and fresh-process recovery pass locally; complete supported resource partitions fail I1/I2/I4 |
+| C1 / DP1 | Cleared | Chat attachment data and editor state use marked reference messages; genuine instructions remain system-owned; all three serializers translate reference data and preserve native tool pairing; layout identity is independent of optional curation |
+| C2 / S2 | Finding I2 | Immutable source/hash/evidence and exact lossless patch constructor are present; whole-document authority fails under narrowing |
+| C3 / S1 | Cleared for implemented projection | Accepted observations retain selected-path anchors, merge before segments/messages/entry alignment, unchanged adds no body, full replay retains chain; composed tests trace multiple edits through all three native serializers |
+| C4 / S2,S3 | Cleared | Full UTF-8 envelopes compared using integer arithmetic, cumulative bytes and 16-patch private limit cause reset, linear prefix/suffix span verifies exact application/hash; no lossy fallback or division |
+| C5 / S3 | Finding I3 | Immutable pending capture and version CAS at accepted response, cancellation/stale completion/branch/generation/curation reset coverage are present; obsolete document state lacks release |
+| C6 / S5 | Findings I1/I2/I4 | Explicit expectedRevision and immutable request target propagation exist through cheap/nested/cooperative dispatch; base alias identity, full capture and file pre/postconditions do not cover all accepted partitions |
+| C7 / DP3,S4 | Cleared local disposition | Changed-layout exact-route allowlist is empty, native request construction derives marked layout, old F98 qualification does not grant this shape; exact route/model/layout tests preserve unsupported/unconfirmed behavior |
+| S4 compatibility | Cleared except dependent resource findings | Native Anthropic, Responses and Chat Completions retain reference framing, instruction authority and adjacency; anchor fingerprints include canvas chronology/layout and reset incompatible continuation state |
+| Actual Daily graphical composition | Cleared for exercised scenario | Actual Grimoire Daily API/opened Canvas, candidate async SQLite owner and worker, real Anthropic serializer/parser, fixture SSE; assertions inspect snapshot/patch, disk/live resource effects, tool pairing and fresh-process reconstruction |
+| External E1/E2/P3 | Capability-unconfirmed | No final-source qualifying success; earlier refused E2 did not execute semantic/tool/cache predicate; correctly not credited as pass |
+
+DP1 is a useful stopping point. DP2 is materially implemented but not acceptable until I1--I4 close. DP3 honestly withholds the affected capability; external qualification remains a separately visible obligation and no paid repeat is required to prove these repository defects.
+
+* Verification and evidence identity
+
+** Existing gates independently checked
+
+- Canonical gate record names committed =2ef06b3e3b9b30d71bcc5efefb71177c8e75f189= and reports 2909 passed, 0 unexpected, 0 skipped. I decompressed =evidence/canonical.log.gz=, matched both its compressed and raw SHA256 to canonical.json and read the final 2909/2909 result. Raw hash =9f4f8590ccc89ea95c067b308bd22d72e05ecd0e1ffa25ddc14e669416a04d59=; compressed hash =e05e3d000d5f05a7250efe6add9d625993ba70164f0c657917ba6d1c5808e3ce=.
+- =git diff --quiet 8dd56b45..bb4a81e9 -- lisp test e2e= and the equivalent =2ef06b3e..bb4a81e9= check both return 0. The reviewed runtime/test/E2E tree is exactly the one behind the final gates despite later evidence-only commits.
+- Current-config log reports 9 tests, 0 unexpected, candidate context/async/worker owners and no foreign runtime files. The durable Grimoire manifest contains 18 sources; I recomputed each actual configured source and private copy hash and matched both with the manifest. This is current-config composition proof with private paths/caches, not merely a synthetic config.
+- =git diff --check 135d3f3f..bb4a81e9= passes.
+
+** Actual Daily/Canvas evidence inspected
+
+Reviewed =e2e/e-f99-daily-graphical-test.el= entrypoints, fixture transport, provenance guards and assertions. The fixture invokes actual =grimoire-topic-daily= and =grimoire-daily-open= in a private repository, binds the ordinary chat factory, uses async SQLite and a fresh native Anthropic harness, then submits through the real composer. Responses contain native tool_use/input_json_delta/tool_result exchanges and final fixture text; this is neither a stub context serializer nor a paid provider answer.
+
+Phase one verifies the complete initial 5076-byte fixture, unchanged snapshot count, an actual org-toggle-checkbox edit whose exact patch reconstructs the current text, successful guarded file EDIT, newer unsaved user text surviving stale WRITE, a fresh dirty read and buffer EDIT, and explicit save. Phase two starts a separate process, reopens the handoff Daily and verifies a complete current 5121-byte snapshot with no old patch dependency. Persisted phase artifacts identify 14 and 2 native requests respectively. The pre-request provenance assertion verifies candidate owners, worker/session/codec selection and no foreign runtime modules.
+
+Visually inspected the two settled PNGs named in the parent dossier: =phase-one/047-daily-fresh-edit-saved.png= and =phase-two/007-daily-fresh-process-snapshot.png= under =/private/tmp/e-f99-work/daily-f99-commit-8dd56b45/=. They show the checked TODO, changed agent/fresh target lines, preserved user addition and reopened Daily/Canvas surfaces. The fixed final fixture response is not evidence of real model comprehension; native reconstruction/tool effects are the deterministic semantic evidence, and actual model/cache behavior remains external/unconfirmed.
+
+** Independent probes and focused checks
+
+=emacs --batch -Q -l /private/tmp/e-f99-work/reviewer-risk-probes.el= exits 0 and reproduces all finding partitions. It verifies relevant owner symbols resolve inside the candidate, uses private synthetic buffers/files and closes them. Complete output is =reviewer-risk-probes-final.log=; no user resource is involved.
+
+Ran four credential-free F99 producer/classifier tests independently: bounded evidence, marked-layout identity, failure classifier and empty-response diagnostics. Final result: 4/4, 0 unexpected, log =reviewer-f99-evidence-tests-fixed.log=. The first custom invocation omitted the candidate package entrypoint from load-path and selected the copied installed e entrypoint; two void-function failures were harness setup failures and are not product findings. Adding the candidate root before requiring e corrected the setup. Neither attempt contacted a provider.
+
+** External evidence classification
+
+Verified raw diagnostic =/private/tmp/e-f99-work/evidence/f99-e2-1c0c2cf5.log= SHA256 =a146f5f220ed9db18996362d5847cecb5078659b27598683ec566f3b0c879247=. It is bound to older =1c0c2cf5=, so it cannot qualify this accepted runtime. It records HTTP 200, three SSE events, stop_reason refusal, zero native content blocks/output tokens and no parser error; the tool/semantic/cache-advance sequence did not run. It therefore supplies no useful-reuse success and no controlled contrary reuse predicate. One static cache read does not alter that disposition. The current empty allowlist makes the unconfirmed capability unavailable rather than inheriting that diagnostic's earlier grant.
+
+* Architecture, resources and economics
+
+The aggregate direction remains small and coherent: one process-local harness chronology; pure exact patch/selection functions; request-owned immutable targets; existing file/buffer mutation owners; adapters translate; shells own editor presentation. The native propagation across three serializers and test instrumentation is inherent composition, not evidence for a larger coordinator or architectural decomposition project.
+
+I1/I2/I4 require complete identity/text authority at the existing resource boundary. They do not justify adding a new document API, provider-specific canvas service, global filesystem lock, or a broad file-operation restriction. The smallest useful correction follows base-buffer identity and the authoritative complete resource before/after normal mutation.
+
+I3 is a real state/lifetime ownership failure under C5. Its carrying cost grows with obsolete documents/sessions and keeps exact user content resident; patch-chain bounds cannot contain that dimension. Cleanup and stale-pending fencing belong to the existing chronology owner. This is a current finding, not an eligible non-gating follow-up. The parent owns the precise correction/branch decision.
+
+Economic basis: ordinary indirect views and narrowing are standard Emacs mechanisms over the same mutable resource; the probes show accepted contract violations rather than hypothetical incidents. I1 has direct user-text overwrite impact. I2 can silently present only part of a purported whole document. I4's false revisions are visible/recoverable but break ordinary next-operation correctness. I3 is bounded only by harness lifetime and number of ever-seen documents. Local capture/identity/result/cleanup corrections are proportionate; no incident-frequency estimate is fabricated.
+
+No broad physical-decomposition or alternate architecture was made part of this package. The roughly 300-line cohesive chronology cluster in the existing context owner and small provider-neutral modules have real ownership reasons. File length alone creates no finding. No architectural deferral or activated follow-up ledger is being accepted here.
+
+* Fourteen architecture self-check dispositions
+
+| Question | Disposition |
+|----------+-------------|
+| Useful stopping point | DP1 useful; DP2 incomplete because I1--I4; honest DP3 withholding remains useful |
+| Final direction | Current exact canvas with appended reusable chronology; checkout stays deferred |
+| Stable/uncertain decisions | Stable full revision/authority versus private span/threshold tuning remains appropriate |
+| Semantic owner | Capture/context/resource/adapter/shell split is correct; resource identity and chronology cleanup need owning fixes |
+| Coupling/interfaces | Narrow expectedRevision on existing operations; no new document tool family |
+| Dependency direction | Pure patch functions avoid provider/UI dependencies; adapters/resource implementations consume core semantics |
+| Effects outward | Capture, mutation and native transport remain outside patch construction |
+| State lifetime | Fails I3 for inactive documents; no new SQLite schema/durable baseline authority |
+| Performance | Linear operand scans and bounded active patch chain; no savings guarantee or unthresholded latency gate; inactive-entry bound missing I3 |
+| Substitutability | Three serializers preserve native meaning; supported resource variants fail identified alias/restriction/create/save partitions |
+| Compatibility | Native layout/chronology fingerprints fence anchors; noncanvas controls and unsupported scheme checks retained |
+| Legacy removal | Canvas body leaves dynamic system prefix; normal noncanvas attachment path preserved |
+| Expected/unexpected errors | Visible revision conflicts and unexpected failures are explicit; false conflict/result values remain I2/I4 |
+| Independent evidence | Pure/owner/composed/native/current-config/actual Daily scenarios are distinct; extend them at the reproduced partitions rather than freeze new helper layout |
+
+* Unresolved and next review boundary
+
+Open findings: I1--I4. No additional required coverage unknown remains. Prior whole-scope plan decisions are preserved; no product contract change is required for the identified corrections. The parent should keep the feature In-review and decide remediation at these owners. After settled corrections, re-run focused negative scenarios and invalidated public composition/gates on the final candidate, then return to this persistent reviewer for incremental finding closure and interaction coverage.
+
+No deterministic-fixed-point, capability-confirmed or Done result is granted. The running Emacs remains unchanged; later integrated core/adapter behavior still requires an explicit manual restart.
+
+* Immutable temporary evidence identities
+
+#+begin_example
+562b307facf0f949ec2a4120a7400b7cd326d63a0ff6943d8d27d68fcbc5cad1  /private/tmp/e-f99-work/reviewer-risk-probes.el
+679499f7209b1cd50d15113c2daf5bb7894008719577ac7a9a09934dbef6ee1b  /private/tmp/e-f99-work/reviewer-risk-probes-final.log
+d7ac82142408be685187fbf73aa3fd19e0e3e2553a52a3afc28f8797ba761b9d  /private/tmp/e-f99-work/reviewer-f99-evidence-tests.el
+10989fa57369af2b542ca585dcee785eeabe5fee73a3949ae67bebfce1db8337  /private/tmp/e-f99-work/reviewer-f99-evidence-tests-fixed.log
+#+end_example
