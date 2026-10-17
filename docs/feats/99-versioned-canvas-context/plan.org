@@ -22,7 +22,7 @@ The numbered contract rows below are this feature's sole normative requirements;
 | Direct scenario | A Daily is open; the user changes a checkbox, the agent edits a section through ordinary resource tools, and intervening tools leave the document unchanged. Requests use the correct revision and stale agent writes preserve newer user text. Compaction or lost context establishes a valid new baseline. |
 | Product authority | The operator owns behavioral changes; the primary may resolve supporting implementation choices within the authorized two-issue scope. |
 | Owning contracts | C1–C7 below |
-| Behavioral status | Repository-controlled behavior is validated in private tests and actual Daily/Canvas composition; Review 01 I1–I4 fixes await independent closure and external qualification is unconfirmed. |
+| Behavioral status | Repository-controlled behavior is validated in private tests and actual Daily/Canvas composition; The resource/lifetime fixes await final independent closure and external qualification is unconfirmed. |
 
 * Current evidence
 
