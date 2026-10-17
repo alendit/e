@@ -20,7 +20,7 @@ The normative C1–C7 matrix remains in plan.org. Its admission identity was pla
 
 * Deterministic validation
 
-The current-config cold start completed 9/9. The earlier reported 2909/2909 canonical result lacks a preserved transcript and is not credited for final acceptance. A full canonical rerun on the final committed candidate is pending, with durable output required before independent review.
+The final canonical Eldev rerun passed 2909/2909, zero unexpected and zero skipped, at committed candidate 2ef06b3e (runtime/native/UI source 8dd56b45). The full run took 412 seconds. [[file:evidence/canonical.json][The gate record]] contains the source revision, command, private dependency setup, exact counts and raw/compressed transcript hashes; [[file:evidence/canonical.log.gz][the complete transcript]] is preserved. The current-config cold start passed 9/9 on the same runtime source. Later evidence-only documentation commits do not alter lisp/, test/ or e2e/ source.
 
 The current-config gate used a private copy of the current Doom/generated profile with source-path substitutions, private runtime/cache directories and a private Grimoire project copy for adjacent byte-compilation outputs. [[file:evidence/current-config-grimoire-sources.json][The manifest]] records 18/18 runtime Elisp sources byte-identical to configured Grimoire 2504efd. [[file:evidence/current-config.log][The final cold-start log]] verifies candidate owner modules, selected worker entry/session worker/codec and no foreign runtime modules. No source reloading repairs a mixed process: the passing run starts fresh.
 

@@ -1,0 +1,14 @@
+{
+  "head": "2ef06b3e3b9b30d71bcc5efefb71177c8e75f189",
+  "command": "eldev test",
+  "dependencies": "private copied packages, excluding installed e; Eldev --disable-dependencies wrapper",
+  "log": "/private/tmp/e-f99-work/evidence/f99-canonical-final-2ef06b3e.log",
+  "sha256": "9f4f8590ccc89ea95c067b308bd22d72e05ecd0e1ffa25ddc14e669416a04d59",
+  "exit": 0,
+  "seconds": 412.29,
+  "passed": 2909,
+  "skipped": 0,
+  "unexpected": 0,
+  "durable_log": "canonical.log.gz",
+  "compressed_sha256": "e05e3d000d5f05a7250efe6add9d625993ba70164f0c657917ba6d1c5808e3ce"
+}
