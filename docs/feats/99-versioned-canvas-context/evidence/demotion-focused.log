@@ -1,0 +1,9 @@
+Loading /private/tmp/e-f99-work/candidate/test/e-harness-test-support.el (source)...
+Loading /private/tmp/e-f99-work/candidate/test/e-test-environment-support.el (source)...
+Running 3 tests (2026-10-17 05:33:48+0200, selector ‘(or e-chat-session-test-canvas-demotion-releases-accepted-chronology e-chat-session-test-canvas-release-fences-pending-chronology e-chat-session-test-session-delete-releases-canvas-chronology)’)
+   passed  1/3  e-chat-session-test-canvas-demotion-releases-accepted-chronology (0.009266 sec)
+   passed  2/3  e-chat-session-test-session-delete-releases-canvas-chronology (0.349111 sec)
+   passed  3/3  e-chat-session-test-canvas-release-fences-pending-chronology (0.006394 sec)
+
+Ran 3 tests, 3 results as expected, 0 unexpected (2026-10-17 05:33:49+0200, 0.367366 sec)
+
