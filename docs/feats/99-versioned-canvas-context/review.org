@@ -1,3 +1,16 @@
+#+title: Feature 99 implementation review ledger
+#+startup: overview
+
+* Current decision
+
+Independent Review 03 established =deterministic-fixed-point= at f37473c17953ee1ab198d99e7f4e07b21fbb9dc2, with runtime/test/E2E source da6ca5fd. Findings I1–I4 are closed and no required review unknown remains. Later evidence packaging and status changes do not alter those source trees.
+
+External capability remains unconfirmed. Changed-layout curation is gated and the feature stays In-review. Lossless compression of the two raw demotion transcripts preserves their exact decompressed bytes; evidence/demotion-transcripts.json records the hashes.
+
+* Immutable review history
+
+Review decisions below apply at their recorded revisions. Review 03 is the current disposition; earlier open findings remain historical evidence.
+
 #+title: Feature 99 independent implementation review 01
 #+date: 2026-10-17
 #+startup: overview
@@ -348,4 +361,105 @@ fb0cd201a0cefb17f787af3013fb4877ebdc2db1131c6910fb62adb2fab4e05e  /private/tmp/e
 fb61d162954f525008baa6bf9ff4ddbced2634627454843e2970796c750fd04d  /private/tmp/e-f99-work/reviewer-tick02-probes.log
 899c9e747bbb7b6e6667503e268b3e368c4ae743dad32c0c4ce477d6aa78871a  /private/tmp/e-f99-work/reviewer-tick02-resource-probes.el
 249994cf84e5d1bfa916963d7649174a212734a678d6f9304daea300b61fc652  /private/tmp/e-f99-work/reviewer-tick02-resource-probes.log
+#+end_example
+
+
+#+title: Feature 99 independent implementation review 03
+#+date: 2026-10-17
+#+startup: overview
+
+* Decision and identity
+
+Result: =deterministic-fixed-point= on =f37473c17953ee1ab198d99e7f4e07b21fbb9dc2=.
+
+All Review 01 findings I1--I4 are closed, including Review 02's residual I3 demotion partition. No open P0--P3 functional/architectural finding or required review unknown remains in the selected F99-G1/C1--C7/DP1--DP3 scope. External changed-layout status remains =capability-unconfirmed=; this result does not grant growing-reuse/P3 qualification, production activation or Done. The feature correctly stays In-review.
+
+Reviewed candidate: =/private/tmp/e-f99-work/candidate=.
+Incremental source base: =4b79daf2baabc4d91a9e7219af5ab886d38dbd4e=.
+Accepted runtime/test source and final gates: =da6ca5fdcf4ad43760dec9beb1cf9b23c929cb44=.
+Later commits through the reviewed head alter only documentation/evidence; =git diff --quiet da6ca5fd..f37473c1 -- lisp test e2e= returns 0.
+
+Git subtree identities:
+#+begin_example
+lisp  2cf36d2a6a64502f9614a086ffcdfd7df0a850cb
+test  0eb0538287109a31897590f2b7e60dbca351f3a3
+e2e   30a5c58e6406512ada9e0698de72a7c5b1bd588a
+#+end_example
+
+Plan Review02's stable C1--C7 authority and establishing delivery relation remain unchanged. Carry Review 01/02's independently cleared full-scope and I1/I2/I4 evidence because their owners, consumers and source dependencies are unchanged by this delta. This pass reopens I3 and its attachment transition, accepted metadata settlement, stale-response, reattachment and ordinary noncanvas interactions.
+
+The reviewer changed no candidate source, Git, user Emacs/configuration, Daily, Board/store or external service. Only temporary review logs/artifacts were written. Candidate status remains only the pre-existing untracked generated =target/= residue.
+
+* DONE Medium I3: Retire canvases from the accepted attachment transition
+
+Required boundary: every accepted transition that removes or demotes a prior canvas must release its exact derived chronology, and earlier pending responses must not repopulate it. Failed updates retain authorized state; subsequent detach and reattachment remain correct.
+
+Current owning correction: =e-chat-session-attach-context= still constructs NEXT through the existing explicit canvas replacement or ordinary identity upsert. It now examines each previous canvas and retires its URI when either an explicit canvas replacement was requested or NEXT contains no canvas at that URI (=lisp/layers/chat/e-chat-session.el:231--250=). Thus an ordinary same-URI or same-ID upsert to a noncanvas attachment reaches the same existing release mechanism as canvas:true replacement. An unrelated ordinary attachment update preserves the current canvas and does not retire its chain.
+
+The ordered effects remain:
+
+1. Compute the before/after attachment classification without mutating chronology.
+2. Submit =e-session-set-context-references= through =--set-attachments=.
+3. Release retired resources immediately for synchronous accepted completion, or only after asynchronous Work reaches finished. An error/rejected update does not run release.
+4. Remove the body-bearing chronology and advance the resource lifecycle token.
+5. At response completion, require the unchanged request lifecycle token as well as the expected chronology version before installing pending state.
+
+No new lifecycle owner, storage authority or callback path was added in this final correction. The release/token/version behavior cleared in Review 02 is reused, so nil-version and later pending candidates remain fenced after demotion. The now-noncanvas subsequent detach has no body to release; reattachment captures a new full snapshot.
+
+Independent rerun of the exact Review 02 reproducer, without changing its source, exits 0 and reports:
+#+begin_example
+PROVENANCE candidate owner functions verified
+DEMOTE canvas-now=nil retained=nil
+DEMOTE-THEN-DETACH attachment-count=0 retained=nil
+#+end_example
+
+This uses a real captured/accepted harness candidate and ordinary attachment owners through the established request-scoped attachment projection. It does not insert an artificial chronology record. Complete output: =/private/tmp/e-f99-work/reviewer-tick03-probes.log=.
+
+The new public regression additionally exercises URI-matching and ID-matching replacement, a rejected metadata update retaining the accepted body, accepted demotion removing it, both initial nil-version and newer pending responses failing to restore it, later noncanvas detach, and a full fresh snapshot on reattachment. Assertions inspect actual owner effects and current model-facing snapshot state rather than just a successful metadata result. The old-owner negative control fails at the retained-body assertion; the current three lifecycle tests pass. This is the original violated lifetime boundary and both replacement partitions, not a nearby cleanup workaround.
+
+* Whole-scope coverage carried and completed
+
+| Contract / package | Current result |
+|--------------------+----------------|
+| C1 / DP1 | Cleared: reference-data placement, genuine instruction authority, volatile editor data and native pairing across all shipped serializers |
+| C2 | Cleared: complete immutable capture, exact Unicode/empty/deletion reconstruction, full provenance, widened narrowed views |
+| C3 | Cleared: stable selected-path observation positions, no new unchanged body and complete stateless replay |
+| C4 | Cleared: full serialized UTF-8 byte comparisons, bounded active chains, exact linear span construction and snapshot recovery |
+| C5 | Cleared: success-only accepted state, branch/generation/curation/loss recovery, release on detach/replacement/demotion/delete, stale pending fencing |
+| C6 | Cleared: ordinary expectedRevision propagation, indirect/base/file aliases, complete guarded capture/mutation, correct unsaved-file and post-hook success revisions |
+| C7 / DP3 local | Cleared: exact route/layout disposition and empty changed-layout allowlist preserve unconfirmed capability withholding |
+
+No native adapter, patch policy, resource mutation or frame/response owner changed in this final delta. Their Review 01/02 source/owner/realistic-composition proof carries unchanged. The fourteen architecture self-checks now clear at the selected deterministic level: the final state-lifetime defect is fixed at the existing attachment/chronology join. There is no new speculative abstraction, wrong dependency edge, durable canvas store, section API or material architectural deferral.
+
+Behavioral progress: passing for repository-controlled G1 through the isolated actual Daily/Canvas workflow and adversarial ordinary resource/lifecycle partitions. Mechanism progress: complete for DP1/DP2 and DP3's local disposition. Actual provider comprehension/cache reuse and curation capability remain separately unconfirmed, rather than inferred from native serialization or synthetic responses.
+
+* Exact-source verification
+
+- Decompressed =evidence/canonical-da6ca5fd.log.gz= and matched raw SHA256 =99c5c584c66a137a9b835063ad6a81489bdb64e48058580d4a70b97902bb89c2= and compressed SHA256 =46119531522b92d2ec763dbeb7a6136588bf665c6099532afcc8cb3f8fbd747c= to the gate JSON. The transcript ends with 2917 results as expected, zero unexpected; the record reports zero skipped. Its source tree is identical to this reviewed runtime/test/E2E tree.
+- Inspected current focused lifecycle proof: 3/3, zero unexpected. The recorded old-owner negative control fails the new test at =should-not (gethash key ...)= with the actual accepted canvas body still retained. Current source fixes that same classification point.
+- Inspected current-config cold-start result: 9 tests, zero unexpected. Provenance names candidate context/async/store owners, candidate worker/session/codec libraries and worker command entry; foreign runtime modules are nil.
+- Recomputed hashes for the refreshed 18 configured Grimoire runtime sources and private copies against =current-config-grimoire-sources-da6ca5fd.json=: all equal.
+- Current actual Daily graphical evidence remains two fresh processes, 1/1 each, using real Grimoire Daily/Org Canvas/harness/SQLite/resource/native-adapter/parser composition with synthetic SSE transport. Its unchanged fixture was reviewed previously; current phase artifacts bind complete initial/unchanged/checkbox/guarded-edit/stale-write/fresh-read/fresh-process behavior to this candidate.
+- Visually inspected both current settled PNGs: =daily-f99-final-da6ca5fd/phase-one/047-daily-fresh-edit-saved.png= and =phase-two/007-daily-fresh-process-snapshot.png=. The saved and reopened Daily contain the checked TODO, agent/fresh target changes and preserved user addition. This is actual application composition evidence, not live gateway/model/cache qualification.
+- Independently reran the exact residual lifecycle reproducer in batch Emacs: exit 0 and no retained body after demotion/then-detach. No broad gate repeat was necessary because the preserved full gate is on the exact runtime/test source and the original negative scenario adds the independent deciding evidence.
+
+* Artifact whitespace observation
+
+At this reviewed identity, the full-range =git diff --check 4b79daf2..f37473c1= returns 2 solely for trailing whitespace/final blank lines already present in the two newly preserved verbatim demotion transcripts, =evidence/demotion-focused.log= and =evidence/demotion-negative.log=. The equivalent check limited to production source, tests, E2E and authored plan/implementation/review prose passes.
+
+Those bytes are raw diagnostic evidence, not a product or architecture defect. The parent has stated it will gzip both transcripts without changing their decompressed bytes/hashes and rerun the global whitespace check in an artifact-only commit after this review. Such lossless evidence packaging leaves this source result intact; it must not be presented as an already completed hygiene step at this reviewed head.
+
+* External and completion boundary
+
+The changed-layout allowlist remains empty. Existing F98 qualification does not transfer to the new material shape. The earlier scenario-specific refusal remains a diagnostic, not a controlled growing-cache predicate result, an outage claim or a final-source pass. No valid external product-contract contradiction is outstanding, and no final qualification success has been fabricated.
+
+This review grants =deterministic-fixed-point= with =capability-unconfirmed=. It grants neither =capability-confirmed= nor =Done=. The feature stays In-review until required qualification and repository/operator completion policy permit otherwise. No push, live reload, restart, user Daily mutation or production activation was performed; integrated core/adapter changes still require a separately chosen manual Emacs restart.
+
+Open findings: none. Required review unknowns: none. Legitimate non-gating architectural follow-ups: none introduced or accepted by this review. Section checkout remains the existing explicit follow-up outside F99 scope.
+
+* Temporary evidence identity
+
+#+begin_example
+8bbb52de109b48fd5595e1e74d4ba17f8cd0afa611c9ff815ccc8b34cc8e1d6d  /private/tmp/e-f99-work/reviewer-tick03-probes.log
+fb0cd201a0cefb17f787af3013fb4877ebdc2db1131c6910fb62adb2fab4e05e  /private/tmp/e-f99-work/reviewer-tick02-probes.el
 #+end_example

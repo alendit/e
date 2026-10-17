@@ -1,0 +1,14 @@
+[
+  {
+    "original": "demotion-focused.log",
+    "compressed": "demotion-focused.log.gz",
+    "raw_sha256": "f66f1b08158dbe5d0caba89806b743d6acb9bbe8b61b7b41c6df7cd5ddb22925",
+    "compressed_sha256": "7fd3eb8d1c01b640b45553ab4159de9e0cbfbeb684230ea8f2c4f6fa0583c035"
+  },
+  {
+    "original": "demotion-negative.log",
+    "compressed": "demotion-negative.log.gz",
+    "raw_sha256": "c38b007365c6cd0db30e882c9f9b25a50204974f7533f3008dc997056bc383a4",
+    "compressed_sha256": "0b02af5557f72421057458feb2f9ce1e6a90350e3659a6112a85758f7e8d323b"
+  }
+]

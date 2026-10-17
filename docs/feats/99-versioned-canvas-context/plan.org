@@ -4,9 +4,8 @@
 
 * Status and authority
 
-Implemented in the isolated candidate; Review 01 resource-authority/lifetime remediation is complete and independent closure is pending.
-Deterministic validation and actual Daily/Canvas evidence are recorded in [[file:implementation.org][implementation.org]].
-Changed-layout growing-reuse and curation qualification remain capability-unconfirmed.
+Implemented and independently reviewed at deterministic fixed point; the feature remains In-review because changed-layout growing-reuse and curation qualification are capability-unconfirmed.
+Repository validation and actual Daily/Canvas evidence are recorded in [[file:implementation.org][implementation.org]]; [[file:review.org][Review 03]] closes all implementation findings.
 The operator authorized validation and implementation on 2026-10-16 through =my-skills:complex-work=.
 The accepted direction is canvas reference-data placement plus versioned snapshots and exact diffs, with byte-based selection rather than changed-line percentages.
 Section checkouts remain a follow-up, and existing targeted =read= operations remain available.
@@ -22,9 +21,9 @@ The numbered contract rows below are this feature's sole normative requirements;
 | Direct scenario | A Daily is open; the user changes a checkbox, the agent edits a section through ordinary resource tools, and intervening tools leave the document unchanged. Requests use the correct revision and stale agent writes preserve newer user text. Compaction or lost context establishes a valid new baseline. |
 | Product authority | The operator owns behavioral changes; the primary may resolve supporting implementation choices within the authorized two-issue scope. |
 | Owning contracts | C1–C7 below |
-| Behavioral status | Repository-controlled behavior is validated in private tests and actual Daily/Canvas composition; The resource/lifetime fixes await final independent closure and external qualification is unconfirmed. |
+| Behavioral status | Independent Review 03 accepts repository-controlled behavior, with private tests and actual Daily/Canvas composition; external qualification remains unconfirmed. |
 
-* Current evidence
+* Baseline evidence
 
 [[file:../../../lisp/layers/chat/e-chat-session.el::e-chat-session-context-attachments-provider][Attachment context]] renders complete live-buffer/file text as dynamic system context.
 [[file:../../../lisp/layers/org-canvas/e-org-canvas-capabilities.el::e-org-canvas--context-provider-messages][Org Canvas context]] also mixes instructions with focus/visibility metadata.
@@ -41,7 +40,7 @@ Attachment capture is complete and currently uncapped; ordinary read-result limi
 
 * Contract and evidence authority
 
-All rows begin =proposed= until their establishing package is accepted.
+Repository-controlled C1–C7 behavior is accepted by independent Review 03. External capability under C7 remains unconfirmed.
 S1–S5 are deterministic; E1/E2/P3 are external compatibility evidence.
 Unthresholded bytes, CPU/memory, latency, and usage totals are observational for every row.
 An unavailable external route does not fail an independent deterministic row.
