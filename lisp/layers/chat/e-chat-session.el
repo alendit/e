@@ -231,11 +231,19 @@ avoids a redundant durable read without installing a metadata mirror."
                    (e-chat-session--replace-canvas attachments attachment)
                  (e-chat-session--upsert-attachment attachments attachment)))
          (retired-canvas-uris
-          (when canvas
-            (mapcar (lambda (existing) (plist-get existing :uri))
-                    (seq-filter (lambda (existing)
-                                  (plist-get existing :canvas))
-                                attachments)))))
+          (mapcar
+           (lambda (existing) (plist-get existing :uri))
+           (seq-filter
+            (lambda (existing)
+              (and (plist-get existing :canvas)
+                   (or canvas
+                       (not (seq-some
+                             (lambda (current)
+                               (and (plist-get current :canvas)
+                                    (equal (plist-get existing :uri)
+                                           (plist-get current :uri))))
+                             next)))))
+            attachments))))
     (e-chat-session--set-attachments
      harness session-id next retired-canvas-uris)
     attachment))

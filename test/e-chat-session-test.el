@@ -1059,6 +1059,104 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-chat-session-test-canvas-demotion-releases-accepted-chronology ()
+  "Demotion by URI or ID releases exact text and fences earlier responses."
+  (dolist (match '(uri id))
+    (let* ((session-id (format "canvas-demotion-%s" match))
+           (harness
+            (e-harness-create
+             :backend (e-backend-create :name "canvas-demotion")
+             :sessions (e-session-store-create)
+             :intrinsic-capabilities
+             (list (e-chat-session-capability-create))))
+           (buffer (generate-new-buffer "e-canvas-demotion"))
+           (uri (concat "buffer://" (buffer-name buffer)))
+           (key (list session-id uri))
+           attachments)
+      (unwind-protect
+          (let ((e-context-lifetime-shadow-projection-enabled t))
+            (e-harness-create-session harness :id session-id)
+            (with-current-buffer buffer (insert "accepted canvas"))
+            (cl-letf (((symbol-function 'e-chat-session-attachments)
+                       (lambda (_harness _session-id) attachments)))
+              (cl-labels
+                  ((pending (label)
+                     (plist-get
+                      (plist-get
+                       (e-harness-turn-context harness session-id label)
+                       :options)
+                      :canvas-pending-observations))
+                   (accept (observations)
+                     (e-harness-context-runtime-commit-canvas-response
+                      harness session-id
+                      (list :canvas-pending-observations observations))))
+                (setq attachments
+                      (list (e-chat-session-attach-context
+                             harness session-id
+                             (list :id "canvas-id" :uri uri
+                                   :buffer-name (buffer-name buffer))
+                             :canvas t :current-attachments nil)))
+                (let ((initial (pending "initial")))
+                  (should (= (length initial) 1))
+                  (accept initial)
+                  (with-current-buffer buffer (insert " changed"))
+                  (let* ((before-demotion (pending "before-demotion"))
+                         (replacement
+                          (if (eq match 'uri)
+                              (list :id "ordinary-id" :uri uri :canvas nil)
+                            (list :id "canvas-id"
+                                  :uri "buffer://replacement-attachment"
+                                  :canvas nil))))
+                    (should (= (length before-demotion) 1))
+                    (cl-letf (((symbol-function 'e-session-set-context-references)
+                               (lambda (&rest _arguments)
+                                 (error "Rejected metadata update"))))
+                      (should-error
+                       (e-chat-session-attach-context
+                        harness session-id replacement :canvas nil)))
+                    (should (equal
+                             (plist-get
+                              (gethash key (e-harness-canvas-chronologies harness))
+                              :text)
+                             "accepted canvas"))
+                    (setq attachments
+                          (list (e-chat-session-attach-context
+                                 harness session-id replacement :canvas nil)))
+                    (should-not (plist-get (car attachments) :canvas))
+                    (should-not
+                     (gethash key (e-harness-canvas-chronologies harness)))
+                    (dolist (stale (list initial before-demotion))
+                      (accept stale)
+                      (should-not
+                       (gethash key (e-harness-canvas-chronologies harness))))
+                    (setq attachments
+                          (e-chat-session-detach-context
+                           harness session-id (plist-get (car attachments) :id)))
+                    (should-not attachments)
+                    (accept initial)
+                    (should-not
+                     (gethash key (e-harness-canvas-chronologies harness)))
+                    (setq attachments
+                          (list (e-chat-session-attach-context
+                                 harness session-id
+                                 (list :uri uri :buffer-name (buffer-name buffer))
+                                 :canvas t)))
+                    (let* ((fresh (pending "reattached"))
+                           (operation
+                            (car (plist-get (plist-get (car fresh) :state)
+                                            :operations))))
+                      (should (= (length fresh) 1))
+                      (should (eq (plist-get operation :representation)
+                                  'snapshot))
+                      (accept fresh)
+                      (should (equal
+                               (plist-get
+                                (gethash key
+                                         (e-harness-canvas-chronologies harness))
+                                :text)
+                               "accepted canvas changed"))))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 (ert-deftest e-chat-session-test-session-delete-releases-canvas-chronology ()
   "A successful harness session deletion drops accepted text and fences replies."
   (e-chat-session-test--with-sqlite-harness
