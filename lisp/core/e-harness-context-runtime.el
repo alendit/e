@@ -465,6 +465,71 @@ This pure projection never consults or installs a session aggregate."
   (when entry-id
     (cdr (assoc entry-id (plist-get projection :path-entry-positions)))))
 
+(defun e-harness-context-runtime--canvas-lifecycle-token
+    (harness session-id uri)
+  "Return current release identity for SESSION-ID's canvas URI."
+  (let ((tokens (e-harness-canvas-lifecycle-tokens harness)))
+    (list (gethash (list :session session-id) tokens 0)
+          (gethash (list :resource session-id uri) tokens 0))))
+
+(defun e-harness-context-runtime--bump-canvas-lifecycle-token
+    (harness key)
+  "Advance process-local lifecycle token KEY and return its new value."
+  (let* ((tokens (e-harness-canvas-lifecycle-tokens harness))
+         (next (1+ (gethash key tokens 0))))
+    (puthash key next tokens)
+    next))
+
+(defun e-harness-context-runtime--canvas-reset-state (state)
+  "Return a body-free chronology cursor following reset of STATE."
+  (list :version (1+ (or (plist-get state :version) 0))
+        :reset t))
+
+(defun e-harness-context-runtime-reset-canvas-resource
+    (harness session-id uri)
+  "Forget obsolete text for SESSION-ID's URI but preserve its reset cursor."
+  (let* ((key (list session-id uri))
+         (table (e-harness-canvas-chronologies harness))
+         (state (gethash key table)))
+    (when state
+      (puthash key (e-harness-context-runtime--canvas-reset-state state)
+               table))
+    (e-harness-context-runtime--bump-canvas-lifecycle-token
+     harness (list :resource session-id uri))))
+
+(defun e-harness-context-runtime-release-canvas-resource
+    (harness session-id uri)
+  "Release accepted chronology for SESSION-ID's detached canvas URI."
+  (let ((key (list session-id uri)))
+    (remhash key (e-harness-canvas-chronologies harness))
+    (e-harness-context-runtime--bump-canvas-lifecycle-token
+     harness (list :resource session-id uri))))
+
+(defun e-harness-context-runtime-release-canvas-session (harness session-id)
+  "Release every accepted canvas chronology for SESSION-ID."
+  (let ((table (e-harness-canvas-chronologies harness))
+        keys)
+    (maphash (lambda (key _state)
+               (when (equal (car key) session-id)
+                 (push key keys)))
+             table)
+    (dolist (key keys)
+      (remhash key table))
+    (e-harness-context-runtime--bump-canvas-lifecycle-token
+     harness (list :session session-id))))
+
+(defun e-harness-context-runtime-reset-canvas-session (harness session-id)
+  "Forget every accepted body for SESSION-ID while retaining reset cursors."
+  (let ((table (e-harness-canvas-chronologies harness)))
+    (maphash (lambda (key state)
+               (when (equal (car key) session-id)
+                 (puthash key
+                          (e-harness-context-runtime--canvas-reset-state state)
+                          table)))
+             table)
+    (e-harness-context-runtime--bump-canvas-lifecycle-token
+     harness (list :session session-id))))
+
 (defun e-harness-context-runtime--canvas-state-valid-p
     (state scope projection)
   "Return non-nil when accepted canvas STATE is exact for SCOPE and PATH."
@@ -628,6 +693,19 @@ This pure projection never consults or installs a session aggregate."
           (puthash key t seen)
           (let* ((valid (e-harness-context-runtime--canvas-state-valid-p
                          old scope projection))
+                 (_reset (when (and old (not valid)
+                                    (not (plist-get old :reset)))
+                           (e-harness-context-runtime-reset-canvas-resource
+                            harness session-id uri)))
+                 (base-version (and old
+                                    (if valid
+                                        (plist-get old :version)
+                                      (if (plist-get old :reset)
+                                          (plist-get old :version)
+                                        (1+ (or (plist-get old :version) 0))))))
+                 (lifecycle-token
+                  (e-harness-context-runtime--canvas-lifecycle-token
+                   harness session-id uri))
                  (prior (and valid old))
                  (candidate
                   (e-harness-context-runtime--canvas-candidate
@@ -642,6 +720,7 @@ This pure projection never consults or installs a session aggregate."
                        (plist-get candidate :operation))
               (push (list :key key
                           :base-version base-version
+                          :lifecycle-token lifecycle-token
                           :state next-state)
                     pending))
             (dolist (operation candidate-operations)
@@ -728,17 +807,18 @@ This pure projection never consults or installs a session aggregate."
   (let* ((pending (plist-get payload :canvas-pending-observations))
          (table (e-harness-canvas-chronologies harness)))
     (if (plist-get payload :curation-effects)
-        (maphash
-         (lambda (key value)
-           (when (equal (car key) session-id)
-             (puthash key (list :version (1+ (or (plist-get value :version) 0)))
-                      table)))
-         table)
+        (e-harness-context-runtime-reset-canvas-session
+         harness session-id)
       (dolist (candidate pending)
         (let* ((key (plist-get candidate :key))
                (current (gethash key table))
-               (current-version (and current (plist-get current :version))))
-          (when (equal current-version (plist-get candidate :base-version))
+               (current-version (and current (plist-get current :version)))
+               (current-token
+                (e-harness-context-runtime--canvas-lifecycle-token
+                 harness session-id (cadr key))))
+          (when (and
+                 (equal current-version (plist-get candidate :base-version))
+                 (equal current-token (plist-get candidate :lifecycle-token)))
             (let ((state (copy-tree (plist-get candidate :state) t)))
               (plist-put state :version (1+ (or current-version 0)))
               (puthash key state table))))))))

@@ -186,14 +186,30 @@ query instead of consulting this live execution helper."
                              existing attachment)))
                       attachments)))
 
-(defun e-chat-session--set-attachments (harness session-id attachments)
-  "Persist ATTACHMENTS as SESSION-ID current-state references."
-  (e-session-set-context-references
-   (e-harness-sessions harness)
-   session-id
-   'chat-session
-   (list :attachments attachments))
-  attachments)
+(defun e-chat-session--set-attachments
+    (harness session-id attachments &optional retired-canvas-uris)
+  "Persist ATTACHMENTS as SESSION-ID current-state references.
+RETIRED-CANVAS-URIS are released after that update is accepted."
+  (let ((result
+         (e-session-set-context-references
+          (e-harness-sessions harness)
+          session-id
+          'chat-session
+          (list :attachments attachments))))
+    (when retired-canvas-uris
+      (let ((release
+             (lambda ()
+               (dolist (uri (delete-dups retired-canvas-uris))
+                 (e-harness-context-runtime-release-canvas-resource
+                  harness session-id uri)))))
+        (if (e-work-handle-p result)
+            (e-work-on-settle
+             result
+             (lambda (settled)
+               (when (eq (plist-get (e-work-status settled) :state) 'finished)
+                 (funcall release))))
+          (funcall release))))
+    attachments))
 
 (cl-defun e-chat-session-attach-context
     (harness session-id attachment &key canvas
@@ -213,19 +229,38 @@ avoids a redundant durable read without installing a metadata mirror."
             (e-chat-session-attachments harness session-id)))
          (next (if canvas
                    (e-chat-session--replace-canvas attachments attachment)
-                 (e-chat-session--upsert-attachment attachments attachment))))
-    (e-chat-session--set-attachments harness session-id next)
+                 (e-chat-session--upsert-attachment attachments attachment)))
+         (retired-canvas-uris
+          (when canvas
+            (mapcar (lambda (existing) (plist-get existing :uri))
+                    (seq-filter (lambda (existing)
+                                  (plist-get existing :canvas))
+                                attachments)))))
+    (e-chat-session--set-attachments
+     harness session-id next retired-canvas-uris)
     attachment))
 
 (defun e-chat-session-detach-context (harness session-id attachment-id-or-uri)
   "Detach ATTACHMENT-ID-OR-URI from SESSION-ID live context in HARNESS."
   (let* ((attachments (e-chat-session-attachments harness session-id))
+         (removed
+          (seq-filter
+           (lambda (attachment)
+             (or (equal (plist-get attachment :id) attachment-id-or-uri)
+                 (equal (plist-get attachment :uri) attachment-id-or-uri)))
+           attachments))
          (next (cl-remove-if
                 (lambda (attachment)
                   (or (equal (plist-get attachment :id) attachment-id-or-uri)
                       (equal (plist-get attachment :uri) attachment-id-or-uri)))
-                attachments)))
-    (e-chat-session--set-attachments harness session-id next)
+                attachments))
+         (retired-canvas-uris
+          (mapcar (lambda (attachment) (plist-get attachment :uri))
+                  (seq-filter (lambda (attachment)
+                                (plist-get attachment :canvas))
+                              removed))))
+    (e-chat-session--set-attachments
+     harness session-id next retired-canvas-uris)
     next))
 
 (defun e-chat-session--action-harness (context)
@@ -372,7 +407,12 @@ instead of presenting an error placeholder as document content."
     (cond
      ((when-let* ((buffer (e-chat-session-attachment-live-buffer attachment)))
         (with-current-buffer buffer
-          (buffer-substring-no-properties (point-min) (point-max)))))
+          (if (plist-get attachment :canvas)
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (buffer-substring-no-properties (point-min) (point-max))))
+            (buffer-substring-no-properties (point-min) (point-max))))))
      ((when-let* ((file (e-chat-session--uri-file-name uri)))
         (if (file-readable-p file)
             (with-temp-buffer

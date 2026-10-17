@@ -41,7 +41,8 @@
                (:constructor e-harness-state--create-context-state))
   "State owned by context/compaction/provider-anchor policy."
   provider-compaction-candidates
-  canvas-chronologies)
+  canvas-chronologies
+  canvas-lifecycle-tokens)
 
 (cl-defstruct (e-harness (:constructor e-harness-state--create))
   "A live harness identity with explicitly owned runtime substates.
@@ -115,7 +116,10 @@ change."
           (e-harness-state--create-context-state
            :provider-compaction-candidates provider-candidates
            :canvas-chronologies (or (plist-get args :canvas-chronologies)
-                                    (make-hash-table :test 'equal)))))
+                                    (make-hash-table :test 'equal))
+           :canvas-lifecycle-tokens
+           (or (plist-get args :canvas-lifecycle-tokens)
+               (make-hash-table :test 'equal)))))
     (e-harness-state--create
      :backend backend
      :context-strategy context-strategy
@@ -231,6 +235,11 @@ change."
 (defun e-harness-canvas-chronologies (harness)
   "Return process-local canvas chronology state owned by HARNESS."
   (e-harness-context-state-canvas-chronologies
+   (e-harness-context-state harness)))
+
+(defun e-harness-canvas-lifecycle-tokens (harness)
+  "Return process-local canvas release tokens owned by HARNESS."
+  (e-harness-context-state-canvas-lifecycle-tokens
    (e-harness-context-state harness)))
 
 (defun e-harness-executing-session-state (harness session-id)

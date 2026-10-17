@@ -88,7 +88,10 @@ workspace root are allowed."
 
 (defun e-base-tools-file--canonical-file-name (path)
   "Return a canonical comparison path for local PATH."
-  (file-truename (expand-file-name path)))
+  (let ((absolute (expand-file-name path)))
+    (condition-case nil
+        (file-truename absolute)
+      (file-error absolute))))
 
 (defun e-base-tools-file--buffer-visible-p (buffer)
   "Return non-nil when BUFFER is visible in a live window."
@@ -271,36 +274,32 @@ workspace root are allowed."
             (push (e-base-tools-file--buffer-link-state buffer) synced)))))
     (nreverse synced)))
 
-(defun e-base-tools-file--save-buffer-content-to-file (buffer content)
+(defun e-base-tools-file--save-buffer-content-to-file
+    (buffer content &optional whole-resource)
   "Replace BUFFER contents with CONTENT and save its visited file.
 Saving is non-interactive: the file is written as UTF-8 without prompting to
 choose a coding system, which `save-buffer' would otherwise do when the
-buffer's detected coding cannot encode CONTENT."
+buffer's detected coding cannot encode CONTENT.  WHOLE-RESOURCE widens the
+buffer for a guarded canvas mutation."
   (with-current-buffer buffer
-    (let ((inhibit-read-only t)
-          (require-final-newline nil)
-          (mode-require-final-newline nil)
-          (coding-system-for-write 'utf-8-unix)
-          (select-safe-coding-system-function nil))
-      (let ((source (generate-new-buffer " *e-base-tools-content*" t)))
-        (unwind-protect
-            (progn
-              (with-current-buffer source (insert content))
-              ;; Diff-based replacement preserves overlays/markers anchored to
-              ;; surviving text; a plain erase+insert slides every overlay to
-              ;; position 1.  Minor modes that persist overlay regions on
-              ;; `before-save-hook' (e.g. Simply Annotate serializes annotation
-              ;; threads from their overlays) would otherwise write collapsed
-              ;; (1 . 1) regions to disk.  MAX-SECS bounds the diff: past the
-              ;; budget it falls back to delete+insert (losing overlay
-              ;; anchoring) rather than hanging.  The bound is mandatory -- the
-              ;; diff runs in C and no timer or C-g can interrupt it, so a big
-              ;; edit that differs throughout would otherwise spin forever.
-              (replace-buffer-contents
-               source e-base-tools-file--replace-contents-max-secs))
-          (kill-buffer source)))
-      (save-buffer)
-      (e-base-tools-file--buffer-link-state buffer))))
+    (save-excursion
+      (save-restriction
+        (when whole-resource (widen))
+        (let ((inhibit-read-only t)
+              (require-final-newline nil)
+              (mode-require-final-newline nil)
+              (coding-system-for-write 'utf-8-unix)
+              (select-safe-coding-system-function nil))
+          (let ((source (generate-new-buffer " *e-base-tools-content*" t)))
+            (unwind-protect
+                (progn
+                  (with-current-buffer source (insert content))
+                  ;; Retain marker and overlay positions across the save hooks.
+                  (replace-buffer-contents
+                   source e-base-tools-file--replace-contents-max-secs))
+              (kill-buffer source)))
+          (save-buffer)
+          (e-base-tools-file--buffer-link-state buffer))))))
 
 (defun e-base-tools-file--read-file-literally (path)
   "Return literal contents of PATH."
@@ -426,15 +425,21 @@ TOTAL-LINES is the full file line count.  START-LINE is 1-based."
            "resource")
        (e-resource-coherence-view-labels stale))))))
 
-(defun e-base-tools-file--file-text (path)
+(defun e-base-tools-file--file-text (path &optional whole-resource)
   "Return coherent text contents of PATH.
 Live resource views visiting PATH win over disk so unsaved edits are visible
-through file:// reads."
+through file:// reads.  WHOLE-RESOURCE widens a live buffer for canvas
+revision checks and full-resource operations."
   (let* ((absolute-path (e-base-tools-file--canonical-file-name path))
          (group (e-base-tools-file-buffer-coherence-group absolute-path)))
     (if-let* ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
         (with-current-buffer buffer
-          (buffer-substring-no-properties (point-min) (point-max)))
+          (if whole-resource
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (buffer-substring-no-properties (point-min) (point-max))))
+            (buffer-substring-no-properties (point-min) (point-max))))
       (e-base-tools-file-disk-text absolute-path))))
 
 (defun e-base-tools-file--read-text (path offset limit &optional captured-content)
@@ -1118,47 +1123,65 @@ result plist; otherwise return nil so the caller runs the default backend."
 (defun e-base-tools-file--write-file-resource
     (uri content directory &optional expected-revision)
   "Write CONTENT to parsed file URI in DIRECTORY."
-  (let* ((guarded-p
-          (or (stringp expected-revision)
-              (e-context-canvas-resource-targeted-p uri directory)))
-         (current-content (and guarded-p
-                               (if (file-exists-p
-                                    (e-base-tools-file-resource-path uri directory))
-                                   (e-base-tools-file--file-text
-                                    (e-base-tools-file-resource-path uri directory))
-                                 "")))
-         (revision-check (and guarded-p
-                              (e-context-canvas-revision-check
-                               uri current-content expected-revision directory))))
-    (if (equal (plist-get revision-check :status) "conflict")
-        revision-check
-      (let* ((path (plist-get uri :address))
+  (let* ((path (plist-get uri :address))
          (absolute-path (e-base-tools-file-resource-path uri directory))
          (file-uri (e-base-tools-file--file-uri absolute-path))
          (group (e-base-tools-file-buffer-coherence-group
-                 absolute-path
-                 (plist-get uri :uri))))
-        (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
+                 absolute-path (plist-get uri :uri)))
+         (buffer (e-base-tools-file-preferred-buffer-for-group group))
+         (canvas-p (e-context-canvas-resource-targeted-p uri directory))
+         (guarded-p (or (stringp expected-revision) canvas-p))
+         (current-content
+          (when guarded-p
+            (cond
+             (buffer (e-base-tools-file--buffer-content buffer t))
+             ((file-exists-p absolute-path)
+              (e-base-tools-file--file-text absolute-path t))
+             (t ""))))
+         (revision-check
+          (and guarded-p
+               (e-context-canvas-revision-check
+                uri current-content expected-revision directory))))
+    (if (equal (plist-get revision-check :status) "conflict")
+        revision-check
+      (let ((conflict-uri
+             (if (and canvas-p buffer)
+                 (e-base-tools-file--buffer-uri buffer)
+               file-uri)))
+        (e-base-tools-file--check-coherence-write-conflicts
+         group conflict-uri "edit")
         (make-directory (file-name-directory absolute-path) t)
-        (let ((result
-               (if-let* ((buffer (e-base-tools-file-preferred-buffer-for-group group)))
-                   (let* ((saved (e-base-tools-file--save-buffer-content-to-file buffer content))
-                          (synced (e-base-tools-file--sync-other-live-buffers
-                                   buffer
-                                   (e-base-tools-file-live-buffers absolute-path))))
-                     (format "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
-                             (string-bytes content)
-                             path
-                             (plist-get saved :name)
-                             (length synced)))
-                 (let ((coding-system-for-write 'utf-8-unix))
-                   (write-region content nil absolute-path nil 'silent))
-                 (format "Successfully wrote %d bytes to %s"
-                         (string-bytes content)
-                         path))))
+        (let (saved synced result-content result)
+          (if buffer
+              (progn
+                (setq saved
+                      (e-base-tools-file--save-buffer-content-to-file
+                       buffer content guarded-p))
+                (setq synced
+                      (e-base-tools-file--sync-other-live-buffers
+                       buffer (e-base-tools-file-live-buffers absolute-path)))
+                (setq result-content
+                      (e-base-tools-file--buffer-content buffer guarded-p))
+                (setq result
+                      (format
+                       "Successfully wrote %d bytes to %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
+                       (string-bytes result-content)
+                       path
+                       (plist-get saved :name)
+                       (length synced))))
+            (let ((coding-system-for-write 'utf-8-unix))
+              (write-region content nil absolute-path nil 'silent))
+            (setq result-content
+                  (if guarded-p
+                      (e-base-tools-file--file-text absolute-path t)
+                    content))
+            (setq result
+                  (format "Successfully wrote %d bytes to %s"
+                          (string-bytes result-content)
+                          path)))
           (if guarded-p
               (list :status "ok"
-                    :revision (e-context-canvas-revision content)
+                    :revision (e-context-canvas-revision result-content)
                     :result result)
             result))))))
 
@@ -1171,19 +1194,27 @@ result plist; otherwise return nil so the caller runs the default backend."
          (group (e-base-tools-file-buffer-coherence-group
                  absolute-path
                  (plist-get uri :uri)))
+         (buffer (e-base-tools-file-preferred-buffer-for-group group))
+         (canvas-p (e-context-canvas-resource-targeted-p uri directory))
          (guarded-p
           (or (stringp expected-revision)
-              (e-context-canvas-resource-targeted-p uri directory)))
-         (content-now (and guarded-p
-                           (e-base-tools-file--file-text absolute-path)))
+              canvas-p))
+         (content-now
+          (when guarded-p
+            (if buffer
+                (e-base-tools-file--buffer-content buffer t)
+              (e-base-tools-file--file-text absolute-path t))))
          (revision-check (and guarded-p
                               (e-context-canvas-revision-check
                                uri content-now expected-revision directory))))
     (if (equal (plist-get revision-check :status) "conflict")
         revision-check
-      (e-base-tools-file--check-coherence-write-conflicts group file-uri "edit")
-    (let* ((buffer (e-base-tools-file-preferred-buffer-for-group group))
-           (raw-content (e-base-tools-file--file-text absolute-path))
+      (e-base-tools-file--check-coherence-write-conflicts
+       group (if (and canvas-p buffer)
+                 (e-base-tools-file--buffer-uri buffer)
+               file-uri)
+       "edit")
+    (let* ((raw-content (e-base-tools-file--file-text absolute-path guarded-p))
            (line-ending (e-base-tools-file--line-ending raw-content))
            (content (e-base-tools-file--normalize-line-endings raw-content))
            (normalized-edits (e-base-tools-file--normalize-edits edits))
@@ -1196,13 +1227,19 @@ result plist; otherwise return nil so the caller runs the default backend."
           (progn
             (make-directory (file-name-directory absolute-path) t)
             (setq saved (e-base-tools-file--save-buffer-content-to-file
-                         buffer final-content))
+                         buffer final-content guarded-p))
             (setq synced (e-base-tools-file--sync-other-live-buffers
                           buffer
                           (e-base-tools-file-live-buffers absolute-path))))
         (let ((coding-system-for-write 'utf-8-unix))
           (write-region final-content nil absolute-path nil 'silent)))
-      (let ((result (list :message (if buffer
+      (let* ((result-content
+              (if guarded-p
+                  (if buffer
+                      (e-base-tools-file--buffer-content buffer t)
+                    (e-base-tools-file--file-text absolute-path t))
+                final-content))
+             (result (list :message (if buffer
                          (format "Successfully replaced %d block(s) in %s through live buffer %s. Saved buffer and synced %d linked buffer(s)."
                                  (length normalized-edits)
                                  path
@@ -1217,14 +1254,20 @@ result plist; otherwise return nil so the caller runs the default backend."
                          :diff (e-base-tools-file--simple-diff content new-content))))
         (if guarded-p
             (list :status "ok"
-                  :revision (e-context-canvas-revision final-content)
+                  :revision (e-context-canvas-revision result-content)
                   :result result)
           result))))))
 
-(defun e-base-tools-file--buffer-content (buffer)
-  "Return BUFFER contents without text properties."
+(defun e-base-tools-file--buffer-content (buffer &optional whole-resource)
+  "Return BUFFER contents without text properties.
+WHOLE-RESOURCE widens a live canvas view before capturing it."
   (with-current-buffer buffer
-    (buffer-substring-no-properties (point-min) (point-max))))
+    (if whole-resource
+        (save-excursion
+          (save-restriction
+            (widen)
+            (buffer-substring-no-properties (point-min) (point-max))))
+      (buffer-substring-no-properties (point-min) (point-max)))))
 
 (defun e-base-tools-file--model-symbol (value)
   "Project domain symbol VALUE to its model-facing string."
@@ -1361,7 +1404,11 @@ result plist; otherwise return nil so the caller runs the default backend."
               (pcase-let* ((`(,offset ,limit)
                             (e-base-tools-file--range-offset-limit range))
                            (path (e-base-tools-file-resource-path uri directory))
-                           (full-content (e-base-tools-file--file-text path))
+                           (full-content
+                            (e-base-tools-file--file-text
+                             path
+                             (e-context-canvas-resource-targeted-p
+                              uri directory)))
                            (content (e-base-tools-file--read-text
                                      path offset limit full-content)))
                 (if (and e-resource-return-revision-on-read

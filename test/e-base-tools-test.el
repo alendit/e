@@ -1718,6 +1718,190 @@ picker."
                          "changed")))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-attached-file-edit-widens-live-buffer ()
+  "Canvas file guards and edits use the whole visiting buffer."
+  (let* ((directory (make-temp-file "e-file-canvas-narrow-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (uri "file://sample.txt")
+         (initial "alpha beta gamma")
+         (registry (e-base-tools-test--resource-tools directory))
+         (context
+          (list :attached-canvas-targets
+                (list (list :uri uri
+                            :target-identities
+                            (e-context-canvas-resource-identities
+                             uri directory)))))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region initial nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (narrow-to-region 7 11)
+            (goto-char 9))
+          (let* ((stale
+                  (e-tools--execute-batch-with-context
+                   registry
+                   '(:id "stale-full-buffer" :name "edit"
+                     :arguments (:uri "file://sample.txt"
+                                :edits [(:oldText "gamma" :newText "GAMMA")]
+                                :expectedRevision "stale"))
+                   context))
+                 (conflict (plist-get stale :content)))
+            (should (equal (plist-get conflict :status) "conflict"))
+            (should (equal (plist-get conflict :currentRevision)
+                           (e-context-canvas-revision initial)))
+            (should
+             (equal (with-current-buffer buffer
+                      (save-restriction
+                        (widen)
+                        (buffer-string)))
+                    initial)))
+          (let ((edited
+                 (e-tools--execute-batch-with-context
+                  registry
+                  `(:id "guarded-full-buffer" :name "edit"
+                    :arguments (:uri "file://sample.txt"
+                               :edits [(:oldText "gamma" :newText "GAMMA")]
+                               :expectedRevision
+                               ,(e-context-canvas-revision initial)))
+                  context)))
+            (should (equal (plist-get edited :status) 'ok))
+            (should (equal (plist-get (plist-get edited :content) :revision)
+                           (e-context-canvas-revision "alpha beta GAMMA")))
+            (with-current-buffer buffer
+              (should (buffer-narrowed-p))
+              (should (= (point) 9))
+              (should (equal (save-restriction
+                               (widen)
+                               (buffer-string))
+                             "alpha beta GAMMA")))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "alpha beta GAMMA"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-guarded-saves-return-post-hook-revisions ()
+  "Canvas write and edit revisions reflect local save-hook changes."
+  (let* ((directory (make-temp-file "e-file-canvas-save-hook-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (uri "file://sample.txt")
+         (registry (e-base-tools-test--resource-tools directory))
+         (context
+          (list :attached-canvas-targets
+                (list (list :uri uri
+                            :target-identities
+                            (e-context-canvas-resource-identities
+                             uri directory)))))
+         buffer)
+    (unwind-protect
+        (progn
+          (write-region "initial" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (let ((hook-suffix " write-hook"))
+            (with-current-buffer buffer
+              (add-hook 'before-save-hook
+                        (lambda ()
+                          (unless (string-empty-p hook-suffix)
+                            (goto-char (point-max))
+                            (insert hook-suffix)))
+                        nil t))
+            (let* ((written
+                    (e-tools--execute-batch-with-context
+                     registry
+                     `(:id "write-with-hook" :name "write"
+                       :arguments (:uri ,uri :content "requested"
+                                  :expectedRevision
+                                  ,(e-context-canvas-revision "initial")))
+                     context))
+                   (write-revision
+                    (plist-get (plist-get written :content) :revision)))
+              (should (equal (plist-get written :status) 'ok))
+              (should (equal write-revision
+                             (e-context-canvas-revision
+                              "requested write-hook")))
+              (should (equal (with-temp-buffer
+                               (insert-file-contents file)
+                               (buffer-string))
+                             "requested write-hook"))
+              (setq hook-suffix " edit-hook")
+              (let* ((edited
+                      (e-tools--execute-batch-with-context
+                       registry
+                       `(:id "edit-with-hook" :name "edit"
+                         :arguments (:uri ,uri
+                                    :edits [(:oldText "requested"
+                                             :newText "edited")]
+                                    :expectedRevision ,write-revision))
+                       context))
+                     (edit-revision
+                      (plist-get (plist-get edited :content) :revision)))
+                (should (equal (plist-get edited :status) 'ok))
+                (should (equal edit-revision
+                               (e-context-canvas-revision
+                                "edited write-hook edit-hook")))
+                (setq hook-suffix "")
+                (let ((followup
+                       (e-tools--execute-batch-with-context
+                        registry
+                        `(:id "followup-with-returned-revision" :name "write"
+                          :arguments (:uri ,uri :content "next"
+                                     :expectedRevision ,edit-revision))
+                        context)))
+                  (should (equal (plist-get followup :status) 'ok))
+                  (should (equal (plist-get
+                                  (plist-get followup :content) :revision)
+                                 (e-context-canvas-revision "next"))))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-guarded-write-uses-unsaved-new-file-buffer ()
+  "An attached file URI reads and writes its live visiting buffer before disk."
+  (let* ((directory (make-temp-file "e-file-canvas-new-buffer-" t))
+         (file (expand-file-name "new.txt" directory))
+         (uri "file://new.txt")
+         (registry (e-base-tools-test--resource-tools directory))
+         (context
+          (list :attached-canvas-targets
+                (list (list :uri uri
+                            :target-identities
+                            (e-context-canvas-resource-identities
+                             uri directory)))))
+         buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (find-file-noselect file))
+          (with-current-buffer buffer
+            (insert "unsaved initial"))
+          (should-not (file-exists-p file))
+          (let* ((result
+                  (e-tools--execute-batch-with-context
+                   registry
+                   `(:id "new-file-write" :name "write"
+                     :arguments (:uri ,uri :content "saved live text"
+                                :expectedRevision
+                                ,(e-context-canvas-revision
+                                  "unsaved initial")))
+                   context))
+                 (content (plist-get result :content)))
+            (should (equal (plist-get result :status) 'ok))
+            (should (equal (plist-get content :revision)
+                           (e-context-canvas-revision "saved live text")))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "saved live text"))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           "saved live text")))
+          (should (file-exists-p file)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (provide 'e-base-tools-test)
 
 ;;; e-base-tools-test.el ends here

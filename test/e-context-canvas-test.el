@@ -69,6 +69,40 @@
                (e-context-canvas-utf8-bytes "✅")))
     (should (string-match-p "baseRevision=" change))))
 
+(ert-deftest e-context-canvas-test-identities-follow-indirect-base-buffer ()
+  "File, base-buffer, and indirect-buffer URIs identify one shared text."
+  (let* ((directory (make-temp-file "e-canvas-identities-" t))
+         (file (expand-file-name "canvas.txt" directory))
+         (buffer nil)
+         (indirect nil))
+    (unwind-protect
+        (progn
+          (write-region "shared text" nil file nil 'silent)
+          (setq buffer (find-file-noselect file))
+          (setq indirect (make-indirect-buffer buffer "e-canvas-indirect" t))
+          (let* ((file-uri (concat "file://" file))
+                 (base-uri (concat "buffer://" (buffer-name buffer)))
+                 (indirect-uri (concat "buffer://" (buffer-name indirect)))
+                 (file-identities
+                  (e-context-canvas-resource-identities file-uri))
+                 (base-identities
+                  (e-context-canvas-resource-identities base-uri))
+                 (indirect-identities
+                  (e-context-canvas-resource-identities indirect-uri)))
+            (should (e-context-canvas-identities-intersect-p
+                     file-identities indirect-identities))
+            (should (e-context-canvas-identities-intersect-p
+                     indirect-identities file-identities))
+            (should (e-context-canvas-identities-intersect-p
+                     base-identities indirect-identities))
+            (should (e-context-canvas-identities-intersect-p
+                     indirect-identities base-identities))))
+      (when (buffer-live-p indirect)
+        (kill-buffer indirect))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (delete-directory directory t))))
+
 (provide 'e-context-canvas-test)
 
 ;;; e-context-canvas-test.el ends here

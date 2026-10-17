@@ -923,6 +923,179 @@
                 (kill-buffer buffer)))))
       (delete-file file))))
 
+(ert-deftest e-chat-session-test-canvas-release-fences-pending-chronology ()
+  "Detach and replacement release text, fence old responses, and reset snapshots."
+  (let* ((session-id "canvas-release-session")
+         (harness
+          (e-harness-create
+           :backend (e-backend-create :name "canvas-release")
+           :sessions (e-session-store-create)
+           :intrinsic-capabilities
+           (list (e-chat-session-capability-create))))
+         (buffer (generate-new-buffer "e-chat-session-release-canvas"))
+         (uri (concat "buffer://" (buffer-name buffer)))
+         (key (list session-id uri))
+         (attachments nil))
+    (unwind-protect
+        (let ((e-context-lifetime-shadow-projection-enabled t))
+          (e-harness-create-session harness :id session-id)
+          (with-current-buffer buffer
+            (insert "initial"))
+          (cl-letf (((symbol-function 'e-chat-session-attachments)
+                     (lambda (_harness _session-id) attachments)))
+            (setq attachments
+                  (list (e-chat-session-attach-context
+                         harness session-id
+                         (list :uri uri :buffer-name (buffer-name buffer))
+                         :canvas t :current-attachments nil)))
+            (let* ((before-detach
+                    (e-harness-turn-context harness session-id "before-detach"))
+                   (pending-before-detach
+                    (plist-get (plist-get before-detach :options)
+                               :canvas-pending-observations)))
+              (should (= (length pending-before-detach) 1))
+              (setq attachments
+                    (e-chat-session-detach-context harness session-id uri))
+              (should-not (gethash key (e-harness-canvas-chronologies harness)))
+              (e-harness-context-runtime-commit-canvas-response
+               harness session-id
+               (list :canvas-pending-observations pending-before-detach))
+              (should-not (gethash key (e-harness-canvas-chronologies harness))))
+            (setq attachments
+                  (list (e-chat-session-attach-context
+                         harness session-id
+                         (list :uri uri :buffer-name (buffer-name buffer))
+                         :canvas t)))
+            (let* ((baseline
+                    (e-harness-turn-context harness session-id "new-baseline"))
+                   (pending-baseline
+                    (plist-get (plist-get baseline :options)
+                               :canvas-pending-observations))
+                   (operation
+                    (car (plist-get (plist-get (car pending-baseline) :state)
+                                    :operations)))
+                   (message (plist-get operation :message)))
+              (should (= (length pending-baseline) 1))
+              (should (eq (plist-get operation :representation) 'snapshot))
+              (should message)
+              (should (string-match-p
+                       (e-context-canvas-revision "initial")
+                       (plist-get message :content)))
+              (e-harness-context-runtime-commit-canvas-response
+               harness session-id
+               (list :canvas-pending-observations pending-baseline))
+              (should (equal (plist-get (gethash key
+                                                   (e-harness-canvas-chronologies
+                                                    harness))
+                                        :text)
+                             "initial"))
+              (with-current-buffer buffer
+                (erase-buffer)
+                (insert "changed"))
+              (let* ((before-replacement
+                      (e-harness-turn-context harness session-id
+                                              "before-replacement"))
+                     (pending-before-replacement
+                      (plist-get (plist-get before-replacement :options)
+                                 :canvas-pending-observations)))
+                (should (= (length pending-before-replacement) 1))
+                (setq attachments
+                      (list (e-chat-session-attach-context
+                             harness session-id
+                             (list :uri uri :buffer-name (buffer-name buffer)
+                                   :label "replacement")
+                             :canvas t)))
+                (should-not
+                 (gethash key (e-harness-canvas-chronologies harness)))
+                (e-harness-context-runtime-commit-canvas-response
+                 harness session-id
+                 (list :canvas-pending-observations
+                       pending-before-replacement))
+                (should-not
+                 (gethash key (e-harness-canvas-chronologies harness)))
+                (let* ((replacement
+                        (e-harness-turn-context harness session-id
+                                                "replacement-baseline"))
+                       (replacement-pending
+                        (plist-get (plist-get replacement :options)
+                                   :canvas-pending-observations))
+                       (replacement-operation
+                        (car (plist-get
+                              (plist-get (car replacement-pending) :state)
+                              :operations)))
+                       (replacement-message
+                        (plist-get replacement-operation :message)))
+                  (should (= (length replacement-pending) 1))
+                  (should (eq (plist-get replacement-operation :representation)
+                              'snapshot))
+                  (should replacement-message)
+                  (should (string-match-p
+                           (e-context-canvas-revision "changed")
+                           (plist-get replacement-message :content)))
+                  (e-harness-context-runtime-commit-canvas-response
+                   harness session-id
+                   (list :canvas-pending-observations replacement-pending))
+                  (let ((token
+                         (e-harness-context-runtime--canvas-lifecycle-token
+                          harness session-id uri)))
+                    (with-current-buffer buffer
+                      (erase-buffer)
+                      (insert "preview only"))
+                    (let ((preview
+                           (e-harness-context harness session-id nil 'preview)))
+                      (should-not
+                       (plist-get (plist-get preview :options)
+                                  :canvas-pending-observations)))
+                    (should
+                     (equal token
+                            (e-harness-context-runtime--canvas-lifecycle-token
+                             harness session-id uri)))
+                    (should (equal (plist-get
+                                    (gethash key
+                                             (e-harness-canvas-chronologies
+                                              harness))
+                                    :text)
+                                   "changed"))))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest e-chat-session-test-session-delete-releases-canvas-chronology ()
+  "A successful harness session deletion drops accepted text and fences replies."
+  (e-chat-session-test--with-sqlite-harness
+      (harness store (e-backend-create :name "delete-canvas"))
+    (let* ((session-id "deleted-canvas-session")
+           (uri "buffer://deleted-canvas")
+           (key (list session-id uri)))
+      (e-chat-session-test--create-session harness session-id)
+      (let* ((table (e-harness-canvas-chronologies harness))
+             (state
+              (list :version 3 :text "PRIVATE-CANVAS-BODY"
+                    :revision (e-context-canvas-revision
+                               "PRIVATE-CANVAS-BODY")
+                    :operations '((:message (:content "PRIVATE-CANVAS-BODY")))))
+             (pending-token
+              (e-harness-context-runtime--canvas-lifecycle-token
+               harness session-id uri))
+             (pending
+              (list :key key :base-version nil
+                    :lifecycle-token pending-token
+                    :state (list :text "stale response body"
+                                 :revision "stale"
+                                 :operations '((:message
+                                                (:content
+                                                 "stale response body")))))))
+        (puthash key state table)
+        (e-chat-session-test--await
+         (e-harness-delete-session harness session-id))
+        (should-not (gethash key table))
+        (e-harness-context-runtime-commit-canvas-response
+         harness session-id
+         (list :canvas-pending-observations (list pending)))
+        (should-not (gethash key table))
+        (should-not
+         (gethash (list session-id uri)
+                  (e-harness-canvas-chronologies harness)))))))
+
 (provide 'e-chat-session-test)
 
 ;;; e-chat-session-test.el ends here

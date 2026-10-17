@@ -305,6 +305,15 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   "Return buffer name addressed by parsed buffer URI."
   (plist-get uri :address))
 
+(defun e-emacs-tools--replace-buffer-content (content)
+  "Replace current complete buffer contents with property-free CONTENT."
+  (let ((source (generate-new-buffer " *e-buffer-resource-content*" t)))
+    (unwind-protect
+        (progn
+          (with-current-buffer source (insert content))
+          (replace-buffer-contents source 0.5))
+      (kill-buffer source))))
+
 (defun e-emacs-tools--discovery-limit (limit)
   "Return normalized discovery LIMIT."
   (cond
@@ -410,20 +419,36 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
   "Read parsed buffer URI with structured RANGE."
   (let ((name (e-emacs-tools--buffer-resource-name uri)))
     (with-current-buffer (e-emacs-tools--buffer name)
-      (let* ((full-content
-              (buffer-substring-no-properties (point-min) (point-max)))
-             (bounds (e-emacs-tools--resource-read-range range))
-             (start (plist-get bounds :start))
-             (exclusive-end (plist-get bounds :exclusive-end))
-             (reported-end (plist-get bounds :reported-end)))
-        (append
-         (list :name name
-               :content (buffer-substring-no-properties start exclusive-end)
-               :start start
-               :end reported-end)
-         (when (and e-resource-return-revision-on-read
-                    (e-context-canvas-resource-targeted-p uri))
-           (list :revision (e-context-canvas-revision full-content))))))))
+      (let ((canvas-p (e-context-canvas-resource-targeted-p uri)))
+        (if canvas-p
+            (save-mark-and-excursion
+              (save-restriction
+                (widen)
+                (let* ((full-content
+                        (buffer-substring-no-properties (point-min) (point-max)))
+                       (bounds (e-emacs-tools--resource-read-range range))
+                       (start (plist-get bounds :start))
+                       (exclusive-end (plist-get bounds :exclusive-end))
+                       (reported-end (plist-get bounds :reported-end)))
+                  (append
+                   (list :name name
+                         :content (substring full-content
+                                             (1- start)
+                                             (1- exclusive-end))
+                         :start start
+                         :end reported-end)
+                   (when e-resource-return-revision-on-read
+                     (list :revision
+                           (e-context-canvas-revision full-content)))))))
+          (let* ((bounds (e-emacs-tools--resource-read-range range))
+                 (start (plist-get bounds :start))
+                 (exclusive-end (plist-get bounds :exclusive-end))
+                 (reported-end (plist-get bounds :reported-end)))
+            (list :name name
+                  :content
+                  (buffer-substring-no-properties start exclusive-end)
+                  :start start
+                  :end reported-end)))))))
 
 (defun e-emacs-tools--write-buffer-resource (uri content &optional expected-revision)
   "Replace parsed buffer URI contents with CONTENT."
@@ -435,7 +460,13 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
          (current-content
           (if (buffer-live-p existing)
               (with-current-buffer existing
-                (buffer-substring-no-properties (point-min) (point-max)))
+                (if guarded-p
+                    (save-excursion
+                      (save-restriction
+                        (widen)
+                        (buffer-substring-no-properties
+                         (point-min) (point-max))))
+                  (buffer-substring-no-properties (point-min) (point-max))))
             ""))
          (revision-check (and guarded-p
                               (e-context-canvas-revision-check
@@ -443,8 +474,18 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     (if (equal (plist-get revision-check :status) "conflict")
         revision-check
       (with-current-buffer (get-buffer-create name)
-        (erase-buffer)
-        (insert content)
+        (let ((replace
+               (lambda ()
+                 (if guarded-p
+                     (e-emacs-tools--replace-buffer-content content)
+                   (erase-buffer)
+                   (insert content)))))
+          (if guarded-p
+              (save-mark-and-excursion
+                (save-restriction
+                  (widen)
+                  (funcall replace)))
+            (funcall replace)))
         (let ((result
                (append
                 (list :chars (length content)
@@ -452,7 +493,13 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                 (e-emacs-tools--buffer-metadata (current-buffer)))))
           (if guarded-p
               (list :status "ok"
-                    :revision (e-context-canvas-revision content)
+                    :revision
+                    (e-context-canvas-revision
+                     (save-excursion
+                       (save-restriction
+                         (widen)
+                         (buffer-substring-no-properties
+                          (point-min) (point-max)))))
                     :result result)
             result))))))
 
@@ -466,7 +513,13 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
          (current-content
           (if (buffer-live-p existing)
               (with-current-buffer existing
-                (buffer-substring-no-properties (point-min) (point-max)))
+                (if guarded-p
+                    (save-excursion
+                      (save-restriction
+                        (widen)
+                        (buffer-substring-no-properties
+                         (point-min) (point-max))))
+                  (buffer-substring-no-properties (point-min) (point-max))))
             ""))
          (revision-check (and guarded-p
                               (e-context-canvas-revision-check
@@ -475,14 +528,27 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
     (if (equal (plist-get revision-check :status) "conflict")
         revision-check
       (with-current-buffer (or existing (e-emacs-tools--buffer name))
-        (let* ((replacements (e-emacs-tools--apply-edits-to-current-buffer
-                              normalized-edits))
-               (content (buffer-substring-no-properties (point-min) (point-max)))
-               (result
+        (let (replacements content result)
+          (if guarded-p
+              (save-mark-and-excursion
+                (save-restriction
+                  (widen)
+                  (setq replacements
+                        (e-emacs-tools--apply-edits-to-current-buffer
+                         normalized-edits))
+                  (setq content
+                        (buffer-substring-no-properties
+                         (point-min) (point-max)))))
+            (setq replacements
+                  (e-emacs-tools--apply-edits-to-current-buffer
+                   normalized-edits))
+            (setq content
+                  (buffer-substring-no-properties (point-min) (point-max))))
+          (setq result
                 (append
                  (list :replacements replacements
                        :saved e-json-false)
-                 (e-emacs-tools--buffer-metadata (current-buffer)))))
+                 (e-emacs-tools--buffer-metadata (current-buffer))))
           (if guarded-p
               (list :status "ok"
                     :revision (e-context-canvas-revision content)

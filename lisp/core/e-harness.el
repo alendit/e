@@ -147,6 +147,19 @@ layer selection APIs change the enabled layer set."
                     :metadata (e-harness--normalize-session-metadata
                                metadata)))
 
+(defun e-harness-delete-session (harness session-id)
+  "Delete SESSION-ID from HARNESS and release its process-local canvas state."
+  (let ((result (e-session-delete (e-harness-sessions harness) session-id)))
+    (if (e-work-handle-p result)
+        (e-work-on-settle
+         result
+         (lambda (settled)
+           (when (eq (plist-get (e-work-status settled) :state) 'finished)
+             (e-harness-context-runtime-release-canvas-session
+              harness session-id))))
+      (e-harness-context-runtime-release-canvas-session harness session-id))
+    result))
+
 (cl-defun e-harness-fork-session (harness session-id &key at metadata name)
   "Fork SESSION-ID in HARNESS into a new independent session and return it.
 Seeds a fresh session with a snapshot of the source's messages up to AT (a head

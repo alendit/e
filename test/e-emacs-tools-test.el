@@ -1038,6 +1038,100 @@ returns a normal tool error instead."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest e-emacs-tools-test-indirect-canvas-guards-and-widens-resource-ops ()
+  "Direct and indirect buffer aliases share guarded, complete canvas text."
+  (let* ((base (generate-new-buffer "e-test-canvas-base"))
+         (indirect (make-indirect-buffer base "e-test-canvas-indirect" t))
+         (registry (e-emacs-tools-test--resource-tools))
+         (base-uri (concat "buffer://" (buffer-name base)))
+         (indirect-uri (concat "buffer://" (buffer-name indirect)))
+         (initial "alpha beta gamma")
+         (revision (e-context-canvas-revision initial))
+         (base-context
+          (list :attached-canvas-targets
+                (list (list :uri base-uri
+                            :target-identities
+                            (e-context-canvas-resource-identities base-uri)))))
+         (indirect-context
+          (list :attached-canvas-targets
+                (list (list :uri indirect-uri
+                            :target-identities
+                            (e-context-canvas-resource-identities
+                             indirect-uri))))))
+    (unwind-protect
+        (progn
+          (with-current-buffer base
+            (insert initial))
+          (with-current-buffer indirect
+            (narrow-to-region 7 11)
+            (goto-char 9)
+            (let* ((read
+                    (e-tools--execute-batch-with-context
+                     registry
+                     `(:id "indirect-read" :name "read"
+                       :arguments (:uri ,indirect-uri
+                                  :range (:unit "offset" :start 7 :limit 4)))
+                     base-context))
+                   (missing
+                    (e-tools--execute-batch-with-context
+                     registry
+                     `(:id "indirect-missing-guard" :name "edit"
+                       :arguments (:uri ,indirect-uri
+                                  :edits [(:oldText "gamma"
+                                           :newText "GAMMA")]))
+                     base-context))
+                   (edited
+                    (e-tools--execute-batch-with-context
+                     registry
+                     `(:id "indirect-edit" :name "edit"
+                       :arguments (:uri ,indirect-uri
+                                  :edits [(:oldText "gamma"
+                                           :newText "GAMMA")]
+                                  :expectedRevision ,revision))
+                     base-context)))
+              (should (equal (plist-get (plist-get read :content) :content)
+                             "beta"))
+              (should (equal (plist-get (plist-get read :content) :revision)
+                             revision))
+              (should (equal (plist-get (plist-get missing :content) :status)
+                             "conflict"))
+              (should (equal (plist-get
+                              (plist-get missing :content) :currentRevision)
+                             revision))
+              (should (equal (plist-get edited :status) 'ok))
+              (should (equal (plist-get (plist-get edited :content) :revision)
+                             (e-context-canvas-revision "alpha beta GAMMA")))
+              (should (buffer-narrowed-p))
+              (should (= (point) 9))
+              (should (equal (buffer-substring-no-properties
+                              (point-min) (point-max))
+                             "beta"))))
+          (let* ((current-revision
+                  (e-context-canvas-revision "alpha beta GAMMA"))
+                 (written
+                  (e-tools--execute-batch-with-context
+                   registry
+                   `(:id "base-write" :name "write"
+                     :arguments (:uri ,base-uri
+                                :content "alpha beta DELTA"
+                                :expectedRevision ,current-revision))
+                   indirect-context)))
+            (should (equal (plist-get written :status) 'ok))
+            (should (equal (plist-get (plist-get written :content) :revision)
+                           (e-context-canvas-revision "alpha beta DELTA")))
+            (with-current-buffer base
+              (should (equal (buffer-string) "alpha beta DELTA")))
+            (with-current-buffer indirect
+              (should (buffer-narrowed-p))
+              (should (= (point) 9))
+              (should (equal (buffer-substring-no-properties
+                              (point-min) (point-max))
+                             "beta")))))
+      (when (buffer-live-p indirect)
+        (kill-buffer indirect))
+      (when (buffer-live-p base)
+        (kill-buffer base)))))
+
 (provide 'e-emacs-tools-test)
 
 ;;; e-emacs-tools-test.el ends here

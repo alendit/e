@@ -164,6 +164,34 @@ The result uses zero-based, half-open character positions."
             (substring-no-properties replacement)
             (substring base end))))
 
+(defun e-context-canvas--ultimate-base-buffer (buffer)
+  "Return BUFFER's ultimate base buffer when it is a live buffer."
+  (when (buffer-live-p buffer)
+    (let ((base buffer)
+          next)
+      (while (and (buffer-live-p base)
+                  (setq next (buffer-base-buffer base))
+                  (not (eq next base)))
+        (setq base next))
+      (and (buffer-live-p base) base))))
+
+(defun e-context-canvas--file-identity (path)
+  "Return canonical file identity for PATH, including not-yet-created paths."
+  (list :kind 'file
+        :path (condition-case nil
+                  (file-truename path)
+                (file-error (expand-file-name path)))))
+
+(defun e-context-canvas--buffer-identities (buffer)
+  "Return BUFFER and ultimate base-buffer identities, plus its file alias."
+  (when-let* ((base (e-context-canvas--ultimate-base-buffer buffer)))
+    (let ((names (delete-dups (list (buffer-name buffer)
+                                    (buffer-name base))))
+          (file (buffer-local-value 'buffer-file-name base)))
+      (append (mapcar (lambda (name) (list :kind 'buffer :name name)) names)
+              (when file
+                (list (e-context-canvas--file-identity file)))))))
+
 (defun e-context-canvas-resource-identities (uri &optional root)
   "Return canonical identity hints for file:// or buffer:// URI.
 ROOT resolves relative file paths."
@@ -176,27 +204,20 @@ ROOT resolves relative file paths."
        (let* ((path (if (file-name-absolute-p address)
                         address
                       (expand-file-name address (or root default-directory))))
-              (canonical
-               (condition-case nil
-                   (file-truename path)
-                 (file-error (expand-file-name path)))))
-         (push (list :kind 'file :path canonical) identities)
-         (when-let* ((buffer (find-buffer-visiting canonical)))
-           (push (list :kind 'buffer :name (buffer-name buffer)) identities))))
+              (file-identity (e-context-canvas--file-identity path))
+              (buffer (find-buffer-visiting (plist-get file-identity :path))))
+         (setq identities
+               (cons file-identity
+                     (e-context-canvas--buffer-identities buffer)))))
       ("buffer"
-       (push (list :kind 'buffer :name address) identities)
-       (when-let* ((buffer (get-buffer address))
-                   ((buffer-live-p buffer))
-                   ((buffer-local-value 'buffer-file-name buffer)))
-         (let* ((path (buffer-local-value 'buffer-file-name buffer))
-                (canonical
-                 (condition-case nil
-                     (file-truename path)
-                   (file-error (expand-file-name path)))))
-           (push (list :kind 'file :path canonical) identities))))
+       (setq identities (list (list :kind 'buffer :name address)))
+       (when-let* ((buffer (get-buffer address)))
+         (setq identities
+               (append identities
+                       (e-context-canvas--buffer-identities buffer)))))
       (_
        (push (list :kind 'uri :scheme scheme :address address) identities)))
-    (nreverse identities)))
+    (delete-dups identities)))
 
 (defun e-context-canvas-identities-intersect-p (left right)
   "Return non-nil when resource identity lists LEFT and RIGHT intersect."
