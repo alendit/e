@@ -18,7 +18,7 @@
 (defvar e-resource-operation-revision-context nil
   "Trusted request-local revision context for a resource operation.")
 (defvar e-resource-return-revision-on-read nil
-  "Non-nil when the model-facing read result should include a full revision.")
+  "Non-nil while a resource read may report an attached-canvas revision.")
 
 (define-error 'e-resources-invalid-uri "Resource URI is invalid")
 (define-error 'e-resources-unknown-scheme "Resource URI scheme is not registered")

@@ -467,6 +467,7 @@ request-time source descriptor."
                          (e-chat-session--attachment-source
                           attachment content
                           (and harness
+                               (plist-get attachment :canvas)
                                (e-harness-project-root harness session-id)))) )
                    (list :canvas (plist-get attachment :canvas)
                          :source source

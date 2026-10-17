@@ -79,10 +79,13 @@
                                                  :description "Optional complete resource revision shown by canvas context or a prior read."))
                  :required ["uri" "content"])
    :dispatch (lambda (call arguments)
-               (funcall call
-                        (e-operations--argument-string arguments :uri)
-                        (e-operations--argument-string arguments :content)
-                        (plist-get arguments :expectedRevision)))))
+               (let ((uri (e-operations--argument-string arguments :uri))
+                     (content
+                      (e-operations--argument-string arguments :content)))
+                 (if (plist-member arguments :expectedRevision)
+                     (funcall call uri content
+                              (plist-get arguments :expectedRevision))
+                   (funcall call uri content))))))
 
 (defconst e-operation-edit
   (e-operation-create
@@ -109,10 +112,12 @@
                                                  :description "Optional complete resource revision shown by canvas context or a prior read."))
                  :required ["uri" "edits"])
    :dispatch (lambda (call arguments)
-               (funcall call
-                        (e-operations--argument-string arguments :uri)
-                        (plist-get arguments :edits)
-                        (plist-get arguments :expectedRevision)))))
+               (let ((uri (e-operations--argument-string arguments :uri))
+                     (edits (plist-get arguments :edits)))
+                 (if (plist-member arguments :expectedRevision)
+                     (funcall call uri edits
+                              (plist-get arguments :expectedRevision))
+                   (funcall call uri edits))))))
 
 (defconst e-operation-glob
   (e-operation-create

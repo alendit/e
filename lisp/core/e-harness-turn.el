@@ -657,7 +657,7 @@ activity persistence."
                             on-work-prepared archival-call
                             archival-rejected-p archival-received-arguments
                             attached-canvas-targets)
-          (let ((request-context (copy-tree (context) t)))
+          (let ((request-context (copy-sequence (context))))
             (when attached-canvas-targets
               (plist-put request-context :attached-canvas-targets
                          (copy-tree attached-canvas-targets t)))

@@ -591,10 +591,18 @@ This pure projection never consults or installs a session aggregate."
 (defun e-harness-context-runtime--canvas-project-context
     (harness session-id context projection)
   "Prepare current canvas representations and request-local pending state."
-  (let* ((captures
-          (e-harness-context-runtime--canvas-captures
-           (plist-get context :segments)))
-         (current-canvas-sources
+  (let ((captures
+         (e-harness-context-runtime--canvas-captures
+          (plist-get context :segments))))
+    (if (null captures)
+        (list :context context :projection projection)
+      (e-harness-context-runtime--canvas-project-context-with-captures
+       harness session-id context projection captures))))
+
+(defun e-harness-context-runtime--canvas-project-context-with-captures
+    (harness session-id context projection captures)
+  "Project CONTEXT and PROJECTION using the attached canvas CAPTURES."
+  (let* ((current-canvas-sources
           (e-harness-context-runtime--canvas-effective-sources captures))
          (path-positions (plist-get projection :path-entry-positions))
          (head-id (plist-get projection :current-head-id))

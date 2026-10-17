@@ -128,6 +128,28 @@
     (should (equal (nreverse calls)
                    '(("test://edit" [(:oldText "a" :newText "b")]))))))
 
+(ert-deftest e-operations-test-revision-argument-preserves-presence ()
+  "Write and edit pass revision only when the model supplied the field."
+  (let (write-calls edit-calls)
+    (funcall (e-operation-dispatch e-operation-write)
+             (lambda (&rest args) (push args write-calls))
+             '(:uri "test://write" :content "content"))
+    (funcall (e-operation-dispatch e-operation-write)
+             (lambda (&rest args) (push args write-calls))
+             '(:uri "test://write" :content "content"
+               :expectedRevision "shown-revision"))
+    (funcall (e-operation-dispatch e-operation-edit)
+             (lambda (&rest args) (push args edit-calls))
+             '(:uri "test://edit" :edits []))
+    (funcall (e-operation-dispatch e-operation-edit)
+             (lambda (&rest args) (push args edit-calls))
+             '(:uri "test://edit" :edits [] :expectedRevision nil))
+    (should (equal (nreverse write-calls)
+                   '(("test://write" "content")
+                     ("test://write" "content" "shown-revision"))))
+    (should (equal (nreverse edit-calls)
+                   '(("test://edit" []) ("test://edit" [] nil))))))
+
 (provide 'e-operations-test)
 
 ;;; e-operations-test.el ends here

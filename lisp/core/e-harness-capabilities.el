@@ -444,6 +444,8 @@ available through e:// resources instead of repeating it in every request.")
                    :expected-revision-present expected-present
                    :expected-revision (plist-get arguments :expectedRevision)
                    :attached-canvas-targets targets))
+            (e-resource-return-revision-on-read
+             (eq (e-operation-id-of operation) 'read))
             child-handle)
        (funcall
         dispatch

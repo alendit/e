@@ -108,6 +108,37 @@ When READ-ONLY is non-nil, buffer resources only support reads."
                   '(:name " *e-test-read*" :content "bcd" :start 2 :end 4))))
       (kill-buffer buffer))))
 
+(ert-deftest e-emacs-tools-test-attached-buffer-read-reports-full-revision ()
+  "Attached partial buffer reads report the revision of the complete buffer."
+  (let* ((registry (e-emacs-tools-test--resource-tools t))
+         (buffer (generate-new-buffer " *e-test-canvas-read*"))
+         (uri (concat "buffer://" (buffer-name buffer)))
+         (text "alpha beta\n")
+         (revision (e-context-canvas-revision text))
+         (context
+          (list :attached-canvas-targets
+                (list (list :uri uri
+                            :revision revision
+                            :target-identities
+                            (e-context-canvas-resource-identities uri))))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert text))
+          (let* ((result
+                  (e-tools--execute-batch-with-context
+                   registry
+                   `(:id "call-1"
+                     :name "read"
+                     :arguments (:uri ,uri
+                                :range (:unit "offset" :start 7 :limit 4)))
+                   context))
+                 (content (plist-get result :content)))
+            (should (equal (plist-get result :status) 'ok))
+            (should (equal (plist-get content :content) "beta"))
+            (should (equal (plist-get content :revision) revision))))
+      (kill-buffer buffer))))
+
 (ert-deftest e-emacs-tools-test-glob-buffer-resources ()
   "The glob tool lists live buffer:// resources by prefix and pattern."
   (let ((registry (e-emacs-tools-test--resource-tools t))

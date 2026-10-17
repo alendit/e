@@ -1815,6 +1815,36 @@ Return request options, persisted anchors, and the final context."
                              (plist-get event :event-type))
                            (e-session-local-activity-events store "session-1"))))))
 
+(ert-deftest e-harness-test-tool-start-preserves-live-context-identities ()
+  "Tool-start metadata copies targets without cloning runtime context objects."
+  (let* ((harness (e-harness-create
+                   :backend (e-backend-fake-create :items nil)))
+         (session-id "session-live-context")
+         (targets (list (list :uri "e://buffer/editor/12"
+                              :revision "revision-1"
+                              :target-identities
+                              (list (list :kind 'emacs-buffer
+                                          :name "editor")))))
+         request-context)
+    (e-harness-create-session harness :id session-id)
+    (cl-letf (((symbol-function 'e-tools-start)
+               (lambda (_tools _tool-call &rest arguments)
+                 (setq request-context (plist-get arguments :context))
+                 'started)))
+      (should
+       (eq (e-tool-lifecycle-start-call
+            (e-harness-tool-lifecycle harness session-id "turn-live-context")
+            '(:id "call-live-context" :name "probe" :arguments nil)
+            :attached-canvas-targets targets)
+           'started)))
+    (should (eq (plist-get request-context :harness) harness))
+    (should (equal (plist-get request-context :attached-canvas-targets)
+                   targets))
+    (should-not (eq (plist-get request-context :attached-canvas-targets)
+                    targets))
+    (should-not (eq (car (plist-get request-context :attached-canvas-targets))
+                    (car targets)))))
+
 (provide 'e-harness-tool-composition-test)
 
 ;;; e-harness-tool-composition-test.el ends here

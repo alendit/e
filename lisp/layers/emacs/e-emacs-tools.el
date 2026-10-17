@@ -421,7 +421,8 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
                :content (buffer-substring-no-properties start exclusive-end)
                :start start
                :end reported-end)
-         (when e-resource-return-revision-on-read
+         (when (and e-resource-return-revision-on-read
+                    (e-context-canvas-resource-targeted-p uri))
            (list :revision (e-context-canvas-revision full-content))))))))
 
 (defun e-emacs-tools--write-buffer-resource (uri content &optional expected-revision)
@@ -473,7 +474,7 @@ When VISIBLE-ONLY is non-nil, include only buffers visible in windows."
          (normalized-edits (e-emacs-tools--normalize-edits edits)))
     (if (equal (plist-get revision-check :status) "conflict")
         revision-check
-      (with-current-buffer (get-buffer-create name)
+      (with-current-buffer (or existing (e-emacs-tools--buffer name))
         (let* ((replacements (e-emacs-tools--apply-edits-to-current-buffer
                               normalized-edits))
                (content (buffer-substring-no-properties (point-min) (point-max)))

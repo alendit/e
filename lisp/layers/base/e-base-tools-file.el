@@ -1364,7 +1364,8 @@ result plist; otherwise return nil so the caller runs the default backend."
                            (full-content (e-base-tools-file--file-text path))
                            (content (e-base-tools-file--read-text
                                      path offset limit full-content)))
-                (if e-resource-return-revision-on-read
+                (if (and e-resource-return-revision-on-read
+                         (e-context-canvas-resource-targeted-p uri directory))
                     (list :content content
                           :revision (e-context-canvas-revision full-content))
                   content)))))

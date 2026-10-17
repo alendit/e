@@ -1633,15 +1633,27 @@ picker."
   "Partial file reads expose the revision of the complete resource."
   (let* ((directory (make-temp-file "e-file-revision-read-" t))
          (file (expand-file-name "sample.txt" directory))
-         (registry (e-base-tools-test--resource-tools directory)))
+         (uri "file://sample.txt")
+         (registry (e-base-tools-test--resource-tools directory))
+         (context
+          (list :attached-canvas-targets
+                (list (list :uri uri
+                            :revision
+                            (e-context-canvas-revision "alpha\nbeta\n")
+                            :target-identities
+                            (e-context-canvas-resource-identities
+                             uri directory))))))
     (unwind-protect
         (progn
           (write-region "alpha\nbeta\n" nil file nil 'silent)
           (let* ((result
-                  (e-base-tools-test--execute
-                   registry "read"
-                   '(:uri "file://sample.txt"
-                     :range (:unit "line" :start 1 :end 1))))
+                  (e-tools--execute-batch-with-context
+                   registry
+                   '(:id "call-1"
+                     :name "read"
+                     :arguments (:uri "file://sample.txt"
+                                :range (:unit "line" :start 1 :end 1)))
+                   context))
                  (content (plist-get result :content)))
             (should (equal (plist-get result :status) 'ok))
             (should (equal (plist-get content :content)
