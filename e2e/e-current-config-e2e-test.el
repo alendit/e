@@ -312,6 +312,53 @@
   (should e-e2e-current-config-loaded-e-p)
   (should (featurep 'e))
   (should (file-equal-p (e-source-directory) e-e2e-project-root))
+  (require 'e-harness-context-runtime)
+  (require 'e-session-async)
+  (require 'e-runtime-store)
+  (let* ((owners '(e-harness-context-runtime--detached-lifetime-projection
+                   e-harness-context-lifetime-apply-projection
+                   e-session-async-context-path
+                   e-runtime-store--worker-file))
+         (owner-files
+          (mapcar (lambda (symbol)
+                    (cons symbol (symbol-file symbol 'defun)))
+                  owners))
+         (candidate-lisp (expand-file-name "lisp" e-e2e-project-root))
+         (foreign-runtime-files
+          (cl-loop for entry in load-history
+                   for file = (car-safe entry)
+                   when (and (stringp file)
+                             (string-match-p
+                              "/lisp/\\(?:.*/\\)?e-[^/]+\\.elc?\\'"
+                              file)
+                             (not (file-in-directory-p file candidate-lisp)))
+                   collect file))
+         (libraries '("e-runtime-store-worker"
+                      "e-runtime-store-session-worker"
+                      "e-runtime-store-codec"))
+         (library-files
+          (mapcar (lambda (library)
+                    (cons library (locate-library library)))
+                  libraries))
+         (worker (e-runtime-store--worker-file))
+         (worker-directory (file-name-directory worker))
+         (worker-command (e-runtime-store--command)))
+    (dolist (owner owner-files)
+      (should (file-in-directory-p (cdr owner) candidate-lisp)))
+    (should-not foreign-runtime-files)
+    (dolist (library library-files)
+      (should (file-in-directory-p (cdr library) candidate-lisp)))
+    (should (file-in-directory-p worker candidate-lisp))
+    (should (member worker-directory worker-command))
+    (should
+     (cl-some (lambda (argument)
+                (and (stringp argument)
+                     (string-match-p (regexp-quote worker) argument)))
+              worker-command))
+    (e-current-config-e2e-test--print
+     "Feature 99 source provenance: %S %S %S\n"
+     owner-files library-files
+     (list :worker-entry worker :foreign-runtime-files foreign-runtime-files)))
   (should (eq (plist-get (e-core-status) :state) 'ready)))
 
 (ert-deftest e-current-config-e2e-test-composer-backspace-removes-reference ()

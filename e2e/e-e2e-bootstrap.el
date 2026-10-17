@@ -14,6 +14,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 
 (defconst e-e2e-project-root
@@ -66,14 +67,48 @@
   "Package command state captured before E2E checkout paths are added.")
 
 (defun e-e2e--add-project-load-paths ()
-  "Add checkout runtime and test dependency directories to `load-path'."
+  "Add checkout runtime and test dependency directories to `load-path'.
+
+Isolated E2E must resolve every runtime module from this checkout before an
+installed copy.  Current-config mode preserves the paths loaded by startup."
   (add-to-list 'load-path e-e2e-project-root)
   (let ((default-directory (expand-file-name "lisp" e-e2e-project-root)))
     (add-to-list 'load-path default-directory)
     (normal-top-level-add-subdirs-to-load-path))
   (let ((egui (expand-file-name "emacs-egui/lisp" e-e2e-project-root)))
     (when (file-directory-p egui)
-      (add-to-list 'load-path egui))))
+      (add-to-list 'load-path egui)))
+  (unless (e-e2e-current-config-p)
+    (let* ((project-root (file-name-as-directory
+                          (file-truename e-e2e-project-root)))
+           (runtime-roots
+            (delq nil
+                  (list (file-name-as-directory
+                         (file-truename
+                          (expand-file-name "lisp" project-root)))
+                        (file-name-as-directory
+                         (file-truename
+                          (expand-file-name "e2e" project-root)))
+                        (let ((egui (expand-file-name "emacs-egui/lisp"
+                                                      project-root)))
+                          (and (file-directory-p egui)
+                               (file-name-as-directory
+                                (file-truename egui)))))))
+           project-paths other-paths)
+      (dolist (path load-path)
+        (when (and (stringp path)
+                   (file-directory-p path)
+                   (or (file-equal-p path project-root)
+                       (cl-some (lambda (root)
+                                  (file-in-directory-p path root))
+                                runtime-roots)))
+          (unless (member path project-paths)
+            (push path project-paths))))
+      (dolist (path load-path)
+        (unless (member path project-paths)
+          (push path other-paths)))
+      (setq load-path (nconc (nreverse project-paths)
+                             (nreverse other-paths))))))
 
 (when (and (not (e-e2e-current-config-p))
            (eq system-type 'darwin)

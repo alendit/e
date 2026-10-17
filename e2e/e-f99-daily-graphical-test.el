@@ -6,9 +6,22 @@
 (require 'ert)
 (require 'seq)
 
-(let ((fixture (getenv "GRIMOIRE_DAILY_GRAPHICAL_TEST_FILE")))
+(defconst e-f99-daily-graphical-test--candidate-root
+  (file-name-directory
+   (directory-file-name
+    (file-name-directory (or load-file-name buffer-file-name))))
+  "Checkout root whose runtime source this graphical test must exercise.")
+
+(let* ((fixture (getenv "GRIMOIRE_DAILY_GRAPHICAL_TEST_FILE"))
+       (candidate-lisp (expand-file-name "../lisp"
+                                         (file-name-directory
+                                          (or load-file-name buffer-file-name))))
+       (process-environment (copy-sequence process-environment)))
   (unless (and fixture (file-readable-p fixture))
     (error "GRIMOIRE_DAILY_GRAPHICAL_TEST_FILE must name the actual Grimoire fixture"))
+  ;; The real Grimoire helper normally adds the user's sibling checkout.  This
+  ;; acceptance test must resolve every E module from the candidate checkout.
+  (setenv "E_LISP_DIR" candidate-lisp)
   (load-file fixture))
 
 (require 'e-anthropic)
@@ -17,6 +30,100 @@
 (require 'e-json)
 (require 'e-org-canvas)
 (require 'e-session-sqlite)
+
+(defun e-f99-daily-graphical-test--assert-candidate-file (owner file)
+  "Signal when OWNER resolves outside the candidate checkout at FILE."
+  (unless (and file
+               (file-in-directory-p
+                file e-f99-daily-graphical-test--candidate-root))
+    (error "Feature 99 source provenance mismatch for %S: %S"
+           owner file)))
+
+(defun e-f99-daily-graphical-test--write-source-provenance (evidence)
+  "Write bounded candidate E runtime-source EVIDENCE and return its path."
+  (let* ((directory (or (getenv "E_F99_DAILY_EVIDENCE_DIR")
+                        temporary-file-directory))
+         (path (expand-file-name
+                (format "f99-daily-source-provenance-%s.el" (emacs-pid))
+                directory)))
+    (make-directory directory t)
+    (with-temp-file path
+      (let ((print-length nil) (print-level nil))
+        (prin1 evidence (current-buffer))
+        (insert "\n")))
+    path))
+
+(defun e-f99-daily-graphical-test--assert-source-provenance ()
+  "Assert the loaded context owners and worker resolve from this checkout."
+  (unless (file-equal-p (e-source-directory)
+                        e-f99-daily-graphical-test--candidate-root)
+    (error "Feature 99 source root is %S, expected %s"
+           (e-source-directory)
+           e-f99-daily-graphical-test--candidate-root))
+  (let* ((owners '(e-harness-context-runtime--detached-lifetime-projection
+                   e-harness-context-lifetime-apply-projection
+                   e-session-async-context-path
+                   e-runtime-store--worker-file))
+         (owner-files
+          (mapcar (lambda (symbol)
+                    (cons symbol (symbol-file symbol 'defun)))
+                  owners)))
+    (dolist (owner owner-files)
+      (e-f99-daily-graphical-test--assert-candidate-file
+       (car owner) (cdr owner)))
+    (let ((foreign-runtime-files
+           (cl-loop for entry in load-history
+                    for file = (car-safe entry)
+                    when (and (stringp file)
+                              (string-match-p
+                               "/lisp/\\(?:.*/\\)?e-[^/]+\\.elc?\\'"
+                               file)
+                              (not (file-in-directory-p
+                                    file
+                                    (expand-file-name
+                                     "lisp"
+                                     e-f99-daily-graphical-test--candidate-root))))
+                              collect file)))
+      (when foreign-runtime-files
+        (error "Feature 99 loaded E modules outside candidate: %S"
+               foreign-runtime-files))
+      (let* ((libraries '("e-runtime-store-worker"
+                          "e-runtime-store-session-worker"
+                          "e-runtime-store-codec"))
+             (library-files
+              (mapcar (lambda (library)
+                        (cons library (locate-library library)))
+                      libraries)))
+        (dolist (library library-files)
+          (e-f99-daily-graphical-test--assert-candidate-file
+           (car library) (cdr library)))
+        (let* ((worker (e-runtime-store--worker-file))
+               (worker-directory (file-name-directory worker))
+               (command (e-runtime-store--command)))
+          (e-f99-daily-graphical-test--assert-candidate-file
+           'worker-entry worker)
+          (unless (and (member worker-directory command)
+                       (cl-some (lambda (argument)
+                                  (and (stringp argument)
+                                       (string-match-p
+                                        (regexp-quote worker) argument)))
+                                command))
+            (error "Runtime-store worker command omitted candidate entry: %S"
+                   command))
+          (e-f99-daily-graphical-test--write-source-provenance
+           (list :candidate-root e-f99-daily-graphical-test--candidate-root
+                 :owners owner-files
+                 :worker-entry worker
+                 :worker-session-module
+                 (cdr (assoc "e-runtime-store-session-worker"
+                             library-files))
+                 :worker-codec-module
+                 (cdr (assoc "e-runtime-store-codec" library-files))
+                 :worker-command-entry-selected t
+                 :foreign-runtime-files foreign-runtime-files)))))
+  t))
+
+(e-f99-daily-graphical-test--assert-source-provenance)
 
 (defun e-f99-daily-graphical-test--sse (events)
   "Encode provider-native EVENTS as a bounded Messages SSE response."
