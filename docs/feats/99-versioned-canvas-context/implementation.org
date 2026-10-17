@@ -3,7 +3,7 @@
 
 * Result
 
-Canvas placement, exact byte-selected changes and guarded ordinary resource edits are implemented. The isolated candidate passed the deterministic suite, current-config cold start and actual Grimoire Daily/Org Canvas composition. Review 01 resource-authority/lifetime remediation is complete; independent finding closure is pending. External growing-reuse and curation qualification remain unconfirmed. The feature stays In-review.
+Canvas placement, exact byte-selected changes and guarded ordinary resource edits are implemented. The isolated candidate passed the deterministic suite, current-config cold start and actual Grimoire Daily/Org Canvas composition. Review 02 closed I1, I2 and I4; I3 remains open for canvas demotion to an ordinary attachment. External growing-reuse and curation qualification remain unconfirmed. The feature stays In-review.
 
 The user Emacs, actual Daily documents, Boards, store and configuration were left unchanged. Core, adapter and request-state changes require a full Emacs restart to use after integration. No push or runtime activation is part of this delivery.
 
@@ -71,4 +71,4 @@ Tock 3dd6a656 resolves I1–I4 at the existing owners: canonical identity includ
 
 The refreshed [[file:evidence/canonical-3dd6a656.json][canonical gate]] passed 2916/2916, zero unexpected and zero skipped; [[file:evidence/canonical-3dd6a656.log.gz][the full transcript]] is preserved. [[file:evidence/current-config-3dd6a656.log][Current-config cold start]] passed 9/9 with candidate owner/worker sources and no foreign runtime modules. [[file:evidence/current-config-grimoire-sources-3dd6a656.json][The refreshed Grimoire manifest]] verifies 18/18 source files. [[file:evidence/daily-phase-one-3dd6a656.el][Actual Daily phase one]] and [[file:evidence/daily-phase-two-3dd6a656.el][fresh-process phase two]] each passed 1/1 with fixture transport through the real native adapter/parser. Focused owner/composition coverage passed 237/237, including the narrowed/indirect and lifecycle/save-hook partitions. Screenshots were inspected again.
 
-The earlier gate artifacts remain historical evidence for Review 01; the 3dd6a656 artifacts are current. Independent Review 02 is pending. External qualification remains unconfirmed and its allowlist stays empty.
+The earlier gate artifacts remain historical evidence for Review 01; the 3dd6a656 artifacts are current. Independent Review 02 closed I1/I2/I4; I3 requires retirement on canvas-to-noncanvas replacement. External qualification remains unconfirmed and its allowlist stays empty.

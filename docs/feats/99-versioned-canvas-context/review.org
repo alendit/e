@@ -210,3 +210,142 @@ No deterministic-fixed-point, capability-confirmed or Done result is granted. Th
 d7ac82142408be685187fbf73aa3fd19e0e3e2553a52a3afc28f8797ba761b9d  /private/tmp/e-f99-work/reviewer-f99-evidence-tests.el
 10989fa57369af2b542ca585dcee785eeabe5fee73a3949ae67bebfce1db8337  /private/tmp/e-f99-work/reviewer-f99-evidence-tests-fixed.log
 #+end_example
+
+
+#+title: Feature 99 independent implementation review 02
+#+date: 2026-10-17
+#+startup: overview
+
+* Decision and identity
+
+In-review. =deterministic-fixed-point= is not established. Review 01 I1, I2 and I4 are closed. I3 remains incomplete for the canvas-to-noncanvas replacement followed by detach partition. No additional actionable finding or required coverage unknown remains.
+
+Reviewed exact candidate =4b79daf2baabc4d91a9e7219af5ab886d38dbd4e= at =/private/tmp/e-f99-work/candidate=. Incremental remediation range =d2d966a684694c8e48f74842e29a510aa6412c6e..4b79daf2baabc4d91a9e7219af5ab886d38dbd4e=. Runtime/test/E2E source is identical to committed =3dd6a656ec0c9a97e41cc2a611a1f9c210a84341=; later changes are documentation/evidence only.
+
+Scope and independence remain those of immutable Review 01: full F99-G1/C1--C7/DP1--DP3, S1--S5, all shipped serializers and ordinary resource/harness composition. Section checkout remains deferred. Carry unchanged Review 01 coverage and plan decisions; reopen dependent identity/full-capture/resource/lifecycle cells and their public interactions. Parent acceptance and implementer handoff were navigation inputs, not closure evidence.
+
+Behavioral progress: the exercised ordinary private Daily/Canvas workflow passes, and the previously failing resource partitions now pass independent probes. C5's complete active-lifetime guarantee remains failing at I3. Mechanism progress: implemented with one incomplete release partition. External changed-layout capability remains =capability-unconfirmed=; no qualifying route has been enabled and no paid probe is needed for this deterministic decision.
+
+No source, Git, user Emacs/configuration, Daily, Board/store or external service was changed by this reviewer. Only temporary reports/probes/logs under =/private/tmp/e-f99-work= were written. Candidate status is unchanged apart from pre-existing untracked =target/= validation residue.
+
+* Prior finding closure
+
+** DONE High I1: Indirect alias guard bypass
+
+Required boundary: every supported view of the same mutable canvas must resolve to its canonical resource identity before deciding whether expectedRevision is required.
+
+Current source: =lisp/core/e-context-canvas.el:167--224= follows buffer-base-buffer to the ultimate live base, returns both view/base names and the base's file identity, and uses that mapping for file and buffer URIs. Both attached-view and target-view identities therefore intersect in either direction. Shipped resource owners acquire that identity before any mutation; missing/stale expectations return conflict first.
+
+Independent rerun of the original direct and ordinary nested resource write reproductions now reports:
+#+begin_example
+INDIRECT ... conflict=t base-changed=nil
+ORDINARY-INDIRECT tool-status=ok conflict=t base-changed=nil
+#+end_example
+
+Current owner/composition tests add both identity directions and guarded reads/edits/writes through indirect/base aliases. Assertions retain current full revision, unchanged text on conflict, successful once-only fresh mutation, point/restriction preservation and ordinary noncanvas behavior. Closure is at the owner and ordinary resource dispatch, not a fixture-supplied expectation workaround.
+
+** DONE Medium I2: Restricted views labeled as complete resources
+
+Required boundary: complete canvas capture, full revision preconditions/results and whole-resource mutations must widen temporarily without changing ordinary noncanvas range semantics or user presentation state.
+
+Current source: canvas attachment capture uses save-excursion/save-restriction/widen; ordinary attachments retain their existing restricted behavior. File complete capture and guarded save helpers accept whole-resource only for the guarded path. Canvas buffer read uses widened complete capture before applying its requested absolute range, and guarded buffer writes/edits widen under save-mark-and-excursion/save-restriction. Conflict preconditions and post-mutation hashes use the same complete text.
+
+Independent original narrowed-buffer probe now reports:
+#+begin_example
+NARROW full-chars=21 captured-chars=21
+full-revision=CC22FC02FB5ACE1BCA0D010BB36E6ED8A6207118B384C7616304FB80469DC713
+read-revision=CC22FC02FB5ACE1BCA0D010BB36E6ED8A6207118B384C7616304FB80469DC713
+equal=t
+#+end_example
+
+The new public resource tests exercise an edit outside the restriction, stale/current preconditions, complete returned hashes and restoration of point and narrowing. The corrected indirect-view composition covers the same widened resource semantics through I1's identity join. No section-checkout interpretation is introduced.
+
+** TODO Medium I3: Canvas demotion bypasses accepted release and remains leaked after detach
+
+The ordinary canvas detach/replacement and harness session-delete routes now release accepted text after successful metadata/delete settlement. Resource/session lifecycle tokens fence older pending responses, while body-free reset cursors preserve chronology version safety. Those parts of I3 are closed. The remaining supported attachment transition is not covered.
+
+=e-chat-session-attach-context= can upsert by ID or URI through =--upsert-attachment= even when its new canvas keyword is nil. An existing canvas can therefore be replaced by a normal attachment at the same identity. However, =retired-canvas-uris= is computed only inside =(when canvas ...)= (=lisp/layers/chat/e-chat-session.el:218--247=). The accepted demotion does not call release. A later detach also fails to release it because the removed attachment now has =:canvas nil= (=249--273=).
+
+Independent probe =reviewer-tick02-probes.el= uses a real attachment source, prepares and accepts its actual harness canvas candidate, then calls ordinary attach-context with =:canvas nil= and finally detach-context. Its request-scoped attachment projection is supplied through the same bounded helper seam used by the repository's public lifecycle tests. It does not insert an artificial chronology record. Output:
+#+begin_example
+DEMOTE canvas-now=nil retained="obsolete-canvas-body"
+DEMOTE-THEN-DETACH attachment-count=0 retained="obsolete-canvas-body"
+#+end_example
+
+The final session has no attachment but still strongly holds the exact former canvas body and operations. The original C5 lifetime violation therefore remains, although the common canvas:true replacement/detach paths are fixed. This is not a stale-answer or unusable-diff claim; it is a proven inactive-content retention defect.
+
+Smallest correction: determine retired canvas identities from the actual before/after attachment transition, including a prior canvas replaced by ID/URI with a noncanvas item. Preserve the existing deliberate canvas replacement behavior and invoke the accepted-settlement release/token mechanism already implemented. A check only of the new canvas flag cannot prove which old identities have retired.
+
+Resolution evidence: accept a canvas, demote it through ordinary attach-context at the same URI (and an ID-matching replacement as applicable), assert that its exact text/operation state is released after the metadata update is accepted, then detach the now-noncanvas attachment and verify no body remains. Deliver an older pending completion after demotion and ensure it cannot repopulate released state; reattachment establishes a new snapshot. Retain failed-update/no-release and preview/non-commit semantics. No new product contract or durable state is needed.
+
+** DONE Medium I4: File pre/postconditions ignored authoritative live/final text
+
+Required boundary: a live visiting buffer wins even before file creation; successful revision values identify the resource after normal save hooks/synchronization.
+
+Current source: =e-base-tools-file--write-file-resource= resolves the coherence group and preferred live buffer first. For a guarded write it captures that complete buffer before considering file existence. Only a missing live/disk resource yields empty text. File writes and edits recapture final authoritative text after save-buffer and linked-view synchronization before returning revision. Normal hooks remain enabled; stale expectations fail before mutation.
+
+Independent probes now report:
+#+begin_example
+SAVE-HOOK status="ok"
+reported=CED2526BD3B34302167645DB8D4D74052035D07D2D571CA66B5FD741970A0295
+actual=CED2526BD3B34302167645DB8D4D74052035D07D2D571CA66B5FD741970A0295
+equal=t
+NEW-UNSAVED status="ok" ... disk-created=t
+#+end_example
+
+The new-file probe supplies the trusted attached-canvas scope, as ordinary Canvas dispatch does. Current public tests prove write and edit hook transformations, exact post-save hashes and a successful following operation using the returned revision; they also prove the new unsaved live file path. Source order and result assertions establish the actual postcondition rather than just successful save status.
+
+* Remediation delta and interaction review
+
+Reviewed the inserted/reordered work before mutation and commit. Resource identity resolution and complete capture occur before revision comparison; conflict returns before edit/save/sync. Complete guarded replacement preserves restrictions/point and then runs the existing save/sync effects; success hashes are captured after those effects. Ordinary noncanvas paths retain their prior scope and operation shape. No provider call, persistence owner or asynchronous gap was inserted into resource check/apply.
+
+Lifecycle release waits for accepted metadata or deletion work to finish; rejected updates do not release state. Release removes body-bearing entries and changes the request-held resource/session lifecycle identity. Response settlement requires both the expected chronology version and the unchanged lifecycle token, so a removed nil-version candidate cannot be reinstated merely because its key is absent. Scope/curation reset replaces obsolete exact data with a version-only cursor, and preview remains non-committing. The unhandled demotion in I3 is an admission classification omission, not a reason to replace this ownership design.
+
+Source and tests for native layout/roles, pure exact patch/UTF-8 selection and external qualification have not changed during this Tock. Resource identity changes are provider-neutral, and private lifecycle tokens stay inside pending/accepted state rather than entering native prompts or provider capability grants. Carry Review 01's three-serializer and external-disposition coverage. No new coordinator, public tool family, durable baseline store or checkout protocol appears.
+
+The new public harness deletion wrapper is an owner-level lifecycle entrypoint that can release harness-derived state after session deletion; the raw storage tests continue to use session-store APIs without a harness. No shipped application deletion caller was found to bypass the new harness path. This review does not infer a product defect merely from the lower-level storage API's lack of harness awareness.
+
+* Contract coverage
+
+| Contract / evidence | Disposition |
+|---------------------+-------------|
+| C1 / DP1 | Cleared, carried; no semantic/native placement owner change |
+| C2 / S2 | Cleared after I2 complete capture and current exact provenance proof |
+| C3 / S1 | Cleared, with lifecycle interaction checked; native chronology/unchanged/full replay behavior carried |
+| C4 | Cleared, carried; pure constructor/UTF-8 byte selection/active-chain bounds unchanged |
+| C5 / S3 | I3 remains incomplete only for demotion/then-detach; ordinary detach, canvas replacement, reset, session deletion and stale-pending fencing otherwise clear |
+| C6 / S5 | Cleared after I1/I2/I4 owner and ordinary public composition evidence |
+| C7 / DP3/S4 | Local honest disposition cleared, carried; current changed-layout allowlist remains empty |
+| Actual Daily/Canvas | Current isolated composition evidence accepted for the exercised ordinary workflow; fixture transport remains distinct from gateway/model/cache evidence |
+| External E1/E2/P3 | Capability-unconfirmed, unchanged; no current valid product-contract contradiction or qualification success added |
+
+DP2 and full F99-G1 cannot be accepted until I3 closes. No independent required coverage unknown remains. The previous fourteen architecture self-check dispositions carry with I1/I2/I4 corrected; state lifetime remains failing only as described in I3.
+
+* Gate and evidence verification
+
+- Decompressed durable =canonical-3dd6a656.log.gz= and matched compressed SHA256 =b25b9a5561f924e0de24156e6703013613c4c44a70827cb76e9df5bb089647f8= and raw SHA256 =8ff606ff0d3b46737e0be6081afde2674cfe0cc0214a7ede3029f713fca486ec= to the JSON gate record. The transcript ends with 2916 results as expected, zero unexpected; the record reports zero skipped. This source is the reviewed runtime/test/E2E tree.
+- =git diff --quiet 3dd6a656..4b79daf2 -- lisp test e2e= returns 0. The final evidence/docs commit does not require another broad test run.
+- Inspected the current 9/9 current-config log and candidate owner/worker provenance. Rehashed all 18 actual configured Grimoire runtime sources and their private copies against the refreshed manifest: all equal.
+- Inspected the new owner/composition tests' assertions, including indirect alias directions, widened restricted resource operations, post-hook returned revisions/next call, unsaved file creation, accepted release and stale completion fencing. The full canonical record includes these tests; the parent also preserved 237/237 focused coverage. Independent probes provide the original negative scenarios' current behavior and the residual I3 partition.
+- Actual Daily graphical fixture/source remains unchanged. Current phase artifacts identify the same real Grimoire API/Canvas/harness/resource/native-parser composition in two fresh processes and fresh-snapshot recovery. Inspected current settled =phase-one/047-daily-fresh-edit-saved.png= and =phase-two/007-daily-fresh-process-snapshot.png= under =daily-f99-tock-3dd6a656-shots=; the checkbox, agent/fresh target changes and user addition are present in the saved and reopened Daily.
+- =emacs --batch -Q -l reviewer-tick02-resource-probes.el=: exit 0; relevant candidate owner provenance verified and I1/I2/I4 original risk outputs corrected.
+- =emacs --batch -Q -l reviewer-tick02-probes.el=: exit 0; real capture/accepted candidate plus public attachment transition reproduces residual I3.
+
+No provider request, live Emacs probe, broad canonical repeat or user-state mutation was performed. The first local demotion harness attempt lacked the request-scoped attachment projection; it produced no pending capture and was discarded. The final reproducible probe supplies that established seam, verifies one real pending capture before accepting it, and records the actual accepted metadata transitions.
+
+* Architecture and economic disposition
+
+The remediation stays at the intended owners and fixes the original bypasses rather than adding warnings or fixture privileges. Ultimate-base identity, complete resource reads and post-save revision capture are narrow consumer-shaped operations. Body-free lifecycle cursors/tokens serve the real stale-completion invariant and avoid retaining removed document content on the corrected paths.
+
+I3 remains a current C5 violation, not a non-gating follow-up: an accepted supported transition removes the canvas role and later all attachment authority while its body remains strongly retained. Correcting retirement classification at the existing attachment/lifecycle join is smaller than adding another service or teaching projection to guess metadata intent. No frequency estimate is needed to retain this already accepted lifetime outcome. The parent owns the correction decision; this review creates no follow-up or scope expansion.
+
+No new architectural decomposition signal or public vocabulary change requires rebaselining the plan. Carry the existing contract/plan authority and evidence invalidation rules. Once I3's actual transition classification is fixed, review the settled delta and rerun its focused lifecycle/interaction evidence before the final deterministic decision. The feature remains In-review, and external qualification remains separately unconfirmed.
+
+* Temporary evidence identities
+
+#+begin_example
+fb0cd201a0cefb17f787af3013fb4877ebdc2db1131c6910fb62adb2fab4e05e  /private/tmp/e-f99-work/reviewer-tick02-probes.el
+fb61d162954f525008baa6bf9ff4ddbced2634627454843e2970796c750fd04d  /private/tmp/e-f99-work/reviewer-tick02-probes.log
+899c9e747bbb7b6e6667503e268b3e368c4ae743dad32c0c4ce477d6aa78871a  /private/tmp/e-f99-work/reviewer-tick02-resource-probes.el
+249994cf84e5d1bfa916963d7649174a212734a678d6f9304daea300b61fc652  /private/tmp/e-f99-work/reviewer-tick02-resource-probes.log
+#+end_example
