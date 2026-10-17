@@ -1,0 +1,129 @@
+{
+  "candidate_head": "3dd6a656ec0c9a97e41cc2a611a1f9c210a84341",
+  "configured_grimoire_head": "2504efd151219c5acd65ed646fec2bae74829154",
+  "source_root": "/Users/dvorona/projects/org/grimoire/.e/layers/topic",
+  "private_root": "/private/tmp/e-f99-work/current-config-overlay/grimoire",
+  "path_substitutions": {
+    "~/projects/org/grimoire and /Users/dvorona/projects/org/grimoire": "private mirror root for default-project and workspace-root entries in copied Doom config.el/config.org; current generated profile roots remain private init/doom/straight directories",
+    "/Users/dvorona/projects/elisp/e and ~/projects/elisp/e": "candidate source root in copied Doom init/config and private E package symlinks",
+    "/Users/dvorona/.config/emacs and its .local": "private init and local state roots in copied generated profile",
+    "/Users/dvorona/.doom.d": "private Doom config root in copied generated profile"
+  },
+  "copied_scope": "18 non-test Grimoire runtime .el files and non-test layer resources at original relative paths; source .elc, tests, user store, temporary files, and publication data omitted. Empty topics/projects/daily/scripts roots and private git metadata support project discovery.",
+  "source_files": [
+    {
+      "path": "agenda-apply.el",
+      "source_sha256": "9a7b7168a6f44cd3edefb6005f09e3acaeb5bfb06f8b80a080675463a29db0de",
+      "private_sha256": "9a7b7168a6f44cd3edefb6005f09e3acaeb5bfb06f8b80a080675463a29db0de",
+      "equal": true
+    },
+    {
+      "path": "agenda-review.el",
+      "source_sha256": "77f87f46f6617f76968baacf7e916cc24ccd96bdfd25f93785e7a9daf2dcbc64",
+      "private_sha256": "77f87f46f6617f76968baacf7e916cc24ccd96bdfd25f93785e7a9daf2dcbc64",
+      "equal": true
+    },
+    {
+      "path": "agenda-triage.el",
+      "source_sha256": "e5faf19b734ec4260425a27594ca3d79d3d36f5713c12822fe68d0d4b9cc03ca",
+      "private_sha256": "e5faf19b734ec4260425a27594ca3d79d3d36f5713c12822fe68d0d4b9cc03ca",
+      "equal": true
+    },
+    {
+      "path": "agenda.el",
+      "source_sha256": "e8f0311921e8d6379305e3525f0bf5027451208996e75064449c36dd1eb3639c",
+      "private_sha256": "e8f0311921e8d6379305e3525f0bf5027451208996e75064449c36dd1eb3639c",
+      "equal": true
+    },
+    {
+      "path": "capabilities/topic.el",
+      "source_sha256": "64f6f418440e063eef980290b46db93cf9db9a1c662ddee2a9d61290ec963856",
+      "private_sha256": "64f6f418440e063eef980290b46db93cf9db9a1c662ddee2a9d61290ec963856",
+      "equal": true
+    },
+    {
+      "path": "commit.el",
+      "source_sha256": "cc7b07562d91f2a92212a3e0e3553fc2d286294ada8fc934d85ef0f18ad6fbc5",
+      "private_sha256": "cc7b07562d91f2a92212a3e0e3553fc2d286294ada8fc934d85ef0f18ad6fbc5",
+      "equal": true
+    },
+    {
+      "path": "cron.el",
+      "source_sha256": "06a95021f850a53388d1101d748277c904a7376f77cdb4cdd181220411fbcc78",
+      "private_sha256": "06a95021f850a53388d1101d748277c904a7376f77cdb4cdd181220411fbcc78",
+      "equal": true
+    },
+    {
+      "path": "daily-coordinator.el",
+      "source_sha256": "79bd115989e410d91e9c6f3a4d0b8cda86657dc69bbea963d65ab973955d786b",
+      "private_sha256": "79bd115989e410d91e9c6f3a4d0b8cda86657dc69bbea963d65ab973955d786b",
+      "equal": true
+    },
+    {
+      "path": "daily-run.el",
+      "source_sha256": "a7d1a9e5c551f23979cbf08775cdb1548cf5a95571fb06ebefe81c254f4614ba",
+      "private_sha256": "a7d1a9e5c551f23979cbf08775cdb1548cf5a95571fb06ebefe81c254f4614ba",
+      "equal": true
+    },
+    {
+      "path": "export.el",
+      "source_sha256": "96b226d6bade3634124acc40465df08f910ede5ceb276f7970282f971cdb8054",
+      "private_sha256": "96b226d6bade3634124acc40465df08f910ede5ceb276f7970282f971cdb8054",
+      "equal": true
+    },
+    {
+      "path": "layer.el",
+      "source_sha256": "b3437f8b1d1c4f9073aaf971b106ccf10bb3bc46bfa0d610e3086f2d7e68c9dc",
+      "private_sha256": "b3437f8b1d1c4f9073aaf971b106ccf10bb3bc46bfa0d610e3086f2d7e68c9dc",
+      "equal": true
+    },
+    {
+      "path": "quest-backfill.el",
+      "source_sha256": "49b26da053b39e7b6843180202dd3246c0b2f541609a50158993ab119d6bc7b5",
+      "private_sha256": "49b26da053b39e7b6843180202dd3246c0b2f541609a50158993ab119d6bc7b5",
+      "equal": true
+    },
+    {
+      "path": "quest.el",
+      "source_sha256": "b1d96b8d4e4ada88af98d6f81fca60001bde6d4371feafbb91662c38fc0be4cd",
+      "private_sha256": "b1d96b8d4e4ada88af98d6f81fca60001bde6d4371feafbb91662c38fc0be4cd",
+      "equal": true
+    },
+    {
+      "path": "semantic.el",
+      "source_sha256": "0bf1e7a815772905d251dccf6abfe619abd22aa120f287cdfe0b2bd34efbe8f4",
+      "private_sha256": "0bf1e7a815772905d251dccf6abfe619abd22aa120f287cdfe0b2bd34efbe8f4",
+      "equal": true
+    },
+    {
+      "path": "session.el",
+      "source_sha256": "2e0bbe249196820be3e4e9427df2e61b1ea41ce17f0fb1fa3c84dd695527659c",
+      "private_sha256": "2e0bbe249196820be3e4e9427df2e61b1ea41ce17f0fb1fa3c84dd695527659c",
+      "equal": true
+    },
+    {
+      "path": "shells/topic.el",
+      "source_sha256": "206b7f58c95a9defe226f0f3a624809ae8bd63d5c483afba8d19130dd65c1b0b",
+      "private_sha256": "206b7f58c95a9defe226f0f3a624809ae8bd63d5c483afba8d19130dd65c1b0b",
+      "equal": true
+    },
+    {
+      "path": "source-work.el",
+      "source_sha256": "2070139efd9e2e61121fd61e82d13f4f8262699d9c6df4cf5c2378654495a1a2",
+      "private_sha256": "2070139efd9e2e61121fd61e82d13f4f8262699d9c6df4cf5c2378654495a1a2",
+      "equal": true
+    },
+    {
+      "path": "sources.el",
+      "source_sha256": "ca1a9b59a2701d18a1590b93c54480ba28698566552132968d224d30784b39fc",
+      "private_sha256": "ca1a9b59a2701d18a1590b93c54480ba28698566552132968d224d30784b39fc",
+      "equal": true
+    }
+  ],
+  "all_equal": true,
+  "config_path_files_rebased": [
+    "doom/config.el",
+    "doom/config.org"
+  ],
+  "verified_at_utc": "2026-10-17T03:15:54+00:00"
+}

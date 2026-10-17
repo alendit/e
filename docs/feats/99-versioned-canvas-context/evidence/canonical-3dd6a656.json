@@ -1,0 +1,11 @@
+{
+  "head": "3dd6a656ec0c9a97e41cc2a611a1f9c210a84341",
+  "command": "eldev test",
+  "dependencies": "private copied packages excluding installed e, candidate-first; Eldev --disable-dependencies wrapper",
+  "passed": 2916,
+  "unexpected": 0,
+  "skipped": 0,
+  "exit": 0,
+  "raw_sha256": "8ff606ff0d3b46737e0be6081afde2674cfe0cc0214a7ede3029f713fca486ec",
+  "compressed_sha256": "b25b9a5561f924e0de24156e6703013613c4c44a70827cb76e9df5bb089647f8"
+}
