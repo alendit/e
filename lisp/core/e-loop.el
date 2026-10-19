@@ -410,6 +410,7 @@ its `:segments' and observation metadata must be consistent with those options.
 Its optional `:message-entry-ids' vector is validated and replaced with the
 same refreshed message projection.  A follow-up provider request waits for an
 async refresh to settle and propagates its failure or cancellation.
+An optional `:tool-registry' replaces the executable tools with the projection.
 REFRESH-MESSAGES is retained as a legacy
 messages-only callback.  The provider request is started through
 `e-backend-start'.  Tool execution is started through TOOL-LIFECYCLE when
@@ -581,6 +582,9 @@ schedules it behind the owning session's active commit barrier."
                        (plist-get projection :message-entry-ids) new-messages)
                     nil))
                  (new-options (copy-sequence (plist-get projection :options)))
+                 (new-tools (if (plist-member projection :tool-registry)
+                                (plist-get projection :tool-registry)
+                              tools))
                  (new-segments
                   (if (plist-member projection :segments)
                       (copy-tree (plist-get projection :segments))
@@ -591,6 +595,10 @@ schedules it behind the owning session's active commit barrier."
                         (plist-get projection :observation-frontier))))
                  (new-options
                   (plist-put new-options :session-id session-id)))
+            (when (and (plist-member projection :tool-registry)
+                       (not (e-tools-registry-p new-tools)))
+              (signal 'wrong-type-argument
+                      (list 'e-tools-registry new-tools)))
             (when (or (plist-member projection :segments)
                       (plist-member new-options :segments))
               (setq new-options
@@ -599,6 +607,15 @@ schedules it behind the owning session's active commit barrier."
               (setq new-options
                     (plist-put new-options :observation-frontier
                                new-frontier)))
+            ;; Hook and nested-tool contexts share the turn's registry object.
+            ;; Replace its contents only when the whole projection is accepted.
+            (if (and (e-tools-registry-p tools)
+                     (e-tools-registry-p new-tools))
+                (setf (e-tools-registry-tools tools)
+                      (e-tools-registry-tools new-tools)
+                      (e-tools-registry-order tools)
+                      (e-tools-registry-order new-tools))
+              (setq tools new-tools))
             (setq turn-messages new-messages
                   turn-message-entry-ids new-message-entry-ids
                   turn-options new-options)

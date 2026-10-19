@@ -57,6 +57,19 @@ The source collector reserves time for interpretation and reporting instead of c
 * Admission and package status
 The operator authorized implementation of the diagnosed improvements on 2026-10-19.
 Use bounded delivery briefs after owner investigation closes implementation decisions; this document records scope and acceptance without introducing a formal contract matrix.
-MCP activation-result and normal asynchronous promotion behavior are the first admitted package.
+MCP activation-result and normal asynchronous promotion behavior were accepted at 0566b61ed06984ffa7ae96910bbde5aad7a1c0dd after source/seam inspection and focused 68/68 loop plus 45/45 MCP checks.
 Daily collector implementation remains dependent on the bounded source-interface checkpoint.
 Repository status: In-progress.
+
+* DP1 integration note
+The async refresh seam required the loop to await a Work result before publishing the observation or issuing a follow-up request.
+Normal SQLite-backed asynchronous turn coverage now captures the promoted direct tool on the next provider request.
+The commit hook unexpectedly ran git-sync and pushed 27 inherited commits plus DP1 to origin/main.
+No remote rewrite was attempted; all remaining task commits must explicitly disable hooks with core.hooksPath=/dev/null.
+
+* Independent DP1 correction
+Independent review found DP1-R1: promoted schemas reached the next provider request, but execution and preparation retained the initial registry.
+The correction carries the executable registry alongside the provider projection and updates the shared turn registry only when that projection is accepted.
+Lifecycle hooks and nested execution retain the same turn-local registry object; provider schemas and callable tools derive from the same captured registry.
+The public SQLite scenario now activates a tool, invokes it directly on the next request, and asserts the actual MCP payload.
+Collector APIs bypass model-facing promotion, so Grimoire implementation can proceed independently while this e correction receives review and final gates.

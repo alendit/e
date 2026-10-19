@@ -172,14 +172,15 @@ helper through the facade."
                           e-harness-provider-request-deadline-seconds))))
     options))
 
-(defun e-harness-turn-options (harness session-id)
+(defun e-harness-turn-options (harness session-id &optional tools)
   "Return backend-neutral turn options for HARNESS and SESSION-ID.
-Tool definitions are attached before backend-owned policy is derived."
+Tool definitions are attached before backend-owned policy is derived.
+Optional TOOLS supplies the same registry used to execute this projection."
   (let* ((merged (e-harness-context-runtime--merge-turn-options
                   (e-harness-default-options harness)
                   (e-harness-session-options harness session-id)))
          (tool-definitions
-          (e-tools-definitions (e-harness-tools harness session-id)))
+          (e-tools-definitions (or tools (e-harness-tools harness session-id))))
          (with-tools (if tool-definitions
                          (plist-put merged :tools tool-definitions)
                        merged)))
@@ -233,9 +234,10 @@ turn context work."
              :session-id session-id
              :turn-id turn-id
              :context-purpose context-purpose)))
-       (let* ((turn-options
+       (let* ((tools (e-harness-tools harness session-id turn-id))
+              (turn-options
                (e-harness-context-runtime--options-with-canvas-layout
-                (e-harness-turn-options harness session-id)
+                (e-harness-turn-options harness session-id tools)
                 (plist-get capability-context :messages)))
          (context-capabilities
                (e-harness-context-capabilities harness turn-options))
@@ -271,6 +273,8 @@ turn context work."
          (setq context
                (e-harness-context-runtime--context-with-provider-compaction
                 harness session-id context context-purpose))
+         (when (eq context-purpose 'turn)
+           (plist-put context :tool-registry tools))
          (e-harness-context-runtime--context-with-continuation-projection-identity context))))))
 
 (defun e-harness-turn-context (harness session-id turn-id)
@@ -280,14 +284,14 @@ the live dynamic providers needed for the model-facing request."
   (e-harness-context harness session-id turn-id 'turn))
 
 (defun e-harness-context-runtime--detached-turn-options
-    (harness session-id path)
+    (harness session-id path &optional tools)
   "Return provider options from detached selected PATH."
   (let* ((merged
           (e-harness-context-runtime--merge-turn-options
            (e-harness-default-options harness)
            (plist-get path :turn-options)))
          (tool-definitions
-          (e-tools-definitions (e-harness-tools harness session-id)))
+          (e-tools-definitions (or tools (e-harness-tools harness session-id))))
          (with-tools (if tool-definitions
                          (plist-put merged :tools tool-definitions)
                        merged)))
@@ -841,10 +845,11 @@ CONTEXT-PURPOSE defaults to `turn'."
            (e-harness-effective-capabilities harness session-id turn-id)
            :harness harness :session-id session-id :turn-id turn-id
            :context-purpose context-purpose))
+         (tools (e-harness-tools harness session-id turn-id))
          (turn-options
           (e-harness-context-runtime--options-with-canvas-layout
            (e-harness-context-runtime--detached-turn-options
-            harness session-id path)
+            harness session-id path tools)
            (plist-get capability-context :messages)))
          (context-capabilities
           (e-harness-context-capabilities harness turn-options))
@@ -854,6 +859,8 @@ CONTEXT-PURPOSE defaults to `turn'."
            :options turn-options
            :prefix-messages (plist-get capability-context :messages)
            :prefix-segments (plist-get capability-context :segments))))
+    (when (eq context-purpose 'turn)
+      (plist-put context :tool-registry tools))
     (when (e-harness-context-runtime--context-lifetime-enabled-p
            context-purpose)
       (setq context

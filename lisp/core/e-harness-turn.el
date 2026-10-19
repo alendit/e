@@ -632,9 +632,10 @@ activity persistence."
              context)))
     context))
 
-(defun e-harness-tool-lifecycle (harness session-id turn-id)
-  "Return a harness-owned tool lifecycle for SESSION-ID and TURN-ID."
-  (let ((tools (e-harness-tools harness session-id turn-id))
+(defun e-harness-tool-lifecycle (harness session-id turn-id &optional tools)
+  "Return a harness-owned tool lifecycle for SESSION-ID and TURN-ID.
+Optional TOOLS shares the turn's registry across preparation and execution."
+  (let ((tools (or tools (e-harness-tools harness session-id turn-id)))
         hook-context)
     (cl-labels
         ((hooks ()
@@ -1746,16 +1747,18 @@ session value directly."
    (list :session-id session-id
          :turn-id turn-id)
    (lambda ()
-     (let ((context (or context
-                        (e-harness-turn-context harness session-id turn-id))))
+     (let* ((context (or context
+                         (e-harness-turn-context harness session-id turn-id)))
+            (tools (or (plist-get context :tool-registry)
+                       (e-harness-tools harness session-id turn-id))))
         (e-loop-start-turn
         :session-id session-id
         :turn-id turn-id
         :messages (plist-get context :messages)
         :message-entry-ids (plist-get context :message-entry-ids)
         :backend (e-harness-backend harness)
-        :tools (e-harness-tools harness session-id turn-id)
-        :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id)
+        :tools tools
+        :tool-lifecycle (e-harness-tool-lifecycle harness session-id turn-id tools)
         :options (plist-get context :options)
         :segments (plist-get context :segments)
         :lifetime-frame (plist-get context :lifetime-frame)

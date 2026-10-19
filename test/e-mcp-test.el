@@ -1212,7 +1212,7 @@ echoed back on `tools/list' and `tools/call'."
       (should (member "mcp__fixture__ping" names)))))
 
 (ert-deftest e-mcp-test-async-activation-refreshes-next-provider-tool-set ()
-  "The next async provider request receives newly activated MCP tools."
+  "A SQLite turn advertises and executes newly activated MCP tools."
   (e-mcp-test--with-transport (e-mcp-test--progressive-transport)
     (e-mcp-test--with-progressive-sql-harness (harness store stall)
       (ignore store stall)
@@ -1221,6 +1221,7 @@ echoed back on `tools/list' and `tools/call'."
         (e-work-await-batch
          (e-harness-create-session harness :id "s1") :timeout 5.0))
       (let ((provider-requests nil)
+            (direct-result nil)
             (request-count 0))
         (setf (e-harness-backend harness)
               (e-backend-create
@@ -1228,7 +1229,6 @@ echoed back on `tools/list' and `tools/call'."
                :stream
                (cl-function
                 (lambda (&key messages options on-item)
-                  (ignore messages)
                   (push (mapcar (lambda (tool) (plist-get tool :name))
                                 (plist-get options :tools))
                         provider-requests)
@@ -1242,6 +1242,23 @@ echoed back on `tools/list' and `tools/call'."
                      (funcall on-item '(:type done :reason tool-use)))
                     (2
                      (funcall on-item
+                              '(:type tool-call :id "direct-echo"
+                                :name "mcp__fixture__echo"
+                                :arguments (:text "hello")))
+                     (funcall on-item '(:type done :reason tool-use)))
+                    (3
+                     (setq direct-result
+                           (plist-get
+                            (seq-find
+                             (lambda (message)
+                               (and (eq (plist-get message :role) 'tool)
+                                    (equal
+                                     (plist-get (plist-get message :content)
+                                                :tool-call-id)
+                                     "direct-echo")))
+                             messages)
+                            :content))
+                     (funcall on-item
                               '(:type assistant-message :content "ready"))
                      (funcall on-item '(:type done :reason stop)))
                     (_ (error "Unexpected provider request %s" request-count)))))))
@@ -1253,10 +1270,12 @@ echoed back on `tools/list' and `tools/call'."
                                :status)
                     'done)))
         (setq provider-requests (nreverse provider-requests))
-        (should (= request-count 2))
+        (should (= request-count 3))
         (should (member "mcp_activate" (car provider-requests)))
         (should-not (member "mcp__fixture__echo" (car provider-requests)))
-        (should (member "mcp__fixture__echo" (cadr provider-requests)))))))
+        (should (member "mcp__fixture__echo" (cadr provider-requests)))
+        (should (eq (plist-get direct-result :status) 'ok))
+        (should (equal (plist-get direct-result :content) "called"))))))
 
 (ert-deftest e-mcp-test-activate-invoke-preserves-error-and-structured-result ()
   "An activation invocation stays prominent, structured, and error-marked."
