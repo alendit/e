@@ -58,8 +58,9 @@ The source collector reserves time for interpretation and reporting instead of c
 The operator authorized implementation of the diagnosed improvements on 2026-10-19.
 Use bounded delivery briefs after owner investigation closes implementation decisions; this document records scope and acceptance without introducing a formal contract matrix.
 MCP activation-result and normal asynchronous promotion behavior were accepted at 0566b61ed06984ffa7ae96910bbde5aad7a1c0dd after source/seam inspection and focused 68/68 loop plus 45/45 MCP checks.
-Daily collector implementation remains dependent on the bounded source-interface checkpoint.
-Repository status: In-progress.
+The deterministic collector candidate passed the focused suites, configured-source gate, and actual read-only source collection.
+Independent findings, recovery proofs, and actual Daily/Canvas acceptance are closed in review.org.
+Repository status: Done.
 
 * DP1 integration note
 The async refresh seam required the loop to await a Work result before publishing the observation or issuing a follow-up request.
@@ -72,4 +73,13 @@ Independent review found DP1-R1: promoted schemas reached the next provider requ
 The correction carries the executable registry alongside the provider projection and updates the shared turn registry only when that projection is accepted.
 Lifecycle hooks and nested execution retain the same turn-local registry object; provider schemas and callable tools derive from the same captured registry.
 The public SQLite scenario now activates a tool, invokes it directly on the next request, and asserts the actual MCP payload.
-Collector APIs bypass model-facing promotion, so Grimoire implementation can proceed independently while this e correction receives review and final gates.
+Collector APIs bypass model-facing promotion; the e registry correction and Grimoire source collection received independent review and acceptance.
+
+* Final acceptance
+Deterministic source collection, bounded worker overviews, authoritative reports/watermarks, exact candidate commits, and coordinator recovery are accepted.
+Coordinator state uses the existing public capability-state namespace rather than adding Daily-specific fields to e's durable schema.
+The final live collector run completed Gmail 97 conversations and Slack 258 threads with full coverage in 17.99 seconds; both overviews stayed below 7 KiB.
+Final verification passed 85 affected Grimoire tests, 17 collector Python tests, 9 current-config tests, and both fresh-process actual Daily/Canvas graphical phases.
+The e runtime's canonical 2922-test gate and independent promotion/invocation proof remain valid; no later e runtime change invalidated them.
+All independent review findings are resolved, including interrupted progress preservation and late coordinator activation fences.
+Provider-token savings remain unmeasured; collection itself no longer uses model turns.

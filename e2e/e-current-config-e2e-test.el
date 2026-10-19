@@ -94,7 +94,8 @@
      ".e/layers/topic/daily-coordinator.el"
      ".e/layers/topic/daily-run.el"
      ".e/layers/topic/cron.el"
-     ".e/layers/topic/shells/topic.el")))
+     ".e/layers/topic/shells/topic.el"
+     ".e/layers/topic/daily-sources.el")))
 
 (defun e-current-config-e2e-test--load-and-compile-grimoire (root)
   "Load and byte-compile the exact configured Grimoire consumer at ROOT."
@@ -139,6 +140,16 @@
     (should (file-equal-p
              (symbol-file 'grimoire-daily 'defun)
              (nth 6 sources)))
+    (dolist (symbol '(grimoire-daily-sources-gmail-start
+                      grimoire-daily-sources-slack-start))
+      (should (file-equal-p (symbol-file symbol 'defun) (nth 7 sources))))
+    (let ((helper (expand-file-name "scripts/daily_sources.py" root)))
+      (should (file-readable-p helper))
+      (e-current-config-e2e-test--print
+       "Daily source helper: %s SHA256 %s\n" helper
+       (with-temp-buffer
+         (insert-file-contents-literally helper)
+         (secure-hash 'sha256 (current-buffer)))))
     sources))
 
 (ert-deftest e-current-config-e2e-test-grimoire-cron-is-publish-supervised ()

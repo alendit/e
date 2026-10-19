@@ -1,0 +1,98 @@
+#+title: Review: Daily source collection efficiency
+#+startup: overview
+
+* Status
+Done.
+All implementation findings and required delivery gates are closed.
+
+* Scope and outcome
+Review covers progressive MCP promotion and asynchronous context refresh in e, plus Grimoire's deterministic Gmail/Slack collectors, Daily queue/report composition, source artifacts, and successful coverage watermarks.
+The direct scenario is Daily populate followed by refresh over a frozen lower bound, including interrupted collection, selected retries, and reopening after restart.
+Workers consume a bounded overview and return a concise source digest; the coordinator consumes those digests before opening detailed evidence.
+Source collection performs no model calls.
+Existing user notes, live sessions, and configuration were outside the mutation scope.
+
+* Review resolutions
+| Finding | Severity | Resolution and evidence |
+|---------+----------+-------------------------|
+| DP1-R1 promoted schemas without callable tools | High | b2781685 updates the shared executable registry only with an accepted context projection. Normal SQLite-backed activation, direct invocation, and actual MCP payload pass. |
+| DP2-R1 failed Gmail refresh erases useful data | High | A shared merge policy preserves unresolved same-window records on periodic and final writes. Independent all-failed, real process interruption, and pending-future timeout probes retain useful data as partial. |
+| DP2-R2 Slack thread errors become complete data | High | MCP execution errors and empty responses become typed hydration gaps. A public collector/process-normalizer probe returns partial coverage. |
+| DP2-R3 Slack startup overwrites its checkpoint | Medium | Startup loads the matching query identity before replacement; cancellation before profile completion preserves saved progress. Public restart sends the saved cursor and retains its page. |
+| DP2-R4 excerpt trimming loses dedup identities | Medium | Full message identity history is independent of bounded excerpts. Eight unique repeated messages count eight. |
+| DP2-R5 malformed Slack content becomes empty success | High | Owning-record grammar validates actual source fields and timestamps, retains body/context boundaries, and recognizes explicit empty results. Actual-source replay and public positive/negative probes pass. |
+| DP2-R6 coordinator commits another candidate path | High | New-run paths require the frozen run ID and selected attempt. Create/reopen persist the canonical namespaced Daily descriptor before activation; the ordinary hook consumes that acknowledged scope. Public SQLite recovery commits attempt 2 and preserves unrelated state. |
+| DP2-R7 late readiness activates a cancelled/stale coordinator | High | The activation owner checks parent Work and owner generation before observing/activating and before demotion. Independent held-readiness cancellation and generation-change probes perform neither late activation nor owner demotion. |
+
+Independent reports are retained in =/private/tmp/e-daily-collectors-20261019/review-dp1-02.org= and =review-dp2.org= through =review-dp2-07.org=.
+The source-ownership review covered exact-window filtering, query exhaustion, owning identities, honest partial results, recovery, cancellation, attempt/generation fences, bounded model evidence, and selected-report authority.
+
+* Verification
+** e runtime and configured environment
+The canonical suite passed 2922/2922 on clean e revision b2781685958c241c5dd4eac16f90e35c24faf321; subsequent e changes are the current-config test and feature documentation.
+Focused loop/MCP coverage passed 113/113, including the normal three-provider-request activation/invocation witness.
+The configured environment passed 9/9 in a fresh isolated daemon, loading the exact Grimoire sources and compiling them strictly.
+The current-config gate now also checks the new collector entry points and records the Python helper hash.
+
+** Daily composition and recovery
+Grimoire 24048548d5f82c6b20e528142c96f313525faad6 passed 62/62 Daily ERT tests and 17/17 Python tests, strict compilation, check-parens, and whitespace checks.
+After the coordinator corrections, final Grimoire revision 6cd6e03713eedabbbc5e79c4295189e6ed6dae02 passed all 85 affected Daily/commit ERT tests; its coordinator subset passed 8/8 and strict compilation passed.
+The final exact-head configured-source gate again passed 9/9.
+Independent public composition exercised real collector Works, e dispatch/admission, durable child report publication, and SQLite selected-run projection.
+A worker intentionally claiming data/count 99 was overridden by collector facts: Gmail data/count 1 and Slack unavailable.
+Only complete, current, selected Gmail coverage advanced its watermark.
+Late child/projection callbacks after cancellation cannot advance coverage.
+Coordinator recovery persists its exact commit descriptor under the existing =grimoire-daily-coordinator= capability-state owner, then activates only after acknowledgement.
+The public reopen test checks the persisted selected attempt through SQLite and the ordinary commit consumer, including unrelated-state preservation and post-persistence callback fences.
+
+** Actual sources
+The final read-only production-owner run collected the frozen window from 2026-10-16T12:27:05Z through 2026-10-19T16:45:00Z in 17.99 seconds.
+Gmail returned 97 conversations / 138 messages; Slack returned 258 threads / 280 distinct messages across six exhausted query streams.
+Both manifests reported data with complete coverage and no errors.
+Worker overviews were 6622 bytes for Gmail and 5842 bytes for Slack, below the 7 KiB UTF-8 ceiling.
+Complete raw source artifacts remained in private temporary directories.
+Exact source hashes are in =/private/tmp/e-daily-collectors-20261019/grimoire-accepted/source-hashes.json=; result metadata is in =live-collectors-accepted.log=.
+The collector sources are unchanged by the later coordinator/commit-hook corrections.
+Captured real Slack pages also replayed successfully through the corrected parser: 247 threads / 260 messages, six queries, no errors.
+
+** Actual Daily / Canvas surfaces
+The Grimoire graphical acceptance passed both fresh-process phases, including normal source artifact publication, coordinator file save, automatic exact-path Git commit, and reopening the saved Daily.
+The stronger e Feature 99 wrapper also passed 1/1 in each of two fresh graphical processes using the actual Daily/Canvas owners, candidate-source provenance checks, ordinary read/edit tools, conflict handling, and reopen baseline assertions.
+Both stronger graphical phases passed again on the final coordinator correction.
+The final rendered Daily/transcript/composer screenshot was inspected at =/private/tmp/e-daily-collectors-20261019/r7-final-graphical/phase-two/007-daily-fresh-process-snapshot.png=.
+Graphical tests use fixture source/provider responses; actual source compatibility is proved separately by the live collector run.
+One Grimoire runner emitted a store-closed persistence warning during teardown after its passing assertions; the next independent process reopened the saved Daily successfully.
+
+** Evidence limits
+The change mechanically removes model-driven collection/paging and bounds overview bytes.
+It does not establish a measured before/after provider-token or monetary reduction for a full production Daily.
+Feature 99 live cache/curation qualification is separate and is not promoted to complete by this work.
+The user's running Emacs was left unchanged; the e core changes require a restart to enter that process.
+
+* Architecture and design self-check
+1. Would stopping here leave the project better off? :: Deterministic collectors, executable MCP promotion, and durable selected-attempt commit scope are accepted independently and through the actual Daily/Canvas owners.
+2. What final direction does this move toward? :: Source-specific mechanical work belongs below model interpretation, with durable evidence and narrow summaries between workers and coordinator.
+3. Which decisions may change? :: Slack text-envelope grammar and Gmail CLI adaptation can change locally; frozen windows, stable identities, and truthful coverage remain stable contracts.
+4. Who owns the behavior? :: e owns generic tool activation/context lifecycle; Grimoire owns Daily collection and report policy; the external helper owns Gmail process I/O and local normalization.
+5. Does coupling change? :: Worker prompts depend on compact evidence and collector facts instead of source pagination protocols; no provider-specific policy was added to e.
+6. Do dependencies point correctly? :: Grimoire calls existing public e Work, MCP, Board, session, and subagent APIs; core e does not depend on Grimoire.
+7. Can side effects move outward? :: Gmail commands, Slack MCP calls, artifact writes, and Git commits remain at their existing process/client/filesystem owners.
+8. What state is added? :: Run/task/attempt candidates and query-identity checkpoints are rebuildable evidence; successful watermarks persist only accepted complete coverage. The bounded coordinator descriptor lasts with its durable session under an existing capability-state namespace. Turn-local executable registries live only for the turn.
+9. What is the performance impact? :: Collection needs no model turns; overviews have a byte ceiling. Whole-window enumeration is retained because Slack does not supply a reliable edit/delete fingerprint for safe detail reuse.
+10. Are abstractions real? :: Existing Work and Board contracts are reused; source adapters expose only Daily's required frozen-window collection behavior.
+11. What compatibility applies? :: User notes and existing source artifact paths for other workers are preserved. New Gmail/Slack candidates are explicitly scoped; obsolete model paging-ledger admission is removed.
+12. What legacy code was removed? :: Repeated activation schema output, worker-controlled Gmail/Slack paging, and the manually asserted Slack paging ledger no longer own these paths. The commit hook no longer consumes mutable flat Daily metadata; public reopen supplies the canonical namespace before activation.
+13. Where are errors handled? :: Collectors classify expected source failures and preserve evidence; manifests retain explicit partial/unavailable gaps. Invalid artifacts fail their owning Work; subprocess diagnostics and credential-bearing structures are not propagated.
+14. What independently proves behavior? :: Source fixtures, real process interruption/timeout probes, public collector/report/SQLite tests, and configured/graphical composition gates cover separate boundaries; parser changes stay local to source fixtures and actual-format replay.
+
+* Working-state and delivery notes
+Grimoire's unrelated live Daily/archive/index/topic changes remain unstaged.
+Task commits use the required personal identity and scoped paths.
+The first e commit's existing post-commit hook unexpectedly pushed inherited Feature 99 commits plus DP1; this was disclosed during execution.
+No remote rewrite was attempted and all subsequent task commits explicitly disable hooks; no further push was performed.
+
+* Delivery
+e runtime commits: 0566b61ed06984ffa7ae96910bbde5aad7a1c0dd and b2781685958c241c5dd4eac16f90e35c24faf321.
+Grimoire commits: 24048548d5f82c6b20e528142c96f313525faad6 (collectors), 0aa46c9ef7961f523ba62c88c12d2f4028a16334 (durable coordinator state), eef2b72192f6adc8446bb9b3aabb8d8d4cd36821 (guidance), and 6cd6e03713eedabbbc5e79c4295189e6ed6dae02 (activation fence).
+Final evidence: =current-config-r7-final.log=, =r7-final-graphical.log=, =final-grimoire-tests.log=, and =review-dp2-07.org= under =/private/tmp/e-daily-collectors-20261019/=.
+No unresolved feature findings remain.
