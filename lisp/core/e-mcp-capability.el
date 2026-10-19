@@ -566,30 +566,62 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
        (lambda (tool) (member (e-mcp-tool-name tool) names))
        catalog))))
 
-(defun e-mcp-capability--activate-result (arguments catalog invoke-result context)
-  "Return the model-facing mcp_activate result for ARGUMENTS and CATALOG."
+(defun e-mcp-capability--activate-result
+    (arguments catalog invoke-result context previously-active)
+  "Return the model-facing mcp_activate result for ARGUMENTS and CATALOG.
+PREVIOUSLY-ACTIVE is the session's activation set before this call."
   (let* ((call (plist-get context :tool-call))
          (harness (plist-get context :harness))
          (session-id (plist-get context :session-id))
          (requested (plist-get arguments :tools))
          (selected (e-mcp-capability--select-tools catalog requested))
+         (newly-selected
+          (cl-remove-if
+           (lambda (tool)
+             (e-mcp-capability--tool-activated-p
+              previously-active
+              (e-mcp-tool-server-id tool)
+              (e-mcp-tool-name tool)))
+           selected))
          (schema-text (string-join
-                       (mapcar #'e-mcp-capability--tool-schema-text selected)
+                       (mapcar #'e-mcp-capability--tool-schema-text
+                               newly-selected)
                        "\n\n"))
-         (sections (list schema-text)))
-    (when (and harness session-id)
-      (push "Activated for this session; the tools above are now callable."
-            sections))
-    (when invoke-result
-      (push (format "Invoke %s result:\n%s"
-                    (plist-get (plist-get arguments :invoke) :tool)
-                    (e-tools-result-content-text
-                     (e-mcp-capability--result-content invoke-result)))
-            sections))
-    (let ((content (string-join (nreverse sections) "\n\n")))
-      (if call
-          (e-tools-result-create call 'ok content (list :kind 'mcp-activate))
-        content))))
+         (invoke-error (and invoke-result
+                            (e-mcp-capability--result-error-p invoke-result)))
+         (activation-text
+          (when (and harness session-id)
+            (if newly-selected
+                "Activated for this session; the schemas below are now callable."
+              "These tools were already active for this session.")))
+         (content
+          (if invoke-result
+              (append
+               (list :invocation
+                     (list :tool (plist-get (plist-get arguments :invoke) :tool)
+                           :isError (if invoke-error t :json-false)
+                           :content
+                           (e-mcp-capability--result-content invoke-result)))
+               (unless (string-empty-p schema-text)
+                 (list :discovery schema-text))
+               (when activation-text
+                 (list :activation activation-text)))
+            (string-join
+             (delq nil
+                   (list (unless (string-empty-p schema-text) schema-text)
+                         activation-text))
+             "\n\n")))
+         (metadata
+          (append
+           (list :kind 'mcp-activate)
+           (when (and harness session-id)
+             (list :refresh-context t))
+           (when invoke-error
+             (list :error 'mcp-execution-error)))))
+    (if call
+        (e-tools-result-create call (if invoke-error 'error 'ok)
+                               content metadata)
+      content)))
 
 (defun e-mcp-capability--activate-work ()
   "Return a Work spec for mcp_activate."
@@ -606,6 +638,12 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
      (let* ((server-id (plist-get arguments :server))
             (invoke (plist-get arguments :invoke))
             (server (and server-id (e-mcp-client-known-server server-id)))
+            (previously-active
+             (when (and (plist-get context :harness)
+                        (plist-get context :session-id))
+               (e-mcp-capability--active-set
+                (plist-get context :harness)
+                (plist-get context :session-id))))
             child-request
             activation-work
             timer)
@@ -632,7 +670,7 @@ Cards are emitted only when CAPABILITY-ID resolves to progressive mode."
                 (e-work-finish
                  handle
                  (e-mcp-capability--activate-result
-                  arguments catalog invoke-result context))))
+                  arguments catalog invoke-result context previously-active))))
             (activation-settled (settled catalog invoke-result)
               (setq activation-work nil)
               (let ((status (e-work-status settled)))

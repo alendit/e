@@ -1052,6 +1052,80 @@
     (should (eq (car (plist-get run :failure))
                 'e-loop-repeated-tool-failure))))
 
+(defun e-loop-test--start-async-context-refresh-turn ()
+  "Start a public loop turn whose context refresh waits on a pending Work.
+Return the Work and observations needed to settle and inspect the turn."
+  (let* ((calls 0)
+         (observations 0)
+         (refresh-started nil)
+         (cancelled nil)
+         (settled nil)
+         (refresh-work
+          (e-work-start
+           (e-work-spec-create
+            :id "test-context-refresh"
+            :execution 'cooperative
+            :interactive-policy 'async
+            :runner (lambda (&rest _arguments) :deferred))
+           nil))
+         (backend
+          (e-backend-create
+           :name "fake-async-context-refresh"
+           :stream
+           (cl-function
+            (lambda (&key messages options on-item)
+              (ignore options)
+              (setq calls (1+ calls))
+              (if (= calls 1)
+                  (progn
+                    (funcall on-item
+                             '(:type tool-call
+                               :id "call-async-refresh"
+                               :name "async_refreshing_tool"
+                               :arguments ()))
+                    (funcall on-item '(:type done :reason tool-use)))
+                (ignore messages)
+                (funcall on-item
+                         '(:type assistant-message :content "done"))
+                (funcall on-item '(:type done :reason stop)))))))
+         (tools (e-tools-registry-create)))
+    (e-tools-test-register
+     tools
+     :name "async_refreshing_tool"
+     :description "Refresh context asynchronously."
+     :handler
+     (lambda (_arguments)
+       (e-tools-result-create
+        (plist-get (e-tools-current-context) :tool-call)
+        'ok
+        "refresh pending"
+        '(:refresh-context t))))
+    (e-loop-start-turn
+     :session-id "session-async-refresh"
+     :turn-id "turn-async-refresh"
+     :messages '((:role user :content "prompt"))
+     :backend backend
+     :tools tools
+     :options '(:state "before")
+     :on-event #'ignore
+     :append-message #'ignore
+     :cancelled-p (lambda () cancelled)
+     :refresh-context
+     (lambda ()
+       (setq refresh-started t)
+       refresh-work)
+     :on-tool-observation (lambda (_payload)
+                            (setq observations (1+ observations)))
+     :on-done (lambda (result) (setq settled result))
+     :on-error (lambda (err) (setq settled (list :status 'error
+                                                  :error err))))
+    (list :work refresh-work
+          :calls (lambda () calls)
+          :observations (lambda () observations)
+          :refresh-started-p (lambda () refresh-started)
+          :cancel-turn (lambda () (setq cancelled t))
+          :settled (lambda () settled))))
+
 (ert-deftest e-loop-test-refreshes-messages-after-tool-requesting-context-refresh ()
   "A tool result may ask the loop to rebuild context before follow-up sampling."
   (let* ((calls 0)
@@ -1104,6 +1178,54 @@
      :refresh-messages (lambda () refreshed-messages))
     (should (= calls 2))
     (should (equal second-request-messages refreshed-messages))))
+
+(ert-deftest e-loop-test-async-context-refresh-failure-stops-followup ()
+  "A failed async projection reaches ON-ERROR before any provider follow-up."
+  (let* ((run (e-loop-test--start-async-context-refresh-turn))
+         (work (plist-get run :work))
+         (settled (plist-get run :settled)))
+    (should (e-loop-test--wait-until
+             (plist-get run :refresh-started-p)))
+    (should (= (funcall (plist-get run :calls)) 1))
+    (e-work-fail work '(error "refresh failed"))
+    (should (e-loop-test--wait-until settled))
+    (should (equal (plist-get (funcall settled) :status) 'error))
+    (should (equal (plist-get (funcall settled) :error)
+                   '(error "refresh failed")))
+    (should (= (funcall (plist-get run :calls)) 1))
+    (should (= (funcall (plist-get run :observations)) 0))))
+
+(ert-deftest e-loop-test-async-context-refresh-cancellation-stops-followup ()
+  "A cancelled refresh propagates cancellation without observing stale context."
+  (let* ((run (e-loop-test--start-async-context-refresh-turn))
+         (work (plist-get run :work))
+         (settled (plist-get run :settled)))
+    (should (e-loop-test--wait-until
+             (plist-get run :refresh-started-p)))
+    (should (= (funcall (plist-get run :calls)) 1))
+    (e-work-cancel work)
+    (should (e-loop-test--wait-until settled))
+    (should (equal (plist-get (funcall settled) :status) 'error))
+    (should (eq (car (plist-get (funcall settled) :error))
+                'e-work-cancelled))
+    (should (= (funcall (plist-get run :calls)) 1))
+    (should (= (funcall (plist-get run :observations)) 0))))
+
+(ert-deftest e-loop-test-async-context-refresh-fences-cancelled-turn ()
+  "A late successful projection cannot mutate or continue a cancelled turn."
+  (let* ((run (e-loop-test--start-async-context-refresh-turn))
+         (work (plist-get run :work))
+         (settled (plist-get run :settled)))
+    (should (e-loop-test--wait-until
+             (plist-get run :refresh-started-p)))
+    (funcall (plist-get run :cancel-turn))
+    (e-work-finish
+     work
+     '(:messages ((:role system :content "stale projection"))
+       :options (:state "stale")))
+    (should (= (funcall (plist-get run :calls)) 1))
+    (should (= (funcall (plist-get run :observations)) 0))
+    (should-not (funcall settled))))
 
 (ert-deftest e-loop-test-context-refresh-applies-one-atomic-request-projection ()
   "A context refresh updates messages and all request metadata together."

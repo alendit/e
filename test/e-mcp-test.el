@@ -24,6 +24,10 @@
 (require 'e-tools)
 (require 'e-work)
 (load (expand-file-name
+       "e-harness-test-support.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil nil t)
+(load (expand-file-name
        "e-test-environment-support.el"
        (file-name-directory (or load-file-name buffer-file-name)))
       nil nil t)
@@ -31,6 +35,9 @@
 (defconst e-mcp-test--schema
   '(:type "object" :properties (:text (:type "string")))
   "Reusable object JSON schema for MCP tests.")
+
+(defvar e-mcp-test--progressive-call-result nil
+  "Optional call-tool response for the progressive MCP test transport.")
 
 (ert-deftest e-mcp-test-wire-json-keeps-canonical-shapes ()
   "MCP HTTP and stdio parsers preserve canonical nested tool arguments."
@@ -996,9 +1003,11 @@ echoed back on `tools/list' and `tools/call'."
                                     "ping" '(:type "object") "Ping host.")))))
       ("call-tool"
        (list :ok t
-             :result (list :content
-                           (vector (list :type "text" :text "called"))
-                           :isError :json-false))))))
+             :result
+             (or e-mcp-test--progressive-call-result
+                 (list :content
+                       (vector (list :type "text" :text "called"))
+                       :isError :json-false)))))))
 
 (defmacro e-mcp-test--with-progressive-harness (harness-var &rest body)
   "Bind HARNESS-VAR to a harness with a progressive MCP layer and run BODY."
@@ -1165,27 +1174,124 @@ echoed back on `tools/list' and `tools/call'."
   (e-mcp-test--with-progressive-harness harness
     (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
     (e-harness-create-session harness :id "s1")
-    (let* ((registry (e-harness-tools harness "s1"))
-           (done nil)
-           (result nil))
-      (e-tools-start
-       registry
-       '(:id "c1" :name "mcp_activate"
-         :arguments (:server "fixture" :tools ["echo"]))
-       :context (list :harness harness :session-id "s1")
-       :on-done (lambda (value) (setq result value done t))
-       :on-error (lambda (err) (setq result err done t)))
-      (while (not done) (accept-process-output nil 0.01))
-      (should (eq (plist-get result :status) 'ok))
-      (should (string-match-p "# mcp__fixture__echo"
-                              (e-tools-result-content-text
-                               (plist-get result :content)))))
-    (should (equal (e-mcp-capability--active-set harness "s1") '(("fixture" "echo"))))
+    (cl-labels
+        ((activate (call-id tools)
+           (let ((done nil) result)
+             (e-tools-start
+              (e-harness-tools harness "s1")
+              (list :id call-id :name "mcp_activate"
+                    :arguments (list :server "fixture" :tools tools))
+              :context (list :harness harness :session-id "s1")
+              :on-done (lambda (value) (setq result value done t))
+              :on-error (lambda (err) (setq result err done t)))
+             (while (not done) (accept-process-output nil 0.01))
+             result)))
+      (let* ((first (activate "c1" ["echo"]))
+             (first-text (e-tools-result-content-text
+                          (plist-get first :content))))
+        (should (eq (plist-get first :status) 'ok))
+        (should (string-match-p "# mcp__fixture__echo" first-text)))
+      (let* ((second (activate "c2" ["echo" "ping"]))
+             (second-text (e-tools-result-content-text
+                           (plist-get second :content))))
+        (should (eq (plist-get second :status) 'ok))
+        (should (string-match-p "# mcp__fixture__ping" second-text))
+        (should-not (string-match-p "# mcp__fixture__echo" second-text)))
+      (let* ((third (activate "c3" ["echo" "ping"]))
+             (third-text (e-tools-result-content-text
+                          (plist-get third :content))))
+        (should (eq (plist-get third :status) 'ok))
+        (should (string-match-p "already active" third-text))
+        (should-not (string-match-p "# mcp__fixture__" third-text))))
+    (should (equal (e-mcp-capability--active-set harness "s1")
+                   '(("fixture" "echo" "ping"))))
     (let ((names (mapcar (lambda (d) (plist-get d :name))
                          (e-tools-definitions
                           (e-harness-tools harness "s1")))))
       (should (member "mcp__fixture__echo" names))
-      (should-not (member "mcp__fixture__ping" names)))))
+      (should (member "mcp__fixture__ping" names)))))
+
+(ert-deftest e-mcp-test-async-activation-refreshes-next-provider-tool-set ()
+  "The next async provider request receives newly activated MCP tools."
+  (e-mcp-test--with-transport (e-mcp-test--progressive-transport)
+    (e-mcp-test--with-progressive-sql-harness (harness store stall)
+      (ignore store stall)
+      (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+      (e-work-with-batch-await
+        (e-work-await-batch
+         (e-harness-create-session harness :id "s1") :timeout 5.0))
+      (let ((provider-requests nil)
+            (request-count 0))
+        (setf (e-harness-backend harness)
+              (e-backend-create
+               :name "capture-activated-tools"
+               :stream
+               (cl-function
+                (lambda (&key messages options on-item)
+                  (ignore messages)
+                  (push (mapcar (lambda (tool) (plist-get tool :name))
+                                (plist-get options :tools))
+                        provider-requests)
+                  (pcase (cl-incf request-count)
+                    (1
+                     (funcall on-item
+                              '(:type tool-call :id "activate-echo"
+                                :name "mcp_activate"
+                                :arguments (:server "fixture"
+                                            :tools ["echo"])))
+                     (funcall on-item '(:type done :reason tool-use)))
+                    (2
+                     (funcall on-item
+                              '(:type assistant-message :content "ready"))
+                     (funcall on-item '(:type done :reason stop)))
+                    (_ (error "Unexpected provider request %s" request-count)))))))
+      (let ((turn-id
+             (e-harness-test-prompt-async
+              harness "s1" "Find the Slack search tool")))
+        (should turn-id)
+        (should (eq (plist-get (e-harness-wait-batch harness "s1" 5.0)
+                               :status)
+                    'done)))
+        (setq provider-requests (nreverse provider-requests))
+        (should (= request-count 2))
+        (should (member "mcp_activate" (car provider-requests)))
+        (should-not (member "mcp__fixture__echo" (car provider-requests)))
+        (should (member "mcp__fixture__echo" (cadr provider-requests)))))))
+
+(ert-deftest e-mcp-test-activate-invoke-preserves-error-and-structured-result ()
+  "An activation invocation stays prominent, structured, and error-marked."
+  (e-mcp-test--with-progressive-harness harness
+    (let ((e-mcp-test--progressive-call-result
+           '(:content [(:type "text" :text "invocation payload")]
+             :structuredContent (:answer "structured value")
+             :isError t)))
+      (e-harness-set-capability-config harness 'fixture-mcp '(:progressive t))
+      (e-harness-create-session harness :id "s1")
+      (let ((done nil) result)
+        (e-tools-start
+         (e-harness-tools harness "s1")
+         '(:id "invoke-echo" :name "mcp_activate"
+           :arguments (:server "fixture" :tools ["echo"]
+                       :invoke (:tool "echo" :arguments (:text "request"))))
+         :context (list :harness harness :session-id "s1")
+         :on-done (lambda (value) (setq result value done t))
+         :on-error (lambda (err) (setq result err done t)))
+        (while (not done) (accept-process-output nil 0.01))
+        (should (eq (plist-get result :status) 'error))
+        (should (eq (plist-get (plist-get result :metadata) :error)
+                    'mcp-execution-error))
+        (should (plist-get (plist-get result :metadata) :refresh-context))
+        (let* ((content (plist-get result :content))
+               (invocation (plist-get content :invocation))
+               (rendered (e-tools-result-content-text content)))
+          (should (eq (plist-get invocation :isError) t))
+          (should (equal (plist-get (plist-get invocation :content)
+                                    :structuredContent)
+                         '(:answer "structured value")))
+          (should (string-match-p "invocation payload" rendered))
+          (should (string-match-p "structured value" rendered))
+          (should (< (string-match "invocation payload" rendered)
+                     (string-match "# mcp__fixture__echo" rendered))))))))
 
 (ert-deftest e-mcp-test-public-activate-waits-for-sql-commit ()
   "Public mcp_activate settles only after its delayed SQL mutation commits."

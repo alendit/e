@@ -404,10 +404,12 @@ ON-EVENT, APPEND-MESSAGE, REFRESH-CONTEXT, REFRESH-MESSAGES, ON-REQUEST-START,
 ON-DONE, ON-ERROR, CANCELLED-P, and DRAIN-PENDING-INPUT receive turn progress,
 output, refreshed context, provider request handles, settlement, failures,
 cancellation state, and same-turn pending user input.  REFRESH-CONTEXT, when
-supplied, must return one atomic context projection containing at least
-`:messages' and `:options'; its `:segments' and observation metadata must be
-consistent with those options.  Its optional `:message-entry-ids' vector is
-validated and replaced with the same refreshed message projection.
+supplied, returns one atomic context projection or an `e-work' handle that
+settles to one.  The projection contains at least `:messages' and `:options';
+its `:segments' and observation metadata must be consistent with those options.
+Its optional `:message-entry-ids' vector is validated and replaced with the
+same refreshed message projection.  A follow-up provider request waits for an
+async refresh to settle and propagates its failure or cancellation.
 REFRESH-MESSAGES is retained as a legacy
 messages-only callback.  The provider request is started through
 `e-backend-start'.  Tool execution is started through TOOL-LIFECYCLE when
@@ -1438,12 +1440,114 @@ schedules it behind the owning session's active commit barrier."
                       (setq active-tool
                             (list :token token :request request))
                       (publish-request request)))
+                   (finish-tool-after-refresh
+                    (token tool-call result message stored-message
+                               provider-followup-bundle projection refresh-p)
+                    (when (and (current-tool-p token)
+                               (not settled)
+                               (not (cancelled)))
+                      (when refresh-p
+                        (apply-context-refresh projection)
+                        (when (lifetime-projection-enabled-p)
+                          (merge-provider-followup-bundle
+                           provider-followup-bundle)
+                          (restore-provider-replay-assistant-correlation
+                           projection provider-followup-bundle))
+                        (setq context-refreshed-p t))
+                      (setq active-tool nil)
+                      ;; The refreshed context and this tool result form one
+                      ;; observation; do not expose it before the refresh settles.
+                      (when on-tool-observation
+                        (let* ((previous-frame
+                                (if (and (not response-curation-effects)
+                                         (e-context-lifetime-frame-p
+                                          active-lifetime-frame)
+                                         (e-context-lifetime-frame-consumed-p
+                                          active-lifetime-frame)
+                                         (e-context-lifetime-frame-p
+                                          provider-request-lifetime-frame)
+                                         (equal
+                                          (e-context-lifetime-frame-id
+                                           active-lifetime-frame)
+                                          (e-context-lifetime-frame-id
+                                           provider-request-lifetime-frame)))
+                                    provider-request-lifetime-frame
+                                  active-lifetime-frame))
+                               (observation-payload
+                                (list :tool-call tool-call
+                                      :result result
+                                      :message (or stored-message message)
+                                      :previous-frame previous-frame))
+                               (new-frame
+                                (funcall on-tool-observation
+                                         observation-payload)))
+                          (setq active-lifetime-frame new-frame)
+                          (when active-lifetime-frame
+                            (when on-tool-observation-presentation
+                              (let ((presentation
+                                     (funcall
+                                      on-tool-observation-presentation
+                                      (append
+                                       observation-payload
+                                       (list :frame active-lifetime-frame
+                                             :turn-messages turn-messages
+                                             :provider-followup-messages
+                                             provider-followup-messages)))))
+                                (unless (and (listp presentation)
+                                             (plist-member presentation
+                                                           :turn-messages)
+                                             (plist-member presentation
+                                                           :provider-followup-messages))
+                                  (signal 'wrong-type-argument
+                                          (list 'e-loop-tool-observation-presentation
+                                                presentation)))
+                                (setq turn-messages
+                                      (plist-get presentation :turn-messages)
+                                      provider-followup-messages
+                                      (plist-get presentation
+                                                 :provider-followup-messages))))
+                          ;; Keep request options immutable after their provider call.
+                          (setq turn-options (copy-sequence turn-options))
+                          (setq turn-options
+                                (plist-put turn-options
+                                           :lifetime-ephemerals-clean-p nil)))))
+                      (setq next-request-causes
+                            (append next-request-causes (list tool-call)))
+                      (start-next-tool)
+                      (maybe-start-followup)))
+                   (await-context-refresh
+                    (work continuation)
+                    (when (e-work-handle-p turn-work-handle)
+                      (e-work-on-settle
+                       turn-work-handle
+                       (lambda (_settled-turn)
+                         (unless (e-request-terminal-p
+                                  (e-work-handle-lifecycle work))
+                           (e-work-cancel work)))))
+                    (e-work-on-settle
+                     work
+                     (lambda (settled-work)
+                       (dispatch-callback
+                        (lambda ()
+                          (unless (or settled (cancelled))
+                            (let ((status (e-work-status settled-work)))
+                              (pcase (plist-get status :state)
+                                ('finished
+                                 (condition-case err
+                                     (funcall continuation
+                                              (plist-get status :result))
+                                   (error (fail err))))
+                                ('failed
+                                 (fail (or (plist-get status :error)
+                                           '(e-loop-context-refresh-failed))))
+                                ('cancelled
+                                 (fail (list 'e-work-cancelled settled-work)))
+                                (_ (fail '(e-loop-context-refresh-failed)))))))))))
                    (finish-tool
                     (token tool-call failure-call result)
                     (when (and (not settled)
                                (not (cancelled))
                                (current-tool-p token))
-                      (setq active-tool nil)
                       (let* ((message
                               (list :role 'tool
                                     :content result
@@ -1494,104 +1598,40 @@ schedules it behind the owning session's active commit barrier."
                            (t
                             (setq previous-tool-failure fingerprint))))
                       (unless settled
-                      (when (plist-get (plist-get result :metadata)
+                        (if (plist-get (plist-get result :metadata)
                                        :refresh-context)
-                        (cond
-                         (refresh-context
-                          (let ((projection (funcall refresh-context)))
-                            (apply-context-refresh projection)
-                            (when (lifetime-projection-enabled-p)
-                              (merge-provider-followup-bundle
-                               provider-followup-bundle)
-                              (restore-provider-replay-assistant-correlation
-                               projection provider-followup-bundle)))
-                          (setq context-refreshed-p t))
-                         (refresh-messages
-                          ;; Compatibility for callers that have not yet
-                          ;; adopted the atomic projection contract.
-                          (let ((projection
-                                 (list :messages (funcall refresh-messages)
-                                       :options turn-options
-                                       :segments (plist-get turn-options :segments)
-                                       :observation-frontier
-                                       (plist-get turn-options
-                                                  :observation-frontier))))
-                            (apply-context-refresh projection)
-                            (when (lifetime-projection-enabled-p)
-                              (merge-provider-followup-bundle
-                               provider-followup-bundle)
-                              (restore-provider-replay-assistant-correlation
-                               projection provider-followup-bundle)))
-                          (setq context-refreshed-p t))))
-                      ;; Refresh is a whole request projection.  Capture the
-                      ;; tool/result bundle after it so a refreshed current
-                      ;; state and the inherited result remain one frame.
-                      (when on-tool-observation
-                        (let* ((previous-frame
-                                ;; The response may complete before an ordinary
-                                ;; tool settles.  Its consumed frame is the
-                                ;; durable binding, while this request's
-                                ;; original frame still owns the observations
-                                ;; needed by the same-turn tool descendant.
-                                (if (and (not response-curation-effects)
-                                         (e-context-lifetime-frame-p
-                                          active-lifetime-frame)
-                                         (e-context-lifetime-frame-consumed-p
-                                          active-lifetime-frame)
-                                         (e-context-lifetime-frame-p
-                                          provider-request-lifetime-frame)
-                                         (equal
-                                          (e-context-lifetime-frame-id
-                                           active-lifetime-frame)
-                                          (e-context-lifetime-frame-id
-                                           provider-request-lifetime-frame)))
-                                    provider-request-lifetime-frame
-                                  active-lifetime-frame))
-                               (observation-payload
-                                (list :tool-call tool-call
-                                      :result result
-                                      :message (or stored-message message)
-                                      :previous-frame previous-frame))
-                               (new-frame
-                                (funcall on-tool-observation
-                                         observation-payload)))
-                          (setq active-lifetime-frame new-frame)
-                          (when active-lifetime-frame
-                            (when on-tool-observation-presentation
-                              (let ((projection
-                                     (funcall
-                                      on-tool-observation-presentation
-                                      (append
-                                       observation-payload
-                                       (list :frame active-lifetime-frame
-                                             :turn-messages turn-messages
-                                             :provider-followup-messages
-                                             provider-followup-messages)))))
-                                (unless (and (listp projection)
-                                             (plist-member projection
-                                                           :turn-messages)
-                                             (plist-member projection
-                                                           :provider-followup-messages))
-                                  (signal 'wrong-type-argument
-                                          (list 'e-loop-tool-observation-presentation
-                                                projection)))
-                                (setq turn-messages
-                                      (plist-get projection :turn-messages)
-                                      provider-followup-messages
-                                      (plist-get projection
-                                                 :provider-followup-messages))))
-                          ;; Provider options are a request snapshot.  Do not
-                          ;; mutate the plist captured by the still-running
-                          ;; provider callback while installing the descendant
-                          ;; frame for its follow-up.
-                          (setq turn-options (copy-sequence turn-options))
-                          (setq turn-options
-                                (plist-put turn-options
-                                           :lifetime-ephemerals-clean-p nil)))))
-                      (setq next-request-causes
-                            (append next-request-causes (list tool-call)))
-                      (start-next-tool)
-                      (maybe-start-followup)))))
+                            (cond
+                             (refresh-context
+                              (let ((projection (funcall refresh-context)))
+                                (if (e-work-handle-p projection)
+                                    (await-context-refresh
+                                     projection
+                                     (lambda (settled-projection)
+                                       (finish-tool-after-refresh
+                                        token tool-call result message stored-message
+                                        provider-followup-bundle
+                                        settled-projection t)))
+                                  (finish-tool-after-refresh
+                                   token tool-call result message stored-message
+                                   provider-followup-bundle projection t))))
+                             (refresh-messages
+                              (finish-tool-after-refresh
+                               token tool-call result message stored-message
+                               provider-followup-bundle
+                               (list :messages (funcall refresh-messages)
+                                     :options turn-options
+                                     :segments (plist-get turn-options :segments)
+                                     :observation-frontier
+                                     (plist-get turn-options
+                                                :observation-frontier))
+                               t))
+                             (t
+                              (finish-tool-after-refresh
+                               token tool-call result message stored-message
+                               provider-followup-bundle nil nil)))
+                          (finish-tool-after-refresh
+                           token tool-call result message stored-message
+                           provider-followup-bundle nil nil))))))
                    (start-next-tool
                     ()
                     (when (and (not active-tool)
@@ -2149,9 +2189,10 @@ SESSION-ID and TURN-ID identify the turn.
 MESSAGES, MESSAGE-ENTRY-IDS, BACKEND, TOOLS, TOOL-LIFECYCLE, OPTIONS, ON-EVENT,
 APPEND-MESSAGE, REFRESH-CONTEXT, and REFRESH-MESSAGES define the turn context
 and output callbacks.  CALLBACK-DISPATCHER preserves admitted callback ordering
-across an owning persistence barrier.  REFRESH-CONTEXT returns one
-atomic request projection; the
-messages-only callback remains for compatibility.
+across an owning persistence barrier.  REFRESH-CONTEXT returns one atomic
+request projection or an `e-work' handle that settles to one; follow-up waits
+for an async refresh to settle.  The messages-only callback remains for
+compatibility.
 ON-REQUEST-START receives the backend request handle when an adapter exposes
 one.  ON-RESPONSE-PREFLIGHT, when supplied, runs before an assistant append
 and returns the pure completion value passed to ON-RESPONSE-COMPLETE."

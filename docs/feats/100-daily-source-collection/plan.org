@@ -1,0 +1,62 @@
+#+title: Daily Slack and Gmail collection efficiency
+
+* Authorized outcome
+The Daily keeps its complete frozen collection window while reducing model work spent on mechanical collection and failure recovery.
+Deterministic collection owns paging, timestamp normalization, deduplication, coverage facts, resumable artifacts, and structural inventory rendering.
+Workers interpret bounded evidence and return concise source digests; the coordinator connects those digests.
+Existing personal notes, active sessions, Boards, and user Emacs configuration remain untouched.
+
+* Evidence and direct scenario
+On 2026-10-19 Slack made 55 provider requests, using 2,565,093 input tokens with 9.34 percent reuse, then hit the 15-minute deadline.
+Its 29 activation calls repeated about 110,000 characters of schema/activation prefaces, and 13 returned truncated output.
+Gmail initially fetched 111 headers but spent further turns rediscovering CLI usage, repeating searches, and rereading results and invocation receipts.
+Even basic shell commands timed out, and Gmail saved no source artifact.
+The direct scenario is a Daily populate followed by a refresh over the same frozen window, including interrupted collection and recovery, with durable source artifacts and honest source coverage.
+
+* Delivery order
+1. Make progressive MCP activation usable on subsequent requests and keep repeated activation/invocation results compact without losing errors or durable activation state.
+2. Integrate deterministic Slack/Gmail collection and persisted recovery into the Daily workflow, supply workers compact evidence, and accept honest partial coverage.
+3. Review the integrated implementation independently and run repository, current-config, and isolated real-source validation.
+
+* Scope and boundaries
+The e MCP capability owns discovery, promotion, activation persistence, and model-visible tool results.
+The Grimoire Daily collection boundary owns source-specific queries, collection/recovery policy, and source artifacts.
+Source APIs and subprocesses remain asynchronous at the Emacs boundary.
+Thin external helpers may own Gmail CLI interaction and deterministic local normalization; Slack uses the existing direct MCP client rather than an additional credential store.
+Raw source data stays in declared local sidecars.
+Incremental refresh must retain complete-window coverage and revisit changed threads; cache reuse must never turn missing pages, inaccessible sources, or stale content into a successful empty result.
+Partial success, no-data success, unavailable sources, cancellation, and malformed responses remain distinct.
+Useful progress is saved independently of model summarization, and a failed collection cannot destroy a prior useful artifact.
+Model workers must not restart collectors, manually page raw output, read invocation receipts as routine recovery, or diagnose repeated basic shell failures.
+No outgoing Slack/email, user configuration changes, live reload, or alteration of today's Daily is authorized by this implementation package.
+Global shell execution behavior is not changed without a concrete isolated reproducer; bounded collector failure and preserved evidence are required regardless.
+
+* Acceptance evidence
+MCP activation is exercised through normal asynchronous session persistence and subsequent tool selection; repeated invocation retains result/error fidelity without repeated schema material.
+Slack fixtures exercise multiple query pages, duplicate hits, old thread roots with fresh activity, changed threads on refresh, terminal cursors, and recoverable partial coverage.
+Gmail fixtures exercise exact UTC boundaries, conversation deduplication, GitHub exclusions, command failure, timeout, and atomic partial/cached artifacts.
+Public Daily composition establishes that settled validated collector evidence reaches the correct worker and report, and that independent source failure leaves useful artifacts and an explicit terminal disposition.
+Captured provider inputs establish that raw listings and schema prefaces do not accumulate through a model turn per page.
+Run focused tests while iterating, then the required complete and current-config checks on the accepted revision.
+Use actual source APIs in private temporary output paths for live validation; do not change user sessions or notes.
+Record observed bytes, calls, and tokens separately from deterministic behavior and avoid claiming measured savings without a comparable run.
+
+* Working-state policy
+The e checkout began clean at 21584164f7fb7a1ee99bc9c355f30322896e457c.
+Grimoire main contains unrelated live note/archive/index changes; preserve them and stage only implementation-owned files.
+Use the repository-required alendit identity for e commits.
+Do not push unless requested.
+
+* Accepted refinement: refresh and time authority
+Retain complete frozen-window enumeration where the source cannot guarantee reliable change deltas.
+Incremental hydration and merging reuse unchanged detail payloads only after current enumeration or an authoritative change cursor establishes eligibility.
+Use stable source identities, and keep attempted refresh cutoff separate from the successful collection watermark.
+Prefer absolute Gmail internal/received timestamps; otherwise use actual RFC Date with timezone, never minute-resolution display dates.
+The source collector reserves time for interpretation and reporting instead of consuming the entire worker deadline.
+
+* Admission and package status
+The operator authorized implementation of the diagnosed improvements on 2026-10-19.
+Use bounded delivery briefs after owner investigation closes implementation decisions; this document records scope and acceptance without introducing a formal contract matrix.
+MCP activation-result and normal asynchronous promotion behavior are the first admitted package.
+Daily collector implementation remains dependent on the bounded source-interface checkpoint.
+Repository status: In-progress.
