@@ -702,6 +702,64 @@ sleep 5
                            "ALPHA\r\nbeta\r\nGAMMA\r\n"))))
       (delete-directory directory t))))
 
+(ert-deftest e-base-tools-test-edit-result-does-not-echo-shifted-document ()
+  "A small insertion reports its edit rather than the shifted file tail."
+  (let* ((directory (make-temp-file "e-base-edit-result-" t))
+         (file (expand-file-name "sample.txt" directory))
+         (registry (e-base-tools-test--resource-tools directory))
+         (tail (mapconcat (lambda (n) (format "unrelated-%d" n))
+                          (number-sequence 1 2000) "\n")))
+    (unwind-protect
+        (progn
+          (write-region (concat "anchor\n" tail "\nlast\n")
+                        nil file nil 'silent)
+          (let* ((result (e-base-tools-test--execute
+                          registry "edit"
+                          '(:uri "file://sample.txt"
+                            :edits [(:oldText "anchor\n"
+                                     :newText "anchor\ninserted link\n")
+                                    (:oldText "last" :newText "LAST")])))
+                 (content (plist-get result :content))
+                 (diff (plist-get content :diff)))
+            (should (eq (plist-get result :status) 'ok))
+            (should (= (plist-get content :replacements) 2))
+            (should (string-match-p "^+inserted link$" diff))
+            (should (string-match-p "^-last$" diff))
+            (should (string-match-p "^+LAST$" diff))
+            (should-not (string-match-p "unrelated-" diff))
+            (should (< (string-bytes (e-json-serialize content)) 1024))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file) (buffer-string))
+                           (concat "anchor\ninserted link\n" tail "\nLAST\n")))))
+      (delete-directory directory t))))
+
+(ert-deftest e-base-tools-test-edit-result-trims-large-matched-context ()
+  "Whole-file input context does not force whole-file output context."
+  (let* ((prefix (mapconcat (lambda (n) (format "prefix-%d" n))
+                            (number-sequence 1 1000) "\n"))
+         (suffix (mapconcat (lambda (n) (format "suffix-%d" n))
+                            (number-sequence 1 1000) "\n"))
+         (diff (e-base-tools-file--edit-diff
+                (list (list :old-text (concat prefix "\nold\n" suffix)
+                            :new-text (concat prefix "\nnew\n" suffix))))))
+    (should (string-match-p "^-old$" diff))
+    (should (string-match-p "^+new$" diff))
+    (should (string-match-p " prefix-1000" diff))
+    (should (string-match-p " suffix-1" diff))
+    (should-not (string-match-p "prefix-1\n" diff))
+    (should-not (string-match-p "suffix-1000" diff))
+    (should (< (string-bytes diff) 200))))
+
+(ert-deftest e-base-tools-test-edit-result-bounds-serialized-unicode-excerpts ()
+  "Large Unicode/control text is clipped without breaking JSON or characters."
+  (let* ((new (apply #'concat (make-list 2000 "😀\"\\\t")))
+         (diff (e-base-tools-file--edit-diff
+                (list (list :old-text "before" :new-text new)))))
+    (should (<= (e-context-canvas-utf8-bytes (e-json-serialize diff)) 2048))
+    (should (string-match-p "Diff excerpt truncated; all edits were applied" diff))
+    (should-not (string-match-p "�" diff))
+    (should (equal diff (e-json-parse-string (e-json-serialize diff))))))
+
 (ert-deftest e-base-tools-test-edit-file-decodes-utf-8-text ()
   "The edit tool decodes UTF-8 text before applying replacements."
   (let* ((directory (make-temp-file "e-base-edit-utf8-" t))

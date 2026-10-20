@@ -49,6 +49,9 @@
 (defconst e-base-tools-file--max-bytes (* 8 1024)
   "Maximum text bytes returned by base tools before truncation.")
 
+(defconst e-base-tools-file--edit-diff-bytes 2048
+  "Maximum serialized UTF-8 bytes for an edit-result diff excerpt.")
+
 (defconst e-base-tools-file--replace-contents-max-secs 0.5
   "Time budget for the diff in `e-base-tools-file--save-buffer-content-to-file'.
 Passed as `replace-buffer-contents' MAX-SECS.  Without a budget its Myers diff
@@ -1251,7 +1254,7 @@ result plist; otherwise return nil so the caller runs the default backend."
             :replacements (length normalized-edits)
             :linked-buffers (when buffer
                               (list :saved saved :synced synced))
-                         :diff (e-base-tools-file--simple-diff content new-content))))
+                         :diff (e-base-tools-file--edit-diff normalized-edits))))
         (if guarded-p
             (list :status "ok"
                   :revision (e-context-canvas-revision result-content)
@@ -1573,27 +1576,67 @@ WHOLE-RESOURCE widens a live canvas view before capturing it."
                               path))))
       new-content)))
 
-(defun e-base-tools-file--simple-diff (old-content new-content)
-  "Return a compact line diff between OLD-CONTENT and NEW-CONTENT."
-  (let ((old-lines (e-base-tools-file--lines old-content t))
-        (new-lines (e-base-tools-file--lines new-content t))
-        (output nil))
-    (while (or old-lines new-lines)
-      (let ((old-line (car old-lines))
-            (new-line (car new-lines)))
-        (cond
-         ((equal old-line new-line)
-          (push (concat " " old-line) output)
-          (setq old-lines (cdr old-lines))
-          (setq new-lines (cdr new-lines)))
-         (t
-          (when old-line
-            (push (concat "-" old-line) output)
-            (setq old-lines (cdr old-lines)))
-          (when new-line
-            (push (concat "+" new-line) output)
-            (setq new-lines (cdr new-lines)))))))
-    (mapconcat #'identity (nreverse output) "\n")))
+(defun e-base-tools-file--edit-diff (edits)
+  "Return bounded contextual excerpts of exact replacement EDITS.
+Each hunk refers to its input edit, rather than an applicable file patch."
+  (let* ((output "")
+         (marker "[Diff excerpt truncated; all edits were applied.]\n")
+         (budget (- e-base-tools-file--edit-diff-bytes
+                    (e-context-canvas-utf8-bytes
+                     (e-json-serialize marker))))
+         (truncated nil))
+    (cl-labels
+        ((fits-p (text)
+           (<= (e-context-canvas-utf8-bytes (e-json-serialize text)) budget))
+         (emit (prefix text)
+           (let* ((length (length text))
+                  (low 0)
+                  (high (min length budget)))
+             (while (< low high)
+               (let ((middle (/ (+ low high 1) 2)))
+                 (if (fits-p (concat output prefix
+                                     (substring text 0 middle) "\n"))
+                     (setq low middle)
+                   (setq high (1- middle)))))
+             (let* ((candidate
+                     (concat output prefix (substring text 0 low) "\n"))
+                    (fits (fits-p candidate)))
+               (when fits (setq output candidate))
+               (unless (and fits (= low length))
+                 (setq truncated t)
+                 (throw 'diff-full nil))))))
+      (catch 'diff-full
+        (cl-loop
+         for edit in edits for index from 1
+         for old-text = (plist-get edit :old-text)
+         for new-text = (plist-get edit :new-text)
+         unless (equal old-text new-text)
+         do
+         (let* ((old (vconcat (e-base-tools-file--lines old-text)))
+                (new (vconcat (e-base-tools-file--lines new-text)))
+                (old-count (length old))
+                (new-count (length new))
+                (prefix 0)
+                (suffix 0))
+           (while (and (< prefix old-count) (< prefix new-count)
+                       (equal (aref old prefix) (aref new prefix)))
+             (setq prefix (1+ prefix)))
+           (while (and (< suffix (- old-count prefix))
+                       (< suffix (- new-count prefix))
+                       (equal (aref old (- old-count suffix 1))
+                              (aref new (- new-count suffix 1))))
+             (setq suffix (1+ suffix)))
+           (emit "" (format "@@ edit %d (matched text) @@" index))
+           (cl-loop for line from (max 0 (- prefix 2)) below prefix
+                    do (emit " " (aref old line)))
+           (cl-loop for line from prefix below (- old-count suffix)
+                    do (emit "-" (aref old line)))
+           (cl-loop for line from prefix below (- new-count suffix)
+                    do (emit "+" (aref new line)))
+           (cl-loop for line from (- old-count suffix)
+                    below (min old-count (+ (- old-count suffix) 2))
+                    do (emit " " (aref old line)))))))
+    (if truncated (concat output marker) output)))
 
 (provide 'e-base-tools-file)
 

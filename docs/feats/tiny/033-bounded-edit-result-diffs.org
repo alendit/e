@@ -1,0 +1,22 @@
+#+title: Bounded edit-result diffs
+
+* Status
+Done.
+
+* Problem and change
+The file edit tool compared old/new documents by line position and echoed unchanged lines.
+A 190-character insertion in the Pre-Thanksgiving CARs topic shifted most following lines, producing a roughly 37 KB result and an 8 KB truncated preview despite a compact canvas patch.
+
+Render excerpts from each validated exact replacement block instead of comparing complete documents.
+Trim common leading/trailing lines to two lines of context, identify hunks by input edit, and cap the diff at 2048 serialized UTF-8 bytes.
+Large excerpts carry an explicit truncation marker; all requested edits still apply completely.
+The excerpts are display context, not an applicable file patch.
+Revision checks, atomic edit behavior, linked-buffer synchronization, and result metadata are unchanged.
+
+* Validation
+- Base-tool ERT: 57/57 passed, including disjoint CRLF edits, Unicode, coherence conflicts, and three new output regressions.
+- Adjacent file-capability and owner ERT: 7/7 passed.
+- Regression cases cover a small insertion before 2000 unrelated lines, separate edits, large matched context, and escaped Unicode/control text at the serialized byte ceiling.
+- Exact CARs receipt replay: canonical result shrank from 37372 to 1026 bytes; its diff is 319 bytes and the revision metadata remains present.
+- Strict owner compilation passed with only pre-existing Emacs 31 obsolescence warnings excluded.
+- The running Emacs and actual topic were not changed; loading the updated base-tools layer or restarting is required to use the fix there.
