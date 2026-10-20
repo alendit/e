@@ -58,8 +58,17 @@
   (setq e-mcp-http--sessions
         (assoc-delete-all server-id e-mcp-http--sessions)))
 
+(defun e-mcp-http--unibyte (value)
+  "Return VALUE as a unibyte UTF-8 string."
+  (if (and (stringp value) (multibyte-string-p value))
+      (encode-coding-string value 'utf-8)
+    value))
+
 (defun e-mcp-http--http-request-headers (session)
-  "Return HTTP request headers for SESSION."
+  "Return HTTP request headers for SESSION.
+Header strings are unibyte because `url-http' concatenates them with the
+encoded body; a multibyte header (e.g. a token read from JSON config)
+would turn non-ASCII body bytes into raw chars and trip Bug#23750."
   (let ((headers (plist-get session :headers))
         (session-id (plist-get session :session-id))
         result)
@@ -69,7 +78,10 @@
       (push (cons "Mcp-Session-Id" session-id) result))
     (dolist (entry headers)
       (push entry result))
-    (nreverse result)))
+    (mapcar (lambda (entry)
+              (cons (e-mcp-http--unibyte (car entry))
+                    (e-mcp-http--unibyte (cdr entry))))
+            (nreverse result))))
 
 (defun e-mcp-http--http-next-id (session)
   "Return and increment the next JSON-RPC id for SESSION."
